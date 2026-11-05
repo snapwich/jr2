@@ -93,7 +93,7 @@ it. Then the Chart ends, and the run ends with the status `done`.
 
 - [`openBody()`](../reference/authoring-surface/openbody.md) refuses a declaration that is not correct, with one line
   for each problem. The refusal starts with `openBody: `, then each problem, separated by `; `. For example:
-  - `lends.<kind>: an Open body lends agents, effects, machines, guards, actions, delays, gate and fail only`
+  - `lends.<kind>: an Open body lends agents, effects, machines, gates, guards, actions, delays, gate and fail only`
   - `allows.workspace: "<value>" is not a Workspace access (write, read, none)`
   - `ceilings.<ceiling>: missing; an Open body states every ceiling`
   - `ceilings.<ceiling>: <value> is not a positive integer`

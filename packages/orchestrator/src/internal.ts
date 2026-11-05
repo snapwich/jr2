@@ -22,6 +22,8 @@ export type { EffectBinding, OpenEffect, OpenEffectPart } from "./open-effect.ts
 export { openPartsText } from "./open-effect.ts";
 export * from "./effector-wire.ts";
 export * from "./pick.ts";
+export * from "./steer.ts";
+export * from "./notices.ts";
 export * from "./chart.ts";
 export * from "./open-body.ts";
 export * from "./charts.ts";
@@ -36,11 +38,13 @@ export * from "./setup.ts";
 export { sentBy } from "./party.ts";
 export * from "./vocabulary.ts";
 export * from "./tokens.ts";
+// What a run records of its Callers (ADR-0078): the CLI's `jr2 status` walks `startedBy`.
+export type { CallerRecord, GateAnswer, RunStarter } from "./callers.ts";
 export * from "./durability.ts";
 export * from "./snapshot-store.ts";
 export * from "./actor.ts";
-// The `gate` actor: jr2Setup pre-registers it and a state invokes it as `src: "gate"`, so no
-// author writes the value (ADR-0015).
+// The `gate` actor: jr2Setup pre-registers it and a state invokes it as `src: "gate"` (ADR-0015).
+// The Authoring surface has `gate({ … })`, a Gate slot that hears a Hook (ADR-0011).
 export * from "./gate.ts";
 // The Failure's brand stays in fail.ts, and so does the logic that throws it: the kit makes a Failure
 // only through `fail()` and `workspace()`, which imports that logic from fail.ts (ADR-0073).
@@ -74,7 +78,19 @@ export * from "./repos.ts";
 export * from "./repo-fetch.ts";
 // Type-only: what a workflow event delivery looks like (the registration TABLE stays internal
 // even here — ADR-0011).
-export type { ChildErrorMarker, DeliveredEvent, PlacingMarker, RunMarker, TurnMarker } from "./registration.ts";
+export type {
+  ChildErrorMarker,
+  DeliveredEvent,
+  GateMarker,
+  HookRefusedMarker,
+  PlacingMarker,
+  PoolMarker,
+  RunMarker,
+  SourceVerdictLine,
+  TurnMarker,
+} from "./registration.ts";
+export type { HookOutcome } from "./hooks.ts";
+export type { HookLogLine } from "./snapshot-store.ts";
 export * from "./machine-doc.ts";
 export * from "./run-host.ts";
 export * from "./http.ts";

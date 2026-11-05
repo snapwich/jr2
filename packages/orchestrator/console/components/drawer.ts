@@ -1,9 +1,10 @@
-// The drawer: Attention (the gate inbox) + Activity (the emit log). Tokenless there is no
-// Attention tab at all — the observer band of ADR-0014/0032 — and a card is only ever a re-fetched
-// fact: it empties when the server's next answer says so, never through bookkeeping on this side.
+// The drawer: Attention (the gate inbox) + Activity (the emit log). The Attention tab is there only
+// for a Caller with `answer` on some Workflow (ADR-0032, ADR-0078) — without it the page is the
+// observer band of ADR-0014 — and a card is only ever a re-fetched fact: it empties when the
+// server's next answer says so, never through bookkeeping on this side.
 
 import { h, type JSX } from "preact";
-import { visibleGates, type GateCard, type Store } from "../store.ts";
+import { may, visibleGates, type GateCard, type Store } from "../store.ts";
 import { SchemaForm } from "./schema-form.ts";
 import type { AppApi } from "./app.ts";
 
@@ -18,8 +19,8 @@ export function Drawer(props: {
   api: AppApi;
 }): JSX.Element {
   const { store, chosenTab, onChooseTab, api } = props;
-  const unlocked = store.token === "live";
-  const tab = unlocked ? chosenTab : "activity"; // tokenless: no Attention tab — today's observer
+  const unlocked = may(store, "answer");
+  const tab = unlocked ? chosenTab : "activity"; // no `answer`: no Attention tab — the observer's drawer
   return h(
     "aside",
     { id: "drawer" },

@@ -21,9 +21,9 @@ import { readAdrs, type RefContext } from "./reference/context.ts";
 import { GLOSSARY_PAGE, renderDecisions, renderGlossary } from "./reference/glossary.ts";
 import { HTTP_PAGE, renderHttp } from "./reference/http-api.ts";
 import { EVENTS_PAGE, readMechanismEvents, renderMechanismEvents } from "./reference/mechanism-events.ts";
-import { examplesOf, readSurface, renderSurface, type EntryPage } from "./reference/surface.ts";
+import { examplesOf, readModules, readSurface, renderSurface, type EntryPage } from "./reference/surface.ts";
 import { allPages, readSitemap, type Page } from "./sitemap.ts";
-import { createProgram, type Program } from "./tsdoc.ts";
+import { createProgram, HOOKS_MODULES, type Program } from "./tsdoc.ts";
 import { generatorSyntax, headingOnes, toPlainMarkdown } from "./vitepress.ts";
 
 export const REPO = fileURLToPath(new URL("../../../", import.meta.url));
@@ -52,6 +52,8 @@ const GENERATED: Record<string, string> = {
   "reference/authoring-surface":
     "Every name that @jr2/orchestrator exports from its root, by group, with a link to its page: its signature, its TSDoc, and an example.",
   "reference/machines": "The Machines that @jr2/machines ships: their input, their output, and their Open parts.",
+  "reference/hooks":
+    "Every name that @jr2/hooks exports: the interface of a Hook kind, the kinds that jr2 ships, and webhook().",
   "reference/config": "Every field of jr2.config.ts: its type, whether it is required, its default, and what it does.",
   "reference/cli": "Every jr2 command: its synopsis, its arguments, flags and env vars, and what it prints.",
   "reference/http-api":
@@ -107,11 +109,25 @@ export function referenceContext(repo: string, pages: readonly Page[]): RefConte
   return { repo, program: programFor(repo), pages, adrs: readAdrs(repo), names: new Map(), errors: [] };
 }
 
-/** The surface pages that are split into a contents page and a folder of entry pages, by slug,
+/** The text that heads each module's group on the `@jr2/hooks` page. */
+const HOOKS_INTROS: Record<(typeof HOOKS_MODULES)[number], string> = {
+  index:
+    "The interface between the door of a Hook and a kind: `defineHookKind`, which makes a kind, the types of a kind, the helpers that read a request, and `HookKinds`, to which each kind adds its id and its payloads.",
+  github: "The kind of GitHub. It verifies with `mac`, over the raw body.",
+  gitlab: "The kind of GitLab. It verifies with `token`, in the header `X-Gitlab-Token`.",
+  slack:
+    "The kind of one Slack app: its slash commands, its clicks and its Events API. It verifies with `mac`, over the signed time and the body.",
+  discord:
+    "The kind of a Discord application's Interactions Endpoint URL. It verifies with `ed25519`, over the signed time and the body.",
+  webhook:
+    "`webhook()` makes a kind from data, for a service that has no kind: a verifier over the raw body, the event key, the delivery id, `onBehalfOf`, and a schema for each event.",
+};
+
+/** The surface pages that are split into a contents page and a folder of group and entry pages, by slug,
  * and what the AGENTS.md block says that the folder holds. The Authoring surface is too long for
  * one read of a file tool (about 200 KB as one page). The machines page is short. */
 export const SPLIT: Record<string, string> = {
-  "reference/authoring-surface": "one file per export and type",
+  "reference/authoring-surface": "one file per group, export and type",
 };
 
 export type GeneratedReference = {
@@ -127,21 +143,36 @@ export function generateReference(ctx: RefContext): GeneratedReference {
   const read = (root: string, slug: string) => readSurface(ctx, root, `${slug}.md`, slug in SPLIT);
   const surface = read("packages/orchestrator/src/index.ts", "reference/authoring-surface");
   const machines = read("packages/machines/src/index.ts", "reference/machines");
+  const hooks = readModules(
+    ctx,
+    HOOKS_MODULES.map((m) => ({
+      root: `packages/hooks/src/${m}.ts`,
+      specifier: m === "index" ? "@jr2/hooks" : `@jr2/hooks/${m}`,
+      intro: HOOKS_INTROS[m],
+    })),
+    "reference/hooks.md",
+  );
   const config = readConfig(ctx);
   const events = readMechanismEvents(ctx);
   const surfacePages = renderSurface(
     ctx,
     surface,
-    "The [Authoring surface](glossary.md#authoring-surface) is every name that `@jr2/orchestrator` exports from its root, and nothing else: a workflow module and `jr2.config.ts` import only these names. The groups and their order are those of the root's `src/index.ts`. This page gives each name its kind and the first sentence of its TSDoc. Each name has a page of its own, in `authoring-surface/`, with the file that declares it, its signature, and its TSDoc.",
+    "The [Authoring surface](glossary.md#authoring-surface) is every name that `@jr2/orchestrator` exports from its root, and nothing else: a workflow module and `jr2.config.ts` import only these names. The groups and their order are those of the root's `src/index.ts`. This page gives each group its description and its names. Each group has a page of its own, in `authoring-surface/`, which gives each name of the group its kind and the first sentence of its TSDoc. Each name has a page of its own, in the same folder, with the file that declares it, its signature, and its TSDoc.",
   );
   const machinesPages = renderSurface(
     ctx,
     machines,
     "`@jr2/machines` ships Machines, not Workflows. A Machine becomes a Workflow when a file in the Instance's `workflows/` folder exports it, with each [Open](glossary.md#open) part bound by [`customize`](authoring-surface/customize.md). Install it beside `@jr2/orchestrator`, at the same version: it is a peer of the kit, never a copy of it.",
   );
+  const hooksPages = renderSurface(
+    ctx,
+    hooks,
+    "`@jr2/hooks` is the interface of a [Hook kind](glossary.md#hook-kind), and the kinds that jr2 ships. `jr2.config.ts` imports a kind to declare a [Hook](glossary.md#hook), and a workflow module imports a kind's types for the handlers of a Gate slot or a Source. Install it beside `@jr2/orchestrator`, at the same version. A kind from another package has a peer dependency on `@jr2/hooks` `^1`. Each group of this page is one module that you import.",
+  );
   const pages = new Map<string, string>([
     ["reference/authoring-surface", surfacePages.body],
     ["reference/machines", machinesPages.body],
+    ["reference/hooks", hooksPages.body],
     [CONFIG_PAGE.replace(/\.md$/, ""), renderConfig(ctx, config)],
     [CLI_PAGE.replace(/\.md$/, ""), renderCli(ctx)],
     [HTTP_PAGE.replace(/\.md$/, ""), renderHttp(ctx)],
@@ -163,6 +194,7 @@ export function generateReference(ctx: RefContext): GeneratedReference {
   const examples = [
     ...examplesOf(ctx, surface).map((e) => ({ page: surface.page, ...e })),
     ...examplesOf(ctx, machines).map((e) => ({ page: machines.page, ...e })),
+    ...examplesOf(ctx, hooks).map((e) => ({ page: hooks.page, ...e })),
   ];
   return { pages, entries, examples };
 }

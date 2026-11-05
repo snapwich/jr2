@@ -73,6 +73,15 @@ the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
   one object with both keys for an Effect with two Open parts; the Effect refuses to run while Open, as the second fence
   — its state's `onError`, with nothing sent and no ledger row. The Open part is the whole url, the whole argv, or the
   secret's name.
+- **Open widens to a hooked Gate's look, which only warns.** A package writes the Hook handlers of its Gate slots for
+  each forge that it supports, because a forge's payload is public, so a handler is never Open. It imports the Hook kind
+  of each forge that it hears, for the payload types, and it has `@jr2/hooks` as a peer dependency
+  ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). Which Hooks of those
+  kinds exist is the Instance's config. A look needs a url and a token, so a package leaves `look: open`, and the
+  composer binds it once, to a look or `"none"`, with `customize(machine, { gates: { <slot>: { look } } })`, which can
+  also add, replace or remove a handler by kind and event key ([ADR-0011](0011-workflow-defined-events.md)). An Open
+  look that nobody binds is the one Open part that `jr2 up` does not refuse: it warns, as it warns about a hooked Gate
+  with no look, because the Gate still works when a person answers it with `jr2 send`.
 - **The per-run Dial is the escape hatch, not the default.** A shipped Machine's door may carry `model` and
   `thinkingLevel` (ADR-0018's two Dials) and fold them into each invoke's input; the bound definition is what `jr2 up`
   preflights, the door value overrides it for one run's Turns. Nothing in jr2 changes for this — it is the Machine's own

@@ -1,0 +1,55 @@
+{
+  "name": "@jr2/hooks",
+  "version": "0.6.0",
+  "description": "The interface of a jr2 Hook kind, webhook(), and the kinds that jr2 ships: github, gitlab, slack, discord.",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/snapwich/jr2.git",
+    "directory": "packages/hooks"
+  },
+  "homepage": "https://github.com/snapwich/jr2#readme",
+  "bugs": {
+    "url": "https://github.com/snapwich/jr2/issues"
+  },
+  "keywords": [
+    "jr2",
+    "agents",
+    "agentic",
+    "webhook",
+    "kubernetes",
+    "workflow"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./github": "./src/github.ts",
+    "./gitlab": "./src/gitlab.ts",
+    "./slack": "./src/slack.ts",
+    "./discord": "./src/discord.ts",
+    "./webhook": "./src/webhook.ts",
+    "./door": "./src/door.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-global-setup=../../scripts/test-tmpdir.ts"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "typescript": "^5.6.0"
+  },
+  "files": [
+    "src"
+  ]
+}

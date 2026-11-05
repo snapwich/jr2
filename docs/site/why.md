@@ -47,7 +47,8 @@ cannot be the right one for each of them.
 
 The You band of the diagram holds the clients of jr2. The [Orchestrator](reference/glossary.md#orchestrator) is an HTTP
 API. The [jr2 CLI](reference/glossary.md#jr2-cli) and the [Console](reference/glossary.md#console) are its clients, and
-your own app, such as a webhook, can be one too. For example, a client can start a run with
+your own app, such as a CI job or a bridge to a chat service, can be one too. An outside service, such as a forge, sends
+its deliveries to a [Hook](reference/glossary.md#hook). For example, a client can start a run with
 [`POST /workflows/:name/runs`](reference/http-api.md#post-workflows-name-runs). In the diagram, a
 [Gate](reference/glossary.md#gate) in the state `approval` asks you, and you answer from any of these clients, with
 [`POST /runs/:runId/gates/:gate/events`](reference/http-api.md#post-runs-runid-gates-gate-events).

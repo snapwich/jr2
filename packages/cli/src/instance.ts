@@ -11,10 +11,13 @@
 //     `config.name` > folder name): the Instance token is read from the in-cluster `jr2-instance`
 //     Secret and the `jr2-orchestrator` Service is port-forwarded for the life of the command —
 //     kube RBAC is the real gate, and no local state file can go stale (ADR-0019).
+//   - On the kube path the CLI says whom it acts for (ADR-0078): the user name a kube
+//     `SelfSubjectReview` gives for the context, sent as `jr2-on-behalf-of`. The Instance token is
+//     the Caller `token/instance`; the name says which person held it. With `--url` it says none.
 //   - Every resolution prints its target on stderr, so ambient-context drift stays visible.
 
 import { basename } from "node:path";
-import { loadConfig } from "@jr2/orchestrator/internal";
+import { loadConfig, ON_BEHALF_OF_MAX } from "@jr2/orchestrator/internal";
 import { INSTANCE_SECRET, kubectlKube, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "./kube.ts";
 import { assertKitVersion } from "./kit-version.ts";
 import { activity, type Io } from "./output.ts";
@@ -31,8 +34,9 @@ export function resolveRoot(cwd: string): string {
   return root;
 }
 
-/** Where to talk, as whom, and how to hang up (the port-forward lives only as long as the verb). */
-export type Target = { url: string; token?: string; close?: () => void };
+/** Where to talk, as whom, and how to hang up (the port-forward lives only as long as the verb).
+ * `onBehalfOf` is the party the CLI says it acts for (ADR-0078): on the kube path, the kube user. */
+export type Target = { url: string; token?: string; onBehalfOf?: string; close?: () => void };
 
 export type TargetOptions = {
   /** Explicit orchestrator address (`--url`); with `JR2_URL` the escape hatch past the kube path. */
@@ -90,6 +94,13 @@ export async function resolveTarget(io: Io, opts: TargetOptions): Promise<Target
       `not deployed here — right context? (context ${context}, namespace ${namespace}; \`jr2 up\` deploys)`,
     );
   }
-  const fwd = await kube.portForward({ namespace, service: ORCHESTRATOR_SERVICE, port: ORCHESTRATOR_PORT, ...ctx });
-  return { url: fwd.url, token, close: fwd.close };
+  // The kube user, read beside the forward so it costs no time of its own. A name past the
+  // header's bound is cut, never sent whole to a refusal. A name that is not printable ASCII is not
+  // sent: a header value cannot carry it, and the claim is not worth a failed verb.
+  const [fwd, user] = await Promise.all([
+    kube.portForward({ namespace, service: ORCHESTRATOR_SERVICE, port: ORCHESTRATOR_PORT, ...ctx }),
+    kube.selfSubject(ctx),
+  ]);
+  const onBehalfOf = user && /^[\x20-\x7e]+$/.test(user) ? user.slice(0, ON_BEHALF_OF_MAX).trim() : undefined;
+  return { url: fwd.url, token, ...(onBehalfOf ? { onBehalfOf } : {}), close: fwd.close };
 }

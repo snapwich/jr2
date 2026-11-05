@@ -208,7 +208,7 @@ Then(
   async function (this: E2EWorld): Promise<void> {
     assert.ok(this.assemblyHash, "a converge published an Assembly first");
     const modules = `/instance/.jr2/assemblies/${this.assemblyHash}/node_modules`;
-    const kit = ["@jr2/orchestrator", "@jr2/agent-protocol", "xstate", "zod", "hono"];
+    const kit = ["@jr2/orchestrator", "@jr2/agent-protocol", "@jr2/hooks", "xstate", "zod", "hono"];
     const found = await kubectlOut([
       "--namespace",
       this.namespace!,

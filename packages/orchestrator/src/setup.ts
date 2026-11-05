@@ -50,7 +50,8 @@ import { isAgent } from "./agent.ts";
 import { isEffect } from "./effect.ts";
 import type { AnyFramePath, FramePath, WorktreePath, WorktreeReady } from "./worktree.ts";
 import { effectChecks, refuseUnroutedOutcome } from "./effect-checks.ts";
-import { gate } from "./gate.ts";
+import { isGateInvoke } from "./gate-brand.ts";
+import { isGateSlot, plainGate, settlesOnItsOwn, type PlainGate } from "./gate.ts";
 import { attachLent, isOpenBody, openBodyDeclarationOf, type LentParts } from "./open-body.ts";
 import { refuseInlineParts } from "./parts.ts";
 import { partyWarnings, refuseSlotActiveTwice, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
@@ -112,7 +113,7 @@ type SentByGuards = { [SENT_BY]: { id: string } };
 /** The jr2 actor every workflow can invoke by name without listing it (ADR-0015). `gate` is the
  * whole set: an Agent is not pre-registered, because it is not one logic — it is the slot the
  * Machine declares, `actors: { coder: agent(def) }` (ADR-0049). */
-const jr2Actors = { gate };
+const jr2Actors: { gate: PlainGate } = { gate: plainGate };
 type JR2Actors = typeof jr2Actors;
 
 /**
@@ -212,7 +213,9 @@ type BindActors<A extends Record<string, UnknownActorLogic>, TInput, TContext> =
  *   `defineEvent` events you list, plus the events jr2 itself sends (`agent.fault`,
  *   `workspace.lost`). An event that a party sent has `event.sender`. A Machine that takes no
  *   workflow event leaves out `events`.
- * - The `gate` actor is ready to invoke by name: `invoke: { src: "gate" }`.
+ * - The `gate` actor is ready to invoke by name: `invoke: { src: "gate" }`. A Gate slot that hears a
+ *   Hook (`actors: { review: gate({ … }) }`) is invoked by its key. An event in its `delivers` whose
+ *   def leaves `audience` unset is `audience: "external"` in this Machine.
  * - Each Agent slot (`actors: { coder: agent(…) }`) gets its Menu from the states that invoke it.
  * - The `sentBy(id)` guard is ready to use.
  * - `createMachine` also takes `input`: a zod object for the input that starts a run. jr2 checks
@@ -269,6 +272,13 @@ type BindActors<A extends Record<string, UnknownActorLogic>, TInput, TContext> =
  *   run an Agent`: the body sends it a Chart's unrouted `agent.fault`. When both kinds have no route,
  *   one line names both, joined by `, and`. One route on the root is a route for each state. A
  *   Chart's Machine does not get this refusal: in a Chart the route is optional (ADR-0070).
+ * - an event in a Gate slot's `delivers` that `events` does not list: ``machine "<id>": Gate slot
+ *   "<slot>" delivers "<name>", which no def in jr2Setup({ events }) declares (declared: <names>) —
+ *   list it in events (ADR-0011)``
+ * - an event in a Gate slot's `delivers` that the Gate does not accept at a state that invokes it:
+ *   ``machine "<id>": state "<state>" invokes Gate slot "<slot>", which delivers "<name>", and its
+ *   Gate does not accept it (accepts: <names>) — no handler or look could deliver it: handle it on
+ *   that state, a state above it or a plain child, or drop it from delivers (ADR-0011)``
  *
  * It also refuses a `sentBy` that names no party (see `sentBy`). It refuses a pick param that
  * nothing reads, where the pick enters a state that invokes an Effect (see `fromPick`). Shapes that
@@ -358,7 +368,8 @@ export function jr2Setup<
      * listed, if it is not a jr2 or xstate event (an event with a `.` in its name). */
     events?: TDefs;
     /** The actors the states invoke by name, as in `setup()`: Agent slots (`agent(…)`), Effects
-     * (`command(…)`, `http(…)`, `push(…)`), child Machines, `workspace(…)` and plain xstate logic.
+     * (`command(…)`, `http(…)`, `push(…)`), Gate slots (`gate({ … })`), child Machines, `workspace(…)`
+     * and plain xstate logic.
      * The key is the slot's name. An actor named `gate` replaces jr2's Gate. */
     actors?: TActors;
     /** Named actions, as in `setup()`. Their `event` has the type of this Machine's events. */
@@ -429,6 +440,10 @@ export function jr2Setup<
     // Resolve the defs first (duplicates and reserved semantics fail HERE, naming the machine —
     // the same loud failure `eventMap` gave the manifest, moved to machine-build time)…
     const defs = eventMap((machineConfig as { id?: string }).id ?? "(machine)", def.events ?? []);
+    // A Gate slot's `delivers` (ADR-0011, ADR-0015): each name is one of this Machine's events, and
+    // one whose def leaves the audience unset reads as `external`, so no Agent has a Hook's event on
+    // its Menu. Before the Menus derive, so the walk, the Menu and the runtime read one vocabulary.
+    externalDelivers((machineConfig as { id?: string }).id ?? "(machine)", defs, def.actors ?? {});
 
     // Every Open body slot (ADR-0070), found by its brand: each name it lends resolves against THIS
     // setup's own parts, or the Machine is refused naming it. The resolved set is stamped on the slot,
@@ -441,6 +456,12 @@ export function jr2Setup<
     // ADR-0007 restore path and invoke-time `resolveAccepts` validation are unchanged.
     const derived = deriveMenus(machineConfig, defs, def.actors ?? {});
     const machine = (inner.createMachine as unknown as (c: never) => AnyStateMachine)(derived.config as never);
+    // A Gate slot's event that its state's Gate does not accept (ADR-0011): no handler or look could
+    // ever deliver it.
+    if (derived.refused.length) {
+      const idOf = (path: readonly string[]): string => stateAt(machine, path).id;
+      throw new Error(`machine "${machine.id}": ${derived.refused.map((r) => r(idOf)).join("; ")}`);
+    }
 
     // Close the nested-`on` typo hole (ADR-0015): with the manifest dead, a typo'd key would
     // silently become vocabulary — so every non-dotted key the machine handles anywhere must map
@@ -603,7 +624,7 @@ function deriveMenus(
   config: unknown,
   defs: Map<string, EventDef>,
   actors: Record<string, UnknownActorLogic>,
-): { config: unknown; seats: Seat[]; warnings: Warning[]; derivedGateIds: Set<string> } {
+): { config: unknown; seats: Seat[]; warnings: Warning[]; derivedGateIds: Set<string>; refused: Warning[] } {
   const pick = (reach: Reach, kind: "agent" | "external", self: string): string[] =>
     [...reach]
       .filter(([name, owners]) => {
@@ -623,6 +644,8 @@ function deriveMenus(
   const parties = new Map<string, { agents: string[]; gate: boolean }>();
   // The Gate invoke ids this walk names: a party warning says how to name one instead.
   const derivedGateIds = new Set<string>();
+  // A Gate slot's `delivers` that its state's Gate does not accept (ADR-0011): refusals.
+  const refused: Warning[] = [];
 
   const walk = (
     node: LooseState,
@@ -645,7 +668,7 @@ function deriveMenus(
       const invokes = Array.isArray(node.invoke) ? node.invoke : [node.invoke];
       // >1 unnamed gate in one state would collide on the state-key id; suffix ONLY then, so
       // the common case (one gate per state) keeps the clean name.
-      const unnamedGates = invokes.filter((inv) => inv?.src === "gate" && inv.id == null).length;
+      const unnamedGates = invokes.filter((inv) => isGateInvoke(inv, actors) && inv.id == null).length;
       let ordinal = 0;
       const wrapOne = (inv: LooseInvoke): LooseInvoke => {
         // The slot key IS the Agent name (ADR-0049) — read off the declaration, never authored.
@@ -678,7 +701,7 @@ function deriveMenus(
           seats.push({ path, party: "agent", agent: inv.src, names: [...derived].sort() });
           return { ...inv, input: wrapAgentInput(inv.input, derived, inv.src, menuOf) };
         }
-        if (inv?.src === "gate") {
+        if (isGateInvoke(inv, actors)) {
           // A Gate's plain children — below it, with no party-invoking state between — are its own
           // by position, as an Agent's modes are its (ADR-0015).
           const reach: Reach = new Map([...names].map(([name, owners]) => [name, new Set(owners)]));
@@ -686,6 +709,20 @@ function deriveMenus(
             reach.set(name, (reach.get(name) ?? new Set<string>()).add(owner));
           const accepts = pick(reach, "external", owner);
           seats.push({ path, party: "gate", names: [...accepts].sort() });
+          const slot = typeof inv.src === "string" ? actors[inv.src] : undefined;
+          if (isGateSlot(slot)) {
+            const outside = slot.gateSlot.delivers.map((d) => d.name).filter((name) => !accepts.includes(name));
+            if (outside.length) {
+              const name = inv.src as string;
+              refused.push(
+                (idOf) =>
+                  `state "${idOf(path)}" invokes Gate slot "${name}", which delivers ${outside.map((n) => `"${n}"`).join(", ")}, ` +
+                  `and its Gate does not accept ${outside.length > 1 ? "them" : "it"} (accepts: ${accepts.join(", ") || "nothing"}) — ` +
+                  "no handler or look could deliver it: handle it on that state, a state above it or a plain child, " +
+                  "or drop it from delivers (ADR-0011)",
+              );
+            }
+          }
           const wrapped: LooseInvoke = { ...inv, input: wrapGateInput(inv.input, accepts) };
           // A machine-root gate (empty path) is left to xstate's default id: a `""` id would be
           // worse than a noisy one, and the derived gate id still works.
@@ -710,7 +747,7 @@ function deriveMenus(
   };
 
   const out = walk(config as LooseState, new Map(), new Map(), [], NOBODY);
-  return { config: out, seats, warnings: [...warnings.values()], derivedGateIds };
+  return { config: out, seats, warnings: [...warnings.values()], derivedGateIds, refused };
 }
 
 /**
@@ -845,7 +882,7 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
             continue;
           }
           const party = child.invoke.some(
-            (inv) => inv.src === "gate" || (typeof inv.src === "string" && isAgent(actors[inv.src])),
+            (inv) => isGateInvoke(inv, actors) || (typeof inv.src === "string" && isAgent(actors[inv.src])),
           );
           if (!party) descend(child);
           continue;
@@ -866,27 +903,6 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
   }
   if (refused.length) throw new Error(`machine "${machine.id}": ${refused.join("; ")}`);
   return out;
-}
-
-/**
- * Does this logic settle on its own — a promise, the one plain xstate actor that ends without being
- * stopped? Asked of its own transition: a promise logic's initial snapshot, sent xstate's resolve
- * event, is `done`. That event name is an xstate internal (5.32.2); a bump that renamed it would
- * make every promise read long-lived, and setup.test.ts pins it against the real constructors.
- */
-function settlesOnItsOwn(logic: unknown): boolean {
-  const l = logic as {
-    getInitialSnapshot?: (scope: unknown, input: unknown) => unknown;
-    transition?: (snapshot: unknown, event: unknown, scope: unknown) => { status?: string } | undefined;
-  };
-  if (typeof l?.getInitialSnapshot !== "function" || typeof l.transition !== "function") return false;
-  try {
-    const scope = { self: {}, defer: () => {}, emit: () => {} };
-    const snapshot = l.getInitialSnapshot(scope, undefined);
-    return l.transition(snapshot, { type: "xstate.promise.resolve", data: undefined }, scope)?.status === "done";
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -918,7 +934,7 @@ function restWarnings(machine: AnyStateMachine, actors: Record<string, UnknownAc
           for (const inv of child.invoke) {
             const logic = logicOf(inv.src);
             const name = typeof inv.src === "string" ? inv.src : inv.id;
-            if (inv.src === "gate") {
+            if (isGateInvoke(inv, actors)) {
               for (const [event, candidates] of child.transitions) {
                 if (event.includes(".") || event === "*") continue;
                 if (candidates.some((t) => (t.target ?? []).length > 0)) continue;
@@ -982,6 +998,7 @@ function stampOpenBodies(
       ["agents", "an Agent slot (agent(...))", isAgent],
       ["effects", "an Effect slot", isEffect],
       ["machines", "a Machine", (l: unknown) => (l as { root?: unknown } | undefined)?.root !== undefined],
+      ["gates", "a Gate slot (gate({ … }))", isGateSlot],
     ] as const;
     for (const [kind, what, test] of actorKinds) {
       for (const name of decl.lends[kind] ?? []) {
@@ -1052,6 +1069,29 @@ function stateAt(machine: AnyStateMachine, path: readonly string[]): AnyStateMac
   return node;
 }
 
+/**
+ * The `delivers` of each Gate slot this setup declares (ADR-0011, ADR-0015). Each name must be an
+ * event of the Machine: a handler or a look gives a plain event, which the Machine's own def parses.
+ * An event whose def leaves the audience unset reads as `audience: "external"` in this Machine's
+ * vocabulary, so no Agent of the Machine has it on its Menu, and the author does not have to know
+ * this. An explicit audience stays.
+ */
+function externalDelivers(machineId: string, defs: Map<string, EventDef>, actors: Record<string, unknown>): void {
+  for (const [slot, logic] of Object.entries(actors)) {
+    if (!isGateSlot(logic)) continue;
+    for (const d of logic.gateSlot.delivers) {
+      const own = defs.get(d.name);
+      if (!own) {
+        throw new Error(
+          `machine "${machineId}": Gate slot "${slot}" delivers "${d.name}", which no def in jr2Setup({ events }) ` +
+            `declares (declared: ${[...defs.keys()].join(", ") || "none"}) — list it in events (ADR-0011)`,
+        );
+      }
+      if (own.audience === undefined) defs.set(d.name, Object.freeze({ ...own, audience: "external" as const }));
+    }
+  }
+}
+
 /** A state's own workflow-event keys: dotted names are jr2's or xstate's, `*` is the wildcard. */
 function ownPicks(node: LooseState): string[] {
   return Object.keys(node.on ?? {}).filter((key) => !key.includes(".") && key !== "*");
@@ -1062,7 +1102,7 @@ function partiesOf(node: LooseState, actors: Record<string, UnknownActorLogic>):
   const invokes = node.invoke ? (Array.isArray(node.invoke) ? node.invoke : [node.invoke]) : [];
   return {
     agents: invokes.flatMap((inv) => (typeof inv?.src === "string" && isAgent(actors[inv.src]) ? [inv.src] : [])),
-    gate: invokes.some((inv) => inv?.src === "gate"),
+    gate: invokes.some((inv) => isGateInvoke(inv, actors)),
   };
 }
 

@@ -2,8 +2,12 @@
 // it must say exactly what `createApp` registers: a route the table does not list is a route the
 // Reference hides, and a row with no route is one it invents. Both directions fail here, and each
 // row's band (ADR-0014) is checked on the wire with a Sandbox token addressed to its own Sandbox:
-// a row cannot say `instanceOnly` above a route that token can reach, nor `authenticated` above
-// one that refuses it.
+// a row cannot say `guarded` or `instanceOnly` above a route that token can reach, nor
+// `authenticated` above one that refuses it. A `guarded` row's scope is checked with two named
+// Caller tokens (ADR-0078): one with every scope, which the route takes, and one with none, which
+// it refuses unless the row says `any`. An `instanceOnly` row refuses the first too. A `hook` row
+// (ADR-0011) takes no bearer at all: each token, the Instance token's among them, gets 401 from the
+// Hook's own verifier.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -13,24 +17,65 @@ import { createApp } from "../src/http.ts";
 // The kit's specifier, not the root: the table is not on the Authoring surface (ADR-0015), and the
 // Reference generator reads it from here.
 import { HTTP_ROUTES, type HttpRoute } from "../src/internal.ts";
-import { createAuthenticator, mintInstanceToken, sandboxToken } from "../src/tokens.ts";
+import {
+  callerTokenDigest,
+  createAuthenticator,
+  mintCallerToken,
+  mintInstanceToken,
+  sandboxToken,
+} from "../src/tokens.ts";
+import { gitlab } from "@jr2/hooks/gitlab";
+import { hookDoor } from "../src/hooks.ts";
+import { secret } from "../src/http-effect.ts";
 import { mkStore } from "./_fixtures.ts";
 
 const KEY = Buffer.alloc(32, 7);
 
+/** A named token with every scope for every Workflow, and one with no scope at all. */
+const EVERY = mintCallerToken();
+const NONE = mintCallerToken();
+
 /** An app with an authenticator, so the bands are live. No workflow is registered: a band
  * answers before any lookup, which is the point of it being middleware. */
+/** The Instance token of the app: a `hook` row must refuse it too. */
+const INSTANCE = mintInstanceToken();
+
 async function mkApp() {
-  const host = new RunHost({ store: await mkStore() });
-  return createApp(host, createAuthenticator({ instanceToken: mintInstanceToken(), signingKey: KEY }));
+  const store = await mkStore();
+  const host = new RunHost({ store });
+  const all = "all" as const;
+  // A `token` Hook under the name each `:name` becomes, so a bearer reaches its verifier.
+  const hooks = hookDoor({
+    host,
+    store,
+    hooks: () => ({ [SANDBOX]: gitlab({ secret: secret("GL") }) }),
+    digests: () => ({ GL: "0".repeat(64) }),
+  });
+  return createApp(
+    host,
+    createAuthenticator({
+      instanceToken: INSTANCE,
+      signingKey: KEY,
+      namedTokens: () => [
+        {
+          name: "every",
+          digest: callerTokenDigest(EVERY),
+          may: { start: all, answer: all, cancel: all, read: all, steer: all },
+        },
+        { name: "none", digest: callerTokenDigest(NONE), may: {} },
+      ],
+    }),
+    { hooks },
+  );
 }
 
 const key = (r: { method: string; path: string }) => `${r.method} ${r.path}`;
 
 test("every registered route has a row, and every row has a registered route", async () => {
   const app = await mkApp();
-  // Hono lists a middleware and its handler as two entries for one route: one key each.
-  const registered = new Set(app.routes.map(key));
+  // Hono lists a middleware and its handler as two entries for one route: one key each. The CORS
+  // middleware (ADR-0078) is on every path, and is no route.
+  const registered = new Set(app.routes.filter((r) => !(r.method === "ALL" && r.path === "/*")).map(key));
   const table = HTTP_ROUTES.map(key);
 
   assert.equal(new Set(table).size, table.length, "a route has two rows");
@@ -86,14 +131,32 @@ test("each row's band is the band the route enforces", async () => {
   const sandbox = sandboxToken(KEY, SANDBOX);
   for (const row of HTTP_ROUTES) {
     const noToken = await statusOf(app, row);
+    if (row.band === "hook") {
+      for (const token of [undefined, sandboxToken(KEY, SANDBOX), EVERY, INSTANCE]) {
+        assert.equal(await statusOf(app, row, token), 401, `${key(row)} is a Hook's door, but a bearer opens it`);
+      }
+      continue;
+    }
     if (row.band === "open") {
       assert.notEqual(noToken, 401, `${key(row)} is open, but refuses a caller with no token`);
       continue;
     }
     assert.equal(noToken, 401, `${key(row)} is ${row.band}, but takes a caller with no token`);
     const withSandbox = await statusOf(app, row, sandbox);
-    if (row.band === "instanceOnly" || row.band === "publishOnly") {
+    if (row.band === "guarded" || row.band === "instanceOnly" || row.band === "publishOnly") {
       assert.equal(withSandbox, 403, `${key(row)} is ${row.band}, but takes a Sandbox token`);
+      const every = await statusOf(app, row, EVERY);
+      const none = await statusOf(app, row, NONE);
+      if (row.band === "guarded") {
+        assert.ok(row.scope, `${key(row)} is guarded, but names no scope`);
+        assert.ok(every !== 401 && every !== 403, `${key(row)} is guarded, but refuses every scope (${every})`);
+        if (row.scope === "any")
+          assert.ok(none !== 401 && none !== 403, `${key(row)} takes any Caller, but not one with no scope`);
+        else assert.equal(none, 403, `${key(row)} needs ${String(row.scope)}, but takes a Caller with no scope`);
+      } else {
+        assert.equal(row.scope, undefined, `${key(row)} is ${row.band}, so no scope opens it`);
+        assert.equal(every, 403, `${key(row)} is ${row.band}, but takes a named token`);
+      }
     } else {
       assert.ok(
         withSandbox !== 401 && withSandbox !== 403,

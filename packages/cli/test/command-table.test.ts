@@ -43,8 +43,10 @@ test("every verb file parses with its own entry's options, and with no parseArgs
   for (const command of COMMANDS) {
     const source = await sourceOf(command.verb);
     assert.doesNotMatch(source, /\bparseArgs\b/, `${command.verb}.ts declares options outside the table`);
+    // A verb with sub-verbs (`caller token`, `caller rotate`) parses once with each of its entries.
     const calls = [...source.matchAll(/parseCommand\("([^"]+)"/g)].map((m) => m[1]);
-    assert.deepEqual(calls, [nameOf(command)], `${command.verb}.ts parses once, with its own entry`);
+    const own = COMMANDS.filter((c) => c.verb === command.verb).map(nameOf);
+    assert.deepEqual(calls, own, `${command.verb}.ts parses once with each entry of its verb`);
   }
 });
 
@@ -158,16 +160,21 @@ test("the help names every entry, and the shared options with the verbs that tak
   assert.match(help, /JR2_TOKEN/);
   const namespace = GLOBAL_OPTIONS.find((g) => g.flag?.name === "namespace")!;
   assert.ok(namespace, "-n is a global option");
-  assert.match(help, /\(version, up, down, run, runs, status, logs, send\)/, "-n is taken by up and down too");
+  assert.match(
+    help.replace(/\s+/g, " "),
+    /\(version, up, down, run, runs, status, logs, send, steer, whoami, hooks, caller token, caller rotate\)/,
+    "-n is taken by up and down too",
+  );
   assert.match(help, /exit codes: 0 ok, 1 runtime error, 2 usage/);
   assert.match(help, /jr2 help \| --help \| -h/);
 });
 
 test("the output section's verb lists are computed: each entry is named once, send as activity", () => {
   const help = renderHelp().replace(/\s+/g, " ");
-  assert.match(help, /result verbs \(kit push, run, runs, status <runId>, logs\)/);
+  assert.match(help, /result verbs \(kit push, run, runs, status <runId>, logs, steer <runId>, whoami, hooks\)/);
   assert.match(help, /report verbs \(version, bare status\)/);
-  assert.match(help, /activity verbs \(init, check, up, down, gc, send\)/);
+  assert.match(help, /activity verbs \(init, check, up, down, gc, send, steer <runId> <agent> <text>, caller rotate\)/);
+  assert.match(help, /value verbs \(caller token\)/);
 });
 
 test("every line of the help, and of each entry's, fits the width", () => {
@@ -257,7 +264,9 @@ test("a usage error prints the verb's usage line from the table", async () => {
   const err: string[] = [];
   const io: Io = { stdout: () => {}, stderr: (s) => err.push(s), env: {}, cwd: "/" };
   assert.equal(await main(["run"], io), 2);
-  assert.ok(err.join("").startsWith(`usage: jr2 ${synopsis(commandNamed("run" satisfies CommandName), true)}`));
+  // A long usage line wraps: read it as one line.
+  const printed = err.join("").replace(/\n\s+/g, " ");
+  assert.ok(printed.startsWith(`usage: jr2 ${synopsis(commandNamed("run" satisfies CommandName), true)}`), printed);
 });
 
 test("`jr2 kit push --help` names the Kit version whose images it mirrors", () => {

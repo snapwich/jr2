@@ -33,6 +33,10 @@ carved out for "the Orchestrator ending a run for its own reasons" was being spe
 - **`stop()` stays public with no production caller, and is deliberately not on the wire.** It is correct, it is what
   the durability suite drives, and it is what a future graceful shutdown should call. What nobody asked for is a
   user-facing "park this run" verb.
+- **A cancel of a standing run is also a pause.** The run ends `cancelled` as any run does, and jr2 does not start its
+  Workflow again until `jr2 run <workflow>` resumes it, with the items it held
+  ([ADR-0017](0017-pool-over-a-source-port.md)). Without the pause, jr2 would start the standing run again at the next
+  boot or publish, and a person could not stop it. The runs that it dispatched go on, as for any dispatch.
 - **A cancelled run's Workspaces are destroyed, unless the cancel says `keep`.** The run is over, so nothing can use
   them, and each holds its whole Size (ADR-0060) — a placed pod left to the idle GC is capacity for nobody. The
   wrapper's `teardown` is a STATE, entered when the body reaches final, and an actor stop skips it; so the host destroys

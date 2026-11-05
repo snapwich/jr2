@@ -28,9 +28,11 @@ it bad text.
 [Open](../reference/glossary.md#open) part that a run binds, not a composer. Its declaration has three parts:
 
 - **`lends`**: the parts of the Chart wrapper that a Chart can use, by their slot keys. These are Agents, Effects,
-  Machines, guards, actions and delays. `gate: true` lends the [Gate](../reference/glossary.md#gate), so that a Chart
-  can wait for a person. `fail: true` lends [`fail()`](../reference/authoring-surface/fail.md), so that a Chart can end
-  its run as a [Failure](../reference/glossary.md#failure) with `invoke: { src: "fail", input: { reason } }`.
+  Machines, Gate slots (`gates`), guards, actions and delays. `gate: true` lends the
+  [Gate](../reference/glossary.md#gate), so that a Chart can wait for a person. A lent Gate slot hears a
+  [Hook](../reference/glossary.md#hook), and the door refuses a Chart whose `events` do not hold each event of the
+  slot's `delivers`. `fail: true` lends [`fail()`](../reference/authoring-surface/fail.md), so that a Chart can end its
+  run as a [Failure](../reference/glossary.md#failure) with `invoke: { src: "fail", input: { reason } }`.
 - **`allows`**: what the Agents that a Chart adds can have. `models` lists the models, and `workspace` lists the
   Workspace accesses. With no model, a Chart cannot add an Agent.
 - **`ceilings`**: the limits of one Chart: the Agent Turns, the wall clock, the transitions, the children at one time,

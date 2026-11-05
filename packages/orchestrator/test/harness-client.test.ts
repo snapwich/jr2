@@ -167,6 +167,29 @@ test("an admitted definition is IDENTITY only — `description` is Console mater
   assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), { message: "do the thing", definition: coder });
 });
 
+test("`steerable` is the Orchestrator's (ADR-0002): stripped at the wire; Steering messages ride apart from notices", async () => {
+  const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
+  const message = {
+    kind: "steering" as const,
+    scope: "slot" as const,
+    text: "Use the v2 API.",
+    author: { kind: "caller" as const, via: "token" as const, name: "alice" },
+    at: "2026-11-03T10:00:00.000Z",
+  };
+
+  await client(fetch).send("coder", "inst-1", {
+    message: "do the thing",
+    definition: { ...coder, steerable: false },
+    steering: [message],
+  });
+
+  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
+    message: "do the thing",
+    definition: coder,
+    steering: [message],
+  });
+});
+
 test("a refused admission is an error carrying the wire's detail", async () => {
   const { fetch } = scriptedFetch([() => new Response(JSON.stringify({ error: "no such agent" }), { status: 404 })]);
   await assert.rejects(

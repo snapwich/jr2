@@ -521,6 +521,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // the seat, ADR-0062). The engine leads every request with it and the tools' declarations.
       // The admission's notices, then those the surface read reserved (ADR-0062): one Turn part.
       const notices = [...(submission.notices ?? []), ...read.notices.map((n) => n.notice)];
+      // …and the slot's Steering messages, the admission's then the read's, each in its author's
+      // frame (ADR-0002).
+      const steering = [...(submission.steering ?? []), ...read.steering.map((m) => m.message)];
       const prompt = briefedPrompt(
         message,
         turnPart({
@@ -530,13 +533,11 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
           toolName: menuToolName,
           briefings: current.briefings,
           ...(notices.length > 0 ? { notices } : {}),
+          ...(steering.length > 0 ? { steering } : {}),
         }),
       );
-      if (read.notices.length > 0)
-        unacked.set(
-          prompt,
-          read.notices.map((n) => n.id),
-        );
+      const reserved = [...read.notices.map((n) => n.id), ...read.steering.map((m) => m.id)];
+      if (reserved.length > 0) unacked.set(prompt, reserved);
       await engine.run({
         model,
         thinkingLevel,

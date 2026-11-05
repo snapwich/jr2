@@ -132,7 +132,7 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   the Harness, never touching it. A Custodian trace shows `action=intercept … method=POST` and none of the four things
   worth watching.
 - **Tee the stream host-side, in the Orchestrator** (the one place holding an admission and an open stream). Genuinely
-  viable, and better on governance: addressable by run, and `instanceOnly` puts it behind the band ADR-0014 already
+  viable, and better on governance: addressable by run, and the `read` scope puts it behind the band ADR-0014 already
   enforces. Rejected as the larger build for the smaller reader — it needs an API, a CLI, and a format, to serve a
   reader `kubectl` already serves. Not foreclosed: it reads the same stream, so it remains the answer if the exception
   below stops being acceptable.
@@ -153,8 +153,8 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   ADR-0058), so Emit payloads may ride it — the tokenless observation band still carries Emit types alone. What it does
   widen is the pod-log surface: a run's narrative becomes readable by whoever can read the Workspace pod's logs, the
   same audience the conversation bullet below already grants.
-- **A scoped exception to ADR-0014**, recorded there. Observation is open and everything sensitive sits behind
-  `instanceOnly`; this puts an Agent's reasoning, and the answers jr2 gave its picks, in front of whoever can read pod
+- **A scoped exception to ADR-0014**, recorded there. Observation is open and everything sensitive sits behind a
+  Caller's scope; this puts an Agent's reasoning, and the answers jr2 gave its picks, in front of whoever can read pod
   logs. Excluding a Working tool's results bounds it to what an Agent reasons aloud and what jr2 told it, rather than
   what it happened to read; what jr2 told it includes an Effect's output, so a `command` Effect's output and a Held
   value echoed into it reach the log as they reach the model, and so does an Effect secret in a form an Effector's scrub

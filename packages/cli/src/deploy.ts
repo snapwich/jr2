@@ -7,6 +7,11 @@ import { createHmac, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
+  CALLER_DIGESTS_KEY,
+  CALLER_DIGESTS_MOUNT,
+  CALLER_DIGESTS_SECRET,
+  callerTokenDigest,
+  callerTokenSecret,
   CA_CONFIGMAP,
   CA_MOUNT,
   EFFECTOR_PORT,
@@ -24,6 +29,9 @@ import {
   controlToken,
   heldStandIn,
   heldStandInKey,
+  HOOK_DIGESTS_KEY,
+  HOOK_DIGESTS_MOUNT,
+  HOOK_DIGESTS_SECRET,
   INSTANCE_CUSTODIAN_CONFIGMAP,
   GIT_SSH_SECRET,
   HELD_CA_SECRET,
@@ -91,6 +99,76 @@ export const LABEL_VERSION = "jr2.dev/version";
 export const ANNOTATION_IMAGES = "jr2.dev/images";
 
 export const ORCHESTRATOR_SA = "jr2-orchestrator";
+
+/** The label on each named Caller token's Secret (ADR-0078), with the token's name as its value.
+ * `jr2 up` finds the Secrets of the names that the config no longer declares by it, and
+ * `jr2 caller rotate` finds every value whose digest the Orchestrator reads. */
+export const LABEL_CALLER_TOKEN = "jr2.dev/caller-token";
+
+/** The key of a named Caller token's value in its Secret (`callerTokenSecret`). */
+export const CALLER_TOKEN_KEY = "token";
+
+/**
+ * The `jr2-caller-digests` file (ADR-0078): one JSON object from each named Caller token's name to
+ * the sha-256 of its value, in hex, names in order. The Orchestrator reads it through a mount, and
+ * never a value.
+ */
+export function callerDigestsJson(values: Readonly<Record<string, string>>): string {
+  const names = Object.keys(values).sort();
+  return JSON.stringify(Object.fromEntries(names.map((n) => [n, callerTokenDigest(values[n]!)])));
+}
+
+/**
+ * The Secrets of the named Caller tokens (ADR-0078): one per name, which holds its value and which
+ * no pod mounts (`jr2 caller token` reads it over the kube API), and `jr2-caller-digests`, which
+ * the Orchestrator mounts. The digests Secret is applied always, empty with no token, so the
+ * mount always has its Secret.
+ */
+export function callerTokenObjects(
+  values: Readonly<Record<string, string>>,
+  meta: (name: string, extra?: Record<string, string>) => KubeManifest,
+): KubeManifest[] {
+  return [
+    ...Object.keys(values)
+      .sort()
+      .map(
+        (name): KubeManifest => ({
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: meta(callerTokenSecret(name), { [LABEL_CALLER_TOKEN]: name }),
+          type: "Opaque",
+          stringData: { [CALLER_TOKEN_KEY]: values[name]! },
+        }),
+      ),
+    {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: meta(CALLER_DIGESTS_SECRET),
+      type: "Opaque",
+      stringData: { [CALLER_DIGESTS_KEY]: callerDigestsJson(values) },
+    },
+  ];
+}
+
+/**
+ * `jr2-hook-digests` (ADR-0078): one JSON object from the secret name of each Hook whose verifier is
+ * `token` to the sha-256 of its value, in hex, names in order. The Orchestrator mounts it, reads it
+ * again when it changes, and never holds a value. Applied always, empty with no `token` Hook, so the
+ * mount always has its Secret.
+ */
+export function hookDigestsObject(
+  digests: Readonly<Record<string, string>>,
+  meta: (name: string) => KubeManifest,
+): KubeManifest {
+  const names = Object.keys(digests).sort();
+  return {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: meta(HOOK_DIGESTS_SECRET),
+    type: "Opaque",
+    stringData: { [HOOK_DIGESTS_KEY]: JSON.stringify(Object.fromEntries(names.map((n) => [n, digests[n]!]))) },
+  };
+}
 
 /** The HMAC over the held-secret inputs, on the Instance Harness's pod template (ADR-0059). */
 export const ANNOTATION_HELD_DIGEST = "jr2.dev/held-digest";
@@ -356,6 +434,12 @@ export function instanceObjects(opts: {
   /** Secret data (the Instance token, the publish token, the signing key) — written stringData,
    * kube encodes. The Orchestrator reads it through `envFrom`. */
   secretData: Record<string, string>;
+  /** The values of the named Caller tokens, by name (ADR-0078): each goes into a Secret of its own,
+   * and the Orchestrator mounts only their digests (`callerTokenObjects`). Absent: none. */
+  callerTokens?: Readonly<Record<string, string>>;
+  /** The sha-256 digests of the `token` Hooks' secrets, by secret name (ADR-0078): the Orchestrator
+   * mounts them in `jr2-hook-digests` (`hookDigestsObject`). Absent: none. */
+  hookDigests?: Readonly<Record<string, string>>;
   /** The HARNESS containers' literal `harness.env` values — a SEPARATE Secret from `secretData` by
    * doctrine (ADR-0013): Agent code executes where this lands, so the Instance token and signing
    * key must never share a Secret with it, and no model key rides it either (ADR-0059). */
@@ -541,6 +625,13 @@ export function instanceObjects(opts: {
       type: "Opaque",
       stringData: opts.secretData,
     },
+    // The named Caller tokens (ADR-0078): a value in a Secret of its own, and the digests in the
+    // one Secret the Orchestrator mounts below. Not in `jr2-instance`: that one is `envFrom`, which
+    // a running pod reads once, and a new token or a rotation must roll no pod.
+    ...callerTokenObjects(opts.callerTokens ?? {}, meta),
+    // The `token` Hooks' digests (ADR-0078): a Secret of their own, as the door reads them, and
+    // never `jr2-caller-digests`, which `jr2 caller rotate` writes whole. Never a value.
+    hookDigestsObject(opts.hookDigests ?? {}, meta),
     {
       // What the HARNESS containers envFrom (see `harnessEnvData` above): Agent creds, never the
       // Instance token. Always applied (possibly empty) so the Sandbox spec can reference it
@@ -608,6 +699,13 @@ export function instanceObjects(opts: {
                   // (ADR-0059): names and hosts, which this process could not derive — its `.env`
                   // values are absent.
                   { name: "held", mountPath: HELD_MOUNT, readOnly: true },
+                  // The digests of the named Caller tokens (ADR-0078), read again when they
+                  // change: a new token or a rotation costs one kubelet propagation window, about
+                  // a minute, and no rollout. Never a value.
+                  { name: "callers", mountPath: CALLER_DIGESTS_MOUNT, readOnly: true },
+                  // The digests of the `token` Hooks' secrets (ADR-0078), read again in the same
+                  // way: a new or changed secret costs one kubelet propagation window. Never a value.
+                  { name: "hooks", mountPath: HOOK_DIGESTS_MOUNT, readOnly: true },
                 ],
                 resources: sized(KIT_POD_SIZES.orchestrator),
                 // The period, not the boot, is what `up`'s rollout wait measures. Measured: the
@@ -645,6 +743,8 @@ export function instanceObjects(opts: {
               { name: "state", persistentVolumeClaim: { claimName: STATE_PVC } },
               { name: "images", configMap: { name: IMAGES_CONFIGMAP } },
               { name: "held", configMap: { name: HELD_CONFIGMAP } },
+              { name: "callers", secret: { secretName: CALLER_DIGESTS_SECRET } },
+              { name: "hooks", secret: { secretName: HOOK_DIGESTS_SECRET } },
             ],
           },
         },
@@ -1453,7 +1553,8 @@ export const effectorGraceSeconds = (plan: EffectorPlan): number =>
 
 /**
  * The Instance Effector (ADR-0068): the objects `jr2 up` converges when a registered Machine
- * places an Effect there — an `http` Effect — and deletes otherwise.
+ * places an Effect there — an `http` Effect — or a Hook needs it (a `mac` verifier, or a kind that
+ * declares `posts`), and deletes otherwise.
  *
  * - A Deployment, not a StatefulSet: a rollout must run the new pod beside the old one (surge), so
  *   the old one finishes an Effect in flight while the new one takes new Effects. The Kit's

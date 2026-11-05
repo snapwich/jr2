@@ -43,7 +43,7 @@ export async function send(args: string[], io: Io): Promise<number> {
   }
   const target = await resolveTarget(io, targetOptions(values));
   try {
-    const client = new JR2Client(target.url, io.fetch, target.token);
+    const client = new JR2Client(target.url, io.fetch, target.token, target.onBehalfOf);
     const ref = await resolveRunId(client, given);
     if (!ref.ok) {
       activity(io, ref.message);

@@ -31,8 +31,9 @@ export type AdmissionBody = AdmissionRequest & TurnKept;
 
 /** What the Orchestrator keeps for the next Turn in a scope (ADR-0062), typed — the Harness writes
  * every word of the Briefing, so the wire carries facts, never text. Delivered once: the admission
- * that carries a notice is the one that clears it. */
-export type TurnNotices = { notices?: Notice[] };
+ * that carries a notice is the one that clears it. `steering`: the Steering messages held for this
+ * Agent slot (ADR-0002), delivered by the same rule; their text is their authors'. */
+export type TurnNotices = { notices?: Notice[]; steering?: SteeringMessage[] };
 
 /** The Orchestrator admits onto a conversation that it was told this Harness keeps (ADR-0062): the
  * re-admission after a restart cut the Turn, and a continued Turn. Its "kept" can be a guess: the
@@ -90,6 +91,17 @@ export type PickAnswerNotice = {
 };
 
 export type Notice = MemoryLimitNotice | ConversationNewNotice | PickAnswerNotice;
+
+/** Who wrote a Steering message (ADR-0002, ADR-0062). `caller`: a Caller sent it from outside the
+ * run, with the name jr2 shows and the party it says it acts for. `machine`: the Machine sent it;
+ * `from` is the party whose words it relays, when it relays some. */
+export type SteeringAuthor =
+  | { kind: "caller"; via: "token" | "jwt" | "hook"; name: string; onBehalfOf?: string }
+  | { kind: "machine"; from?: { party: "agent" | "gate"; id: string } };
+
+/** One Steering message: free text to this Agent, with its author. It is not a notice — the
+ * Harness frames it by its author, and the text is the author's. `at`: when it was sent. */
+export type SteeringMessage = { kind: "steering"; scope: "slot"; text: string; author: SteeringAuthor; at: string };
 
 /** The Admission: what `POST /agents/:name/:id` answers with (200, immediately — accept
  * and queue). The serializable three-string handle the host ledger persists (ADR-0016) and a

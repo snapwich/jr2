@@ -164,7 +164,7 @@ jr2 up
 → .env: ANTHROPIC_API_KEY
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 …
-warning: secrets[0] (ANTHROPIC_API_KEY) is named by nothing; goes nowhere — no workspace() lists it, no Agent's provider reads it, and no Effect names it (ADR-0059, ADR-0068)
+warning: secrets[0] (ANTHROPIC_API_KEY) is named by nothing; goes nowhere — no workspace() lists it, no Agent's provider reads it, and no Effect or Hook names it (ADR-0059, ADR-0068)
 …
 converged — `jr2 run <workflow>` when ready
 ```

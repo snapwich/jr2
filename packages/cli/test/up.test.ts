@@ -9,7 +9,7 @@ import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { randomBytes, X509Certificate } from "node:crypto";
+import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import {
   CUSTODIAN_PROGRAM,
   configMapDigest,
@@ -413,6 +413,7 @@ class FakeOrchestrator {
       this.forwards.push(`${opts.namespace}/${opts.service}:${opts.port}`);
       return { url: "http://orchestrator.test", close: () => void this.closed++ };
     },
+    selfSubject: async () => undefined,
   };
 
   fetch = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -584,11 +585,12 @@ async function mkKit(): Promise<string> {
     "effector/cmd/effector/main.go": "package main\n",
     "effector/internal/wire/wire.go": "package wire\n",
     "packages/harness/package.json": `{"name":"@jr2/harness"}`,
-    // The Orchestrator Kit image (ADR-0069): its Dockerfile, its package and the kit package it
+    // The Orchestrator Kit image (ADR-0069): its Dockerfile, its package and the kit packages it
     // depends on.
     "deploy/orchestrator/Dockerfile": "FROM node:24-slim\n",
     "packages/orchestrator/package.json": `{"name":"@jr2/orchestrator"}`,
     "packages/agent-protocol/package.json": `{"name":"@jr2/agent-protocol"}`,
+    "packages/hooks/package.json": `{"name":"@jr2/hooks"}`,
   };
   for (const [rel, content] of Object.entries(files)) {
     await mkdir(join(kit, dirname(rel)), { recursive: true });
@@ -1797,8 +1799,8 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
     .spec.template.spec.containers[0].envFrom.map((e: { secretRef?: { name: string } }) => e.secretRef?.name);
   assert.deepEqual(orchSecrets, ["jr2-instance"], "the Orchestrator's env reads the instance Secret alone");
   // The Orchestrator neither clones nor holds a key: its one claim is its state, its mounts are
-  // state, the image map and the held-secret manifest (names and hosts, never a value — ADR-0059),
-  // and its env is its namespace — the credential rides the Secret above and is
+  // state, the image map, the held-secret manifest (names and hosts, never a value — ADR-0059) and
+  // the named Caller tokens' and the token Hooks' digests (never a value — ADR-0078), and its env is its namespace — the credential rides the Secret above and is
   // read only by the cache agent. The one addition is the API server's trust, for its own client
   // (ADR-0063).
   assert.deepEqual(
@@ -1809,7 +1811,7 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   const podSpec = orch.spec.template.spec;
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
-    ["state", "images", "held"],
+    ["state", "images", "held", "callers", "hooks"],
   );
   assert.deepEqual(
     podSpec.containers[0].env.map((e: { name: string }) => e.name),
@@ -2519,6 +2521,55 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   assert.equal(harnessEnv.stringData.API_KEY, "k123", "config env values materialize there");
   assert.equal(instance.stringData.API_KEY, undefined, "…and not beside the Instance token");
   assert.equal(harnessEnv.stringData.JR2_INSTANCE_TOKEN, undefined, "the token never rides the harness Secret");
+});
+
+test("named Caller tokens: a value per name in its own Secret, kept across converges; the Orchestrator mounts only the digests; an undeclared name's Secret is deleted (ADR-0078)", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", callers: { tokens: { ci: { may: { start: ["work"], read: ["work"] } } } } };\n`,
+  );
+  const w = mkWorld(root);
+  // A token the config no longer declares, from an earlier converge.
+  w.kube.set("myinst", "secret", "jr2-caller-gone", {
+    metadata: { name: "jr2-caller-gone", labels: { "jr2.dev/caller-token": "gone" } },
+    data: { token: Buffer.from("jr2c_gone").toString("base64") },
+  });
+
+  assert.equal(await up(["--yes"], w.io), 0);
+  const items = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  const value = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-caller-ci")!;
+  const made = value.stringData.token as string;
+  assert.match(made, /^jr2c_[A-Za-z0-9_-]{43}$/, "jr2c_ and 32 random bytes in base64url");
+  assert.equal(value.metadata.labels["jr2.dev/caller-token"], "ci");
+  const digests = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-caller-digests")!;
+  assert.deepEqual(JSON.parse(digests.stringData["digests.json"]), {
+    ci: createHash("sha256").update(made).digest("hex"),
+  });
+  // No value in the Orchestrator's own Secret, and none in its env: the digests alone, mounted.
+  const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
+  assert.ok(!JSON.stringify(instance).includes(made));
+  const pod = deploymentOf(w).spec.template.spec;
+  assert.deepEqual(
+    pod.containers[0].volumeMounts.find((m: { name: string }) => m.name === "callers"),
+    { name: "callers", mountPath: "/etc/jr2/callers", readOnly: true },
+  );
+  assert.deepEqual(
+    pod.volumes.find((v: { name: string }) => v.name === "callers"),
+    { name: "callers", secret: { secretName: "jr2-caller-digests" } },
+  );
+  assert.ok(!JSON.stringify(pod).includes(made), "no value reaches the pod spec");
+  assert.ok(w.kube.deleted.includes("myinst/secret/jr2-caller-gone"), "an undeclared name's Secret is deleted");
+  assert.match(w.err.join(""), /caller token "ci": made/);
+  assert.match(w.err.join(""), /caller token "gone": deleted/);
+
+  // The next converge keeps the value the Secret holds.
+  w.kube.set("myinst", "secret", "jr2-caller-ci", {
+    metadata: { name: "jr2-caller-ci", labels: { "jr2.dev/caller-token": "ci" } },
+    data: { token: Buffer.from(made).toString("base64") },
+  });
+  w.kube.applied.length = 0;
+  assert.equal(await up(["--yes"], w.io), 0);
+  const again = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  assert.equal(again.find((i) => i.metadata.name === "jr2-caller-ci")!.stringData.token, made);
 });
 
 /** A `"none"` Agent on the custom provider: the Instance Harness's pod claims the provider's key. */
@@ -4851,6 +4902,85 @@ async function withHttpEffect(root: string, name = "jira"): Promise<string> {
   return root;
 }
 
+/** A `@jr2/hooks` kind's module, by the file url a fixture config imports it with. */
+const HOOK_KIND = (kind: string): string =>
+  pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "hooks", "src", `${kind}.ts`)).href;
+
+test("a mac Hook alone converges the Instance Effector: its secret placed there, its kind's posts in the fence, the Hook reported (ADR-0068)", async () => {
+  const root = await mkInstance(
+    `import { secret } from ${JSON.stringify(KIT_SRC)};\n` +
+      `import { github } from ${JSON.stringify(HOOK_KIND("github"))};\n` +
+      `import { slack } from ${JSON.stringify(HOOK_KIND("slack"))};\n` +
+      `export default { name: "myinst", secrets: [{ name: "GH_HOOK", value: "gh-hook-value-0123" }, ` +
+      `{ name: "SLACK_SIGNING", value: "slack-signing-0123" }], ` +
+      `hooks: { forge: github({ secret: secret("GH_HOOK") }), chat: slack({ secret: secret("SLACK_SIGNING") }) } };\n`,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const out = w.err.join("\n");
+  assert.match(out, /secret GH_HOOK: an Effect secret in the Instance Effector \(hook forge\)/);
+  assert.match(
+    out,
+    /instance effector: converging \(hook forge, hook chat; secrets `GH_HOOK`, `SLACK_SIGNING`; grace 30s\)/,
+  );
+  const list = w.kube.applied.find(
+    (m) => m.includes(`"name":"jr2-instance-effector"`) && m.includes(`"kind":"Deployment"`),
+  )!;
+  const [secret] = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  assert.equal(secret!.stringData["secret.GH_HOOK"], "gh-hook-value-0123");
+  assert.deepEqual(JSON.parse(secret!.stringData["effector.json"]).targets, [
+    { scheme: "https", host: "hooks.slack.com", port: 443, secrets: [] },
+  ]);
+});
+
+test("a token Hook's secret: jr2 up writes its sha-256 into jr2-hook-digests, which the Orchestrator mounts; the value reaches no pod (ADR-0078)", async () => {
+  const root = await mkInstance(
+    `import { secret } from ${JSON.stringify(KIT_SRC)};\n` +
+      `import { gitlab } from ${JSON.stringify(HOOK_KIND("gitlab"))};\n` +
+      `export default { name: "myinst", secrets: [{ name: "GL_HOOK", value: "gl-hook-value-0123" }, ` +
+      `{ name: "GL_STORED", valueFrom: { secretKeyRef: { name: "forge", key: "token" } } }], ` +
+      `hooks: { lab: gitlab({ secret: secret("GL_HOOK") }), lab2: gitlab({ secret: secret("GL_STORED") }) } };\n`,
+  );
+  const w = mkWorld(root);
+  // kubectl --from-file keeps a trailing newline; the digest is of the value a service sends.
+  w.kube.set("myinst", "secret", "forge", {
+    metadata: { name: "forge" },
+    data: { token: Buffer.from("gl-stored-value-0123\n").toString("base64") },
+  });
+  assert.equal(await up(["--yes"], w.io), 0);
+  const out = w.err.join("\n");
+  assert.match(out, /secret GL_HOOK: a digest in the Orchestrator \(hook lab\)/);
+  assert.doesNotMatch(out, /warning: .*GL_HOOK/, "a token Hook names its secret");
+  assert.match(out, /instance effector: none/, "a token Hook needs no Instance Effector");
+  const items = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  const digests = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-hook-digests")!;
+  const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+  assert.deepEqual(JSON.parse(digests.stringData["digests.json"]), {
+    GL_HOOK: sha("gl-hook-value-0123"),
+    GL_STORED: sha("gl-stored-value-0123"),
+  });
+  const pod = deploymentOf(w).spec.template.spec;
+  assert.deepEqual(
+    pod.containers[0].volumeMounts.find((m: { name: string }) => m.name === "hooks"),
+    { name: "hooks", mountPath: "/etc/jr2/hooks", readOnly: true },
+  );
+  assert.deepEqual(
+    pod.volumes.find((v: { name: string }) => v.name === "hooks"),
+    { name: "hooks", secret: { secretName: "jr2-hook-digests" } },
+  );
+  for (const applied of w.kube.applied) {
+    assert.ok(!applied.includes("gl-hook-value-0123"), "the value is in no object jr2 up applies");
+  }
+});
+
+test("no token Hook: jr2-hook-digests is applied empty, so the Orchestrator's mount always has its Secret (ADR-0078)", async () => {
+  const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  assert.equal(await up(["--yes"], w.io), 0);
+  const items = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  const digests = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-hook-digests")!;
+  assert.deepEqual(digests.stringData, { "digests.json": "{}" });
+});
+
 test("an http Effect places its secret in the Instance Effector: the four objects, the key, the report (ADR-0068)", async () => {
   const root = await withHttpEffect(
     await mkInstance(
@@ -5093,7 +5223,7 @@ test("a value edited in the user's Secret behind a valueFrom rolls the Instance 
 test("no Effect placed there: no Instance Effector, and a stale one is deleted (ADR-0068)", async () => {
   const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.match(w.err.join("\n"), /instance effector: none \(no Effect is placed there\)/);
+  assert.match(w.err.join("\n"), /instance effector: none \(no Effect is placed there, and no Hook needs it\)/);
   for (const kind of ["deployment", "service", "networkpolicy", "secret"]) {
     assert.ok(w.kube.deleted.includes(`myinst/${kind}/jr2-instance-effector`), kind);
   }

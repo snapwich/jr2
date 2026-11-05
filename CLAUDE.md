@@ -82,18 +82,19 @@ scaffold writes, the lockfile-dispatched bundle install, and installed mode itse
 Publish is once per suite run, so the profile is deliberately serial; scenarios isolate by namespace like `@kind`. Two
 commands: `just e2e-dist-up`, then `just e2e-dist` — and `just dist-up` is the same loop with a human at the wheel.
 **`@console` (opt-in, needs a Playwright chromium):** browser scenarios for the Console's UX — a Playwright page held
-inside Cucumber steps against the same per-scenario orchestrator; no docker (ADR-0010 as amended, ADR-0032). Excluded
-from the default e2e profile; store logic stays unit-tested in `console-store.test.ts`. **Harness conformance (ADR-0027;
-in `@jr2/harness`, no infra):** the claims the socket-free tests cannot see, driven through the real turn loop — pi at
-the exact pin, the Menu over a real socket to the Custodian's address, a scripted provider that chooses each turn's
-shape. Not a separate tier: it runs in the default `test` gate as part of `pnpm -r test`. `@jr2/harness` owns the pi
-pin; conformance is the canary for pi bumps (a minor can break), and since ADR-0038 `@kind` is a **second** canary — it
-drives the same turn loop in a real pod — so **run both before bumping pi** — and the `@model` tier below, the third
-canary. **`@model` (ADR-0066; opt-in):** a REAL model behind each scenario's Custodian — see
-[Model-tier testing](#model-tier-testing-adr-0066) below. **Custodian suite (ADR-0059; opt-in, needs docker):** the
-Custodian's claims against the pinned Envoy image itself — the swap, the strip, the refusals, the dial guard, SSE,
-abort, and the Anthropic SDK through `HTTPS_PROXY` — `just custodian-test`; not in `pnpm -r test`. Run it before moving
-the Envoy pin.
+inside Cucumber steps against the same per-scenario orchestrator; no docker, except the login scenario, also tagged
+`@dex`, which runs Dex in a container (ADR-0010 as amended, ADR-0032). The `console` profile runs it; on a host with no
+docker, add `--tags "@console and not @dex"`. Excluded from the default e2e profile; store logic stays unit-tested in
+`console-store.test.ts`. **Harness conformance (ADR-0027; in `@jr2/harness`, no infra):** the claims the socket-free
+tests cannot see, driven through the real turn loop — pi at the exact pin, the Menu over a real socket to the
+Custodian's address, a scripted provider that chooses each turn's shape. Not a separate tier: it runs in the default
+`test` gate as part of `pnpm -r test`. `@jr2/harness` owns the pi pin; conformance is the canary for pi bumps (a minor
+can break), and since ADR-0038 `@kind` is a **second** canary — it drives the same turn loop in a real pod — so **run
+both before bumping pi** — and the `@model` tier below, the third canary. **`@model` (ADR-0066; opt-in):** a REAL model
+behind each scenario's Custodian — see [Model-tier testing](#model-tier-testing-adr-0066) below. **Custodian suite
+(ADR-0059; opt-in, needs docker):** the Custodian's claims against the pinned Envoy image itself — the swap, the strip,
+the refusals, the dial guard, SSE, abort, and the Anthropic SDK through `HTTPS_PROXY` — `just custodian-test`; not in
+`pnpm -r test`. Run it before moving the Envoy pin.
 
 ## Model-tier testing (ADR-0066)
 
@@ -104,10 +105,10 @@ runs in CI. **You run it.**
 
 **When.** After any change to what the model reads or is offered, before calling the change done: the Briefing
 (`packages/harness/src/briefing.ts`), the Chart briefing (`CHART_BRIEFING`, `packages/orchestrator/src/chart.ts`), the
-Menu's rendering or its refusal text, the nudge, the Working tools and their descriptions, Compaction's summary, the
-admit body's notices, the pi pin, a provider adapter, or an authoring surface that changes a Frame. Also before bumping
-pi: it is the third canary beside conformance and `@kind`. If you are reviewing a feature or refactor that touched one
-of these and did not run it, say so.
+Menu's rendering or its refusal text, the frame of a Steering message, the nudge, the Working tools and their
+descriptions, Compaction's summary, the admit body's notices, the pi pin, a provider adapter, or an authoring surface
+that changes a Frame. Also before bumping pi: it is the third canary beside conformance and `@kind`. If you are
+reviewing a feature or refactor that touched one of these and did not run it, say so.
 
 **How.**
 
@@ -132,23 +133,24 @@ An agent starts `just e2e-model`, and each other long tier, with the Bash tool's
 completion notice. It never polls with `pgrep -f` on the command line: the pattern also matches the shell that polls, so
 the loop never ends.
 
-**What it runs.** Nineteen scenarios in `features/model.feature`. Seventeen are CLAIMS — an ADR's measured claim as N
+**What it runs.** Twenty-one scenarios in `features/model.feature`. Nineteen are CLAIMS — an ADR's measured claim as N
 trials with a floor: `obedience` (Allowed picks obeyed, thinking off and on), `advised` (a Menu-only Agent's first call
 is its pick), `workdir` (a relative write lands in the Worktree), `noticed` (a memory-kill notice is acted on), the mode
 and step-boundary claims (`mode-follow`, `mode-refusal`, `mode-stop`, `wake`, `push-follow`), the held-answer claims
 (`chain-answer`, `cut-pick`), the command-Effect claims (`answered`, `allowed-after-route`, `unknown-outcome`), the push
 claim (`continue-after-signed-push`: the push after a signed push publishes), and the Chart claim (`chart-refusal`:
-after the door refuses a planner's Chart, its next Chart admits; its floor is set ahead of a measured run, ADR-0070).
-Two are THE RUN — `ticket`: planner, coder, reviewer, and a commit verified in the pod (branch ahead of `main`, HEAD is
-the named commit, tree clean, `node --test` passes); and `ticket-modes`, one coder Turn through three modes. The whole
-tier is about 27 minutes on the home lab (one run, 2026-10-25; about 70 one scenario at a time) and about 11 on Haiku
-5.5. The scenarios run the profile's `workers` at once (the recipe passes it as `--parallel`), in file order, so
-`model.feature` lists its longest Rules first; `chart-refusal` is the longest, about 21 minutes. Each claim keeps the
-profile's `parallel` trials in flight, so `workers` × `parallel` runs are in flight. That product must stay within what
-the endpoint serves (the home-lab vLLM serves 16 streams) and what the host holds (about 0.85 CPU and 2.2 GiB per
-scenario, plus 0.5 CPU and 1 GiB per Sandbox trial in flight, on a 16 CPU, 45 GB host that three kind clusters share).
-One checkout runs one suite at a time: a second suite fails at once, whatever its profile, and two suites at once need
-two worktrees.
+after the door refuses a planner's Chart, its next Chart admits; its floor is set ahead of a measured run, ADR-0070),
+and the steering claims (`steer-follow`: a Caller's Steering message in an open Turn is followed; `peer-not-order`: a
+peer's relayed word is not obeyed as an order; ADR-0002). Two are THE RUN — `ticket`: planner, coder, reviewer, and a
+commit verified in the pod (branch ahead of `main`, HEAD is the named commit, tree clean, `node --test` passes); and
+`ticket-modes`, one coder Turn through three modes. The whole tier is about 27 minutes on the home lab (one run,
+2026-10-25; about 70 one scenario at a time) and about 11 on Haiku 5.5. The scenarios run the profile's `workers` at
+once (the recipe passes it as `--parallel`), in file order, so `model.feature` lists its longest Rules first;
+`chart-refusal` is the longest, about 21 minutes. Each claim keeps the profile's `parallel` trials in flight, so
+`workers` × `parallel` runs are in flight. That product must stay within what the endpoint serves (the home-lab vLLM
+serves 16 streams) and what the host holds (about 0.85 CPU and 2.2 GiB per scenario, plus 0.5 CPU and 1 GiB per Sandbox
+trial in flight, on a 16 CPU, 45 GB host that three kind clusters share). One checkout runs one suite at a time: a
+second suite fails at once, whatever its profile, and two suites at once need two worktrees.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
 `scorecard: <model> <cell>: k/N`. Every trial, pass or not, keeps its evidence in

@@ -4,6 +4,7 @@
 // with `secret("name")`. `hosts` is the binding and never the placement. Both is both; neither goes
 // nowhere.
 
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -20,6 +21,7 @@ import {
   refuseEffectSecrets,
   secretPlacementsOf,
   storedValueLength,
+  storedValueSha256,
   type PlacedEffect,
   type PlacementWalk,
 } from "../src/secret-placement.ts";
@@ -82,7 +84,7 @@ test("a Workspace holds what its workspace() lists and its Agents' providers cla
   // `hosts` is the binding, never the placement: an entry with hosts that nothing names goes nowhere.
   assert.deepEqual(out.warnings, [
     "secrets[3] (GATEWAY_KEY) is named by nothing; goes nowhere — no workspace() lists it, no Agent's provider " +
-      "reads it, and no Effect names it (ADR-0059, ADR-0068)",
+      "reads it, and no Effect or Hook names it (ADR-0059, ADR-0068)",
   ]);
 });
 
@@ -266,6 +268,10 @@ test("a stored value is measured as the Effector reads its file: bytes, one trai
   assert.equal(storedValueLength(b64("1234567\r\n")), 7);
   assert.equal(storedValueLength(b64("1234567\n\n")), 8, "only one");
   assert.equal(storedValueLength(b64("é1234567")), 9, "bytes, as Go's len");
+  // A `token` Hook's digest is of the same trimmed value: the header that a service sends has no newline.
+  const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+  assert.equal(storedValueSha256(b64("gl-token-value\n")), sha("gl-token-value"));
+  assert.equal(storedValueSha256(b64("gl-token-value")), sha("gl-token-value"));
 });
 
 test("an Effect that names a secret the list does not hold is refused with the line to add", () => {
@@ -824,4 +830,66 @@ test("a dispatch with a target sits in the Instance Effector beside the http Eff
     out.report.includes("secret ops: an Effect secret in the Instance Effector (w/away)"),
     out.report.join("\n"),
   );
+});
+
+// A Hook in the Instance Effector (ADR-0068, ADR-0078): a `mac` Hook's secret is placed there as an
+// Effect's is, and a kind's `posts` hosts join its fence with no secret.
+test("a mac Hook places its secret in the Instance Effector, and a kind's posts join the fence with no secret", async () => {
+  const { github } = await import("@jr2/hooks/github");
+  const { slack } = await import("@jr2/hooks/slack");
+  const { gitlab } = await import("@jr2/hooks/gitlab");
+  const config: JR2Config = {
+    secrets: [
+      { name: "GH_HOOK", value: VALUE },
+      { name: "SLACK_SIGNING", value: VALUE },
+      { name: "GL_HOOK", value: VALUE },
+    ],
+    hooks: {
+      forge: github({ secret: secret("GH_HOOK") }),
+      chat: slack({ secret: secret("SLACK_SIGNING") }),
+      lab: gitlab({ secret: secret("GL_HOOK") }),
+    },
+  };
+  const out = secretPlacementsOf(config, walk({}));
+  assert.ok(out.instance, "the Instance Effector converges for a mac Hook alone");
+  assert.deepEqual(
+    out.instance.secrets.map((s) => s.name),
+    ["GH_HOOK", "SLACK_SIGNING"],
+    "a token Hook's secret is a digest in the Orchestrator, never in the Effector",
+  );
+  assert.deepEqual(out.instance.hooks, ["forge", "chat"]);
+  assert.deepEqual(out.instance.effects, []);
+  assert.deepEqual(out.instance.targets, [{ scheme: "https", host: "hooks.slack.com", port: 443, secrets: [] }]);
+  assert.ok(out.report.includes("secret GH_HOOK: an Effect secret in the Instance Effector (hook forge)"));
+  assert.ok(out.report.includes("the Instance Effector: holds GH_HOOK, SLACK_SIGNING"));
+  assert.ok(out.report.includes("secret GL_HOOK: a digest in the Orchestrator (hook lab)"), out.report.join("\n"));
+  assert.deepEqual(out.warnings, [], "a token Hook names its secret: never 'named by nothing'");
+  assert.deepEqual(out.hookTokens, [{ name: "GL_HOOK", value: VALUE }], "only its digest reaches the Orchestrator");
+});
+
+test("a token Hook's secret from the user's Secret is a key there; one the list does not hold is refused", async () => {
+  const { gitlab } = await import("@jr2/hooks/gitlab");
+  const config: JR2Config = {
+    secrets: [{ name: "GL_HOOK", valueFrom: { secretKeyRef: { name: "forge", key: "token" } } }],
+    hooks: { lab: gitlab({ secret: secret("GL_HOOK") }) },
+  };
+  const out = secretPlacementsOf(config, walk({}), { secretKeys: () => ["token"] });
+  assert.deepEqual(out.hookTokens, [{ name: "GL_HOOK", secret: "forge", key: "token" }]);
+  assert.equal(out.instance, undefined, "a token Hook needs no Instance Effector");
+  assert.throws(
+    () => refuseEffectSecrets({ hooks: config.hooks }, walk({})),
+    /hooks\.lab names secret\("GL_HOOK"\), which the `secrets` list does not hold — add it/,
+  );
+});
+
+test("a mac Hook that names a secret the list does not hold is refused with the line to add; a short one is refused", async () => {
+  const { github } = await import("@jr2/hooks/github");
+  const missing: JR2Config = { hooks: { forge: github({ secret: secret("GH_HOOK") }) } };
+  assert.throws(() => refuseEffectSecrets(missing, walk({})), /hooks\.forge names secret\("GH_HOOK"\).*add it/);
+  const short: JR2Config = { ...missing, secrets: [{ name: "GH_HOOK", value: "short" }] };
+  assert.throws(() => secretPlacementsOf(short, walk({})), /shorter than 8 characters/);
+});
+
+test("no Hook and no Effect: no Instance Effector", () => {
+  assert.equal(secretPlacementsOf({}, walk({})).instance, undefined);
 });

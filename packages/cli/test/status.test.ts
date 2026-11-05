@@ -109,6 +109,14 @@ test("a dispatched run reads `dispatched by:` with its caller, slot and depth; a
     "dispatched by: caller-run (review), depth 2, from Orchestrator ops",
   );
   assert.equal(dispatchedActivity(run), undefined);
+  // A Pool of runs (ADR-0017): the item's key, and the Hook delivery that carried it.
+  assert.equal(
+    dispatchedActivity({
+      ...run,
+      dispatchedBy: { ...by, key: "alert-4471", hook: { name: "sentry", delivery: "d-1", onBehalfOf: "ann" } },
+    }),
+    "dispatched by: caller-run (review), depth 1, key alert-4471, hook sentry, delivery d-1, on behalf of ann",
+  );
 });
 
 test("a run that dispatched reads one `dispatched:` line per run it started, the oldest past ten counted", () => {

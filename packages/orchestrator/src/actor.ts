@@ -56,9 +56,15 @@ import type { HarnessRestarts, MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { SENDER_KEY } from "@jr2/agent-protocol";
 import { agentAddress, agentSlot, continuedIid, allowedPicks, resolveAccepts, runBindingOf } from "./registration.ts";
-import type { NoticeScope } from "./notices.ts";
+import type { LedgerBody, NoticeScope } from "./notices.ts";
 import { restOf } from "./rest.ts";
-import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice, type PodMemoryKill } from "./wire.ts";
+import {
+  SUBMISSION_HARNESS_RESTARTED,
+  SUBMISSION_RUNAWAY,
+  type Notice,
+  type PodMemoryKill,
+  type SteeringMessage,
+} from "./wire.ts";
 import type { AbortCause } from "./wire.ts";
 
 /**
@@ -367,6 +373,8 @@ export type AgentAdmitOptions = {
   /** The pending notices in this admission's scope (ADR-0062), for the Briefing's Turn part. Not
    * on the persisted input either: they are the Orchestrator's, and delivered once. */
   notices?: Notice[];
+  /** The Steering messages held for this Agent slot (ADR-0002), delivered by the rules of a notice. */
+  steering?: SteeringMessage[];
   /** The admission is for a conversation that `holds` said the Harness keeps (ADR-0062): the
    * re-admission after a cut, and a continued Turn. That "kept" can be a timeout's, so a Harness
    * that keeps none refuses it and seats none; `admit` then rejects with an error whose `notKept`
@@ -739,7 +747,10 @@ export function agentActorWith(
     // Per iid, the notices a step boundary's surface read reserved and the Harness has not yet
     // acknowledged (ADR-0062): by the id the read named, every id it stands for — equal notices
     // are said once — and what each was raised as, for `reraiseUnheard`.
-    const boundary = new Map<string, Map<string, Array<{ id: string; raised: { notice: Notice; source?: string } }>>>();
+    const boundary = new Map<
+      string,
+      Map<string, Array<{ id: string; raised: { notice: LedgerBody; source?: string } }>>
+    >();
     const registerSurface = (iid: string) =>
       disposers.push(
         binding.table.register({
@@ -994,7 +1005,7 @@ export function agentActorWith(
     // reserved for this Turn until the Harness acknowledges the append. A guard kill's audience
     // leaves out the conversations its `bash` answer told, which only the pod's list says — so when
     // one is among them, the list is read first, and a read that could not tell takes no guard kill.
-    const readBoundary = async (iid: string): Promise<Array<{ id: string; notice: Notice }>> => {
+    const readBoundary = async (iid: string): Promise<Array<{ id: string; notice: LedgerBody }>> => {
       if (stopped || iid !== currentIid || binding.takeNotices === undefined) return [];
       const scope: NoticeScope = { ...noticeScope, taker: iid };
       if (noticeWorkspace !== undefined) {
@@ -1016,7 +1027,7 @@ export function agentActorWith(
       const taken = binding.takeNotices(scope);
       const held = boundary.get(iid) ?? new Map();
       const said = new Map<string, string>();
-      const out: Array<{ id: string; notice: Notice }> = [];
+      const out: Array<{ id: string; notice: LedgerBody }> = [];
       taken.ids.forEach((id, i) => {
         const raised = taken.raised?.[i] ?? { notice: taken.notices[i]! };
         const key = JSON.stringify(raised.notice);
@@ -1078,7 +1089,7 @@ export function agentActorWith(
     // the Harness last read its surface, `heard` before that — and whether an unheard one carried
     // the Turn's task. Collected across the Turn, so a re-admission onto a lost conversation tells
     // the Agent all of them again.
-    type Raised = { notice: Notice; source?: string };
+    type Raised = { notice: LedgerBody; source?: string };
     // `fresh`: a fresh Turn's "this conversation is new", which rides an admission as `extra` and so
     // is kept in no ledger — an unread one is carried again by the next re-admission.
     const carriedBy = new Map<string, { heard: Raised[]; unheard: Raised[]; task: boolean; fresh: Notice[] }>();
@@ -1125,7 +1136,7 @@ export function agentActorWith(
             : unsaid.length > 0
               ? { workspace: noticeWorkspace, taker, only: unsaid }
               : undefined;
-      const none = { ids: [] as string[], notices: [] as Notice[], raised: [] as Raised[] };
+      const none = { ids: [] as string[], notices: [] as LedgerBody[], raised: [] as Raised[] };
       const restored =
         opts.include && opts.include.length > 0
           ? (binding.takeNotices?.({ ...noticeScope, taker, only: opts.include }) ?? none)
@@ -1143,12 +1154,16 @@ export function agentActorWith(
       // cut pick never got (ADR-0031), whose one path to the model is this admission. One "this
       // conversation is new" is enough, whichever path brought it.
       let fresh = false;
-      const notices = [...taken.notices, ...(opts.extra ?? [])].filter((n) => {
+      const bodies = [...taken.notices, ...(opts.extra ?? [])].filter((n) => {
         if (n.kind !== "conversation-new") return true;
         if (fresh) return false;
         fresh = true;
         return true;
       });
+      // The two kinds of body ride the admission apart (ADR-0062): a notice is a fact, and a
+      // Steering message an author's text, which the Harness frames by its author.
+      const notices = bodies.filter((n): n is Notice => n.kind !== "steering");
+      const steering = bodies.filter((n): n is SteeringMessage => n.kind === "steering");
       // `served` is per Instance ID, and a nudge or a wake reuses the Turn's: it must be read again
       // before this admission counts as heard (`reraiseUnheard`). An admission that fails puts the
       // mark back — what an earlier one carried was heard.
@@ -1161,6 +1176,7 @@ export function agentActorWith(
           slot,
           signal: controller.signal,
           ...(notices.length ? { notices } : {}),
+          ...(steering.length ? { steering } : {}),
           ...(opts.kept ? { kept: true } : {}),
         });
       } catch (err) {
@@ -1213,12 +1229,12 @@ export function agentActorWith(
         if (gone) bucket.heard = [];
         if (!read) bucket.unheard = [];
         for (const { notice, source } of again) {
-          const to = notice.scope === "conversation" ? conversation : noticeWorkspace;
+          const to = notice.scope === "conversation" ? conversation : notice.scope === "slot" ? slot : noticeWorkspace;
           if (to === undefined) continue;
           // A Workspace notice is pending again for the conversation that carried it, which did not
           // hear it; the others it reached keep theirs.
           if (binding.restoreNotice) binding.restoreNotice(notice, to, source, iid);
-          else binding.raiseNotice?.(notice, to);
+          else if (notice.kind !== "steering") binding.raiseNotice?.(notice, to);
           if (source !== undefined) restored.push(source);
         }
       }

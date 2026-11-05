@@ -25,7 +25,7 @@ import type { AgentDefinition } from "../src/agent.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
-import type { AbortCause, Notice, PodMemoryKill } from "../src/wire.ts";
+import type { AbortCause, Notice, PodMemoryKill, SteeringMessage } from "../src/wire.ts";
 
 /** An AgentRunPort the test drives by hand: capture admissions/attaches, settle or fault them. */
 export class MockFlueClient implements AgentRunPort {
@@ -36,6 +36,8 @@ export class MockFlueClient implements AgentRunPort {
   definitions: AgentDefinition[] = [];
   /** The notices each of those admits carried (ADR-0062) — `[]` for an admit that carried none. */
   notices: Notice[][] = [];
+  /** The Steering messages each of those admits carried (ADR-0002) — `[]` for none. */
+  steering: SteeringMessage[][] = [];
   /** Hold admits unanswered, so a test can restart the host BEFORE an admission is ledgered. */
   holdAdmits = false;
   private heldAdmits: Array<() => void> = [];
@@ -86,6 +88,7 @@ export class MockFlueClient implements AgentRunPort {
     this.kept.push(opts.kept === true);
     this.definitions.push(opts.definition);
     this.notices.push(opts.notices ?? []);
+    this.steering.push(opts.steering ?? []);
     const minted: AgentAdmission = {
       streamUrl: `http://mock/agents/${input.agentName}/${input.instanceId}`,
       offset: `adm-${++this.seq}`,

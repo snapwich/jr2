@@ -38,6 +38,10 @@ func TestKindsForGivesTheInstanceEffectorTheDispatchRunnerAlone(t *testing.T) {
 	if sandbox.Dispatch != nil {
 		t.Fatal("a Sandbox Effector runs a dispatch")
 	}
+	// The Hook door's `mac` check is the Instance Effector's alone (ADR-0068).
+	if instance.Mac == nil || sandbox.Mac != nil {
+		t.Fatal("the mac check is not the Instance Effector's alone")
+	}
 }
 
 // The signed wire, end to end in the binary (ADR-0068, ADR-0071): a dispatch start is validated,

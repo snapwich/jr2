@@ -1,11 +1,17 @@
 // The nav: breadcrumb (the address, made clickable), the Machine's id, the zoom controls, the
-// fleet-wide attention badge, the feed state, and the token box (ADR-0032). The token INPUT is
+// fleet-wide attention badge, the feed state, and the credential box (ADR-0032). The token INPUT is
 // uncontrolled — its value is the reader's secret, never state — seeded once from sessionStorage
 // and committed on the change event; the store carries only the token's STATE, which is what the
-// badge renders.
+// badge renders, and the Caller that `GET /whoami` said it is.
+//
+// With no live credential the box offers the field and a login button for each issuer the Instance
+// declares for a login. With one, it shows who the page acts as (its scopes in the title) and a
+// sign-out button in place of the field.
 
 import { h, type JSX } from "preact";
-import { gateCount, type Store, type TokenState } from "../store.ts";
+import { useRef } from "preact/hooks";
+import { callerLabel, callerScopes, gateCount, may, type Store, type TokenState } from "../store.ts";
+import type { LoginIssuer } from "../login.ts";
 import type { AppApi } from "./app.ts";
 
 const TOKEN_BADGES: Record<TokenState, string> = { none: "", checking: "…", live: "live", invalid: "invalid" };
@@ -15,10 +21,14 @@ export function Nav(props: {
   machineId: string | null;
   zoomPct: number;
   initialToken: string;
+  logins: readonly LoginIssuer[];
+  loginNote: string | null;
   onChooseTab: (tab: "attention") => void;
   api: AppApi;
 }): JSX.Element {
-  const { store, machineId, zoomPct, initialToken, onChooseTab, api } = props;
+  const { store, machineId, zoomPct, initialToken, logins, loginNote, onChooseTab, api } = props;
+  const field = useRef<HTMLInputElement>(null);
+  const actingAs = callerLabel(store);
   const connection = store.workflow ? store.connection : "idle";
   const count = gateCount(store);
   return h(
@@ -56,7 +66,7 @@ export function Nav(props: {
       "button",
       {
         id: "attention-badge",
-        hidden: store.token !== "live" || count === 0,
+        hidden: !may(store, "answer") || count === 0,
         title: "open gates across the fleet",
         onClick: () => onChooseTab("attention"),
       },
@@ -65,17 +75,53 @@ export function Nav(props: {
     ),
     h("span", { id: "connection", class: `conn conn--${connection}`, title: "feed connection" }, connection),
     h(
-      "label",
-      { id: "token-box", title: "Instance token — unlocks start & gates (ADR-0032)" },
+      "div",
+      { id: "token-box" },
+      h(
+        "span",
+        { id: "caller", hidden: actingAs === null, title: callerScopes(store.caller) },
+        actingAs === null ? "" : `as ${actingAs}`,
+      ),
+      h(
+        "button",
+        {
+          id: "sign-out",
+          hidden: actingAs === null,
+          title: "forget the credential: the page goes back to observer",
+          onClick: () => {
+            if (field.current) field.current.value = "";
+            api.setToken("");
+          },
+        },
+        "sign out",
+      ),
       h("input", {
         id: "token",
+        ref: field,
         type: "password",
-        placeholder: "instance token",
+        hidden: actingAs !== null,
+        placeholder: "Caller token",
+        title: "a Caller's token — unlocks what its scopes allow (ADR-0032)",
         autocomplete: "off",
         defaultValue: initialToken,
         onChange: (e: Event) => api.setToken((e.currentTarget as HTMLInputElement).value.trim()),
       }),
+      actingAs === null
+        ? logins.map((issuer) =>
+            h(
+              "button",
+              {
+                key: issuer.issuer,
+                class: "login",
+                title: `log in at ${issuer.issuer}`,
+                onClick: () => api.login(issuer),
+              },
+              logins.length === 1 ? "log in" : `log in · ${new URL(issuer.issuer).host}`,
+            ),
+          )
+        : null,
       h("span", { id: "token-state", class: `token-state token-state--${store.token}` }, TOKEN_BADGES[store.token]),
+      h("span", { id: "login-note", hidden: loginNote === null, title: loginNote ?? "" }, loginNote ?? ""),
     ),
   );
 }

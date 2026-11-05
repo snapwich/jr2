@@ -152,6 +152,23 @@ export type PickAnswerNotice = {
 
 export type Notice = MemoryLimitNotice | ConversationNewNotice | PickAnswerNotice;
 
+// ---- Steering messages (ADR-0002, ADR-0062) ----------------------------------------------------
+// Free text to one Agent slot, with its author. Not a notice: a notice is a fact with no author,
+// and the model weighs a Steering message by who wrote it. The two ride one ledger and one
+// transport, and the Harness frames each message by its author.
+
+/** Who wrote a Steering message. `caller`: a Caller sent it from outside the run (ADR-0078), with
+ * the name jr2 shows and the party it says it acts for. `machine`: the Machine sent it with its
+ * `steer` action; `from` is the party whose words it relays, when it relays some. */
+export type SteeringAuthor =
+  | { kind: "caller"; via: "token" | "jwt" | "hook"; name: string; onBehalfOf?: string }
+  | { kind: "machine"; from?: { party: "agent" | "gate"; id: string } };
+
+/** One Steering message, as the admission and the surface read carry it. `scope: "slot"` is the
+ * address kind it uses in the ledger. `at`: when it was sent (ISO). The Harness writes the frame;
+ * `text` is the author's. */
+export type SteeringMessage = { kind: "steering"; scope: "slot"; text: string; author: SteeringAuthor; at: string };
+
 /** Response header: the offset to resume the stream from (every stream read carries it). */
 export const STREAM_NEXT_OFFSET_HEADER = "stream-next-offset";
 

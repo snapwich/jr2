@@ -9,6 +9,15 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 
 ## Decision
 
+- **What an Effector is for.** It holds the secrets that the Orchestrator must not hold, and it makes every call that
+  jr2 makes to the outside for a Machine or a Hook: every `http` Effect runs in an Effector
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), and the
+  Orchestrator's one call out of the Instance is the fetch of a JWT issuer's public keys (and of its discovery document,
+  which names where the keys are), which spends no secret
+  ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). It serves two clients: a
+  Machine's Effects, in both placements, and the Orchestrator's Hook door, in the Instance Effector only, which uses two
+  operations: the `mac` check and one `http` call (below). It knows no Hook kind and no service. The reason above holds
+  for both clients, and a Hook's secret adds one: it can forge a delivery that answers a Gate.
 - **One static Go binary, `effector`.** A top-level Go module, `effector/`, beside `operator/`: the same toolchain and
   lint, `make test` and `make lint`, the standard library only. Go because the Effector is the trust boundary, and the
   safe file opener (`os.Root`, `openat2`) is Go's. It is configured by its env, which names where its own mount holds
@@ -49,13 +58,13 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   cause.
 
 - **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file, and `dispatch` toward another
-  Orchestrator ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), the other Orchestrator's Instance
-  token being an Effect secret it holds. A Sandbox Effector — the binary with `JR2_EFFECTOR_WORK` set, a read-only view
-  of the Agent's `/work` — runs an `http` whose body is a Worktree file, `push` and a credentialed `command` (ADR-0067);
-  the Instance Effector refuses the last two, and a file body, as a defect, and a Sandbox Effector refuses a `dispatch`.
-  Under Repo Slots each of the three needs a cut's settled row in the run's ledger, because a path alone does not name
-  the target of a credential: the Orchestrator reads the row before it starts the Effect, and with no row it sends
-  nothing and settles the kind's own outcome
+  Orchestrator ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), the other Orchestrator's Caller token
+  being an Effect secret it holds. It also serves the Hook door (below). A Sandbox Effector — the binary with
+  `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs an `http` whose body is a Worktree file,
+  `push` and a credentialed `command` (ADR-0067); the Instance Effector refuses the last two, and a file body, as a
+  defect, and a Sandbox Effector refuses a `dispatch`. Under Repo Slots each of the three needs a cut's settled row in
+  the run's ledger, because a path alone does not name the target of a credential: the Orchestrator reads the row before
+  it starts the Effect, and with no row it sends nothing and settles the kind's own outcome
   ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). Its env names where its mount holds the
   rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only), `JR2_EFFECTOR_GIT` (the push credentials: one
   directory per `git.credentials` entry the Sandbox's pushes spend, the entry's own Secret as the operator projects it —
@@ -67,6 +76,26 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   found in one fixed PATH, `/usr/local/bin:/usr/bin:/bin`, never by the PATH the image set: an image that puts a
   directory of its own first does not choose which `git` runs. For a credentialed `command` the Agent's files are the
   author's choice to run, and the claims are the next bullet's.
+- **The Instance Effector serves the Hook door with two operations, and the Orchestrator never holds a Hook's secret.**
+  A Hook with a `mac` verifier
+  ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)) names its secret as an
+  Effect names one, and the secret is placed in the Instance Effector alone.
+  - **The `mac` check.** The Orchestrator sends, on the signed wire (below), the bytes to check, the signature, the
+    secret's name and the algorithm. The Hook's kind gives the bytes, and the door makes every check that needs no
+    secret itself, so the Effector reads no header and no timestamp. The Effector computes an HMAC over the bytes with
+    that secret, compares it with the signature in constant time, and answers only "match" or "no match". It returns no
+    secret and no digest of one.
+  - **One `http` call**: a Hook kind's follow-up, such as the reply to a Slack click, which the door posts to the
+    click's `response_url` ([ADR-0011](0011-workflow-defined-events.md)). It is the `http` kind on the same wire, with
+    no secret, to a host that the Hook's kind declares, which `jr2 up` writes into `effector.json` for each Hook of that
+    kind, and it is sent once. It has no slot, no ledger row and no run.
+
+  `jr2 up` converges the Instance Effector when a Hook has a `mac` verifier or its kind declares a follow-up host, as it
+  does when an Effect is placed there. The `token` and `ed25519` verifiers run in the Orchestrator: a digest and a
+  public key cannot sign anything, so they need no Effector, but a follow-up of their kind goes through it. The check is
+  `POST /mac`, beside the Effects' routes and never an Effect: it has no id, starts nothing and is answered at once, and
+  a secret the Effector does not hold is a defect (400), as an Effect's is. A Sandbox Effector does not serve the route.
+
 - **A credentialed `command`'s child is confined with Landlock.** The child runs as the Effector's own uid in the
   Effector's container, where the placement key, every placed secret and the push and signing keys are files that uid
   can read, and its program is often the Agent's code (`npm run deploy`, `make`, `./scripts/release.sh`, a tool's
@@ -204,8 +233,9 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   `effector/internal/wire` and zod schemas in `@jr2/orchestrator`, the one definition each TypeScript type is inferred
   from. Go decodes with unknown fields disallowed. The golden fixtures in `effector/testdata/wire/` keep the two equal:
   one JSON file per request shape (`request.*`), per answer and outcome (`response.*`), per shape its decoder must
-  refuse (`reject.*`), and the two signatures (`signature.*`). Go decodes each request and encodes each response; the
-  TypeScript tests read the same files by a relative path, encode the requests and decode the responses.
+  refuse (`reject.*`), the two signatures (`signature.*`), and the `mac` check's request, answers and refusals
+  (`mac.*`). Go decodes each request and encodes each response; the TypeScript tests read the same files by a relative
+  path, encode the requests and decode the responses.
 - **Signed requests and signed answers, and no bearer.** The key is the placement's,
   `HMAC(signing key, "effector:" + placement)`, as ADR-0058 derives the Harness bearer: the Orchestrator stores nothing.
   The Effector reads it from a file in its own mount. A request carries `X-Jr2-Time` (Unix milliseconds), `X-Jr2-Nonce`,
@@ -283,7 +313,7 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
     `truncated` past it. A body that is not text is never returned: its size and type are.
   - `unreachable`: nothing was sent — the name did not resolve, the connection or TLS failed.
   - `refused`: the Effector refused it and sent nothing — a path segment that is `.`, `..` or empty (an Agent's param
-    can cause it, so it is output, not a fault), or a host and secrets that no Effect placed there names. The
+    can cause it, so it is output, not a fault), or a host and secrets that no Effect or Hook placed there names. The
     Orchestrator settles an `http` start longer than 4 MiB `refused` the same way, before it sends anything, and a file
     body with no cut's row (ADR-0075); a `push` and a `command` have no `refused`.
   - `unknown`: the connection was made and no answer came (the timeout, a reset): the host may have acted.
@@ -298,10 +328,11 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   plain data) lists each scheme, host and port an Effect placed there names, with the secrets that Effect names — the
   host its definition fixes, or for a url the package left Open, the one the composer's `customize()` bound
   ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); `jr2 up` refuses a Machine
-  whose Open url nothing bound, so no fence entry is ever a guess. A request to another target, or with another secret,
-  is `refused`. A redirect is the response and is never followed: it would send the request, and its `Authorization`, to
-  a host the definition did not fix. No proxy is read from the environment. The trust is the system roots and the
-  instance's `caBundle` ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)).
+  whose Open url nothing bound, so no fence entry is ever a guess. Each Hook adds the hosts that its kind declares for a
+  follow-up (the `slack` kind: `https://hooks.slack.com`), with no secret (above). A request to another target, or with
+  another secret, is `refused`. A redirect is the response and is never followed: it would send the request, and its
+  `Authorization`, to a host the definition did not fix. No proxy is read from the environment. The trust is the system
+  roots and the instance's `caBundle` ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)).
 - **One list of secrets; placement is read, never declared, and naming is placement on both sides.** The top-level
   `secrets` list replaces `harness.heldSecrets`; its entry is ADR-0059's
   (`{ name, value | valueFrom.secretKeyRef, hosts?, headers?, paths? }`). A pod gets the secrets something in it names:
@@ -310,13 +341,13 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   with `secret("name")` (an `http` Effect: the Instance Effector; an `http` whose body is a Worktree file: the Sandbox
   Effector of the Workspace whose body invokes it; a credentialed command: that Sandbox Effector), and the name a
   composer binds to an Effect's `secret(open)` with `customize()` (ADR-0054) is placed the same way, in that Effect's
-  Effector alone, once bound — `jr2 up` refuses an Open secret nothing bound. `hosts`, `headers` and `paths` are a Held
-  secret's binding, never its placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the
-  held manifest, the Custodian config and the held values' Secret of each Harness pod come from it. Both is both, and
-  `jr2 up` reports it per pod. An entry nothing names goes nowhere, and `jr2 up` warns:
-  `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no `placement:` key: naming is the placement.
-  `jr2 up` prints one line per secret with its placements, and one per pod with what it holds
-  (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
+  Effector alone, once bound — `jr2 up` refuses an Open secret nothing bound. A Hook with a `mac` verifier places its
+  secret in the Instance Effector the same way. `hosts`, `headers` and `paths` are a Held secret's binding, never its
+  placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the held manifest, the Custodian
+  config and the held values' Secret of each Harness pod come from it. Both is both, and `jr2 up` reports it per pod. An
+  entry nothing names goes nowhere, and `jr2 up` warns: `secrets[i] (<name>) is named by nothing; goes nowhere`. There
+  is no `placement:` key: naming is the placement. `jr2 up` prints one line per secret with its placements, and one per
+  pod with what it holds (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
   `the Instance Effector: holds jira`,
   `Workspace of workflow "coding": Sandbox Effector (image the Sandbox Image) holds aws; pushes Repo Slot "app" with git.credentials "*"`
   — for a slot the run or a `customize()` binds, `with the git.credentials entry its url matches at provision`). Right
@@ -330,9 +361,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   short value, for a Secret edited after the converge. A secret reaches only the pods where something names it: a
   literal is written into the placement's own Secret, and a `valueFrom` is projected from the user's Secret by
   reference, never copied. `git.credentials` stays its own list: a fence keyed by url prefix, not a named value.
-- **The Instance Effector's objects.** `jr2 up` converges them when a registered Machine places an Effect there, and
-  deletes them otherwise; it reports either (`instance effector: converging (<workflow>/<slot>; secrets …; grace …)` or
-  `instance effector: none`). All four are named `jr2-instance-effector`:
+- **The Instance Effector's objects.** `jr2 up` converges them when a registered Machine places an Effect there or a
+  Hook has a `mac` verifier or a kind that declares a follow-up host, and deletes them otherwise; it reports either
+  (`instance effector: converging (<workflow>/<slot> or hook <name>; secrets …; grace …)` or `instance effector: none`).
+  All four are named `jr2-instance-effector`:
   - A **Deployment**, one replica, rolling with surge and no gap, so a rollout runs the old pod beside the new one: the
     `jr2-harness` image, command `/opt/jr2/bin/effector`, non-root, no privilege escalation, every capability dropped, a
     read-only root filesystem, an emptyDir scratch as `$HOME`, no ServiceAccount token, the control tier's PriorityClass
@@ -403,6 +435,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 - **A StatefulSet for the Instance Effector**, as the Instance Harness is. Rejected: a one-replica StatefulSet deletes
   the old pod before it creates the new one, so a rollout would cut an Effect in flight; the Effector keeps nothing a
   stable name or volume would hold.
+- **Check a Hook's `mac` in the Orchestrator.** Rejected: the Orchestrator runs every Machine's code, and an HMAC secret
+  in its process can sign a forged delivery. The check costs one call on the signed wire for each delivery.
+- **A verifier container of its own** for the Hook door. Rejected: it would be the same binary, with the same secret
+  mount and the same signed wire, so a second pod adds a Deployment, a key and a NetworkPolicy and closes nothing.
 - **A `placement:` key on a secret.** Rejected: naming a secret in an Effect is what places it, and a key would be a
   second statement that can disagree with the first.
 

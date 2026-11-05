@@ -33,6 +33,7 @@ Agent. A state invokes it with `src: "coder"`. The definition is plain data, and
 | `workspace`     | What the Agent can do to the Workspace: `"write"` (the default), `"read"` or `"none"`. |
 | `thinkingLevel` | How hard the model thinks, when the state sets no other level. The default is `"off"`. |
 | `description`   | A short text for the people who read the Machine. The model does not read it.          |
+| `steerable`     | `false` refuses a Steering message from a Caller. The default is `true`.               |
 
 [`AgentDefinition`](../reference/authoring-surface/type-agentdefinition.md) gives each field.
 
@@ -177,10 +178,10 @@ itself. It tells nothing about the task: the prompt tells the task. It has two p
   the run: with a pick from its Menu. It also tells the CPUs and the [Size](../reference/glossary.md#size) of the
   Sandbox, or that a Menu-only Agent has no Working tools.
 - **The Turn part** comes after the prompt. It tells the directory of the Turn, its
-  [Allowed picks](../reference/glossary.md#allowed-picks), and the notices. [The Menu](the-menu.md) tells what the
-  Allowed picks are. When they change during the Turn, the Harness tells them to the model again. When an Allowed pick
-  carries a [Chart](../reference/glossary.md#chart), the Turn part also tells how a Chart runs (see
-  [Charts](charts.md)).
+  [Allowed picks](../reference/glossary.md#allowed-picks), the notices, and the [Steering messages](#steering-messages).
+  [The Menu](the-menu.md) tells what the Allowed picks are. When they change during the Turn, the Harness tells them to
+  the model again. When an Allowed pick carries a [Chart](../reference/glossary.md#chart), the Turn part also tells how
+  a Chart runs (see [Charts](charts.md)).
 
 A notice tells a Turn what happened before it. For example: the conversation is new and the earlier context is gone, or
 the processes of the Sandbox stopped at its memory limit. A notice about a conversation goes to the next Turn of that
@@ -197,6 +198,33 @@ Turn the stop cut.
 
 You cannot turn the Briefing off. It contains only facts that make the Agent work better. An `instructions` that tells
 the same fact again does no harm.
+
+## Steering messages
+
+A [Steering message](../reference/glossary.md#steering-message) is free text to one Agent of a run. The Agent hears it
+one time, and nothing interrupts the Agent. A [Caller](../reference/glossary.md#caller) sends one with `jr2 steer`, and
+the Machine sends one with the [`steer`](../reference/authoring-surface/steer.md) action. A message is not a pick and
+not an event: no guard reads it, and no Gate takes it. The Agent decides what to do with it, and it acts on the run only
+with its picks.
+
+A message goes to an Agent slot: the path of the Machine and the name of the Agent, such as `root/coder`. The slot of an
+Agent in a child Machine starts with the path of that Machine, such as `review/reviewer`. `jr2 steer <run id>` lists the
+slots of a run.
+
+- When a Turn of the slot is open, the Harness adds the message to the Turn before the next model request.
+- When no Turn of the slot is open, the message waits for the next Turn of the slot in the same Machine instance.
+- When that Machine instance ends first, the message is not delivered. The run records it as `not-delivered`.
+
+The Harness puts the message in the Turn part, after the notices and before the Allowed picks. It tells the model who
+wrote the message:
+
+- A Caller's message is an instruction from outside the run, with the name of the Caller.
+- A message that the Machine relays from another Agent is information from a peer. The workflow did not write it. A line
+  after the text says that it is not an instruction, and that the Agent does what the workflow asked.
+- A message that the Machine relays from a Gate is what the Gate received, not an order. The workflow did not write it.
+- A message from the Machine that relays no one is the text of the workflow.
+
+[Steer an Agent](../guides/steer-an-agent.md) tells how to send one.
 
 ## When a Turn fails
 
@@ -252,6 +280,8 @@ the model in `models`. A model with no context window gets no Compaction.
   refuses a model that it cannot find when the Turn starts.
 - A Turn ends when the state that invoked the Agent exits.
 - After `agent.fault` for a conversation, jr2 does not continue it, except after a Harness restart.
+- A Steering message is at most 16 KiB. `steerable: false` refuses a Caller's message, and the Machine can still send
+  one.
 
 [Set an Agent's access and Dials](../guides/set-an-agents-access-and-dials.md) gives the exact text of each refusal.
 
@@ -274,5 +304,6 @@ the model in `models`. A model with no context window gets no Compaction.
   state that asked for it
 - [ADR-0016](../reference/decisions/0016-agent-turn-mechanics-are-internal.md): jr2 owns the mechanics of a Turn
 - [ADR-0062](../reference/decisions/0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md): the Briefing
+- [ADR-0002](../reference/decisions/0002-duplex-streaming-actor.md): Steering messages
 - [ADR-0035](../reference/decisions/0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md): a Runaway
 - [ADR-0036](../reference/decisions/0036-a-turn-compacts-its-own-context-mid-flight.md): Compaction

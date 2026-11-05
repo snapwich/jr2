@@ -42,7 +42,7 @@ export function llmsTxt(
 }
 
 /** The Reference pages an Assistant writes against, first in the block. */
-const AUTHORING = ["reference/authoring-surface", "reference/machines", "reference/config"];
+const AUTHORING = ["reference/authoring-surface", "reference/machines", "reference/hooks", "reference/config"];
 
 /** The groups of the block's index, in the order an Assistant needs them: the Reference it writes
  * against, the Write Machines guides, the Concepts of what it writes, then the rest in nav order.

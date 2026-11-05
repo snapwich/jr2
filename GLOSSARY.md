@@ -49,8 +49,8 @@ _Avoid_: agent (unqualified), coding agent (a `coder` Agent codes too), copilot,
 
 **Console**:
 The browser surface that the Orchestrator serves, where a person sees the Workflows, their runs and their Machines.
-Observation needs no token; the Instance token unlocks control, so that a person can start runs and see and answer the
-open Gates.
+Observation needs no token; a Caller's credential unlocks the control that its scopes allow, so that a person can start
+runs and see and answer the open Gates.
 _Avoid_: visualizer (only one panel of it), dashboard, UI (unqualified), viz
 
 **Kit image**:
@@ -160,10 +160,31 @@ _Avoid_: origin, Caller (the holder of the credential behind a Gate's answer)
 
 **Caller**:
 The holder of a credential that acts on an Instance from outside its Machines, such as a person, a CI job or a bridge
-to a chat service: it starts a run, answers a Gate or cancels a run. A Caller can act **on behalf of** another party,
-but that is the Caller's claim, which jr2 does not check.
+to a chat service: it starts a run, answers a Gate, sends a **Steering message** or cancels a run. A Caller can act
+**on behalf of** another party, but that is the Caller's claim, which jr2 does not check, except where a **Hook**'s
+signature covers it.
 _Avoid_: principal (it brings policies and roles that an Instance does not have), user (a CI job is a Caller), actor
 (xstate's word), Sender (a party inside the run)
+
+**Steering message**:
+Free text that a Caller, or the Machine, sends to one Agent of a run, named by its slot, which the Agent hears once,
+without an interrupt. A Caller's is an instruction from outside the run; the Machine's can carry what another Agent said, which is
+a peer's word, not an instruction. It is not a fact from jr2, and it is not a pick.
+_Avoid_: steer (as a noun), notice (a fact that jr2 knows and the Agent cannot find), prompt (the Turn's, from the
+Machine), interrupt (`abort` is the terminal act)
+
+**Hook**:
+An Instance's door, at a stable address, for one outside service that sends it deliveries, such as a forge or an alert
+service. A Hook checks that a delivery is the service's and decides nothing: it is a Caller that can only answer a Gate
+or bring items to a Source. Its Hook kind, such as `github` or `slack`, is the service's protocol.
+_Avoid_: webhook (the service's request, not the door), endpoint, trigger, listener, subscription, intake; not an engine
+hook or a git hook
+
+**Hook kind**:
+One outside service's protocol, as code that an Instance imports: what the service signed, how to read a delivery and
+its payloads, the service's handshake, and the envelope of an answer that a person reads. It never holds a secret, and
+one kind serves every Hook of that service.
+_Avoid_: plugin, adapter (a Source's word), integration, driver
 
 **Emit**:
 A message of progress or notice that a Machine's author sends from it to whoever watches the run, beside its
@@ -180,7 +201,8 @@ spawned run (a dispatched run is a run of its own)
 **Open**:
 A part that a Machine declares but does not bind, so that its composer binds it: for example, a Repo Slot with no url,
 an Agent with no model, or an Effect with no url, program or secret. It is the shape that a packaged Machine ships in,
-`jr2 up` refuses an Open part that nobody bound, and a run never sees one, except an Open body, which a run binds.
+`jr2 up` refuses an Open part that nobody bound, and a run never sees one, except an Open body, which a run binds, and
+a Gate's Open look, about which `jr2 up` only warns.
 _Avoid_: unset, default (an Open part has none), placeholder
 
 **Open body**:
@@ -387,8 +409,10 @@ cluster.
 _Avoid_: probe, probe pod, preflight pod, test pod, Harness (it runs none)
 
 **Effector**:
-The container where jr2's own process runs a Machine's Effects and holds their secrets, and where the Agent executes
-nothing: a Sandbox Effector or the Instance Effector. Every Effect runs in it except a command that names no secret,
+The container where jr2's own process holds the secrets that the Orchestrator must not hold and makes the calls to the
+outside that jr2 makes for a Machine or a Hook, and where the Agent executes nothing: a Sandbox Effector or the Instance
+Effector. It serves a Machine's Effects and, in the Instance Effector, the Hook door, and it knows no Hook kind or
+service. Every Effect runs in it except a command that names no secret,
 which runs beside the Agent, and a dispatch that names no target, which runs in the Orchestrator's own process; a
 command that runs in it sees a pinned commit, never the live Worktree.
 _Avoid_: Courier, Actuator, Clerk, machine container, tool image
@@ -401,7 +425,8 @@ _Avoid_: sidecar, worker, runner
 
 **Instance Effector**:
 The Effector as a stateless pod of its own, one per Instance, for an Effect that calls a URL and reads no Worktree file,
-and for a dispatch that starts a run on another Orchestrator.
+for a dispatch that starts a run on another Orchestrator, and for the Hook door's two operations: it checks an HMAC
+with a Hook's secret, which the Orchestrator never holds, and makes the door's one call out.
 _Avoid_: sidecar, worker, runner
 
 **Effect secret**:
@@ -441,13 +466,15 @@ _Avoid_: sidecar (its deployment shape), debug container (a one-off attach, not 
 
 **Source**:
 The port from which a Pool gets its work items. A queue, a generator or a re-queried set can be a Source, and a Work
-Source is one Source adapter.
+Source is one Source adapter. A Source can pull (read its set again) and be pushed (hear a Hook, which either tells it to
+read again or carries an item to it); when it can read, the read is the truth.
 _Avoid_: queue (one possible backing, and not FIFO), feed
 
 **Pool**:
-The Machine that the kit supplies to run one worker Machine for each Source item, with a limit on how many run at the
-same time.
-_Avoid_: scheduler, work loop
+The Machine that the kit supplies to run one worker for each Source item, with a limit on how many run at the same
+time. A worker is a child Machine inside the Pool's run, or a run of another Workflow that the Pool dispatches. A Pool
+of runs can be **standing**: jr2 keeps it live for the Instance, and it parks when it has no work instead of ending.
+_Avoid_: scheduler, work loop, intake, router
 
 **Work Source**:
 The Source adapter for tickets, modeled as a set of behaviors and not as one common data schema. It owns the dependency

@@ -10,7 +10,7 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { setup } from "xstate";
 import { RunHost } from "../src/run-host.ts";
-import { DISPATCHED_BY_HEADER } from "../src/registration.ts";
+import { DISPATCHED_BY_HEADER, KEY_ONLY_HEADER } from "../src/registration.ts";
 import { createApp } from "../src/http.ts";
 import { KIT_VERSION } from "../src/config.ts";
 import type { RepoStatus } from "../src/repos.ts";
@@ -205,7 +205,7 @@ test("POST /runs/:id/events takes CANCEL, and nothing else", async () => {
 
 test("POST /runs/:id/events: CANCEL carries `keep` to the host, and refuses one that is not a boolean (ADR-0025)", async () => {
   const { host, app } = await mkApp();
-  const seen: Array<{ keep?: boolean }> = [];
+  const seen: Array<{ keep?: boolean; by?: unknown }> = [];
   const cancel = host.cancel.bind(host);
   host.cancel = async (id, opts) => {
     seen.push(opts ?? {});
@@ -222,7 +222,13 @@ test("POST /runs/:id/events: CANCEL carries `keep` to the host, and refuses one 
   assert.equal((await app.request(`/runs/${a.runId}/events`, jsonPost({ type: "CANCEL", keep: true }))).status, 200);
   const b = await host.start("coding");
   assert.equal((await app.request(`/runs/${b.runId}/events`, jsonPost({ type: "CANCEL" }))).status, 200);
-  assert.deepEqual(seen, [{ keep: true }, { keep: false }]);
+  // The run records who cancelled it (ADR-0078): with no authenticator, the Instance token's Caller.
+  const by = { via: "token", name: "instance" };
+  assert.deepEqual(seen, [
+    { keep: true, by },
+    { keep: false, by },
+  ]);
+  assert.deepEqual((await host.read(a.runId))?.cancelledBy, by);
 });
 
 test("SSE: GET /runs/:id/events streams a status delta on transition", async () => {
@@ -675,7 +681,7 @@ test("a start with jr2-dispatched-by is 201, and its repeat 200 `existing` with 
   assert.equal(((await repeat.json()) as { runId: string }).runId, runId);
 });
 
-test("a key a run of another Workflow carries is 409 naming both, never that run answered `existing` (ADR-0071)", async () => {
+test("the key is scoped to the Workflow named: the same key in another Workflow is a new run, and an ended run still answers its key (ADR-0071)", async () => {
   const { host, app } = await mkApp();
   host.register(gatedDef());
   host.register({
@@ -687,10 +693,17 @@ test("a key a run of another Workflow carries is 409 naming both, never that run
   assert.equal(first.status, 201);
   const { runId } = (await first.json()) as { runId: string };
   const other = await app.request("/workflows/quick/runs", dispatchPost({}, dispatchedBy("k-shared")));
-  assert.equal(other.status, 409);
-  const { error } = (await other.json()) as { error: string };
-  assert.match(error, new RegExp(`run ${runId} of "gated", not of "quick"`));
-  assert.equal(host.list().filter((s) => s.workflow === "quick").length, 0, "nothing of the other Workflow ran");
+  assert.equal(other.status, 201, "no 409: a key of another Workflow names nothing here");
+  const quick = (await other.json()) as { runId: string; instanceId: string };
+  assert.notEqual(quick.runId, runId);
+  // `quick` ended at once; its row lives, so its key answers it, `existing`.
+  await waitFor(() => host.status(quick.runId) === undefined);
+  const again = await app.request("/workflows/quick/runs", dispatchPost({}, dispatchedBy("k-shared")));
+  assert.equal(again.status, 200);
+  assert.deepEqual(await again.json(), { ...quick, existing: true });
+  const gated = await app.request("/workflows/gated/runs", dispatchPost({}, dispatchedBy("k-shared")));
+  assert.equal(gated.status, 200);
+  assert.equal(((await gated.json()) as { runId: string }).runId, runId);
 });
 
 test("a start that throws a defect is 500, not 404: a foreign caller reads 404 as nothing started (ADR-0071)", async () => {
@@ -726,6 +739,43 @@ test("a jr2-dispatched-by that does not parse, or names no instance, is 400 nami
     [],
     "a refused header starts nothing",
   );
+});
+
+test("a key-only ask answers the run under the key, or 200 `existing: false` and starts nothing; it reads no body (ADR-0071)", async () => {
+  const { host, app } = await mkApp();
+  host.register(gatedDef());
+  const ask = (key: string, value = "true"): RequestInit => ({
+    method: "POST",
+    headers: { [DISPATCHED_BY_HEADER]: dispatchedBy(key), [KEY_ONLY_HEADER]: value },
+  });
+  const none = await app.request("/workflows/gated/runs", ask("k-ask"));
+  assert.equal(none.status, 200);
+  assert.deepEqual(await none.json(), { existing: false });
+  assert.deepEqual(
+    host.list().filter((s) => s.workflow === "gated"),
+    [],
+    "no run under the key: nothing started",
+  );
+  const first = await app.request("/workflows/gated/runs", dispatchPost({}, dispatchedBy("k-ask")));
+  assert.equal(first.status, 201);
+  const started = (await first.json()) as { runId: string; instanceId: string };
+  const found = await app.request("/workflows/gated/runs", ask("k-ask"));
+  assert.equal(found.status, 200);
+  assert.deepEqual(await found.json(), { ...started, existing: true });
+  // A Workflow the Assembly lacks has no run under any key: the same answer, never a 404.
+  const unknown = await app.request("/workflows/nowhere/runs", ask("k-ask"));
+  assert.equal(unknown.status, 200);
+  assert.deepEqual(await unknown.json(), { existing: false });
+  // The mark with another value, or with no key, is 400 naming the header.
+  for (const init of [
+    ask("k-ask", "1"),
+    { method: "POST", headers: { [KEY_ONLY_HEADER]: "true" } },
+  ] satisfies RequestInit[]) {
+    const res = await app.request("/workflows/gated/runs", init);
+    assert.equal(res.status, 400);
+    assert.match(((await res.json()) as { error: string }).error, /jr2-key-only/);
+  }
+  assert.equal(host.list().filter((s) => s.workflow === "gated").length, 1, "one run, from the one start");
 });
 
 test("GET /runs/:id serves a dispatched run's dispatchedBy and, once settled, its output; the open band drops the key (ADR-0071)", async () => {

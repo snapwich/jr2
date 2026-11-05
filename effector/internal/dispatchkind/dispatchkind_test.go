@@ -113,6 +113,11 @@ func (o *orchestrator) handler() http.Handler {
 			_, _ = io.WriteString(w, `{"runId":"`+run+`","instanceId":"i-1","existing":true}`)
 			return
 		}
+		if r.Header.Get(KeyOnlyHeader) == "true" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"existing":false}`)
+			return
+		}
 		run := "run-" + strconv.Itoa(len(o.runs)+1)
 		o.runs[by.Effect] = run
 		w.WriteHeader(http.StatusCreated)
@@ -166,6 +171,28 @@ func TestAStartThenARepeatedKeyAnswerTheSameRun(t *testing.T) {
 		}
 	}
 	noToken(t, first)
+}
+
+func TestOnBehalfOfRidesItsHeaderAndIsAbsentWhenUnset(t *testing.T) {
+	o, srv := fake()
+	defer srv.Close()
+	r := runner(t, srv, "ops")
+	req := request(srv.URL, "review", false)
+	req.OnBehalfOf = "alice@example.com"
+	if out := r.Run(context.Background(), req); out.Outcome != wire.OutcomeStarted {
+		t.Fatalf("got %+v", out)
+	}
+	bare := request(srv.URL, "triage", false)
+	bare.DispatchedBy.Effect = "ledger-row-2"
+	if out := r.Run(context.Background(), bare); out.Outcome != wire.OutcomeStarted {
+		t.Fatalf("got %+v", out)
+	}
+	if got := o.starts[0].Header.Get(OnBehalfOfHeader); got != "alice@example.com" {
+		t.Fatalf("the start's %s is %q", OnBehalfOfHeader, got)
+	}
+	if _, set := o.starts[1].Header[http.CanonicalHeaderKey(OnBehalfOfHeader)]; set {
+		t.Fatalf("a start with no onBehalfOf sent the header: %v", o.starts[1].Header)
+	}
 }
 
 func TestASlashedNameIsOneEncodedSegment(t *testing.T) {
@@ -570,5 +597,63 @@ func TestTheHeaderIsASCIIAndKeepsANonASCIISlot(t *testing.T) {
 	var by wire.DispatchedBy
 	if err := json.Unmarshal([]byte(raw), &by); err != nil || by.Slot != "révision-😀" {
 		t.Fatalf("got %+v, %v from %q", by, err, raw)
+	}
+}
+
+// A key-only ask (ADR-0071) sends the key and no body. With no run under the key the door starts
+// nothing, and the outcome is `absent`, which the TS driver tells from every other; with a run, the
+// ask is a start like any other, and a wait follows that run.
+func TestAKeyOnlyAskSendsNoBodyAndPassesAbsentThrough(t *testing.T) {
+	o, srv := fake()
+	defer srv.Close()
+	req := request(srv.URL, "review", false)
+	req.Input = nil
+	req.KeyOnly = true
+	if err := req.Validate(); err != nil {
+		t.Fatalf("a key-only ask is refused: %v", err)
+	}
+	out := runner(t, srv, "ops").Run(context.Background(), req)
+	if out.Outcome != wire.OutcomeAbsent || encoded(t, out) != `{"outcome":"absent"}` {
+		t.Fatalf("got %s", encoded(t, out))
+	}
+	if len(o.starts) != 1 || o.bodies[0] != "" || o.starts[0].Header.Get(KeyOnlyHeader) != "true" ||
+		o.starts[0].Header.Get("Content-Type") != "" || o.starts[0].Header.Get(Header) == "" {
+		t.Fatalf("the ask was not key-only: %d starts, body %q, headers %v", len(o.starts), o.bodies, o.starts[0].Header)
+	}
+	if len(o.runs) != 0 {
+		t.Fatalf("a key-only ask started a run: %v", o.runs)
+	}
+
+	o.runs["ledger-row-1"] = "run-9"
+	wait := true
+	req.Wait = &wait
+	out = runner(t, srv, "ops").Run(context.Background(), req)
+	if out.Outcome != wire.OutcomeSettled || out.Run != "run-9" {
+		t.Fatalf("a key-only ask with a run under the key: got %s", encoded(t, out))
+	}
+
+	// A 200 with no run id to a start that is not key-only is still an answer that was lost.
+	plain := request(srv.URL, "review", false)
+	plain.TimeoutMs = 300
+	o.refusal = func(w http.ResponseWriter) bool {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"existing":false}`)
+		return true
+	}
+	if out := runner(t, srv, "ops").Run(context.Background(), plain); out.Outcome != wire.OutcomeUnknown {
+		t.Fatalf("a body start read {existing:false} as %s", encoded(t, out))
+	}
+}
+
+func TestAKeyOnlyAskWithAnInputIsRefused(t *testing.T) {
+	req := request("https://ops.example.com", "review", false)
+	req.KeyOnly = true
+	if err := req.Validate(); err == nil {
+		t.Fatal("a key-only ask with an input is accepted")
+	}
+	req.Input = nil
+	req.KeyOnly = false
+	if err := req.Validate(); err == nil {
+		t.Fatal("a dispatch with neither an input nor keyOnly is accepted")
 	}
 }

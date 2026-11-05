@@ -253,6 +253,68 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the dispatch settled with the dispatched run, which ended "done"
       And the echo received the run's call exactly once
 
+  Rule: the Hook door's mac check and its follow-up run in the Instance Effector, and so do a look's read and a Source's read
+    ADR-0068, ADR-0078, ADR-0011, ADR-0017. The kind instance declares two Hooks with a `mac` verifier: `forge`, of the
+    `github` kind, and `chat`, Slack's protocol with a follow-up host the tier serves (`workflows/_chat.ts`). So
+    `jr2 up` places their secrets in the Instance Effector alone and converges it for them; the Orchestrator sends the
+    bytes and the signature, and the Effector answers "match" or "no match". The `hooked` workflow's Gate hears both
+    Hooks, and its look reads the echo with an `http` Effect marked idempotent; the `sourced` workflow's Pool reads its
+    set the same way. A click's follow-up is one `http` call with no secret, to the host that `jr2 up` wrote into the
+    Effector's fence from the kind's `posts`: here a Service of the scenario's namespace whose endpoint is a server on
+    the host, under the tier's CA.
+
+    Scenario: a review signed with the Hook's secret answers the run's Gate, and one signed with another is refused
+      Given the kind instance is serving
+      Then jr2 up converged the Instance Effector for the Hooks "forge" and "chat"
+      When I start the "hooked" workflow in mode "deliver" detached
+      Then the run's Gate is open
+      When GitHub sends a review of the run's marker signed with another secret
+      Then the Hook door answers 401
+      And the run is still waiting at its Gate
+      When GitHub sends a review of the run's marker signed with the Hook's secret
+      Then the door delivered the event to the run's Gate
+      And the run ends "done", approved by "octocat"
+
+    Scenario: a Gate's look reads through the Instance Effector and answers the Gate with no delivery
+      Given the kind instance is serving
+      When I start the "hooked" workflow in mode "look" detached
+      Then the run ends "done", approved by "look"
+      And the echo has received the run's call
+
+    Scenario: a read Source reads through the Instance Effector, and its Pool drains
+      Given the kind instance is serving
+      When I start the "sourced" workflow with a marker detached
+      Then the run ends "done" with the items "n-1" and "n-2"
+      And the echo has received the run's call
+
+    Scenario: a click on the chat Hook answers the Gate, and its follow-up leaves the Instance Effector once
+      Given the kind instance is serving
+      And the chat kind's follow-up host answers in the scenario's namespace
+      When I start the "hooked" workflow in mode "deliver" detached
+      Then the run's Gate is open
+      When the chat Hook sends a click on the run's marker
+      Then the Hook door answers 200
+      And the run ends "done", approved by "U1"
+      And the follow-up host received the Gate's reply for the run, once
+
+  Rule: a token Hook's secret reaches the Orchestrator only as its digest, which the door compares a delivery's token with
+    ADR-0078. The kind instance declares `lab`, of the `gitlab` kind, whose verifier is `token`. `jr2 up` writes the
+    sha-256 of its secret into the Secret `jr2-hook-digests`, which the Orchestrator mounts; the Instance Effector does
+    not hold it. A delivery with the right token answers the `hooked` workflow's Gate, and one with another token is
+    refused with 401.
+
+    Scenario: an approval with the Hook's token answers the run's Gate, and one with another token is refused
+      Given the kind instance is serving
+      Then jr2 up gave the Orchestrator only the digest of the Hook "lab"'s secret "GL_HOOK"
+      When I start the "hooked" workflow in mode "deliver" detached
+      Then the run's Gate is open
+      When GitLab sends an approval of the run's marker with another token
+      Then the Hook door answers 401
+      And the run is still waiting at its Gate
+      When GitLab sends an approval of the run's marker with the Hook's token
+      Then the door delivered the event to the run's Gate
+      And the run ends "done", approved by "ann"
+
   Rule: a file-body http and a credentialed command run in the Workspace's Sandbox Effector, which the Agent cannot read
     ADR-0067, ADR-0068. The `effected` workflow's body commits a file in the Harness container, then
     runs an Effect that `jr2 up` placed in this Workspace's Sandbox Effector: an `http` whose body is the
@@ -832,3 +894,21 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run parks at the "review" Gate, with summary "wrote the summary"
       And the file "SUMMARY.md" is in the Worktree the Gate names and in no directory above it
       And the Worktree the Gate names has the commit "jr2-frame-ok" on its branch
+
+  Rule: jr2 up makes each named Caller token, and a rotation ends the old value
+    ADR-0078. A named token's value is in a Secret of its own, which `jr2 caller token` reads over
+    the kube API; the Orchestrator holds only its digest, through a mount that it reads again when
+    it changes. So a rotation rolls no pod: the old value stops working when the kubelet updates the
+    mount, about a minute, and from then the new value works. The CLI on a kube context is the
+    Caller token/instance, on behalf of the user that a SelfSubjectReview names.
+
+    Scenario: the CLI is token/instance for the kube user, a named token is its own Caller, and a rotated value is refused
+      Given the kind instance is serving
+      When I ask who I am
+      Then I am the Caller "token/instance" on behalf of the kube user
+      When I read the Caller token "ci"
+      Then the Caller token "ci" acts as "token/ci"
+      When I rotate the Caller token "ci"
+      Then the old value of the Caller token "ci" is refused within 240 seconds
+      When I read the Caller token "ci"
+      Then the Caller token "ci" acts as "token/ci"

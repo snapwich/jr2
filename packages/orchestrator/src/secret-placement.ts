@@ -9,7 +9,11 @@
 //     `http` Effects name and the token of each `dispatch` with a target (ADR-0071; a dispatch with
 //     no target runs in the Orchestrator's own process and names nothing); a Workspace's Sandbox Effector what its file-body `http`s and
 //     credentialed `command`s name. The push credential its `push`es spend is not placed here: the provision
-//     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, ADR-0051).
+//     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, ADR-0051);
+//   - the Instance Effector also holds the secret of each Hook with a `mac` verifier, and its fence
+//     takes each host that a Hook's kind declares in `posts`, with no secret (ADR-0068, ADR-0078);
+//   - the Orchestrator gets only the sha-256 digest of the secret of each Hook with a `token`
+//     verifier, in `jr2-hook-digests`, and never the value (ADR-0078).
 //
 // `hosts`, `headers` and `paths` are an entry's BINDING — where a Custodian may put the value — and
 // never its placement. Both is both, and `jr2 up` reports it per pod; an entry nothing names goes
@@ -19,6 +23,7 @@
 // the list does not hold, and an Effect secret shorter than 8 characters (ADR-0068): the Effector
 // replaces every match of a secret in what it returns, and a short one would match ordinary text.
 
+import { createHash } from "node:crypto";
 import {
   providerClaims,
   sourceOf,
@@ -28,6 +33,7 @@ import {
   type HeldLookups,
 } from "./held-secrets.ts";
 import type { JR2Config } from "./config.ts";
+import { hookParts } from "@jr2/hooks/door";
 import { needsASlot } from "./effect.ts";
 import { declaredPushKinds, pushRefusal } from "./git-push.ts";
 import { INSTANCE_HARNESS_HELD_POD } from "./names.ts";
@@ -55,7 +61,14 @@ export type EffectorPlan = {
   longestTimeoutMs: number;
   /** The Effects placed there, as `<workflow>/<slot>`. */
   effects: string[];
+  /** The Hooks it serves (ADR-0068): each one with a `mac` verifier, or whose kind declares
+   * `posts`, by name. */
+  hooks: string[];
 };
+
+/** The secret of a Hook with a `token` verifier (ADR-0078): `jr2 up` writes the sha-256 digest of
+ * its value into `jr2-hook-digests`, from the literal or from the key of the user's Secret. */
+export type HookTokenSecret = { name: string } & ({ value: string } | { secret: string; key: string });
 
 /** One registered Machine's Effect, as `jr2 up` walked it. */
 export type PlacedEffect = { workflow: string; effect: CarriedEffect };
@@ -120,10 +133,12 @@ export type SecretPlacements = {
   held: HeldPodPlan[];
   /** Every name some pod holds — what `heldSecretsOf` normalizes. */
   claimed: Set<string>;
-  /** The Instance Effector, when an Effect is placed there; absent otherwise. */
+  /** The Instance Effector, when an Effect is placed there or a Hook needs it; absent otherwise. */
   instance?: EffectorPlan;
   /** Each Workspace whose body places an Effect in its Sandbox Effector. */
   sandbox: SandboxEffectorPlan[];
+  /** The secrets of the `token` Hooks, in list order: only their digests reach the Orchestrator. */
+  hookTokens: HookTokenSecret[];
   /** One line per secret, then one per pod: where each goes, what each holds. */
   report: string[];
   warnings: string[];
@@ -184,7 +199,7 @@ export function secretPlacementsOf(
   walk: PlacementWalk,
   lookups: Pick<HeldLookups, "secretKeys" | "valueLength"> = {},
 ): SecretPlacements {
-  const { entries, namedBy, instancePlaced } = namesOf(config, walk);
+  const { entries, namedBy, instancePlaced, hooks, tokenHooks } = namesOf(config, walk);
   const { pods, redundant } = heldPodsOf(config, walk, new Set(entries.map((e) => e.name)));
   const claimed = new Set(pods.flatMap((p) => p.names));
 
@@ -192,6 +207,7 @@ export function secretPlacementsOf(
   const warnings: string[] = [];
   const secrets: EffectSecret[] = [];
   const values: Record<string, string> = {};
+  const hookTokens: HookTokenSecret[] = [];
   for (const e of entries) {
     const named = namedBy.get(e.name) ?? [];
     if (named.length > 0) {
@@ -215,10 +231,21 @@ export function secretPlacementsOf(
         )})`,
     );
     const where = [...(heldIn.length ? [`Held in ${heldIn.join(", ")}`] : []), ...effectIn];
+    // A `token` Hook names its secret: the Orchestrator gets its digest, never its value (ADR-0078).
+    const byToken = tokenHooks.get(e.name);
+    if (byToken !== undefined) {
+      const source = sourceOf(e, lookups);
+      hookTokens.push(
+        source.kind === "literal"
+          ? { name: e.name, value: e.value as string }
+          : { name: e.name, secret: source.secret, key: source.key },
+      );
+      where.push(`a digest in the Orchestrator (${byToken.map((h) => `hook ${h}`).join(", ")})`);
+    }
     if (where.length === 0) {
       warnings.push(
         `${e.at} (${e.name}) is named by nothing; goes nowhere — no workspace() lists it, no Agent's provider ` +
-          "reads it, and no Effect names it (ADR-0059, ADR-0068)",
+          "reads it, and no Effect or Hook names it (ADR-0059, ADR-0068)",
       );
       continue;
     }
@@ -238,12 +265,16 @@ export function secretPlacementsOf(
     report.push(`${label}: secrets lists ${name}, which its Agents' provider claims already — redundant`);
   }
 
-  const instanceSecrets = new Set(instancePlaced.flatMap((p) => p.effect.secrets));
+  const instanceSecrets = new Set([
+    ...instancePlaced.flatMap((p) => p.effect.secrets),
+    ...hooks.flatMap((h) => (h.secret === undefined ? [] : [h.secret])),
+  ]);
   const instance =
-    instancePlaced.length === 0
+    instancePlaced.length === 0 && hooks.length === 0
       ? undefined
       : effectorPlan(
           instancePlaced,
+          hooks,
           secrets.filter((s) => instanceSecrets.has(s.name)),
           values,
         );
@@ -275,7 +306,7 @@ export function secretPlacementsOf(
         `${pushes.length ? `; pushes ${pushes.join(", ")}` : ""}`,
     );
   }
-  return { held: pods, claimed, ...(instance ? { instance } : {}), sandbox, report, warnings };
+  return { held: pods, claimed, ...(instance ? { instance } : {}), sandbox, hookTokens, report, warnings };
 }
 
 /** A Workspace's Sandbox Effector: the secrets its Effects name, the targets its file-body https call, its
@@ -354,18 +385,27 @@ function pushesOf(config: JR2Config, ws: PlacedWorkspace): SandboxPush[] {
   return out;
 }
 
-function effectorPlan(placed: InstancePlaced[], secrets: EffectSecret[], values: Record<string, string>): EffectorPlan {
+function effectorPlan(
+  placed: InstancePlaced[],
+  hooks: InstanceHook[],
+  secrets: EffectSecret[],
+  values: Record<string, string>,
+): EffectorPlan {
   const targets: EffectorTargetConfig[] = [];
+  const add = (t: EffectorTargetConfig): void => {
+    const same = (x: EffectorTargetConfig) =>
+      x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();
+    if (!targets.some(same)) targets.push(t);
+  };
   for (const { effect } of placed) {
     // An Open url or an Open dispatch target has no target, so it allows nothing: `jr2 up` refuses
     // it before this (ADR-0054). A dispatch's target is its origin, its one secret the token
     // (ADR-0071).
     if (effect.target === undefined) continue;
-    const t = { ...effect.target, secrets: [...effect.secrets].sort() };
-    const same = (x: EffectorTargetConfig) =>
-      x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();
-    if (!targets.some(same)) targets.push(t);
+    add({ ...effect.target, secrets: [...effect.secrets].sort() });
   }
+  // A Hook's follow-up is one `http` call with no secret, to a host its kind declares (ADR-0068).
+  for (const hook of hooks) for (const post of hook.posts) add({ ...post, secrets: [] });
   return {
     placement: "instance",
     secrets,
@@ -376,7 +416,45 @@ function effectorPlan(placed: InstancePlaced[], secrets: EffectSecret[], values:
     // poll resumes, and a wait of hours never stretches the Effector's grace.
     longestTimeoutMs: Math.max(0, ...placed.flatMap((p) => (p.effect.kind === "http" ? [p.effect.timeoutMs] : []))),
     effects: placed.map((p) => `${p.workflow}/${p.effect.name}`),
+    hooks: hooks.map((h) => h.name),
   };
+}
+
+/** A Hook the Instance Effector serves (ADR-0068): its `mac` secret's name, when its verifier is
+ * `mac`, and the targets of its kind's `posts`. */
+type InstanceHook = { name: string; secret?: string; posts: Array<Omit<EffectorTargetConfig, "secrets">> };
+
+/**
+ * The Hooks the Instance Effector serves (ADR-0068, ADR-0078): each one with a `mac` verifier, whose
+ * secret only that Effector holds, and each one whose kind declares `posts`, whose follow-up it
+ * sends. A `token` Hook's secret is a digest in the Orchestrator, and an `ed25519` Hook holds a
+ * public key: neither needs the Effector unless its kind posts.
+ */
+function instanceHooksOf(config: JR2Config): InstanceHook[] {
+  const out: InstanceHook[] = [];
+  for (const [name, hook] of Object.entries(config.hooks ?? {})) {
+    const { kind, credential } = hookParts(hook);
+    const secret = "mac" in kind.verify && "secret" in credential ? credential.secret.secret : undefined;
+    const posts = (kind.posts ?? []).map((prefix) => {
+      const url = new URL(prefix);
+      return { scheme: "https" as const, host: url.hostname, port: url.port === "" ? 443 : Number(url.port) };
+    });
+    if (secret === undefined && posts.length === 0) continue;
+    out.push({ name, ...(secret !== undefined ? { secret } : {}), posts });
+  }
+  return out;
+}
+
+/** The Hooks with a `token` verifier, by the name of the secret each names (ADR-0078). */
+function tokenHooksOf(config: JR2Config): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const [name, hook] of Object.entries(config.hooks ?? {})) {
+    const { kind, credential } = hookParts(hook);
+    if (!("token" in kind.verify) || !("secret" in credential)) continue;
+    const secret = credential.secret.secret;
+    out.set(secret, [...(out.get(secret) ?? []), name]);
+  }
+  return out;
 }
 
 /** An Effect the Instance Effector runs: an http one with no Worktree file, or a dispatch with a
@@ -489,6 +567,30 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
         "workspace()'s body, or send a json or text body (ADR-0068)",
     );
   }
+  // A Hook with a `mac` verifier names its secret as an Effect names one, and it is placed in the
+  // Instance Effector alone (ADR-0068).
+  const hooks = instanceHooksOf(config);
+  const tokenHooks = tokenHooksOf(config);
+  for (const [secret, names] of tokenHooks) {
+    if (byName.has(secret)) continue;
+    throw new Error(
+      `hooks.${names[0]} names secret("${secret}"), which the \`secrets\` list does not hold — add it: ` +
+        `secrets: [{ name: "${secret}", value: process.env.${envish(secret)} }] (ADR-0078)`,
+    );
+  }
+  for (const hook of hooks) {
+    if (hook.secret === undefined) continue;
+    if (!byName.has(hook.secret)) {
+      throw new Error(
+        `hooks.${hook.name} names secret("${hook.secret}"), which the \`secrets\` list does not hold — add it: ` +
+          `secrets: [{ name: "${hook.secret}", value: process.env.${envish(hook.secret)} }] (ADR-0068)`,
+      );
+    }
+    namedBy.set(hook.secret, [
+      ...(namedBy.get(hook.secret) ?? []),
+      { label: `hook ${hook.name}`, where: "the Instance Effector" },
+    ]);
+  }
   for (const { workflow, effect } of walk.effects) {
     const label = `${workflow}/${effect.name}`;
     const where =
@@ -505,7 +607,7 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
       namedBy.set(name, [...(namedBy.get(name) ?? []), { label, where }]);
     }
   }
-  return { entries, namedBy, instancePlaced };
+  return { entries, namedBy, instancePlaced, hooks, tokenHooks };
 }
 
 /** An Effect secret shorter than 8 characters is refused, and the refusal says why. */
@@ -515,10 +617,23 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
  * length leaves; `jr2 up` keeps no value of the user's Secret (ADR-0068).
  */
 export function storedValueLength(base64: string): number {
+  return storedBytes(base64).length;
+}
+
+/**
+ * The sha-256, in hex, of a value a Kubernetes Secret holds, trimmed as `storedValueLength` trims
+ * it: what `jr2-hook-digests` holds for a `token` Hook whose secret is a key of the user's Secret
+ * (ADR-0078). Only the digest leaves.
+ */
+export function storedValueSha256(base64: string): string {
+  return createHash("sha256").update(storedBytes(base64)).digest("hex");
+}
+
+function storedBytes(base64: string): Buffer {
   let bytes = Buffer.from(base64, "base64");
   if (bytes.at(-1) === 0x0a) bytes = bytes.subarray(0, -1);
   if (bytes.at(-1) === 0x0d) bytes = bytes.subarray(0, -1);
-  return bytes.length;
+  return bytes;
 }
 
 function shortRefusal(e: { at: string; name: string }, length: number): void {

@@ -27,8 +27,51 @@
 // a second read in the same conversation cannot carry it too — and a restart forgets reservations
 // along with everything else in memory. jr2 keeps no "handled" state: whether an Agent acted on a
 // notice is not the ledger's concern.
+//
+// The same ledger keeps Steering messages (ADR-0002): one transport, two kinds of body. Each entry is
+// an ENVELOPE — the address, the source, the audience, what is reserved and heard — and a BODY: a
+// Notice, or a Steering message with its author. The address is a tagged value: the body's `scope`
+// names its kind and `to` its value — `conversation` (a continued conversation's base id),
+// `workspace` (a Sandbox name), or `slot` (an Agent slot of one Machine instance, ADR-0076). A
+// message to a slot has one taker, like a conversation notice: the slot's open Turn at a step
+// boundary, or else its next Turn's admission, whose conversation does not exist yet when it is
+// sent. It RETIRES, recorded "not delivered", when its Machine instance ends (`retire`). The ledger
+// also keeps the record of each message (`steering`): its author and its outcome.
 
-import type { Notice } from "./wire.ts";
+import type { Notice, SteeringAuthor, SteeringMessage } from "./wire.ts";
+
+/** One body of the ledger: a Notice (a fact with no author) or a Steering message (an author's
+ * text). The body's `scope` is the kind of its address. */
+export type LedgerBody = Notice | SteeringMessage;
+
+/** What became of one Steering message (ADR-0002): `held` until a Turn of its slot hears it,
+ * `heard` once one did, `not-delivered` when its Machine instance ended first. */
+export type SteeringOutcome = "held" | "heard" | "not-delivered";
+
+/** The run's record of one Steering message: the slot it went to, its author, its text, when it was
+ * sent, and what became of it. */
+export type SteeringRecord = {
+  id: string;
+  agent: string;
+  author: SteeringAuthor;
+  text: string;
+  at: string;
+  outcome: SteeringOutcome;
+};
+
+/** How many Steering messages a run's record keeps: the newest, and every held one. A message is at
+ * most 16 KiB, so the record stays under about 1.6 MiB of a run's blob. */
+export const STEERING_RECORD_MAX = 100;
+
+/** The Machine path of a slot (`<machine path>/<agent>`): what ends with its Machine instance. */
+export const slotMachine = (slot: string): string => slot.slice(0, Math.max(0, slot.lastIndexOf("/")));
+
+const isSteering = (body: LedgerBody): body is SteeringMessage => body.kind === "steering";
+
+/** Whether a record is the record of this message to this slot: a message that an unheard
+ * admission carried is put back as a new entry, and its record stays the same. */
+const recordOf = (r: SteeringRecord, body: SteeringMessage, slot: string): boolean =>
+  r.agent === slot && r.at === body.at && r.text === body.text;
 
 /** Where an admission, or a step boundary, may hear notices: its continued conversation's base
  * Instance ID (ADR-0057) and its Workspace's Sandbox name. Either may be absent — a fresh Turn has no
@@ -70,7 +113,8 @@ export const AUDIENCE_SKEW_MS = 2_000;
  * own `bash` answer told them. */
 export type PendingNotice = {
   id: string;
-  notice: Notice;
+  /** The body: a Notice or a Steering message. */
+  notice: LedgerBody;
   to: string;
   source?: string;
   audience?: string[];
@@ -93,15 +137,17 @@ export type NoticeLedgerState = {
   /** Each retry ever recorded, by source and slot: a replayed raise records it once. */
   retriesSeen?: string[];
   members?: Record<string, NoticeMember[]>;
+  /** The record of the run's Steering messages, oldest first (ADR-0002). */
+  steering?: SteeringRecord[];
 };
 
 /** What one admission takes: the notices it carries, and their ids for the ledger write. */
 export type TakenNotices = {
   ids: string[];
-  notices: Notice[];
+  notices: LedgerBody[];
   /** Every notice taken, in the order of `ids`, with the source it was raised with — what `restore`
    * puts back when no model heard the admission. */
-  raised?: Array<{ notice: Notice; source?: string }>;
+  raised?: Array<{ notice: LedgerBody; source?: string }>;
 };
 
 /** What a Workspace notice's raise knows of its kill: the cut Turn's retry, the conversations its
@@ -129,6 +175,7 @@ export class NoticeLedger {
    * retry `retried`. */
   readonly #asRetry = new Map<string, string>();
   readonly #newId: () => string;
+  readonly #steering: SteeringRecord[];
 
   constructor(state: NoticeLedgerState | undefined, newId: () => string) {
     this.#pending = (state?.pending ?? []).map((p) => ({
@@ -142,6 +189,71 @@ export class NoticeLedger {
     this.#retriesSeen = new Set(state?.retriesSeen ?? []);
     this.#members = new Map(Object.entries(state?.members ?? {}).map(([ws, ms]) => [ws, ms.map((m) => ({ ...m }))]));
     this.#newId = newId;
+    this.#steering = (state?.steering ?? []).map((r) => ({ ...r }));
+  }
+
+  /** Hold a Steering message for `slot` (ADR-0002): its open Turn hears it at a step boundary, or
+   * else its next Turn's admission carries it. Recorded `held`. Answers its id. */
+  steer(message: SteeringMessage, slot: string): string {
+    const id = this.#newId();
+    this.#pending.push({ id, notice: message, to: slot });
+    this.#steering.push({
+      id,
+      agent: slot,
+      author: message.author,
+      text: message.text,
+      at: message.at,
+      outcome: "held",
+    });
+    this.#trimRecord();
+    return id;
+  }
+
+  /** The Machine instance at `machine` (a slot's Machine path) ended (ADR-0002): every message held
+   * for a slot of it, or of a Machine below it, retires, recorded `not-delivered`. With no
+   * `machine`, the run ended, and every held message retires. Answers whether anything changed. */
+  retire(machine?: string): boolean {
+    let changed = false;
+    for (const p of [...this.#pending]) {
+      if (!isSteering(p.notice)) continue;
+      const at = slotMachine(p.to);
+      if (machine !== undefined && at !== machine && !at.startsWith(`${machine}.`)) continue;
+      this.#pending.splice(this.#pending.indexOf(p), 1);
+      this.#reserved.delete(p.id);
+      this.#outcome(p.notice, p.to, "not-delivered");
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** The run's record of its Steering messages, oldest first. */
+  steeringRecord(): SteeringRecord[] {
+    return this.#steering.map((r) => ({ ...r }));
+  }
+
+  /** The outcome of a message, on its record. */
+  #outcome(body: SteeringMessage, slot: string, outcome: SteeringOutcome): void {
+    const record = this.#steering.find((r) => recordOf(r, body, slot));
+    if (record !== undefined) record.outcome = outcome;
+  }
+
+  /** Whether a message's record says that it retired: one put back after its Machine ended stays
+   * retired. */
+  #retired(body: SteeringMessage, slot: string): boolean {
+    return this.#steering.some((r) => r.outcome === "not-delivered" && recordOf(r, body, slot));
+  }
+
+  /** Keep the newest {@link STEERING_RECORD_MAX} records, and every held one. */
+  #trimRecord(): void {
+    let over = this.#steering.length - STEERING_RECORD_MAX;
+    for (let i = 0; over > 0 && i < this.#steering.length; ) {
+      if (this.#steering[i]!.outcome === "held") {
+        i++;
+        continue;
+      }
+      this.#steering.splice(i, 1);
+      over--;
+    }
   }
 
   /** Raise a notice for `to` (a conversation's base id, or a Sandbox name — the notice's own
@@ -240,7 +352,7 @@ export class NoticeLedger {
 
   /** What {@link take} would reserve in this scope, reserving nothing: a step boundary asks first
    * whether a guard kill is among them, and so whether it must learn who was told. */
-  peek(scope: NoticeScope): Array<{ id: string; notice: Notice; source?: string }> {
+  peek(scope: NoticeScope): Array<{ id: string; notice: LedgerBody; source?: string }> {
     return this.#eligible(scope, scope.taker ?? scope.conversation).map((p) => ({
       id: p.id,
       notice: p.notice,
@@ -253,7 +365,17 @@ export class NoticeLedger {
    * for the other conversations: it is pending again for `taker`, the conversation that did not hear
    * it, which is a member of its audience again. Nothing changes when the notice is pending for that
    * conversation already. Answers whether anything changed. */
-  restore(notice: Notice, to: string, source?: string, taker?: string): boolean {
+  restore(notice: LedgerBody, to: string, source?: string, taker?: string): boolean {
+    // A Steering message has one taker: pending again for its slot, unless its Machine instance
+    // ended while the admission that carried it was unheard.
+    if (isSteering(notice)) {
+      const same = (p: PendingNotice) =>
+        p.to === to && isSteering(p.notice) && p.notice.at === notice.at && p.notice.text === notice.text;
+      if (this.#retired(notice, to) || this.#pending.some(same)) return false;
+      this.#pending.push({ id: this.#newId(), notice, to });
+      this.#outcome(notice, to, "held");
+      return true;
+    }
     const pending =
       source === undefined
         ? notice.scope === "workspace" && taker !== undefined
@@ -303,6 +425,7 @@ export class NoticeLedger {
       this.#reserved.delete(key);
       if (p.notice.scope !== "workspace") {
         this.#pending.splice(at, 1);
+        if (isSteering(p.notice)) this.#outcome(p.notice, p.to, "heard");
         continue;
       }
       const slot = this.#asRetry.get(key);
@@ -421,6 +544,7 @@ export class NoticeLedger {
       ...(this.#members.size === 0
         ? {}
         : { members: Object.fromEntries([...this.#members].map(([ws, ms]) => [ws, ms.map((m) => ({ ...m }))])) }),
+      ...(this.#steering.length === 0 ? {} : { steering: this.#steering.map((r) => ({ ...r })) }),
     };
   }
 
@@ -434,10 +558,14 @@ export class NoticeLedger {
         (scope.exceptPrefix === undefined || p.source === undefined || !p.source.startsWith(scope.exceptPrefix)) &&
         (p.notice.scope === "conversation"
           ? p.to === scope.conversation
-          : taker !== undefined &&
-            p.to === scope.workspace &&
-            !(p.heardBy ?? []).includes(taker) &&
-            (p.audience === undefined || p.audience.includes(taker) || this.#retryFor(p, scope, taker) !== undefined)),
+          : p.notice.scope === "slot"
+            ? p.to === scope.slot
+            : taker !== undefined &&
+              p.to === scope.workspace &&
+              !(p.heardBy ?? []).includes(taker) &&
+              (p.audience === undefined ||
+                p.audience.includes(taker) ||
+                this.#retryFor(p, scope, taker) !== undefined)),
     );
   }
 

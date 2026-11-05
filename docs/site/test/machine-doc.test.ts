@@ -59,8 +59,14 @@ test("a Machine in a workspace() shows the Workspace's states, and its body in r
 
 test("a graph says in words what xstate writes in code: the end of an invoke, the order of conditions", async () => {
   const g = graphOf("tickets", await load("concepts/pools-and-sources/tickets.ts"));
-  // The Pool's own Gate, and its wildcard on each child, are what the Machine does in each state.
-  assert.deepEqual(g.any, ["the Gate source waits", "a child ends → discovering", "a child fails, if → discovering"]);
+  // The Pool's own Gate, and its wildcard on each child, are what the Machine does in each state. A
+  // `wake` that comes while `next` runs sets the latch, so the Pool asks once more (ADR-0017).
+  assert.deepEqual(g.any, [
+    "the Gate source waits",
+    "a child ends → discovering",
+    "a child fails, if → discovering",
+    "tickets_changed → stays",
+  ]);
   assert.equal(g.ordered, true);
   const from = (state: string) =>
     g.edges.filter((e) => e.source === `tickets.${state}`).map((e) => `${e.label}${e.quiet ? " (quiet)" : ""}`);
@@ -69,6 +75,8 @@ test("a graph says in words what xstate writes in code: the end of an invoke, th
     "discover ends ② (quiet)",
     "discover ends ③ (quiet)",
     "discover ends ④ (quiet)",
+    // The latch: a `wake` while `next` ran asks `next` once more.
+    "discover ends ⑤ (quiet)",
     "discover ends else (quiet)",
     "at once, if (quiet)",
   ]);

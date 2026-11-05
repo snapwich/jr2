@@ -1,15 +1,16 @@
 // Package dispatchkind runs the `dispatch` kind (ADR-0071) in the Instance Effector: a run of a
 // Workflow started on another Orchestrator through its door, `POST <url>/workflows/<name>/runs`,
-// with the target's Instance token, which this Effector holds as an Effect secret and the author
-// never sees. With `wait`, it then polls `GET <url>/runs/<id>` until that run ends or the
-// Effect's timeout passes.
+// with a Caller token of the target (ADR-0078), which this Effector holds as an Effect secret and
+// the author never sees. With `wait`, it then polls `GET <url>/runs/<id>` until that run ends or
+// the Effect's timeout passes.
 //
 // The caller's ledger row id rides every start in the `jr2-dispatched-by` header, so a start sent
 // again (an Effector rollout, a lost answer) gets the run the first one started (ADR-0071): the
 // TS driver treats every dispatch as idempotent, and this runner holds no state of its own.
 //
 // Every outcome is output (ADR-0067): `started`; `settled` with the run's status and its
-// Machine's output; `refused` with the door's status and report (or status 0, when the Effector
+// Machine's output; `absent` for a key-only ask (no body: the slot's schema refused it) when no
+// run has the key, so nothing was started; `refused` with the door's status and report (or status 0, when the Effector
 // refused it before anything was sent); `unreachable` (nothing was sent); `unknown` (the start
 // may have reached the door, and no answer came in the whole bound, though it was sent again under
 // its key; or a poll failed after the start, or no poll read the run at the wait's bound). A
@@ -45,6 +46,15 @@ import (
 // Header carries the caller's DispatchedBy to the door (ADR-0071): out of band, never a body
 // field the callee's door would have to reserve. registration.ts's DISPATCHED_BY_HEADER.
 const Header = "jr2-dispatched-by"
+
+// KeyOnlyHeader makes a start a key-only ask (ADR-0071): the slot's schema refused the body, so
+// none is sent, and the door answers the run under the key, or `{ "existing": false }` and starts
+// nothing. registration.ts's KEY_ONLY_HEADER.
+const KeyOnlyHeader = "jr2-key-only"
+
+// OnBehalfOfHeader carries the first Caller of the calling run's chain (ADR-0071, ADR-0078).
+// tokens.ts's ON_BEHALF_OF_HEADER.
+const OnBehalfOfHeader = "jr2-on-behalf-of"
 
 // DefaultPoll is how often a wait reads the run (ADR-0071, the brief's D-G).
 const DefaultPoll = 5 * time.Second
@@ -235,13 +245,24 @@ func (r *Runner) send(ctx context.Context, base string, req *wire.StartRequest, 
 	traced := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
 	})
-	hreq, err := http.NewRequestWithContext(traced, http.MethodPost, target, bytes.NewReader(req.Input))
+	var body io.Reader = http.NoBody
+	if !req.KeyOnly {
+		body = bytes.NewReader(req.Input)
+	}
+	hreq, err := http.NewRequestWithContext(traced, http.MethodPost, target, body)
 	if err != nil {
 		return "", refused(0, fmt.Sprintf("the start could not be built: %v; nothing was sent", err)), ended
 	}
 	hreq.Header.Set("Authorization", auth)
-	hreq.Header.Set("Content-Type", "application/json")
+	if req.KeyOnly {
+		hreq.Header.Set(KeyOnlyHeader, "true")
+	} else {
+		hreq.Header.Set("Content-Type", "application/json")
+	}
 	hreq.Header.Set(Header, by)
+	if req.OnBehalfOf != "" {
+		hreq.Header.Set(OnBehalfOfHeader, req.OnBehalfOf)
+	}
 	resp, err := r.client().Do(hreq)
 	if err != nil {
 		if !connected.Load() {
@@ -251,15 +272,20 @@ func (r *Runner) send(ctx context.Context, base string, req *wire.StartRequest, 
 		return "", unknown(why(err) + "; the start may have reached the Orchestrator, and no answer came"), noAnswer
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, readErr := read(resp.Body)
+	raw, readErr := read(resp.Body)
 	var answer struct {
-		RunID  string          `json:"runId"`
-		Error  string          `json:"error"`
-		Report json.RawMessage `json:"report"`
+		RunID    string          `json:"runId"`
+		Existing *bool           `json:"existing"`
+		Error    string          `json:"error"`
+		Report   json.RawMessage `json:"report"`
 	}
-	parsed := readErr == nil && json.Unmarshal(body, &answer) == nil
+	parsed := readErr == nil && json.Unmarshal(raw, &answer) == nil
 	code := resp.StatusCode
 	switch {
+	case req.KeyOnly && code == http.StatusOK && parsed && answer.RunID == "" && answer.Existing != nil &&
+		!*answer.Existing:
+		// A key-only ask, and no run has the key: the door started nothing (ADR-0071).
+		return "", wire.Output{Outcome: wire.OutcomeAbsent}, ended
 	case code == http.StatusCreated || code == http.StatusOK:
 		if !parsed || answer.RunID == "" {
 			return "", unknown(fmt.Sprintf("the door answered %d with no run id; a run may have started", code)),

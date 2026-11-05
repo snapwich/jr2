@@ -45,6 +45,9 @@ const (
 	// and `unknown` (ADR-0071): the run was accepted, or — with `wait` — it ended or the wait did.
 	OutcomeStarted = "started"
 	OutcomeSettled = "settled"
+	// OutcomeAbsent answers a key-only ask when no run has the key: nothing was started. The TS
+	// driver makes it the invoke's error, the slot's schema refusal; a Machine never reads it.
+	OutcomeAbsent = "absent"
 )
 
 // ErrStopped is the cause a credentialed command's run is cancelled with when the Orchestrator
@@ -194,7 +197,8 @@ type DispatchedBy struct {
 
 // StartRequest is the body of `POST /effects/<id>`. A `dispatch` (ADR-0071) is flat, as the TS
 // shape is: it shares `url` (the target's origin) and `auth` (the bearer) with http, and adds
-// `workflow`, `input` (the run's body, whole), `dispatchedBy` and `wait`.
+// `workflow`, `input` (the run's body, whole), `dispatchedBy` and `wait`. `keyOnly` in place of
+// `input` makes it a key-only ask: the slot's schema refused the body, so no body is sent.
 type StartRequest struct {
 	Kind         string          `json:"kind"`
 	Method       string          `json:"method,omitempty"`
@@ -207,7 +211,11 @@ type StartRequest struct {
 	Command      *CommandSpec    `json:"command,omitempty"`
 	Workflow     string          `json:"workflow,omitempty"`
 	Input        json.RawMessage `json:"input,omitempty"`
+	KeyOnly      bool            `json:"keyOnly,omitempty"`
 	DispatchedBy *DispatchedBy   `json:"dispatchedBy,omitempty"`
+	// OnBehalfOf is the first Caller of the calling run's chain (ADR-0071, ADR-0078). A dispatch
+	// sends it as the `jr2-on-behalf-of` header; the door records it and does not check it.
+	OnBehalfOf string `json:"onBehalfOf,omitempty"`
 	// Wait is a pointer so that `false`, which the TS shape requires, survives a round trip.
 	Wait      *bool `json:"wait,omitempty"`
 	TimeoutMs int64 `json:"timeoutMs"`
@@ -365,6 +373,10 @@ type startedJSON struct {
 	Run     string `json:"run"`
 }
 
+type absentJSON struct {
+	Outcome string `json:"outcome"`
+}
+
 type settledJSON struct {
 	Outcome string          `json:"outcome"`
 	Run     string          `json:"run"`
@@ -425,6 +437,8 @@ func (o Output) MarshalJSON() ([]byte, error) {
 		return json.Marshal(startedJSON{Outcome: o.Outcome, Run: o.Run})
 	case OutcomeSettled:
 		return json.Marshal(settledJSON{Outcome: o.Outcome, Run: o.Run, Status: o.Status, Output: o.Result})
+	case OutcomeAbsent:
+		return json.Marshal(absentJSON{Outcome: o.Outcome})
 	case OutcomeRefused:
 		if o.Report != nil {
 			return json.Marshal(reportJSON{Outcome: o.Outcome, Status: o.HTTPStatus, Report: o.Report})
@@ -448,7 +462,7 @@ func (o *Output) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		*o = Output{Outcome: OutcomeResponse, Response: &r.Response}
-	case OutcomeStarted, OutcomeSettled:
+	case OutcomeStarted, OutcomeSettled, OutcomeAbsent:
 		return o.unmarshalDispatch(head.Outcome, raw)
 	case OutcomeRefused:
 		var fields map[string]json.RawMessage
@@ -517,8 +531,8 @@ func (o *Output) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// unmarshalDispatch reads a dispatch's own outcomes (ADR-0071): `started`, `settled`, and the
-// door's `refused`. Each field effector-wire.ts's DispatchOutputShape requires is required here
+// unmarshalDispatch reads a dispatch's own outcomes (ADR-0071): `started`, `settled`, `absent`,
+// and the door's `refused`. Each field effector-wire.ts's DispatchOutputShape requires is required here
 // too: Go would read an absent one as its zero value, and the TS side would call that answer
 // malformed.
 func (o *Output) unmarshalDispatch(outcome string, raw []byte) error {
@@ -541,6 +555,12 @@ func (o *Output) unmarshalDispatch(outcome string, raw []byte) error {
 			return err
 		}
 		*o = Output{Outcome: r.Outcome, Run: r.Run, Status: r.Status, Result: r.Output}
+	case OutcomeAbsent:
+		var r absentJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome}
 	default:
 		var r reportJSON
 		if err := strict(raw, &r); err != nil {
@@ -649,8 +669,13 @@ func (r *StartRequest) httpSet() bool {
 }
 
 func (r *StartRequest) dispatchSet() bool {
-	return r.Workflow != "" || r.Input != nil || r.DispatchedBy != nil || r.Wait != nil
+	return r.Workflow != "" || r.Input != nil || r.KeyOnly || r.DispatchedBy != nil || r.Wait != nil ||
+		r.OnBehalfOf != ""
 }
+
+// onBehalfOf is a claim a header can carry: printable ASCII, at most what the door takes.
+// effector-wire.ts's DispatchStartShape holds the same rule.
+var onBehalfOf = regexp.MustCompile(`^[\x20-\x7e]{1,256}$`)
 
 var (
 	// WorkflowName is a Workflow's name as `jr2 run` names it (ADR-0071): a Machine's filename stem,
@@ -663,7 +688,8 @@ var (
 )
 
 // validateDispatch checks a dispatch start (ADR-0071): only url and auth of http's fields, the
-// url one text part that is an origin, the bearer named, a Workflow name, the input an object,
+// url one text part that is an origin, the bearer named, a Workflow name, the input an object (or
+// keyOnly and no input),
 // and who dispatches it — a foreign caller, so its Instance is named.
 func (r *StartRequest) validateDispatch() error {
 	if r.Push != nil || r.Command != nil || r.Method != "" || r.Path != nil || r.Headers != nil ||
@@ -673,17 +699,15 @@ func (r *StartRequest) validateDispatch() error {
 	if !WorkflowName.MatchString(r.Workflow) {
 		return fmt.Errorf("workflow %q is not a Workflow name: a Machine's file stem, or <wrapper>/<name>", r.Workflow)
 	}
-	if len(r.URL) != 1 || r.URL[0].Text == nil || r.URL[0].Secret != nil || !origin.MatchString(*r.URL[0].Text) {
-		return errors.New("a dispatch url is one text part, an origin: http(s)://host[:port]")
-	}
-	if r.Auth == nil || r.Auth.Bearer == nil || r.Auth.Basic != nil || r.Auth.Text != nil {
-		return errors.New("a dispatch's auth is a bearer, the target's token")
-	}
-	if err := r.Auth.validate(); err != nil {
+	if err := r.validateDispatchTarget(); err != nil {
 		return err
 	}
-	if trimmed := bytes.TrimSpace(r.Input); len(trimmed) == 0 || trimmed[0] != '{' {
-		return errors.New("a dispatch's input is a JSON object, the run's body")
+	if r.KeyOnly {
+		if r.Input != nil {
+			return errors.New("a dispatch's keyOnly ask carries no input")
+		}
+	} else if trimmed := bytes.TrimSpace(r.Input); len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("a dispatch's input is a JSON object, the run's body, or keyOnly is set")
 	}
 	// Each field the door's header shape requires non-empty (http.ts): one empty here would be the
 	// door's 400, which the author would read as a defect of the input, not of the wire. The effect
@@ -695,7 +719,22 @@ func (r *StartRequest) validateDispatch() error {
 	if r.Wait == nil {
 		return errors.New("a dispatch's wait is unset")
 	}
+	if r.OnBehalfOf != "" && !onBehalfOf.MatchString(r.OnBehalfOf) {
+		return errors.New("a dispatch's onBehalfOf is printable ASCII, at most 256 characters")
+	}
 	return nil
+}
+
+// validateDispatchTarget checks where a dispatch goes and with what: the url one text part that is
+// an origin, and the auth a bearer, the target's token.
+func (r *StartRequest) validateDispatchTarget() error {
+	if len(r.URL) != 1 || r.URL[0].Text == nil || r.URL[0].Secret != nil || !origin.MatchString(*r.URL[0].Text) {
+		return errors.New("a dispatch url is one text part, an origin: http(s)://host[:port]")
+	}
+	if r.Auth == nil || r.Auth.Bearer == nil || r.Auth.Basic != nil || r.Auth.Text != nil {
+		return errors.New("a dispatch's auth is a bearer, the target's token")
+	}
+	return r.Auth.validate()
 }
 
 var gitRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
@@ -912,4 +951,44 @@ func (r *StartRequest) Secrets() []string {
 		add(r.Auth.Text)
 	}
 	return names
+}
+
+// The HMAC algorithms of a `mac` check (ADR-0068): the ones a Hook kind's `mac` verifier can name.
+const (
+	MacSHA256 = "sha256"
+	MacSHA1   = "sha1"
+	MacSHA512 = "sha512"
+)
+
+// MacPath is the route of a `mac` check on the Instance Effector.
+const MacPath = "/mac"
+
+// MacRequest is a `mac` check (ADR-0068, ADR-0078): the Hook's door sends the bytes that the
+// service signed and the signature, and names the secret and the algorithm. The Effector computes
+// the HMAC of the bytes with that secret and compares it with the signature. Both byte fields are
+// base64 on the wire (padded, the standard alphabet), as encoding/json writes a []byte.
+type MacRequest struct {
+	Secret    string `json:"secret"`
+	Alg       string `json:"alg"`
+	Bytes     []byte `json:"bytes"`
+	Signature []byte `json:"signature"`
+}
+
+// MacAnswer is the answer to a `mac` check: whether the HMAC is the signature, and nothing more.
+// It carries no HMAC and no form of the secret.
+type MacAnswer struct {
+	Match bool `json:"match"`
+}
+
+// Validate checks what a decode cannot: the secret's name and the algorithm. A signature of the
+// wrong length is not a refused request: it is "no match".
+func (r *MacRequest) Validate() error {
+	if !ValidSecretName(r.Secret) {
+		return fmt.Errorf("secret %q is not a secret name", r.Secret)
+	}
+	switch r.Alg {
+	case MacSHA256, MacSHA1, MacSHA512:
+		return nil
+	}
+	return fmt.Errorf("alg %q is not sha256, sha1 or sha512", r.Alg)
 }

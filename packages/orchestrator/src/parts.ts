@@ -49,7 +49,8 @@ import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnyActorRef, AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
 import { isAgent, isOpenAgent, type AgentDeclaration } from "./agent.ts";
-import { argvText, isEffect, placementOf, type EffectParts, type Placement } from "./effect.ts";
+import { argvText, isEffect, placementOf, type EffectParts, type EffectSlot, type Placement } from "./effect.ts";
+import { isGateSlot } from "./gate.ts";
 import { effectBindingLine, openPartsOf, type OpenEffectPart } from "./open-effect.ts";
 import { isFailSlot } from "./fail.ts";
 import { isImageContext } from "./images.ts";
@@ -842,6 +843,10 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
         effects.push(effect);
         if (effect.kind !== "push" && effect.open !== undefined)
           openEffects.push({ slot: name, path, parts: [...effect.open] });
+      } else if (lookReadOf(logic)) {
+        // A Gate slot's look reads with an http Effect (ADR-0011): the Instance Effector runs it, so
+        // `jr2 up` converges the Effector and places its secrets as for any Effect slot.
+        effects.push(carriedEffectOf(`${name}.look`, path, route, lookReadOf(logic)!.effect));
       } else {
         const child = asMachine(logic);
         if (child) walk(child, slotPath(path, name, body), name === body ? route : [...route, name]);
@@ -922,6 +927,11 @@ export function placedEffectsOf(root: AnyStateMachine): CarriedEffect[] {
       if (isAgent(logic)) continue;
       if (isEffect(logic)) {
         effects.push(carriedEffectOf(name, path, route, logic.effect));
+        continue;
+      }
+      const look = lookReadOf(logic);
+      if (look) {
+        effects.push(carriedEffectOf(`${name}.look`, path, route, look.effect));
         continue;
       }
       const child = asMachine(logic);
@@ -1155,6 +1165,14 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
   };
   walk(root, [], [], new Set());
   return pods;
+}
+
+/** The read of a Gate slot's bound look, when it is an Effect (ADR-0011); undefined otherwise. */
+function lookReadOf(logic: unknown): EffectSlot | undefined {
+  if (!isGateSlot(logic)) return undefined;
+  const look = logic.gateSlot.look;
+  if (typeof look !== "object" || look === null) return undefined;
+  return isEffect(look.read) ? look.read : undefined;
 }
 
 /** Every state of `machine`'s own tree that invokes a `fail()` slot (ADR-0073), in document order,

@@ -25,11 +25,13 @@ Run [`jr2 run`](../reference/cli.md#run) in the Instance folder, with the name o
 jr2 run ping --input '{"message":"hi"}'
 ```
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
 run e3972b4c-eef9-4e7d-9068-3556332d2ba6 (ping) — attached
   → done "done"
-{"runId":"e3972b4c-eef9-4e7d-9068-3556332d2ba6","workflow":"ping","instanceId":"8e13475a-d325-45d4-bc64-0627086e97ba","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"16f4181d70d9"}
+{"runId":"e3972b4c-eef9-4e7d-9068-3556332d2ba6","workflow":"ping","instanceId":"8e13475a-d325-45d4-bc64-0627086e97ba","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"16f4181d70d9"}
 ```
 
 Your run id, your instance id and your `assembly` hash are different. When your Instance folder has a `.env` file, the
@@ -67,11 +69,11 @@ Use the run id, or its first 4 characters or more, with `jr2 status`, `jr2 logs`
 
 ## Start a run from the Console
 
-You need the Instance token to start a run from the Console. [Open the Console](open-the-console.md) tells how to open
-it and how to get the token.
+You need a credential with the `start` scope for the Workflow, such as the Instance token, to start a run from the
+Console. [Open the Console](open-the-console.md) tells how to open it, how to get the token and how to log in.
 
 1. Open the Console.
-2. Type the Instance token in the `instance token` box in the nav.
+2. Type the token in the `Caller token` box in the nav, or click `log in`.
 3. Push Enter. The badge beside the box shows `…`, then `live`.
 4. In the Fleet rail on the left, find the Workflow. Click `start` beside its name.
 5. Fill in the form. When the Machine declares its input, the form has one field for each property of the input. A field
@@ -92,7 +94,10 @@ cannot start one.
 ## Start a run with the HTTP API
 
 Send [`POST /workflows/:name/runs`](../reference/http-api.md#post-workflows-name-runs) to the Orchestrator, with the
-Instance token. The body is the run input. A script, a webhook handler or a CI job can start a run this way.
+token of a [Caller](../reference/glossary.md#caller) that has the `start` scope for the Workflow. The body is the run
+input. A script, a webhook handler or a CI job can start a run this way. A CI job uses a named Caller token, not the
+Instance token: [Give a Caller a scope](give-a-caller-a-scope.md) makes it. The example below uses the Instance token,
+because it can do everything.
 
 `jr2 up` makes the Service `jr2-orchestrator` on port 4000, with no address outside the cluster. Thus a caller outside
 the cluster uses a port forward, or an address that you make for the Service.
@@ -148,7 +153,8 @@ list on stderr.
 ### Use the CLI without the Instance folder
 
 The CLI can also speak to an Orchestrator at a URL. Then it does not look for the Instance folder or for a kubectl
-context. Give the URL in `--url`, or in `JR2_URL`. Give the Instance token in `JR2_TOKEN`:
+context. Give the URL in `--url`, or in `JR2_URL`. Give a credential in `JR2_TOKEN`: the Instance token, or the token of
+a [Caller](../reference/glossary.md#caller) with the `start` scope ([Give a Caller a scope](give-a-caller-a-scope.md)):
 
 ```sh
 JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN jr2 run ping --input '{"message":"hi"}' --detach
@@ -175,10 +181,12 @@ JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN jr2 run ping --input '{"message":
   `the body must be a JSON object`.
 - `jr2 run` starts no run when `--input` is not valid JSON. It prints `error: <message>`, where `<message>` is the
   message of the JSON parser, and exits with `1`.
-- The Orchestrator refuses a start without the Instance token, with the status code `401`: `unauthorized`.
+- The Orchestrator refuses a start with no valid credential, with the status code `401`: `unauthorized`.
 - The Orchestrator refuses a start with the token of a [Sandbox](../reference/glossary.md#sandbox), with the status code
-  `403`: `run state and control need the Instance token — a Sandbox token has neither`. Thus an
-  [Agent](../reference/glossary.md#agent) cannot start a run.
+  `403`: `this route needs a Caller, and a Sandbox token is not one: no Agent reaches run state, run control or a Gate`.
+  Thus an [Agent](../reference/glossary.md#agent) cannot start a run.
+- The Orchestrator refuses a start from a Caller that does not have the `start` scope for the Workflow, with the status
+  code `403`: `the Caller <via>/<name> needs the "start" scope for Workflow "<workflow>" (ADR-0078)`
 - `jr2 run` outside an Instance folder, with no `--url` and no `JR2_URL`, starts no run:
   `error: not inside a jr2 instance — no jr2.config.ts found walking up from cwd`
 - `jr2 run` starts no run when the namespace holds no Instance:
@@ -199,7 +207,7 @@ JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN jr2 run ping --input '{"message":
   Orchestrator.
 - [ADR-0033](../reference/decisions/0033-a-machine-declares-the-input-that-starts-it.md): the input that a Machine
   declares.
-- [ADR-0058](../reference/decisions/0058-a-harness-answers-the-orchestrator-alone.md): why only the Instance token
-  starts a run.
+- [ADR-0078](../reference/decisions/0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md): the
+  Callers, and the `start` scope.
 - [Answer a Gate](answer-a-gate.md)
 - [Watch a run](watch-a-run.md)

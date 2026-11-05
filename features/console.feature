@@ -2,9 +2,10 @@
 Feature: The Console in a real browser
   The browser tier (ADR-0010 as amended): a real Chromium, driven by playwright in library form,
   against the same per-scenario orchestrator fixture every other Rule uses — host-booted, no
-  docker. Black-box like the rest of the suite, one band up: steps assert what a READER sees in
-  the served page, never the page's internals. Tagged @console and excluded from the default
-  profile exactly like @kind, because this tier needs a browser binary the everyday gate must not.
+  docker except for the login's issuer (@dex). Black-box like the rest of the suite, one band up:
+  steps assert what a READER sees in the served page, never the page's internals. Tagged @console
+  and excluded from the default profile exactly like @kind, because this tier needs a browser
+  binary the everyday gate must not.
 
   Rule: tokenless, the Console is exactly today's observer
     ADR-0014/0032: the page as served is the open band — structure and observation, no credential
@@ -19,8 +20,8 @@ Feature: The Console in a real browser
       And the Console offers no Attention tab
 
   Rule: the Instance token unlocks control, and a bad one does not
-    ADR-0032: control is earned per tab. The token is validated with a guarded read; "live"
-    reveals the control surface, anything else leaves the page exactly the observer it was.
+    ADR-0032: control is earned per tab. The token is validated with `GET /whoami`; "live"
+    reveals what its scopes allow, anything else leaves the page exactly the observer it was.
 
     Background:
       Given a fresh instance
@@ -97,3 +98,42 @@ Feature: The Console in a real browser
       And I open the seats
       Then the seats show "review.working" as "agent:coder" sending "request_review"
       And the seats show "review.humanReview" as "gate" sending "approve"
+
+  Rule: the page shows only what the Caller's scopes allow
+    ADR-0032, ADR-0078: the page asks `GET /whoami` what its credential may do, and renders a
+    control only where a scope opens it. A token that may answer one Workflow gets that Workflow's
+    Gate cards and no start button. The nav names who the page acts as.
+
+    Scenario: a token that may only answer sees the Gate card and no start button
+      Given a fresh instance
+      And the instance also has the "review" workflow
+      And the instance declares the Caller token "approver" that may answer "review"
+      And the orchestrator is serving
+      And I start the "review" workflow against the stub harness
+      And the agent calls "request_review" with summary "PR up"
+      When I open the Console at "/workflows/review"
+      And I enter the Caller token "approver"
+      Then the Console acts as "token/approver"
+      And the Attention drawer shows a gate card for "review-1"
+      And the Console offers no start button
+
+  Rule: a person logs in at the Instance's issuer
+    ADR-0032, ADR-0078: the Console logs a person in with OIDC (the code flow with PKCE, as a
+    public client) against an issuer the config offers a login at, and sends the JWT as it sends a
+    typed token. The scopes come from the person's groups. Dex runs in a container, so this
+    scenario also needs docker.
+
+    @dex
+    Scenario: a login gives the page the person's scopes, and signing out gives them back
+      Given a fresh instance
+      And a Dex issuer is running
+      And the instance offers a login at that issuer, where the group "authors" may start, answer and read every Workflow
+      And the orchestrator is serving
+      When I open the Console at "/workflows/ping"
+      And I log in at the issuer
+      Then the Console acts as "kilgore@kilgore.trout"
+      And the token badge reads "live"
+      And the address is "/workflows/ping"
+      And the Console offers a start button for "ping"
+      When I sign out
+      Then the Console offers no start button

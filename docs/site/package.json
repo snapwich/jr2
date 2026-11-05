@@ -16,6 +16,7 @@
     "test": "node --test test/*.test.ts"
   },
   "devDependencies": {
+    "@jr2/hooks": "workspace:*",
     "@jr2/machines": "workspace:*",
     "@jr2/orchestrator": "workspace:*",
     "@types/node": "^26.0.1",

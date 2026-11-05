@@ -7,8 +7,9 @@ See where a run is and what its [Agents](../reference/glossary.md#agent) do, in 
 [Console](../reference/glossary.md#console) and the pod log of an Agent.
 
 The CLI shows the status of a run: where its [Machine](../reference/glossary.md#machine) is, its context, and its open
-[Gates](../reference/glossary.md#gate). The Console shows where the Machine is and, with the Instance token, the open
-Gates. The pod log shows the conversation of each Agent: its prompts, its text, and its calls.
+[Gates](../reference/glossary.md#gate). The Console shows where the Machine is and, with the credential of a
+[Caller](../reference/glossary.md#caller) that has the `answer` scope, the open Gates. The pod log shows the
+conversation of each Agent: its prompts, its text, and its calls.
 
 The examples on this page use a run of the [Workflow](../reference/glossary.md#workflow) `release`. Its Gate `review`
 waits for `approve` or `reject`. [Answer a Gate](answer-a-gate.md) gives the file `workflows/release.ts`. In the
@@ -45,12 +46,14 @@ Run [`jr2 runs`](../reference/cli.md#runs):
 jr2 runs
 ```
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
 workflows:
   ping (machine)
   release (machine)
-[{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}]
+[{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}]
 ```
 
 `jr2 runs` prints a JSON array of the runs that did not end. On stderr, it first lists the Workflows that a run can
@@ -70,9 +73,12 @@ Run [`jr2 status`](../reference/cli.md#status) with the run id. It reads a run t
 jr2 status a2d8
 ```
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
-{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"2.0.0"}}]}
+{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"2.0.0"}}]}
+started by: token/instance on behalf of kubernetes-admin
 ```
 
 The status is a [`RunStatus`](../reference/http-api.md#type-runstatus), with the open Gates of the run:
@@ -91,6 +97,12 @@ The status is a [`RunStatus`](../reference/http-api.md#type-runstatus), with the
 | `assembly`  | The hash of the [Assembly](../reference/glossary.md#assembly) that the run started under, and holds.                                                          |
 | `gates`     | Each open Gate. [Answer a Gate](answer-a-gate.md) explains its fields.                                                                                        |
 | `worktrees` | Each [Worktree](../reference/glossary.md#worktree) that the run cut: its `slot`, its `path`, and its `branch`, which is `null` when the Worktree is detached. |
+
+`jr2 status` also prints on stderr who started the run, from `startedBy`: `started by: <via>/<name>`, then the name that
+jr2 shows and `on behalf of <party>` when the [Caller](../reference/glossary.md#caller) gave them. For a run that a
+`dispatch` started, `jr2 status` reads each run of the chain, up to the first run that a Caller started. Then the line
+also names the runs between, as `through run <run id> (<slot>)`. A run that jr2 started says `started by: jr2 (<why>)`.
+A cancelled run also prints `cancelled by: <via>/<name>`.
 
 For a run that cut a Worktree, `jr2 status` also prints one line on stderr for each cut:
 `worktree: <path> (<slot>), branch <branch>`, or `worktree: <path> (<slot>), detached`. jr2 reads each line from the
@@ -117,10 +129,12 @@ jr2 send a2d8 --gate review --event approve
 
 The run ends. `jr2 logs -f` prints the status when it attached, then the last status, and stops:
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
-{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}
-{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}
+{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}
+{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"answers":[{"gate":"review","type":"approve","at":"2026-11-03T10:44:18.237Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"28c844453c20"}
 ```
 
 When the run ended before you attach, `jr2 logs -f` prints only its last status. Without `-f`, `jr2 logs` prints the
@@ -137,6 +151,7 @@ for each item of activity:
 | `placing <child>: waits for a node — <message>`                           | The [Sandbox](../reference/glossary.md#sandbox) of a Workspace waits for a node. With a quota, the line says `waits for quota`. |
 | `placed <child> after <n>s`                                               | The Sandbox got its node after `<n>` seconds.                                                                                   |
 | ``child-error: `<child>` failed below <agent>'s pick `<pick>` — <error>`` | A child that an Agent's pick started failed. The Agent does not get this error.                                                 |
+| `looked: gate <gate> read its fact, and the run took "<event>"`           | The look of a Gate slot read the fact that the Gate waits for, and the run took the event of its `until`. No Caller answered.   |
 
 A line about the root Workspace of the run has no `<child>`. `jr2 run` prints the same lines, with two spaces before
 each line. It prints each change of status as `→ <status> <state>`.
@@ -151,8 +166,9 @@ each line. It prints each change of status as `→ <status> <state>`.
 - The `Activity` tab in the drawer lists the Emits of the runs of the Workflow that you selected. Each Emit shows the
   first 8 characters of the run id, and only the type of the Emit.
 
-To see more, type the Instance token in the `instance token` box in the nav. Push Enter. When the badge beside the box
-shows `live`:
+To see more, type a Caller token, such as the Instance token, in the `Caller token` box in the nav. Push Enter. When the
+badge beside the box shows `live`, the nav shows who the Console acts as, such as `as token/instance`. With the `answer`
+and `read` scopes for the Workflow ([Open the Console](open-the-console.md) gives what each scope shows):
 
 - In the Fleet rail, `⚑` and a number show the open Gates of each run.
 - The `Attention` tab shows the open Gates, and you can answer them. See [Answer a Gate](answer-a-gate.md).
@@ -161,17 +177,18 @@ shows `live`:
 - For a run that you selected that ended `failed`, the Console shows the reason of its
   [Failure](../reference/glossary.md#failure): `failed: <reason>`, as `jr2 status` shows it. With no token, the rail
   shows only the status `failed`, in orange.
+- For the run that you selected, the Console shows who started it, such as `started by token/ci`.
 
 ## Watch from a program
 
 The [Orchestrator](../reference/glossary.md#orchestrator) sends the activity of a run as Server-Sent Events. A program
 can read them:
 
-| Route                                                                                                      | Token          | What it sends                                                                            |
-| ---------------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------- |
-| [`GET /runs/:runId/events`](../reference/http-api.md#get-runs-runid-events)                                | Instance token | The full status of one run, its Emits, and its other activity, until it ends.            |
-| [`GET /workflows/:name/runs/:runId/events`](../reference/http-api.md#get-workflows-name-runs-runid-events) | none           | The state of one live run, and the type of each Emit, with no context.                   |
-| [`GET /workflows/:name/events`](../reference/http-api.md#get-workflows-name-events)                        | none           | A `runs` event with all the live runs, then the same events for each run. It stays open. |
+| Route                                                                                                      | Token        | What it sends                                                                            |
+| ---------------------------------------------------------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------- |
+| [`GET /runs/:runId/events`](../reference/http-api.md#get-runs-runid-events)                                | `read` scope | The full status of one run, its Emits, and its other activity, until it ends.            |
+| [`GET /workflows/:name/runs/:runId/events`](../reference/http-api.md#get-workflows-name-runs-runid-events) | none         | The state of one live run, and the type of each Emit, with no context.                   |
+| [`GET /workflows/:name/events`](../reference/http-api.md#get-workflows-name-events)                        | none         | A `runs` event with all the live runs, then the same events for each run. It stays open. |
 
 The run of the steps above ended, and a feed of one run sends only a live run. Start a new run:
 
@@ -329,7 +346,8 @@ cluster, decide who can read the pod logs.
 - A prefix that no run id starts with is an error. The command exits with `1`: `no run "<prefix>"`
 - A prefix that more than one run id starts with is an error. The command lists the run ids, and exits with `1`:
   `error: run id "<prefix>" is ambiguous`
-- `GET /runs/:runId/events` refuses a call without the Instance token, with the status code `401`: `unauthorized`.
+- `GET /runs/:runId/events` refuses a call without a Caller's credential, with the status code `401`: `unauthorized`. It
+  refuses a Caller without the `read` scope for the Workflow of the run with the status code `403`.
 - `GET /workflows/:name/runs/:runId/events` sends only a live run of that Workflow. For a different run, it refuses with
   the status code `404`: `no live run "<run id>" of "<workflow>"`
 

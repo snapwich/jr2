@@ -6,14 +6,22 @@
 // `fetchImpl` is injectable so tests drive it with a hono `app.request` (no socket) the same way the
 // orchestrator's own http tests do; in production it defaults to the global `fetch`.
 
-import type {
-  ChildErrorMarker,
-  DispatchedBy,
-  MachineDoc,
-  PlacingMarker,
-  RepoStatus,
-  RunChild,
-  RunWaiting,
+import {
+  ON_BEHALF_OF_HEADER,
+  type CallerRecord,
+  type ChildErrorMarker,
+  type GateMarker,
+  type HookLogLine,
+  type HookRefusedMarker,
+  type PoolMarker,
+  type DispatchedBy,
+  type MachineDoc,
+  type PlacingMarker,
+  type RepoStatus,
+  type RunChild,
+  type RunStarter,
+  type RunWaiting,
+  type Scopes,
 } from "@jr2/orchestrator/internal";
 import { parseSSE } from "./sse.ts";
 
@@ -56,7 +64,20 @@ export type RunStatus = {
   /** The Worktrees this run's cuts made, oldest first: the Repo Slot, the path, and the branch,
    * `null` when detached (ADR-0075). Absent when it cut none. */
   worktrees?: Array<{ slot: string; path: string; branch: string | null }>;
+  /** Who started the run (ADR-0078): a Caller, a run through a local `dispatch`, or jr2. Behind the
+   * token; absent for a run that a host started with no starter. */
+  startedBy?: RunStarter;
+  /** The Caller that cancelled the run (ADR-0078). */
+  cancelledBy?: CallerRecord;
+  /** The Caller whose `jr2 run` resumed this standing run (ADR-0017, ADR-0078). */
+  resumedBy?: CallerRecord;
+  /** The run that took over from this standing run at a hand-over (ADR-0017). */
+  handedOverTo?: string;
 };
+
+/** A request's Caller, as `GET /whoami` gives it (ADR-0078): how jr2 knows it, its name, the name
+ * jr2 shows, what it may do, and the party it says it acts for. */
+export type WhoAmI = CallerRecord & { may: Scopes };
 
 /** Where a Workflow came from (ADR-0070): a Machine in the Assembly, a Chart file in the Assembly, or
  * a runtime Chart put by `PUT /workflows/:wrapper/charts/:name`. */
@@ -83,11 +104,21 @@ export type RunFeedEvent =
   | { kind: "emit"; event: { type: string } & Record<string, unknown> }
   | { kind: "retry"; child: string; attempt: number; reason: string }
   | PlacingMarker
-  | ChildErrorMarker;
+  | ChildErrorMarker
+  | GateMarker
+  | HookRefusedMarker
+  | PoolMarker;
+
+/** A Hook's log, as `GET /hooks/:name` gives it (ADR-0011): whether the current config declares the
+ * Hook, and its lines, newest first. */
+export type HookLog = { hook: string; declared: boolean; lines: HookLogLine[] };
 
 /** A run-control event posted to a live run (ADR-0013): CANCEL is the vocabulary that is left.
  * `keep` leaves a cancelled run's Workspaces instead of destroying them (ADR-0025). */
 export type RunEvent = { type: string; keep?: boolean };
+
+/** One Agent slot of a live run, as `GET /runs/:runId/agents` lists it (ADR-0002). */
+export type RunAgentView = { agent: string; open: boolean; steerable: boolean };
 
 /** The subset of `fetch` the client uses. `globalThis.fetch` and hono's `app.request` both satisfy it. */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -139,19 +170,44 @@ export function workflowPath(workflow: string): string {
 export class JR2Client {
   readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
-  /** The Instance token (ADR-0013). The run and gate surfaces are authenticated; without it every
-   * call below is a 401. Absent only for an unauthenticated surface (a test's in-process app). */
+  /** The Caller's credential (ADR-0078): the Instance token, or any Caller's. The run and gate
+   * surfaces are authenticated; without it every call below is a 401. Absent only for an
+   * unauthenticated surface (a test's in-process app). */
   private readonly token?: string;
+  /** The party the Caller says it acts for, sent as `jr2-on-behalf-of` with the bearer (ADR-0078). */
+  private readonly onBehalfOf?: string;
 
-  constructor(baseUrl: string, fetchImpl: FetchLike = globalThis.fetch, token?: string) {
+  constructor(baseUrl: string, fetchImpl: FetchLike = globalThis.fetch, token?: string, onBehalfOf?: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.fetchImpl = fetchImpl;
     this.token = token;
+    this.onBehalfOf = onBehalfOf;
   }
 
-  /** Request headers: the bearer, plus whatever the call adds. */
+  /** Request headers: the bearer and the party it acts for, plus whatever the call adds. */
   private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return this.token ? { ...extra, authorization: `Bearer ${this.token}` } : extra;
+    if (!this.token) return extra;
+    return {
+      ...extra,
+      authorization: `Bearer ${this.token}`,
+      ...(this.onBehalfOf ? { [ON_BEHALF_OF_HEADER]: this.onBehalfOf } : {}),
+    };
+  }
+
+  /** `GET /whoami` — the Caller this credential is (ADR-0078). It needs no scope, so a credential
+   * that may do nothing still learns why. */
+  async whoami(): Promise<WhoAmI> {
+    const res = await this.fetchImpl(`${this.baseUrl}/whoami`, { headers: this.headers() });
+    return (await this.json(res, "/whoami")) as WhoAmI;
+  }
+
+  /** `GET /hooks/:name` — a Hook's log, newest first (ADR-0011). The Instance token alone. */
+  async hookLog(name: string, limit?: number): Promise<HookLog> {
+    const query = limit === undefined ? "" : `?limit=${limit}`;
+    const res = await this.fetchImpl(`${this.baseUrl}/hooks/${encodeURIComponent(name)}${query}`, {
+      headers: this.headers(),
+    });
+    return (await this.json(res, "/hooks/:name")) as HookLog;
   }
 
   /** `GET /workflows` — every registered Workflow with its origin, each Chart wrapper's Charts inside
@@ -186,13 +242,19 @@ export class JR2Client {
   /** `POST /workflows/:name/runs` — start a run; unknown workflow → 404 → throws. A named Chart's
    * name `<wrapper>/<name>` rides the path as one encoded segment (ADR-0070); a refused Chart in
    * the input → 422 → throws with the door's `report`. */
-  async start(workflow: string, input: Record<string, unknown> = {}): Promise<{ runId: string; instanceId: string }> {
-    const res = await this.fetchImpl(`${this.baseUrl}${workflowPath(workflow)}/runs`, {
+  async start(
+    workflow: string,
+    input: Record<string, unknown> = {},
+    opts: { dropHeld?: boolean } = {},
+  ): Promise<{ runId: string; instanceId: string; resumed?: true }> {
+    // `drop-held` resumes a paused standing Workflow with no held item (ADR-0017).
+    const query = opts.dropHeld ? "?drop-held=true" : "";
+    const res = await this.fetchImpl(`${this.baseUrl}${workflowPath(workflow)}/runs${query}`, {
       method: "POST",
       headers: this.headers(JSON_HEADERS),
       body: JSON.stringify(input),
     });
-    return (await this.json(res, "/workflows/:name/runs")) as { runId: string; instanceId: string };
+    return (await this.json(res, "/workflows/:name/runs")) as { runId: string; instanceId: string; resumed?: true };
   }
 
   /** `GET /runs` — every live run's status. */
@@ -241,6 +303,25 @@ export class JR2Client {
     await this.json(res, "/runs/:runId/gates/:gate/events"); // surface { error }; ignore { ok:true }
   }
 
+  /** `GET /runs/:runId/agents` — the Agent slots a Steering message can go to (ADR-0002). */
+  async agents(runId: string): Promise<RunAgentView[]> {
+    const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/agents`, {
+      headers: this.headers(),
+    });
+    return (await this.json(res, "/runs/:runId/agents")) as RunAgentView[];
+  }
+
+  /** `POST /runs/:runId/steering` — a Steering message to one Agent slot of a live run (ADR-0002).
+   * Answers its id, and whether a Turn of the slot is open now. */
+  async steer(runId: string, agent: string, text: string): Promise<{ id: string; agent: string; open: boolean }> {
+    const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/steering`, {
+      method: "POST",
+      headers: this.headers(JSON_HEADERS),
+      body: JSON.stringify({ agent, text }),
+    });
+    return (await this.json(res, "/runs/:runId/steering")) as { id: string; agent: string; open: boolean };
+  }
+
   /** `POST /runs/:runId/events` — feed one run-control event into a live run. */
   async send(runId: string, event: RunEvent): Promise<void> {
     const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
@@ -287,6 +368,15 @@ export class JR2Client {
         } else if (frame.event === "child-error") {
           // A child's error below an Agent's state, which the Agent's answer does not carry (ADR-0024).
           yield { ...(JSON.parse(frame.data) as object), kind: "child-error" } as ChildErrorMarker;
+        } else if (frame.event === "looked") {
+          // A Gate's look gave its event, and the run took it (ADR-0011).
+          yield { ...(JSON.parse(frame.data) as object), kind: "looked" } as GateMarker;
+        } else if (frame.event === "hook-refused") {
+          // A Hook's delivery reached an open Gate, and the Gate did not take it (ADR-0011).
+          yield { ...(JSON.parse(frame.data) as object), kind: "hook-refused" } as HookRefusedMarker;
+        } else if (frame.event === "pool") {
+          // What a Pool of runs did with an item (ADR-0017).
+          yield { ...(JSON.parse(frame.data) as object), kind: "pool" } as PoolMarker;
         } else if (frame.event === "gone") {
           // The run left the live set without settling — stopped, parked for the next boot's
           // restore (ADR-0025). This end is the run's own (ADR-0022): nothing to re-attach to.

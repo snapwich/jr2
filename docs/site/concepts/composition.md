@@ -134,6 +134,9 @@ An Open part has no default. You bind it with `customize()`. Each Open part has 
 - At run time, the part refuses too. An Agent does not start a [Turn](../reference/glossary.md#turn) with an Open model.
   An Effect does not run while it is Open.
 
+One Open part only warns: the look of a Gate slot (`look: open`). `jr2 up` prints a warning for a look that nobody
+bound, because a person can still answer the Gate with `jr2 send`.
+
 [Bind a shipped Machine's Open parts](../guides/bind-open-parts.md) shows each binding.
 
 ## @jr2/machines

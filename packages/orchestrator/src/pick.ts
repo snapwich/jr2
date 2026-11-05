@@ -424,8 +424,8 @@ export function fromPick<N extends string, I extends z.ZodObject, C, E extends E
 }
 
 /**
- * One reply since the pick, as the author reads it: an invoked actor's output, typed by its slot
- * (`src`); or an event that answered a state below the Agent's — a Gate's answer, a nested Agent's
+ * One reply since the pick, as the author reads it. It is an invoked actor's output, typed by its
+ * slot (`src`); or an event that answered a state below the Agent's — a Gate's answer, a nested Agent's
  * pick — typed by the Machine's events. A reply is from outside the Machine: the events it sends
  * itself are not links.
  */

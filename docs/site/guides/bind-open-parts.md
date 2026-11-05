@@ -131,6 +131,13 @@ the name of a secret Open. Bind them with `effects`, by the slot of the Effect:
 part one time, to a value. No run chooses it. [`EffectBinding`](../reference/authoring-surface/type-effectbinding.md)
 gives the values, and [Run a command or call a URL with an Effect](run-a-command-or-call-a-url.md) shows an Effect.
 
+## Bind the look of a Gate
+
+A packaged Machine can leave the look of a Gate slot Open: `look: open`. Bind it with `gates`, by the slot of the Gate:
+`customize(machine, { gates: { review: { look } } })`. The same key adds, replaces or removes a handler of the Gate, by
+Hook kind and event key, where `null` removes one. `jr2 up` does not refuse an Open look. It warns, because a person can
+still answer the Gate with `jr2 send`. [Answer a Gate from a forge](answer-a-gate-from-a-forge.md) shows a Gate slot.
+
 ## Rules
 
 - `jr2 up` refuses a registered Machine that leaves a part Open. It changes nothing in the cluster:
@@ -150,6 +157,7 @@ gives the values, and [Run a command or call a URL with an Effect](run-a-command
   - `customize(): machine "<id>" composes no Machine under "<slot>" — the Machines it composes are: <slots> (ADR-0049).`
   - `customize(): machine "<id>" declares no Repo Slot "<slot>" — its slots are: <slots> (ADR-0051)`
   - `customize(): machine "<id>" carries no Effect slot "<slot>" — its Effects are: <slots> (ADR-0067). Only declared parts can be bound.`
+  - `customize(): machine "<id>" carries no Gate slot "<slot>" — its Gate slots are: <slots> (ADR-0011). Only declared parts can be bound.`
 - `customize()` refuses an Open map that you bind with no slot:
   ``customize(): machine "<id>" declares its Repo Slots open as a map — name at least one: `repos: { app: "https://…" }` (ADR-0051).``
 - `customize()` refuses a Repo Slot key that is not a directory name. The key becomes `/work/<slot>`:

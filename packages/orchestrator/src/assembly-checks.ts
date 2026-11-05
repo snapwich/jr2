@@ -10,7 +10,11 @@ import { z } from "zod";
 import type { JR2Config } from "./config.ts";
 import { imageContextDigest, type ImageRefs } from "./images.ts";
 import { openPartsText } from "./open-effect.ts";
-import { customizeLine, partsOf, placedEffectsOf, workspacePodsOf } from "./parts.ts";
+import { asMachine, customizeLine, partsOf, placedEffectsOf, workspacePodsOf } from "./parts.ts";
+import { isGateSlot } from "./gate.ts";
+import { isStandingPool, standingPoolOf } from "./pool.ts";
+import { hookParts, isHook } from "@jr2/hooks/door";
+import { open } from "./open.ts";
 import { refuseEffectSecrets, type PlacementWalk } from "./secret-placement.ts";
 import {
   chartFileRefusals,
@@ -51,6 +55,76 @@ export function doorRefusals(workflows: readonly LoadedWorkflow[]): string[] {
         "is only a field for JSON — make the Machine with jr2Setup in place of setup() or createMachine() (leave " +
         "out `events` if it takes no workflow event) (ADR-0033)",
     );
+  }
+  return lines;
+}
+
+/**
+ * What `jr2 up` prints of the standing Pools (ADR-0017): for each one, the chain from each Hook that
+ * reaches it to its callee (`sentry → alerts → triage`; a Pool that no Hook reaches prints its own
+ * chain alone), and a warning when two standing Pools dispatch to one Workflow: `cap` is for each
+ * Pool, so one item that both Sources carry can take a slot in each, and the caps add. A Hook reaches
+ * a Pool when its kind is one that the Source's handlers hear and it may answer the Workflow.
+ */
+export function standingPoolLines(
+  workflows: readonly LoadedWorkflow[],
+  hooks: JR2Config["hooks"] = {},
+): { chains: string[]; warnings: string[] } {
+  const chains: string[] = [];
+  const byCallee = new Map<string, string[]>();
+  for (const w of workflows) {
+    const info = standingPoolOf(w.machine);
+    if (!info) continue;
+    byCallee.set(info.callee, [...(byCallee.get(info.callee) ?? []), w.name]);
+    const reaching = Object.entries(hooks ?? {}).filter(([, hook]) => {
+      if (!isHook(hook)) return false;
+      const parts = hookParts(hook);
+      const may = parts.may.answer;
+      return info.kinds.includes(parts.kind.id) && (may === "all" || may.includes(w.name));
+    });
+    if (!reaching.length) chains.push(`${w.name} → ${info.callee}`);
+    for (const [name] of reaching) chains.push(`${name} → ${w.name} → ${info.callee}`);
+  }
+  const warnings = [...byCallee]
+    .filter(([, pools]) => pools.length > 1)
+    .map(
+      ([callee, pools]) =>
+        `the standing Pools ${pools.map((p) => `"${p}"`).join(" and ")} each dispatch to "${callee}": \`cap\` is for ` +
+        "each Pool, so one item that two Sources carry can take a slot in each, and the caps add (ADR-0017)",
+    );
+  return { chains, warnings };
+}
+
+/**
+ * Every standing Pool that is not the top Machine of its Workflow (ADR-0017): jr2 keeps one run for
+ * each standing Workflow and hands that run over, so the Workflow is the Pool. One line per Machine
+ * that composes one, naming the fix. `pool()` itself refuses what it can see alone (a Pool of runs
+ * that does not stand, a slot with no `wait: true`, no `cap`); this is the one refusal that needs the
+ * Workflow.
+ *
+ * The line text follows `refusing: ` in `jr2 up`'s output; the prefix is the caller's.
+ */
+export function standingPoolRefusals(workflows: readonly LoadedWorkflow[]): string[] {
+  const lines: string[] = [];
+  for (const w of workflows) {
+    const seen = new Set<AnyStateMachine>();
+    const walk = (machine: AnyStateMachine): void => {
+      if (seen.has(machine)) return;
+      seen.add(machine);
+      for (const logic of Object.values(machine.implementations.actors as Record<string, unknown>)) {
+        const child = asMachine(logic);
+        if (!child) continue;
+        if (isStandingPool(child)) {
+          lines.push(
+            `workflow "${w.name}": machine "${machine.id}" composes the standing Pool "${child.id}" — a standing Pool ` +
+              "is the top Machine of its Workflow, because jr2 keeps one run of each standing Workflow: move the Pool " +
+              "to a file of its own in workflows/ (ADR-0017)",
+          );
+        }
+        walk(child);
+      }
+    };
+    walk(w.machine);
   }
   return lines;
 }
@@ -301,7 +375,11 @@ export type AssemblyRefusalInput = {
  * did its cluster work, so each check is true when the Assembly lands.
  */
 export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<string[]> {
-  const lines = [...doorRefusals(input.workflows), ...openPartRefusals(input.workflows)];
+  const lines = [
+    ...doorRefusals(input.workflows),
+    ...standingPoolRefusals(input.workflows),
+    ...openPartRefusals(input.workflows),
+  ];
   // A Chart file is the Instance's own (ADR-0070): one that fails refuses the publish.
   if (input.charts?.length) lines.push(...chartFileRefusals(input.charts, input.workflows));
   // A same-Instance dispatch names a Workflow this Assembly has (ADR-0071). The door sees the
@@ -342,6 +420,58 @@ export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<str
         }
       }
     }
+  }
+  return lines;
+}
+
+/**
+ * The hooked Gates whose delivery a lost delivery can stop (ADR-0011, ADR-0054): a Gate slot that
+ * hears a Hook and has no look, on a state with no `after`; and a Gate slot whose look a package left
+ * `open` and nobody bound. `jr2 up` WARNS and does not refuse, because a person can still answer the
+ * Gate with `jr2 send`. A Gate with `look: "none"` hears a command, which is an edge: no warning. One
+ * line per Gate slot and state, over the registered Machine and every Machine that it composes.
+ */
+export function gateLookWarnings(workflows: readonly LoadedWorkflow[]): string[] {
+  const lines: string[] = [];
+  for (const w of workflows) {
+    const seen = new Set<AnyStateMachine>();
+    const walk = (machine: AnyStateMachine): void => {
+      if (seen.has(machine)) return;
+      seen.add(machine);
+      const actors = machine.implementations.actors as Record<string, unknown>;
+      const visit = (node: AnyStateMachine["root"]): void => {
+        for (const inv of node.invoke) {
+          const logic = typeof inv.src === "string" ? actors[inv.src] : inv.src;
+          const child = asMachine(logic);
+          if (child) walk(child);
+          if (!isGateSlot(logic)) continue;
+          const slot = inv.src as string;
+          const parts = logic.gateSlot;
+          if (parts.look === open) {
+            lines.push(
+              `workflow "${w.name}": Gate slot "${slot}" on "${node.id}" leaves its look open — a delivery lost in an ` +
+                "outage stops the run until a person answers the Gate: bind it with customize(machine, { gates: { " +
+                `${slot}: { look } } }), or give it look: "none" (ADR-0011, ADR-0054)`,
+            );
+            continue;
+          }
+          const hears = Object.values(parts.hooks).some((keys) => Object.keys(keys).length > 0);
+          if (!hears || parts.look !== undefined || node.after.length > 0) continue;
+          lines.push(
+            `workflow "${w.name}": Gate slot "${slot}" on "${node.id}" hears a Hook and has no look and no \`after\` on ` +
+              "its state — a delivery lost in an outage stops the run until a person answers the Gate: give it a " +
+              'look, or look: "none" for a Gate that hears a command (ADR-0011)',
+          );
+        }
+        for (const child of Object.values(node.states)) visit(child);
+      };
+      visit(machine.root);
+      for (const logic of Object.values(actors)) {
+        const child = asMachine(logic);
+        if (child) walk(child);
+      }
+    };
+    walk(w.machine);
   }
   return lines;
 }

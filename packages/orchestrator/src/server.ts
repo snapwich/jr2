@@ -16,6 +16,15 @@
 //                      a publish door anyone outside it can open.
 //   JR2_SIGNING_KEY     base64 key Sandbox tokens are signed with; from the Secret so live Sandboxes
 //                      survive a pod restart. Absent → minted into `<dir>/.jr2/secret` (dev-grade).
+//   JR2_CALLER_DIGESTS  the file of the named Caller tokens' digests (ADR-0078). Default, deployed:
+//                      the `jr2-caller-digests` mount; host-booted: none. Read again when it
+//                      changes, so a rotation needs no restart.
+//   JR2_HOOK_DIGESTS    the file of the `token` Hooks' secrets' digests (ADR-0078). Default,
+//                      deployed: the `jr2-hook-digests` mount; host-booted: none. Read again when
+//                      it changes.
+//   JR2_INSTANCE_EFFECTOR  the Instance Effector's address, `host:port` (ADR-0068). Default,
+//                      deployed: its Service; host-booted: none. A host-booted fixture names its
+//                      own, which speaks the same signed wire (the e2e tier's `mac` Hook check).
 //   JR2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
 //                      Sandboxes are driven in it, and the Custodians' route home is Service DNS.
 //
@@ -60,6 +69,10 @@ import {
   INSTANCE_HARNESS_SERVICE,
   INSTANCE_EFFECTOR,
   EFFECTOR_PORT,
+  CALLER_DIGESTS_KEY,
+  CALLER_DIGESTS_MOUNT,
+  HOOK_DIGESTS_KEY,
+  HOOK_DIGESTS_MOUNT,
 } from "./names.ts";
 import type { AnyStateMachine } from "xstate";
 import { partsOf, type CarriedRepo } from "./parts.ts";
@@ -69,7 +82,7 @@ import { kubeRepos, type RepoResources } from "./repos.ts";
 import { SANDBOX_EFFECTOR_PORT, kubeSandbox } from "./sandbox-kube.ts";
 import { sandboxEffectorService } from "./sandbox-effector.ts";
 import { watchSandboxes, type SandboxWatch } from "./sandbox-watch.ts";
-import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
+import { loadSigningKey, mintInstanceToken, watchCallerDigests } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 
 export type ServerMainOptions = {
@@ -100,6 +113,18 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // From the instance Secret when deployed; per-boot for a host-booted fixture.
   const instanceToken = env.JR2_INSTANCE_TOKEN ?? mintInstanceToken();
   const publishToken = env.JR2_PUBLISH_TOKEN ?? mintInstanceToken();
+  // The named Callers' digests (ADR-0078), from the mount `jr2 up` writes. A host-booted process
+  // has none unless the env names a file.
+  const digestsPath =
+    env.JR2_CALLER_DIGESTS ?? (namespace !== undefined ? join(CALLER_DIGESTS_MOUNT, CALLER_DIGESTS_KEY) : undefined);
+  const digests = digestsPath !== undefined ? watchCallerDigests(digestsPath) : undefined;
+  // The `token` Hooks' digests (ADR-0078): the same form, another mount.
+  const hookDigestsPath =
+    env.JR2_HOOK_DIGESTS ?? (namespace !== undefined ? join(HOOK_DIGESTS_MOUNT, HOOK_DIGESTS_KEY) : undefined);
+  const hookDigests = hookDigestsPath !== undefined ? watchCallerDigests(hookDigestsPath) : undefined;
+  const instanceEffector =
+    env.JR2_INSTANCE_EFFECTOR ??
+    (namespace !== undefined ? `${INSTANCE_EFFECTOR}.${namespace}.svc:${EFFECTOR_PORT}` : undefined);
 
   // The current Assembly (ADR-0069), and its config and Workflows read from its ROOT, never from
   // the folder directly. A published Assembly that does not load (a Kit bump that broke an import,
@@ -249,6 +274,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     hostname: env.HOST ?? "0.0.0.0",
     instanceToken,
     publishToken,
+    ...(digests ? { callerDigests: digests.current } : {}),
+    ...(hookDigests ? { hookDigests: hookDigests.current } : {}),
     signingKey,
     sandbox,
     dataPlane,
@@ -300,7 +327,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     ...(namespace ? { orchestratorName: namespace } : {}),
     // Where an http Effect runs (ADR-0068): the Instance Effector's headless Service. `jr2 up`
     // converges it whenever a registered Machine carries an http Effect.
-    ...(namespace ? { instanceEffector: `${INSTANCE_EFFECTOR}.${namespace}.svc:${EFFECTOR_PORT}` } : {}),
+    ...(instanceEffector !== undefined ? { instanceEffector } : {}),
     // Where a push, a file-body http or a credentialed command runs (ADR-0068): a Sandbox's Effector, by
     // the headless Service the provision writes beside it when `jr2 up` placed an Effect there.
     ...(namespace
@@ -311,6 +338,14 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       : {}),
   });
   held = inst.heldMachines;
+  for (const watched of [digests, hookDigests]) {
+    if (!watched) continue;
+    const close = inst.close;
+    inst.close = async () => {
+      watched.stop();
+      await close();
+    };
+  }
   // The watch ends with the instance: its stream is the one thing here that never settles alone.
   if (watch) {
     const close = inst.close;

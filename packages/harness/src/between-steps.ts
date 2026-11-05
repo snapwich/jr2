@@ -20,8 +20,8 @@
 // block is in the Turn (`turn.ts`); a reservation it does not acknowledge is released when the Turn
 // ends, and the next admission carries the notice.
 
-import { noticeText, restatedTurnPart } from "./briefing.ts";
-import { readStep, type HeldNotice, type MenuOptions } from "./menu.ts";
+import { noticeText, restatedTurnPart, steeringText } from "./briefing.ts";
+import { readStep, type HeldNotice, type HeldSteering, type MenuOptions } from "./menu.ts";
 
 /** The last Allowed-picks list the model read, as a set. One per conversation. */
 export class ToldPicks {
@@ -74,26 +74,37 @@ export async function between(
   if (now === undefined) return undefined;
   if (boundary.stopped && now.allowed.length === 0) return undefined;
   const changed = told.differs(now.allowed);
-  if (!changed && now.notices.length === 0) return undefined;
+  if (!changed && now.notices.length === 0 && now.steering.length === 0) return undefined;
   if (changed) told.heard(now.allowed);
   return {
-    text: steppedTurnPart(now.notices, changed ? now.allowed : undefined, opts.toolName, boundary.briefings),
-    heard: now.notices.map((n) => n.id),
+    text: steppedTurnPart(
+      now.notices,
+      changed ? now.allowed : undefined,
+      opts.toolName,
+      boundary.briefings,
+      now.steering,
+    ),
+    heard: [...now.notices.map((n) => n.id), ...now.steering.map((m) => m.id)],
   };
 }
 
 /**
- * The block a step boundary appends (ADR-0062): each notice, then the Allowed picks restated when
- * they changed. Notices alone are a `<jr2-turn>` block of their own; with a change, the restatement
- * is the block's (`restatedTurnPart`) and the notices lead it.
+ * The block a step boundary appends (ADR-0062): each notice, then each Steering message in its
+ * author's frame (ADR-0002), then the Allowed picks restated when they changed. Notices and
+ * messages alone are a `<jr2-turn>` block of their own; with a change, the restatement is the
+ * block's (`restatedTurnPart`) and they lead it.
  */
 export function steppedTurnPart(
   notices: readonly HeldNotice[],
   allowed: string[] | undefined,
   toolName?: (name: string) => string,
   briefings?: ReadonlyMap<string, string>,
+  steering: readonly HeldSteering[] = [],
 ): string {
-  const lines = notices.map((n) => noticeText(n.notice, toolName));
+  const lines = [
+    ...notices.map((n) => noticeText(n.notice, toolName)),
+    ...steering.map((m) => steeringText(m.message)),
+  ];
   if (allowed === undefined) return `<jr2-turn>\n${lines.join("\n")}\n</jr2-turn>`;
   const restated = restatedTurnPart(allowed, toolName, briefings);
   if (lines.length === 0) return restated;

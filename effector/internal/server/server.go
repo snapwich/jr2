@@ -5,7 +5,8 @@
 // grace, and the answer is its outcome, as a poll's. It stops a dispatch's wait the same way
 // (ADR-0071): the poll of the run ends, and the run it started is never touched. A push and an
 // http Effect are one request each and end on their own, so a DELETE on one answers as an unknown
-// method does. Every request
+// method does. `POST /mac` is the Hook door's `mac` check, in the Instance Effector alone: "match"
+// or "no match", answered at once, never an Effect (package mackind). Every request
 // is verified before anything else — an unsigned, mis-signed or replayed request gets 401 and an
 // empty body, so it learns nothing, not even whether an Effect exists — and every answer is
 // scrubbed, then signed.
@@ -42,10 +43,20 @@ type Runner interface {
 	Run(ctx context.Context, req *wire.StartRequest) wire.Output
 }
 
+// MacChecker is the Instance Effector's `mac` check for the Hook's door (ADR-0068): the HMAC of
+// the bytes with a named secret, compared with the signature in constant time.
+type MacChecker interface {
+	// Missing names the secret the check names when this Effector does not hold it, or "".
+	Missing(req *wire.MacRequest) string
+	Check(req *wire.MacRequest) bool
+}
+
 // Options configure a Server.
 type Options struct {
 	Verifier *sign.Verifier
 	Runner   Runner
+	// Mac serves `POST /mac`; nil, the route is not served (a Sandbox Effector serves no Hook).
+	Mac MacChecker
 	// Scrubber is the last pass over every answer's bytes before it is signed.
 	Scrubber *scrub.Scrubber
 	Replica  wire.Replica
@@ -130,6 +141,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	reply := func(status int, v any) { s.reply(w, status, r.Method, path, nonce, v) }
 
+	if r.URL.Path == wire.MacPath && s.opts.Mac != nil && r.URL.RawQuery == "" {
+		if r.Method != http.MethodPost {
+			reply(http.StatusMethodNotAllowed, wire.Refusal{Error: "POST"})
+			return
+		}
+		s.mac(reply, body)
+		return
+	}
 	id, ok := strings.CutPrefix(r.URL.Path, "/effects/")
 	if !ok || !wire.ValidEffectID(id) || r.URL.RawQuery != "" {
 		reply(http.StatusNotFound, wire.Refusal{Error: "no such route"})
@@ -179,6 +198,33 @@ func (s *Server) stop(ctx context.Context, reply func(int, any), id string) {
 	s.opts.Log.Printf("jr2.effector action=stop effect=%s", id)
 	e.stop(wire.ErrStopped)
 	s.poll(ctx, reply, id)
+}
+
+// mac is the Hook door's `mac` check (ADR-0068): "match" or "no match", and nothing more. It is
+// not an Effect: it has no id, it starts nothing, and it is answered at once — while the replica
+// stops, too, since it ends before its answer does. A secret this Effector does not hold is a
+// defect (400), as an Effect's is.
+func (s *Server) mac(reply func(int, any), body []byte) {
+	var req wire.MacRequest
+	if err := wire.Decode(strings.NewReader(string(body)), &req); err != nil {
+		reply(http.StatusBadRequest, wire.Refusal{Error: "the request is malformed: " + err.Error()})
+		return
+	}
+	if err := req.Validate(); err != nil {
+		reply(http.StatusBadRequest, wire.Refusal{Error: "the request is malformed: " + err.Error()})
+		return
+	}
+	if name := s.opts.Mac.Missing(&req); name != "" {
+		reply(http.StatusBadRequest, wire.Refusal{
+			Error: "the mac check names secret " + name + ", which this Effector does not hold — `jr2 up` places " +
+				"a Hook's secret in the Instance Effector (ADR-0068)",
+		})
+		return
+	}
+	match := s.opts.Mac.Check(&req)
+	// The secret's name and the answer: never the bytes, the signature or a value.
+	s.opts.Log.Printf("jr2.effector action=mac secret=%s alg=%s match=%t", req.Secret, req.Alg, match)
+	reply(http.StatusOK, wire.MacAnswer{Match: match})
 }
 
 // reply scrubs the answer's bytes, signs them, and writes them.

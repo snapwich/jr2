@@ -38,7 +38,7 @@ The diagram shows what `jr2 up` makes, and what [`jr2 run`](../reference/cli.md#
       - **Assembly**: your Workflows and your config
     - **jr2-instance Secret**: holds the Instance token
     - **Instance Harness**: when an Agent is Menu-only
-    - **Instance Effector**: when an Effect runs there
+    - **Instance Effector**: when an Effect runs there, or a Hook needs it
     - **Repo cache**: when a Machine has a Sandbox
   - ↓ the Orchestrator asks for each Sandbox · ↑ the operator makes its pod
   - **jr2-system**: one for each cluster

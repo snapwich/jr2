@@ -213,7 +213,12 @@ test("send --keep carries keep on CANCEL, and is refused with any other event (A
   assert.match(kept.err(), /Workspaces are kept/);
   const b = await host.start("loop");
   assert.equal(await main(["send", b.runId, "--event", "CANCEL"], mk().io), 0);
-  assert.deepEqual(seen, [{ keep: true }, { keep: false }]);
+  // The run host also hears who cancelled (ADR-0078): an app with no authenticator acts as the
+  // Instance token's Caller.
+  assert.deepEqual(
+    seen.map((o: { keep?: boolean } | undefined) => o?.keep),
+    [true, false],
+  );
 });
 
 test("send --gate: an answer the run would not take prints the refusal and what the Gate takes now, and exits 1 (ADR-0013)", async () => {

@@ -27,6 +27,7 @@ const OUTPUT_TEXT = {
   result: "one JSON result on stdout, and activity on stderr",
   report: "a table on stdout, or the one report object with `--json`",
   activity: "activity on stderr only",
+  value: "one value alone on stdout, for `$(…)`, and activity on stderr",
 } as const;
 
 function flagName(f: Flag): string {

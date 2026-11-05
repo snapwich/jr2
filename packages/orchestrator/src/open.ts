@@ -14,12 +14,14 @@
  * - a Repo Slot: `repos: { app: open }`, or the whole map: `repos: open`;
  * - an Agent's model: `agent({ model: open, … })`;
  * - an Effect's url or argv: `http({ url: open, … })`, `command(open)`;
- * - the secret of an Effect's auth, of a header, or of a command's `env`: `secret(open)`.
+ * - the secret of an Effect's auth, of a header, or of a command's `env`: `secret(open)`;
+ * - the look of a Gate slot: `gate({ …, look: open })`.
  *
  * `jr2 up` refuses a Workflow with an Open part that nobody bound, and prints the `customize()`
  * line that binds it: ``refusing: workflow "<name>" leaves <part> open — bind it where the Machine
  * is registered: export const machine = customize(<import>, …)  (<adr>)``. A run never sees an
- * Open part.
+ * Open part. An Open look is the one exception: `jr2 up` warns about it and does not refuse,
+ * because a person can still answer the Gate with `jr2 send`.
  *
  * @example
  * ```ts

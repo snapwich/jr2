@@ -275,9 +275,14 @@ test("an Effector's outcome reads as its output, decoded off the wire as the Orc
       'connection refused; nothing was started"}.',
   };
   // A stopped command's outcome (`exited` with the signal) answers the Orchestrator's stop, after the
-  // state that asked has exited: no Machine takes it, so no Agent reads it (ADR-0067).
+  // state that asked has exited: no Machine takes it, so no Agent reads it (ADR-0067). A key-only
+  // ask's `absent` is the Effect's own: it becomes the slot's schema error, and no Machine takes it
+  // as output (ADR-0071).
   const settled = readdirSync(fixtures).filter(
-    (f) => f.startsWith("response.settled-") && !f.startsWith("response.settled-exited-stopped"),
+    (f) =>
+      f.startsWith("response.settled-") &&
+      !f.startsWith("response.settled-exited-stopped") &&
+      f !== "response.settled-dispatch-absent.json",
   );
   assert.deepEqual(settled.sort(), Object.keys(want).sort(), "every settled fixture has its text here");
   for (const [name, text] of Object.entries(want)) assert.equal(read(name), text, name);

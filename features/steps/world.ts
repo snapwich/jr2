@@ -27,7 +27,9 @@ import { setWorldConstructor } from "@cucumber/cucumber";
 import { issueCa, issueLeaf, JR2Client, kubectlKube, type FetchLike, type Pem, type RunStatus } from "@jr2/cli";
 import {
   assemblyHash,
+  callerTokenDigest,
   INSTANCE_SECRET,
+  mintCallerToken,
   KIT_VERSION,
   ORCHESTRATOR_PORT,
   ORCHESTRATOR_SERVICE,
@@ -228,6 +230,10 @@ export class E2EWorld {
   /** This scenario's Effect secret (ADR-0068): the kind instance's `echo-token`, which only the
    * Instance Effector holds. The steps look for every form of it in what came back. */
   echoToken?: string;
+  /** @kind: the `forge`, `chat` and `lab` Hooks' secrets, per scenario (`setupKind`). */
+  ghHook?: string;
+  chatSigning?: string;
+  glHook?: string;
   /** @kind: the `self-token` the `dispatched` workflow's target names (ADR-0071), per scenario. The
    * dispatch scenario writes it as this Instance's token before `jr2 up`. */
   selfToken?: string;
@@ -255,6 +261,14 @@ export class E2EWorld {
   readonly publishToken = randomBytes(16).toString("hex");
   /** The Instance token this scenario's server boots with (the fixture plays `jr2 up`'s Secret). */
   private readonly token = randomBytes(16).toString("hex");
+  /** The named Caller tokens this scenario made (ADR-0078), by name: the values, which the fixture
+   * gives the server only as digests, in a file the server reads (`JR2_CALLER_DIGESTS`). */
+  readonly callerTokens = new Map<string, string>();
+  /** Extra env for the host-booted orchestrator: an instance option of a scenario, such as the
+   * address of the Instance Effector that a `mac` Hook's check goes to (`JR2_INSTANCE_EFFECTOR`). */
+  readonly serverEnv: Record<string, string> = {};
+  /** What a scenario's own fixtures close in `cleanup` (a fake Instance Effector). */
+  readonly closers: Array<() => Promise<void>> = [];
 
   /** Allocate a fresh, isolated instance folder. Called from the `Before` hook. */
   async setup(): Promise<void> {
@@ -304,6 +318,15 @@ export class E2EWorld {
     this.extraEnv.JR2_E2E_NAMESPACE = this.namespace;
     this.selfToken = `self-${randomBytes(12).toString("hex")}`;
     this.extraEnv.JR2_SELF_TOKEN = this.selfToken;
+    // The three Hooks' secrets (ADR-0078): every converge places the two `mac` ones in the Instance
+    // Effector and gives the Orchestrator the digest of the `token` one. The hook steps sign each
+    // delivery with them, or send the token.
+    this.ghHook = `gh-${randomBytes(12).toString("hex")}`;
+    this.extraEnv.JR2_GH_HOOK = this.ghHook;
+    this.chatSigning = `chat-${randomBytes(12).toString("hex")}`;
+    this.extraEnv.JR2_CHAT_SIGNING = this.chatSigning;
+    this.glHook = `gl-${randomBytes(12).toString("hex")}`;
+    this.extraEnv.JR2_GL_HOOK = this.glHook;
   }
 
   /**
@@ -368,6 +391,7 @@ export class E2EWorld {
   async cleanup(): Promise<void> {
     await this.closeOrchestrator();
     await this.stopServer();
+    for (const close of this.closers.splice(0)) await close().catch(() => {});
     await this.stub?.close();
     this.stub = undefined;
     await this.provider?.close();
@@ -461,15 +485,31 @@ export class E2EWorld {
    * an npm install of the published package — shim, `files:` list, prod dependency chain and all.
    * Everywhere else it is this checkout's `bin/jr2.js`, run by this node.
    *
+   * `env` adds variables for one call: a @kind step sends a named Caller token with `JR2_URL` and
+   * `JR2_TOKEN` over its own port-forward, as a CI job outside the cluster does.
+   *
    * `namespaced: false` is for the verbs that address no instance at all: `jr2 gc` decides what is
    * garbage by asking the WHOLE cluster (ADR-0039), so a namespace flag would narrow nothing — and
    * a step must invoke it the way a user does. */
-  async runCli(args: string[], opts: { namespaced?: boolean } = {}): Promise<CliResult> {
+  async runCli(
+    args: string[],
+    opts: { namespaced?: boolean; as?: string; env?: Record<string, string> } = {},
+  ): Promise<CliResult> {
     const base = this.sealedEnv();
-    const env: NodeJS.ProcessEnv = this.server
-      ? { ...base, ...this.extraEnv, JR2_URL: this.server.url, JR2_TOKEN: this.server.token }
-      : { ...base, ...this.extraEnv };
-    const full = this.namespace && opts.namespaced !== false ? [...args, "-n", this.namespace] : args;
+    // `as`: the named Caller token whose value the binary sends (ADR-0078), with the address as the
+    // `--url` flag, the way a CI job outside the cluster attaches.
+    const callerToken = opts.as === undefined ? undefined : this.callerTokens.get(opts.as);
+    assert.ok(opts.as === undefined || callerToken, `the scenario made no Caller token "${opts.as}"`);
+    const env: NodeJS.ProcessEnv =
+      this.server && callerToken
+        ? { ...base, ...this.extraEnv, JR2_TOKEN: callerToken }
+        : this.server
+          ? { ...base, ...this.extraEnv, JR2_URL: this.server.url, JR2_TOKEN: this.server.token }
+          : { ...base, ...this.extraEnv };
+    // `env`: what one call adds, such as `JR2_URL` and `JR2_TOKEN` for a Caller on a cluster.
+    Object.assign(env, opts.env);
+    const target = this.server && callerToken ? [...args, "--url", this.server.url] : args;
+    const full = this.namespace && opts.namespaced !== false ? [...target, "-n", this.namespace] : target;
     if (this.dist) env.PATH = `${this.dist.binDir}:${process.env.PATH ?? ""}`;
     const child = this.dist
       ? spawn("jr2", full, { cwd: this.dir, env })
@@ -506,6 +546,31 @@ export class E2EWorld {
     for (const key of Object.keys(env)) if (key.startsWith("JR2_")) delete env[key];
     if (!this.namespace) env.KUBECONFIG = "/dev/null";
     return env;
+  }
+
+  /** Where the fixture writes the named Callers' digests: outside the Assembly's files. */
+  private callerDigestsFile(): string {
+    return join(this.dir, ".jr2-caller-digests.json");
+  }
+
+  /**
+   * Declare a named Caller token in the instance's `jr2.config.ts` and make its value (ADR-0078),
+   * as `jr2 up` does: the value stays here, and the server gets its sha-256 alone, in the file it
+   * reads. Before serving: the config rides the Assembly the fixture publishes.
+   */
+  async declareCallerToken(name: string, may: Record<string, unknown>): Promise<void> {
+    const config = join(this.dir, "jr2.config.ts");
+    const text = await readFile(config, "utf8");
+    const declared = text.replace(
+      "export default defineConfig({",
+      `export default defineConfig({\n  callers: { tokens: { ${JSON.stringify(name)}: { may: ${JSON.stringify(may)} } } },`,
+    );
+    assert.notEqual(declared, text, "the scaffolded config has a defineConfig call to declare the token in");
+    await writeFile(config, declared);
+    const value = mintCallerToken();
+    this.callerTokens.set(name, value);
+    const digests = Object.fromEntries([...this.callerTokens].map(([n, v]) => [n, callerTokenDigest(v)]));
+    await writeFile(this.callerDigestsFile(), JSON.stringify(digests));
   }
 
   /** Scaffold the instance with the real `jr2 init` (gives it `ping` + config). */
@@ -620,6 +685,9 @@ export class E2EWorld {
         HOST: "127.0.0.1",
         JR2_INSTANCE_TOKEN: this.token,
         JR2_PUBLISH_TOKEN: this.publishToken,
+        // The named Callers' digests (ADR-0078), as `jr2 up` mounts them.
+        ...(this.callerTokens.size ? { JR2_CALLER_DIGESTS: this.callerDigestsFile() } : {}),
+        ...this.serverEnv,
       },
     });
     this.serverProc = proc;
@@ -750,7 +818,7 @@ let hostAddress: Promise<string> | undefined;
 
 /** Resolved against a plain-HTTP listener of its own: the model provider serves HTTPS under a leaf
  * that must NAME the address, so the address is known before the provider starts. */
-function kindHostAddress(): Promise<string> {
+export function kindHostAddress(): Promise<string> {
   hostAddress ??= (async () => {
     const probe = createHttpServer((_req, res) => res.end("ok"));
     await new Promise<void>((resolve) => probe.listen(0, "0.0.0.0", resolve));
@@ -782,7 +850,7 @@ const FAKE_CA_CRT = fileURLToPath(new URL("../.tmp/fake-provider-ca.crt", import
  * with the pid, two workers wrote one file and the second link found it already removed. The
  * `.crt` another worker's `jr2 up` may be reading is replaced by a rename, never rewritten in place.
  */
-async function fakeProviderCa(): Promise<Pem> {
+export async function fakeProviderCa(): Promise<Pem> {
   await mkdir(dirname(FAKE_CA_JSON), { recursive: true });
   const read = async (): Promise<Pem | undefined> =>
     JSON.parse(await readFile(FAKE_CA_JSON, "utf8").catch(() => "null")) as Pem | undefined;

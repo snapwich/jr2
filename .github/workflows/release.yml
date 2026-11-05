@@ -8,7 +8,7 @@
 #      own runner kind cluster) and `dist` (the @dist tier on one more) — the installed path proven
 #      on the exact tree that ships, not on a maintainer's box the day before
 #   3. `release`, only when every tier passed: the Kit images, multi-arch, to their canonical home
-#      (ADR-0044), then the four packages STAGED on npm, dependencies first — live once the
+#      (ADR-0044), then the public packages STAGED on npm, dependencies first — live once the
 #      maintainer approves
 #
 # Images before packages is the contract: an installed kit pulls `<home>/jr2-<x>:<version>` on its
@@ -25,12 +25,13 @@
 # can do what `release` does, because nothing it holds exists outside it. Only `release` holds
 # those rights; the tier jobs read the code and nothing more. And the job STAGES rather than
 # publishes: each trusted publisher is configured for `npm stage publish` only ("allow npm publish"
-# left unchecked), so a tag makes four staged tarballs and the maintainer's 2FA approval
+# left unchecked), so a tag makes one staged tarball per public package and the maintainer's 2FA approval
 # (`npm stage approve <stage-id>`, or the Staged Packages tab on npmjs.com) makes them live. A
 # stolen GitHub session or a bad change to this file can stage and nothing more. Bootstrap, once:
 # the very first version is published by hand with a token (npm attaches a trusted publisher only
-# to a package that exists), the trusted publisher is configured on all four, and the token
-# revoked.
+# to a package that exists), the trusted publisher is configured on each, and the token
+# revoked. The same holds for each NEW public package: its first version is published by hand before
+# the first tag that holds it, or that tag's stage of it fails (`@jr2/hooks`, ADR-0078).
 #
 # Then `pages` (ADR-0072): the docs site of the same tree, to GitHub Pages. It needs `release`, so
 # a tag whose gate fails publishes no docs; it does not wait for the npm approval, which happens

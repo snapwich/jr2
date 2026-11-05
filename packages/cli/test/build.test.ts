@@ -99,7 +99,7 @@ function kitFiles(harnessSrc: string, protocolSrc = "export const v = 1;\n"): Re
     "effector/internal/wire/wire.go": "package wire\n",
     "packages/harness/package.json": `{"name":"@jr2/harness"}`,
     "packages/harness/src/main.ts": harnessSrc,
-    // The Orchestrator Kit image (ADR-0069): its package, the kit package it depends on, and its
+    // The Orchestrator Kit image (ADR-0069): its package, the kit packages it depends on, and its
     // Dockerfile's directory.
     "deploy/orchestrator/Dockerfile": "FROM node:24-slim\n",
     "deploy/orchestrator/closure.json": `{"zod":"4.4.3"}`,
@@ -107,6 +107,8 @@ function kitFiles(harnessSrc: string, protocolSrc = "export const v = 1;\n"): Re
     "packages/orchestrator/src/index.ts": "export {};\n",
     "packages/agent-protocol/package.json": `{"name":"@jr2/agent-protocol"}`,
     "packages/agent-protocol/src/index.ts": protocolSrc,
+    "packages/hooks/package.json": `{"name":"@jr2/hooks"}`,
+    "packages/hooks/src/index.ts": "export {};\n",
   };
 }
 
@@ -272,7 +274,7 @@ test("kit hashes exclude only what each context's OWN .dockerignore drops", asyn
   );
   assert.equal(withDocs.orchestrator, base.orchestrator, "packages/orchestrator/docs is dockerignored, so excluded");
   const ignore = await readFile(new URL("../../../.dockerignore", import.meta.url), "utf8");
-  for (const source of ["packages/orchestrator", "packages/agent-protocol", "deploy/orchestrator"]) {
+  for (const source of ["packages/orchestrator", "packages/agent-protocol", "packages/hooks", "deploy/orchestrator"]) {
     assert.match(ignore, new RegExp(`^${source}/\\*\\*/docs$`, "m"), `${source}/**/docs is in .dockerignore`);
   }
 });

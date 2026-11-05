@@ -164,6 +164,11 @@ Each event that a party sends carries its [Sender](../reference/glossary.md#send
 [`Sender`](../reference/authoring-surface/type-sender.md)). The [Orchestrator](../reference/glossary.md#orchestrator)
 writes it on each event that a party delivers. An event that the Machine sends to itself has no Sender.
 
+A Gate's event also carries the [Caller](../reference/glossary.md#caller) that answered it: `via`, `name`, and
+`onBehalfOf` when the Caller says that it acts for a person or a service. `checked` names the fields that jr2 verified.
+jr2 always verifies `via` and `name`. It does not verify `onBehalfOf`, except for a Hook, whose signature covers it. So
+do not use an unchecked `onBehalfOf` to decide who may do something.
+
 Use the Sender when two parties can send the same event to one state. The guard
 [`sentBy(id)`](../reference/authoring-surface/sentby.md) is true for an event from that party, and for an event with no
 Sender. It is false for an event from a different party, so xstate tries the next transition. `sentBy` can only make a

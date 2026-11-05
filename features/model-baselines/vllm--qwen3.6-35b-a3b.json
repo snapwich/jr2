@@ -78,5 +78,13 @@
   "chart-refusal/off": {
     "passed": 9,
     "trials": 10
+  },
+  "steer-follow/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "peer-not-order/off": {
+    "passed": 20,
+    "trials": 20
   }
 }

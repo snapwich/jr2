@@ -1,10 +1,11 @@
 ---
 title: Open the Console
-description: Forward the port of the Orchestrator, open the Console, and unlock it with the Instance token.
+description: Forward the port of the Orchestrator, open the Console, and unlock it with a token or a login.
 ---
 
-Open the [Console](../reference/glossary.md#console) in a browser, and paste the Instance token to start runs and answer
-[Gates](../reference/glossary.md#gate).
+Open the [Console](../reference/glossary.md#console) in a browser. Paste a token, or log in, to start runs and answer
+[Gates](../reference/glossary.md#gate). The Console shows only what the [Caller](../reference/glossary.md#caller) of the
+token may do.
 
 The [Orchestrator](../reference/glossary.md#orchestrator) serves the Console on port 4000, in the cluster. To reach it
 from your computer, forward the port with `kubectl`. In the commands on this page, replace `<namespace>` with the
@@ -62,29 +63,63 @@ The Instance token starts runs, answers Gates and cancels runs. Keep it as you k
 
 ## Paste the token
 
-Paste the token into the box `instance token` in the nav of the Console. Push Enter. The badge after the box shows `…`
-while the Console checks the token, then `live`. With a live token, the Console shows more:
+Paste the token into the box `Caller token` in the nav of the Console. Push Enter. The badge after the box shows `…`
+while the Console checks the token, then `live`. The nav then shows who the Console acts as, such as
+`as token/instance`. Put the pointer on the name to see its scopes.
 
-- A `start` button for each Workflow in the Fleet rail. It opens a form for the run input of the Workflow. A Workflow
-  that declares no run input gets a box for JSON.
-- The Attention tab of the right drawer. It shows a card for each open Gate of the selected Workflow, with a form to
-  send each event that the Gate takes. Select `all workflows` to see the Gates of each Workflow.
+The Console asks the Orchestrator what the token may do ([`GET /whoami`](../reference/http-api.md#get-whoami)). Then it
+shows each control that a scope of the token opens:
 
-The Console keeps the token in the browser tab. A reload keeps it. When you close the tab, the token is gone.
+| Scope    | What the Console shows                                                                                    |
+| -------- | --------------------------------------------------------------------------------------------------------- |
+| `start`  | A `start` button for the Workflow in the Fleet rail. It opens a form for the run input of the Workflow.   |
+| `answer` | The Attention tab of the right drawer, with a card for each open Gate and a form for each event it takes. |
+| `read`   | The full state of the selected run: why it waits, why it failed, and who started it.                      |
+| `cancel` | A `cancel run` button on the selected run, while the run is live.                                         |
+| `steer`  | A `steer` button on the selected run, while the run is live. It opens a box to send a Steering message.   |
+
+The Instance token has each scope for each Workflow, so it shows each control. A named Caller token shows the controls
+of its scopes, for its Workflows ([Give a Caller a scope](give-a-caller-a-scope.md)). A Workflow that declares no run
+input gets a box for JSON in its start form. In the Attention tab, select `all workflows` to see the Gates of each
+Workflow.
+
+The Console keeps the token in the browser tab. A reload keeps it. When you close the tab, the token is gone. Click
+`sign out` to forget it before then.
+
+## Log in
+
+When the Instance declares an issuer with [`login: true`](../reference/config.md#callers), the nav shows a `log in`
+button. Click it. The browser goes to the login page of the issuer, and then comes back to the Console. The Console then
+acts as you, with the scopes that your groups give. The nav shows the name that jr2 shows for you, such as your email.
+
+To make the login work, register a client at the issuer:
+
+- A public client, with no secret. Its client id is the `audience` of the issuer entry.
+- The redirect URI is the root of the Console, such as `http://localhost:4000/`.
+- The issuer must let the origin of the Console call its discovery document and its token endpoint (CORS).
+
+The login needs the Console on `https`, or on `localhost`, because the browser makes its code challenge only there.
 
 ## Rules
 
 - A token that the Orchestrator does not accept reads `invalid`. The Console then shows no `start` button and no
   Attention tab.
-- When the Orchestrator refuses the token later, with the status 401, the Console goes back to view only.
-- Only the Instance token unlocks the Console. A [Sandbox](../reference/glossary.md#sandbox) token reads `invalid`.
+- When the Orchestrator refuses the token later, with the status 401, the Console goes back to view only. An expired
+  login and a rotated token do this.
+- A login whose groups give no scope reads `live` and shows no control. The nav shows who you are, so that you can see
+  why.
+- A [Sandbox](../reference/glossary.md#sandbox) token is not a Caller. It reads `invalid`.
+- The Console hides a control that the scopes do not open, so that you do not get a 403. The Orchestrator still checks
+  each request.
 - The port forward stops when you stop its command, or when the Orchestrator pod restarts. Then run the command again.
 
 ## Read next
 
 - [Architecture](../concepts/architecture.md)
-- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-the-instance-token.md): why the token unlocks the
-  Console.
+- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md): why a Caller's credential
+  unlocks the Console, and how the login works.
+- [ADR-0078](../reference/decisions/0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md): the
+  Callers and their scopes.
 - [ADR-0014](../reference/decisions/0014-observation-is-open-run-state-is-not.md): what the Console shows with no token.
 - [`GET /`](../reference/http-api.md#get) and the [open band](../reference/http-api.md#band-open)
 - [Answer a Gate](answer-a-gate.md)

@@ -3,6 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -15,6 +16,8 @@ import {
   EffectorNotSent,
   EffectorRefused,
   EffectStateShape,
+  MacAnswerShape,
+  MacRequestShape,
   PushOutputShape,
   RefusalShape,
   requestMac,
@@ -153,6 +156,18 @@ test("every request fixture is what a definition encodes", () => {
         instance: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
       },
     ),
+    // A key-only ask (ADR-0071): the slot's schema refused the body, so the start carries none.
+    "request.dispatch-key-only.json": dispatchStartOf(
+      dispatchParts("review", { target: { url: "https://ops.example.com/", token: secret("ops-instance") } }),
+      undefined,
+      {
+        run: "0b7e3c1a-5d2f-4e8b-9c6a-1f2e3d4c5b6a",
+        slot: "review",
+        effect: "3f1c7a52-1b2d-4c8e-9a0f-6b5d4e3c2a19",
+        depth: 1,
+        instance: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      },
+    ),
     "request.dispatch-wait.json": dispatchStartOf(
       dispatchParts("task/review-loop", {
         wait: true,
@@ -242,12 +257,26 @@ test("every answer fixture decodes strictly; every reject fixture is refused", (
   }
 });
 
+test("the mac check's fixtures: the request and the answers parse, each reject is refused, and the signature is the HMAC of the bytes (ADR-0068)", () => {
+  const req = MacRequestShape.parse(fixture("mac.request.json"));
+  const want = createHmac(req.alg, "the-github-hook-secret").update(Buffer.from(req.bytes, "base64")).digest("base64");
+  assert.equal(req.signature, want);
+  for (const name of named("mac.answer-")) assert.ok(MacAnswerShape.safeParse(fixture(name)).success, name);
+  const rejects = named("mac.reject-");
+  assert.ok(rejects.length >= 4);
+  for (const name of rejects) {
+    const shape = name.startsWith("mac.reject-answer-") ? MacAnswerShape : MacRequestShape;
+    assert.ok(!shape.safeParse(fixture(name)).success, name);
+  }
+});
+
 test("a dispatch's answers decode as a dispatch's outcome set, and its `refused` is told from an http one by its fields", () => {
   const outcomes: Record<string, string> = {
     "response.settled-dispatch-started.json": "started",
     "response.settled-dispatch-settled.json": "settled",
     "response.settled-dispatch-refused.json": "refused",
     "response.settled-dispatch-unreachable.json": "unreachable",
+    "response.settled-dispatch-absent.json": "absent",
   };
   assert.deepEqual(named("response.settled-dispatch-").sort(), Object.keys(outcomes).sort());
   for (const [name, outcome] of Object.entries(outcomes)) {

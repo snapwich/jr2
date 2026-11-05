@@ -28,9 +28,11 @@ import { getStateNodes } from "xstate";
 import type { ActorSystem, AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyStateMachine } from "xstate";
 import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
+import type { CallerRecord } from "./callers.ts";
+import type { AnyHandler, GateSlotParts } from "./gate.ts";
 import type { EffectMarker, EffectRow } from "./effect.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
-import type { NoticeScope, RaiseOptions, TakenNotices } from "./notices.ts";
+import type { LedgerBody, NoticeScope, RaiseOptions, TakenNotices } from "./notices.ts";
 import type { AnswerSeat } from "./pick.ts";
 import type { Notice, PickAnswer } from "./wire.ts";
 import type { SandboxPort } from "./workspace.ts";
@@ -92,7 +94,7 @@ export type Registration = {
   slot?: string;
   /** An Agent's: the step boundary's read of its conversation's pending notices (ADR-0062), each
    * reserved for this Turn until {@link noticesHeard} or the Turn's end releases it. */
-  boundaryNotices?: () => Promise<Array<{ id: string; notice: Notice }>>;
+  boundaryNotices?: () => Promise<Array<{ id: string; notice: LedgerBody }>>;
   /** An Agent's: the Harness appended these step-boundary notices — they are heard, ledgered in one
    * save. Answers how many were this Turn's reservations. */
   noticesHeard?: (ids: readonly string[]) => number;
@@ -124,6 +126,57 @@ export type Registration = {
    * answer has nowhere to go.
    */
   conversation?: string;
+  /**
+   * A Gate slot's (ADR-0011): its handlers by Hook kind id and event key, its `reply`, and the names
+   * of its `delivers`. What the Hook's door reads to fan a delivery out to this Gate. Absent on a
+   * plain Gate and on an Agent.
+   */
+  hooked?: {
+    hooks: Readonly<Record<string, Readonly<Record<string, AnyHandler>>>>;
+    reply?: GateSlotParts["reply"];
+    delivers: readonly string[];
+  };
+  /**
+   * A Pool's `source` Gate (ADR-0017): the push half of its Source. `hears` says whether a handler
+   * of the Source hears a Hook kind and event key; `hear` runs that handler and answers the
+   * Source's verdict. What the Hook's door reads to bring a delivery to the Pool. Absent on every
+   * other Gate and on an Agent.
+   */
+  source?: SourceSeat;
+};
+
+/** One Hook delivery as a Source's handler hears it (ADR-0017): the Hook, its kind and event key,
+ * the delivery id, the parsed payload and the Hook as a Caller. */
+export type SourceDelivery = {
+  hook: string;
+  kind: string;
+  key: string;
+  delivery: string;
+  payload: unknown;
+  caller: CallerRecord;
+};
+
+/** The verdicts of a Source on one delivery (ADR-0017). */
+export const SOURCE_VERDICTS = ["held", "existing", "hold-full", "reread", "skipped", "paused"] as const;
+export type SourceVerdictName = (typeof SOURCE_VERDICTS)[number];
+
+/** A Source's verdict on one delivery (ADR-0017): `key` for a carried item, `run` when a run holds
+ * that key, `reason` for a skip. */
+export type SourceVerdictLine = { verdict: SourceVerdictName; key?: string; run?: string; reason?: string };
+
+/** A Source's verdict as its seat gives it: the line, and the carried item, which only the
+ * Source's `reply` reads (ADR-0011). The item never goes in the outcome. */
+export type SourceHeard = SourceVerdictLine & { item?: unknown };
+
+/** The push half of a Pool's Source, on its `source` Gate's registration (ADR-0017). */
+export type SourceSeat = {
+  hears(kind: string, key: string): boolean;
+  /** Run the handler, check the key and hold the item. The answer is the verdict; a `held` item is
+   * in the Pool's context when it resolves, and the caller saves the run before it answers. */
+  hear(d: SourceDelivery): Promise<SourceHeard>;
+  /** The Source's `reply`, when it has one: the text that the person who acted reads, from the
+   * verdict (ADR-0011). Pure; a throw is the caller's to log. */
+  reply?(verdict: SourceHeard, caller: CallerRecord): unknown;
 };
 
 /**
@@ -280,6 +333,9 @@ export class OutstandingError extends Error {
   }
 }
 
+/** The Caller that a Gate's event carries on its {@link Sender} (ADR-0011, ADR-0078). */
+export type SenderCaller = Pick<Sender, "via" | "name" | "onBehalfOf" | "checked">;
+
 /** Refuse a caller's body that carries the sender (ADR-0013, ADR-0015): only the Orchestrator writes
  * it, from the registration, so neither the Agent's wire nor the gates route takes it. */
 export function refuseSenderField(payload: unknown): void {
@@ -328,10 +384,42 @@ export function actorPath(ref: AnyActorRef): string[] {
  * names the conversation it burns with it.
  */
 /** An Agent's slot (ADR-0076): its continued conversation's Instance ID without the run id —
- * `<machine actor path>/<agent>`. What the Harness states and the registration records. */
+ * `<machine actor path>/<agent>`. What the Harness states and the registration records. Each
+ * segment of the path is encoded ({@link slotSegment}) before the segments are joined with `.`,
+ * so two paths never have one spelling (ADR-0057). The root Machine's path is `root`, a spelling
+ * that no encoded path has: a segment `root` and the empty segment are escaped. */
 export function agentSlot(machine: AnyActorRef | undefined, agentName: string): string {
-  const path = (machine ? actorPath(machine).join(".") : "") || "root";
-  return `${path}/${agentName}`;
+  return `${slotPath(machine)}/${agentName}`;
+}
+
+/** The Machine part of a slot ({@link agentSlot}): the encoded actor path of the Machine instance,
+ * `root` for the run's root. A Steering message held for a slot ends with this Machine (ADR-0002). */
+export function slotPath(machine: AnyActorRef | undefined): string {
+  return (machine ? actorPath(machine).map(slotSegment).join(".") : "") || "root";
+}
+
+/**
+ * One actor id as a segment of a slot's path (ADR-0057). A letter, a digit, `-` and `_` stay as
+ * they are; each other character becomes `~` and two upper-case hex digits for each of its UTF-8
+ * bytes. So a segment has no `.` (the joint), no `/` (the iid's joint) and nothing that a URL or
+ * a header must escape, and the encoding is one to one: `~` occurs only as an escape. A Pool's
+ * worker has its item's id as its actor id, and an item id can be any text. Two segments are
+ * escaped although each character in them may stay: `root` is `~72oot` and the empty id is `~`
+ * (a `~` that no hex follows), so no encoded path spells `root`, the root Machine's path, or is
+ * empty, which the root's path also was.
+ */
+export function slotSegment(id: string): string {
+  if (id === "") return "~";
+  if (id === "root") return "~72oot";
+  let out = "";
+  for (const ch of id) {
+    if (/^[A-Za-z0-9_-]$/.test(ch)) {
+      out += ch;
+      continue;
+    }
+    for (const byte of new TextEncoder().encode(ch)) out += `~${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return out;
 }
 
 export function continuedIid(machine: AnyActorRef | undefined, runId: string, agentName: string): string {
@@ -391,9 +479,10 @@ export class RegistrationTable {
    * to their wire (404 / 400, MCP tool errors). The payload is parsed by the named def's
    * schema, so what lands in the Machine is exactly the validated shape — plus the registration's
    * sender, written here and nowhere else (ADR-0015). A delivery that would run another party's
-   * writing throws {@link NotTakenError}.
+   * writing throws {@link NotTakenError}. `caller` is the Caller that answers a Gate (ADR-0011,
+   * ADR-0078): a Gate's Sender carries it, and an Agent's never does.
    */
-  deliver(address: string, type: string, payload: unknown): void {
+  deliver(address: string, type: string, payload: unknown, caller?: SenderCaller): void {
     const reg = this.byAddress.get(address);
     if (!reg) throw new UnknownAddressError(`no live registration at "${address}"`);
     refuseSenderField(payload);
@@ -408,10 +497,11 @@ export class RegistrationTable {
       throw new EventValidationError(`invalid "${type}" payload: ${parsed.error.message}`);
     }
     // `type` after the payload: a payload never names the event the Machine receives (ADR-0011).
+    const sender = reg.sender && caller && reg.sender.party === "gate" ? { ...reg.sender, ...caller } : reg.sender;
     const event: DeliveredEvent = {
       ...parsed.data,
       type: def.name,
-      ...(reg.sender ? { [SENDER_KEY]: reg.sender } : {}),
+      ...(sender ? { [SENDER_KEY]: sender } : {}),
     };
     // Exact, with the real payload (ADR-0015): a delivery whose selection holds a writing that is
     // not this sender's never reaches the Machine.
@@ -437,11 +527,33 @@ export class RegistrationTable {
  * and on the row. `instance` is set for a foreign caller, whose Orchestrator this one cannot
  * verify: opaque text, never resolved.
  */
-export type DispatchedBy = { run: string; slot: string; effect: string; depth: number; instance?: string };
+export type DispatchedBy = {
+  run: string;
+  slot: string;
+  effect: string;
+  depth: number;
+  instance?: string;
+  /** The idempotency key when a Pool of runs started the run (ADR-0017): the item's id. The store
+   * scopes it to the callee Workflow, as it scopes `effect`. Absent: the key is `effect`. */
+  key?: string;
+  /** The Hook delivery that carried the item to the Pool (ADR-0017): the Hook's name, the delivery
+   * id, and the party that the signed payload names. Absent for an item that a read or `next` gave. */
+  hook?: { name: string; delivery: string; onBehalfOf?: string };
+};
+
+/** The idempotency key that a start carries (ADR-0017, ADR-0071): a Pool's `key`, else the caller's
+ * ledger row id. */
+export const dispatchKeyOf = (by: Pick<DispatchedBy, "effect" | "key">): string => by.key ?? by.effect;
 
 /** The header a foreign `dispatch` carries its {@link DispatchedBy} in, as JSON (ADR-0071): out of
  * band, so the callee's door reserves no body field for it. */
 export const DISPATCHED_BY_HEADER = "jr2-dispatched-by";
+
+/** The header that makes a foreign start a key-only ask (ADR-0071), with the value `true`: the door
+ * answers the run under the key of {@link DISPATCHED_BY_HEADER}, or `200 { existing: false }`, and
+ * starts nothing. The Instance Effector sends it, with no body, when the slot's schema refuses the
+ * body. */
+export const KEY_ONLY_HEADER = "jr2-key-only";
 
 /**
  * A dispatch's start as the run host answers it in-process (ADR-0071): the run, and whether the key
@@ -467,16 +579,24 @@ export type RunBinding = {
   /** The run's depth in a chain of dispatches (ADR-0071): 0 for a run nothing dispatched. Absent
    * on a bare unit-test binding, which reads 0. */
   depth?: number;
+  /** The first Caller of the run's chain of starts (ADR-0078): the Caller that started this run,
+   * or the run that dispatched it, and so on. A foreign `dispatch` sends it to the other door as
+   * `onBehalfOf` (ADR-0071). Undefined when jr2 started the chain. Absent on a bare binding. */
+  firstCaller?: () => Promise<{ via: string; name: string; shown?: string; onBehalfOf?: string } | undefined>;
   /**
    * The in-process half of a `dispatch` Effect (ADR-0071): the run host, reached directly, with no
    * wire and no token — the Orchestrator is the single writer of runs. `start` answers a refusal as
    * {@link DispatchStart}, never by throwing; `settled` resolves with the run's status once it is no
    * longer live — at once for a run already settled, and across a restore in either order — and
-   * rejects when `signal` aborts. Absent outside a RunHost: a dispatch with no target faults.
+   * rejects when `signal` aborts. `lookup` is the key check alone: the run of `workflow` that
+   * carries the key `key`, in any status, while its row lives; the Effect asks it before it reads
+   * its input, so a run that exists is answered whatever the slot's schema says now. Absent
+   * outside a RunHost: a dispatch with no target faults.
    */
   dispatch?: {
     start(workflow: string, input: Record<string, unknown>, by: DispatchedBy): Promise<DispatchStart>;
     settled(runId: string, signal: AbortSignal): Promise<RunStatus>;
+    lookup?(workflow: string, key: string): Promise<{ runId: string } | undefined>;
   };
   /** The hash of the Assembly the run holds (ADR-0069): the one it started under, through
    * restarts. Absent for a run no Assembly started. */
@@ -554,14 +674,18 @@ export type RunBinding = {
   /** Put back a notice an admission carried that no model heard, WITH its source (`NoticeLedger.restore`):
    * a raise would drop it, its source being seen. A Workspace notice is pending again for `taker`,
    * the conversation that did not hear it. Persisted at the write. */
-  restoreNotice?: (notice: Notice, to: string, source?: string, taker?: string) => void;
+  restoreNotice?: (notice: LedgerBody, to: string, source?: string, taker?: string) => void;
   /** Reserve the pending notices in one admission's scope, for its conversation (`scope.taker`).
    * They are delivered by the `recordAdmission` that ledgers it (its `delivered` ids and `taker`),
    * or released for that conversation if the admission fails. */
   takeNotices?: (scope: NoticeScope) => TakenNotices;
   releaseNotices?: (ids: readonly string[], taker?: string) => void;
   /** What `takeNotices` would reserve in this scope, reserving nothing (`NoticeLedger.peek`). */
-  peekNotices?: (scope: NoticeScope) => Array<{ id: string; notice: Notice; source?: string }>;
+  peekNotices?: (scope: NoticeScope) => Array<{ id: string; notice: LedgerBody; source?: string }>;
+  /** The Machine's `steer` action (ADR-0002): hold a Steering message for the Agent `agentName` of
+   * `machine`, with the Sender whose words it relays. Throws when `machine` carries no Agent of
+   * that name. Absent outside a RunHost: the action then does nothing. */
+  steer?: (machine: AnyActorRef, agentName: string, text: string, from?: Sender) => void;
   /** The Harness acknowledged a step boundary's notices (ADR-0062): each that `taker` reserved is
    * heard there, persisted at the write. Answers how many were. */
   acknowledgeNotices?: (ids: readonly string[], taker: string) => number;
@@ -727,7 +851,57 @@ export type ChildErrorMarker = { kind: "child-error"; agent: string; pick: strin
 
 /** Every marker a run's mechanism puts on its per-run feed — an Effect's lines among them
  * (ADR-0067): its start, its stream, its output, its abort. */
-export type RunMarker = TurnMarker | PlacingMarker | ChildErrorMarker | EffectMarker;
+export type RunMarker =
+  | TurnMarker
+  | PlacingMarker
+  | ChildErrorMarker
+  | EffectMarker
+  | GateMarker
+  | HookRefusedMarker
+  | PoolMarker;
+
+/**
+ * What a Pool of runs did with one item (ADR-0017): `started` (its run, and `existing` when the key
+ * found a run that was there before), `settled` (the run ended, with its status, or the start
+ * ended with no run: `start-refused` with the door's report, `dispatch-error` with the error), and
+ * `carry-refused` (a held item that the Source's `item` schema does not parse), and `skipped` (an
+ * item of a read whose `itemId` threw or gave no id: it has no `key`, and `reason` says which item
+ * and why; one mark per item in a run's life). `pool` is the Pool's Machine id. Instance-token class
+ * like the Turn markers: a key is the workflow's data.
+ */
+export type PoolMarker = {
+  kind: "pool";
+  pool: string;
+  mark: "started" | "settled" | "carry-refused" | "skipped";
+  /** The item's id: absent on `skipped`, whose item has none. */
+  key?: string;
+  run?: string;
+  existing?: boolean;
+  status?: string;
+  reason?: string;
+};
+
+/**
+ * A Gate's look gave its event, and the run took it (ADR-0011): the Gate's id and the event's name.
+ * The event's Sender is the Gate, and no Caller answered it. Instance-token class like the Turn
+ * markers: a Gate id can be one that the workflow computed from its data.
+ */
+export type GateMarker = { kind: "looked"; gate: string; event: string };
+
+/**
+ * A Hook's delivery reached an open Gate of the run, and the Gate did not take it (ADR-0011): its
+ * handler threw, gave an event that is not in its `delivers`, or gave one that the run does not take
+ * now. The run goes on. The Hook's name, the delivery id, the Gate, the event when there was one,
+ * and why. Instance-token class like the Turn markers: the reason can be a handler's own words.
+ */
+export type HookRefusedMarker = {
+  kind: "hook-refused";
+  hook: string;
+  delivery: string;
+  gate: string;
+  event?: string;
+  reason: string;
+};
 
 const bindings = new WeakMap<AnyActorSystem, RunBinding>();
 

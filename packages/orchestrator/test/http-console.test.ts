@@ -95,6 +95,22 @@ test("JSON `/` is a 404 — no invented index, and no HTML for a caller that did
   }
 });
 
+test("GET /console/config is open, and names each login issuer with its client id, read per request", async () => {
+  const { host } = await mkLive();
+  // An authenticator that refuses every bearer: the route must answer a page with no credential.
+  const refuseAll = async () => undefined;
+  let issuers = [{ issuer: "https://dex.example.com", clientId: "jr2-console" }];
+  const app = createApp(host, refuseAll, { consoleLogin: () => issuers });
+  const res = await app.request("/console/config");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { login: [{ issuer: "https://dex.example.com", clientId: "jr2-console" }] });
+  // A publish changes the config: the route reads it on each request.
+  issuers = [];
+  assert.deepEqual(await (await app.request("/console/config")).json(), { login: [] });
+  // An app with no login issuers at all offers none.
+  assert.deepEqual(await (await createApp(host).request("/console/config")).json(), { login: [] });
+});
+
 test("JSON /workflows/:name is the workflow detail, its declared input as JSON Schema", async () => {
   const app = await mkApp();
   const res = await app.request("/workflows/titled");

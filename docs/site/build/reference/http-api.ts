@@ -12,7 +12,7 @@ import { renderTypes, typeClosure } from "./types.ts";
 export const HTTP_PAGE = "reference/http-api.md";
 const ROUTES_FILE = "packages/orchestrator/src/http.ts";
 
-/** The bands of ADR-0014, in the order of the credential each asks for. */
+/** The bands of ADR-0014 and ADR-0078, in the order of the credential each asks for. */
 const BANDS: { band: HttpBand; title: string; text: string }[] = [
   { band: "open", title: "Open", text: "No token. Structure and observation: no run context, and no control." },
   {
@@ -21,14 +21,24 @@ const BANDS: { band: HttpBand; title: string; text: string }[] = [
     text: "Any token jr2 minted: the Instance token, or a Sandbox token. A Sandbox token reaches only what its own Sandbox owns.",
   },
   {
+    band: "guarded",
+    title: "A Caller with a scope",
+    text: "A Caller: the Instance token, a named Caller token, or a JWT. Each route needs one scope, for the Workflow of the run or the door that it addresses, and a 403 names the scope and the Workflow. The Instance token has every scope. A Sandbox token is not a Caller, and is refused. A Caller can state the party it acts for in the header `jr2-on-behalf-of`; jr2 records the claim and does not check it.",
+  },
+  {
     band: "instanceOnly",
     title: "Instance token only",
-    text: "The Instance token alone: run control, starting a run, and full run state. A Sandbox token is refused.",
+    text: "The Instance token alone: the routes that no scope opens. A named Caller token is refused, whatever its scopes, and so is a Sandbox token.",
   },
   {
     band: "publishOnly",
     title: "Publish token only",
     text: "The publish token alone, which `jr2 up` reads from the instance Secret. The Instance token is refused, because a publish puts code into the Orchestrator.",
+  },
+  {
+    band: "hook",
+    title: "A Hook's verifier",
+    text: "No bearer token: the Hook's own verifier checks each delivery, as its kind tells (a `token` header, an `ed25519` signature or a `mac`). A delivery that fails the verifier, or whose signed time is more than 300 seconds from the Orchestrator's clock, gets 401.",
   },
 ];
 
@@ -56,8 +66,16 @@ function linkTypes(text: string, names: ReadonlySet<string>): string {
     .replace(/(^|[^`\]])(<[^>\s]+>)/g, (_, pre: string, tag: string) => pre + code(tag));
 }
 
+/** A guarded route's scope, as a reader asks for it. */
+function scopeText(scope: NonNullable<HttpRoute["scope"]>): string {
+  if (scope === "any") return "any Caller";
+  if (typeof scope === "string") return code(scope);
+  return `${scope.map(code).join(" or ")}; each opens its own part of the answer`;
+}
+
 function renderRoute(ctx: RefContext, r: HttpRoute, names: ReadonlySet<string>): string {
   const rows: [string, string][] = [["Summary", r.summary]];
+  if (r.scope !== undefined) rows.push(["Scope", scopeText(r.scope)]);
   if (r.body) rows.push(["Body", linkTypes(r.body, names)]);
   rows.push(["Response", linkTypes(r.response, names)]);
   rows.push(["Stream", r.stream ? "yes: Server-Sent Events" : "no"]);
@@ -78,7 +96,7 @@ export function renderHttp(ctx: RefContext): string {
     ].join("\n\n");
   });
   const intro = [
-    `The Orchestrator's HTTP API: what the ${code("jr2")} CLI, the Console, a webhook and the Harness call. Each route is in one access band, by the credential it asks for (${adrLinks(ctx, ["0014"], HTTP_PAGE, ROUTES_FILE)}). Send a token as ${code("Authorization: Bearer <token>")}. An error answer is ${code("{ error }")}, with the status the route gives. A path segment ${code(":name")} is a parameter; ${code(":name{regex}")} is a parameter that must match the regex.`,
+    `The Orchestrator's HTTP API: what the ${code("jr2")} CLI, the Console, a webhook and the Harness call. Each route is in one access band, by the credential it asks for (${adrLinks(ctx, ["0014", "0078"], HTTP_PAGE, ROUTES_FILE)}). Send a token as ${code("Authorization: Bearer <token>")}. An error answer is ${code("{ error }")}, with the status the route gives. A path segment ${code(":name")} is a parameter; ${code(":name{regex}")} is a parameter that must match the regex.`,
     `Bands: ${BANDS.map((b) => `[${b.title}](#${anchorOf("band", b.band)})`).join(", ")}. The types the bodies and answers name are in [Types](#types).`,
   ];
   return [...intro, ...bands, renderTypes(ctx, closure, HTTP_PAGE)].join("\n\n") + "\n";

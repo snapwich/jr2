@@ -42,6 +42,8 @@ jr2 up
 
 For an Instance that has only `ping`, the output is:
 
+<!-- output: not run -->
+
 ```text
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
@@ -54,7 +56,7 @@ sandbox images: skipped (no registered Machine composes a Sandbox)
 orchestrator: applying (image ghcr.io/snapwich/jr2-orchestrator:<version>)
 orchestrator: waiting for rollout
 orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
-instance effector: none (no Effect is placed there)
+instance effector: none (no Effect is placed there, and no Hook needs it)
 assembly: publishing 0adf5bff234d (current is ba71fa27f37f)
 assembly: 0adf5bff234d is current — workflows: ping
 swept nothing — every labeled image is named by a live root
@@ -80,11 +82,13 @@ Run the Workflow:
 jr2 run ping --input '{"message":"hi"}'
 ```
 
+<!-- output: not run -->
+
 ```text
 → context kind-jr2 / namespace my-instance
 run 7df09f94-d26d-44c3-ba1e-0279f16ccacb (ping) — attached
   → done "done"
-{"runId":"7df09f94-d26d-44c3-ba1e-0279f16ccacb","workflow":"ping","instanceId":"b2ec6504-553e-495a-a8be-62715c6d8595","status":"done","value":"done","context":{"message":"hi","reply":"pong, again: hi"},"children":[],"waiting":[],"held":[],"assembly":"0adf5bff234d"}
+{"runId":"7df09f94-d26d-44c3-ba1e-0279f16ccacb","workflow":"ping","instanceId":"b2ec6504-553e-495a-a8be-62715c6d8595","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"done","context":{"message":"hi","reply":"pong, again: hi"},"children":[],"waiting":[],"held":[],"assembly":"0adf5bff234d"}
 ```
 
 Your run id and your instance id are different. The `reply` comes from the new Machine, and `assembly` is the hash of

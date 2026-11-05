@@ -1,4 +1,4 @@
-# Observation is open; run state and control need the Instance token
+# Observation is open; run state and control need a Caller's scope
 
 [ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) minted two tokens and scoped them
 for **delivery** — a Sandbox token may deliver to its own agent registrations, an Instance token may deliver to gates.
@@ -16,20 +16,40 @@ Building `jr2 visualize` (the Machine renderer and its live run highlighting) fo
 
 ```
 open           /workflows, /workflows/:name/machine, /viz/*        structure
+               /console/config (the login's issuers, ADR-0032)     public values
                /workflows/:name/runs, …/runs/:runId/events         OBSERVATION (new)
 authenticated  /agents/:iid/*                                      the Agent's surface  [Sandbox token]
-instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + control  [Instance token]
-               POST /workflows/:name/runs                          starting a run (ADR-0058)
-               /runs/:id/gates/:gate/events                        gates (ADR-0011/0013)
+guarded        each route below, opened by one scope of a Caller   run state + control  [a Caller, ADR-0078]
 ```
 
-- **Run state and run control are the Instance token's alone.** `authenticated` accepts _any_ token we minted, so a
-  Sandbox token — the one credential that sits in a pod an Agent shares a network namespace with — could read **every**
-  run's context (other features' branches, ticket bodies, review verdicts, Harness endpoints) and **CANCEL any run**.
-  Neither is on the Agent's surface, no more than a gate is: ADR-0013 scopes that token to delivering into registrations
-  recorded against its _own_ Sandbox. This closes the same class of hole ADR-0013 closed for gates, on the routes it did
-  not name. The band is named for the credential it requires, not for a role — "operator" in this repo is the Kubernetes
-  operator (ADR-0001).
+- **Run state and run control are a Caller's, and each route needs one scope.** `authenticated` accepts _any_ token we
+  minted, so a Sandbox token — the one credential that sits in a pod an Agent shares a network namespace with — could
+  read **every** run's context (other features' branches, ticket bodies, review verdicts, Harness endpoints) and
+  **CANCEL any run**. Neither is on the Agent's surface, no more than a gate is: ADR-0013 scopes that token to
+  delivering into registrations recorded against its _own_ Sandbox. This closes the same class of hole ADR-0013 closed
+  for gates, on the routes it did not name. The guarded band takes only a Caller
+  ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)): a Sandbox token is never
+  one. Each route of the band needs one scope, checked against the Workflow of the run or the door that it addresses:
+
+  ```
+  start    POST /workflows/:name/runs, POST /workflows/:wrapper/charts/:name/runs
+  read     GET /runs (the runs of its Workflows), GET /runs/:id (the whole status), GET /runs/:id/events
+  answer   POST /runs/:id/gates/:gate/events, GET /gates, and the `gates` of GET /runs/:id
+  cancel   POST /runs/:id/events (CANCEL)
+  steer    POST /runs/:id/steering, GET /runs/:id/agents (the conversation list { agent, open, steerable }, ADR-0002)
+  ```
+
+  `answer` alone opens a run's `gates` and their routing, and never its `context`: a person who answers a Gate reads the
+  Gate's `meta`, which the author wrote for that person. So `GET /runs/:id` gives `read` the status and `answer` the
+  `gates`; with `answer` alone the answer is the run's observation (below) and its `gates`. `GET /runs` leaves out the
+  runs of the Workflows that the Caller may not read; it refuses no run, and refuses only a Caller with no `read` scope
+  at all (ADR-0078). `GET /runs/resolve` answers ids to a Caller with any scope, for the Workflows of its scopes.
+  `GET /whoami` answers any Caller. A route that no scope names stays the Instance token's: the runtime Chart routes
+  (`PUT` and `DELETE /workflows/:wrapper/charts/:name`), `GET /repos`, a Hook's log (`GET /hooks/:name`, which can hold
+  a payload's fields and a handler's words), and the Instance-token door on `/agents/:iid/*` (ADR-0013).
+  `POST /hooks/:name` is outside the bands: the Hook's own verifier authenticates it
+  ([ADR-0011](0011-workflow-defined-events.md)). The band is named for what it checks, not for a role — "operator" in
+  this repo is the Kubernetes operator (ADR-0001).
 
 - **The observer gets a PROJECTION, not a credential.** `RunObservation` is
   `{ runId, workflow, status, value, children }` — identity, and where in the Machine the run is. What is absent is the
@@ -48,16 +68,15 @@ instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + c
 
 ## Considered options
 
-- **Give the page a token.** It would have to be the **Instance** token — gates, cancel, every run's context — handed to
-  whatever can load a URL. Putting it in `jr2.config.ts` (checked in) is worse still, and the token is minted per boot,
-  so the page would not have it anyway. Rejected: the visualizer needs to _see_ a run, and seeing is not a subset of the
-  credential that steers it. That mismatch is the whole reason a projection exists.
+- **Give the page a token.** It would be a credential — gates, cancel, every run's context — handed to whatever can load
+  a URL. Putting it in `jr2.config.ts` (checked in) is worse still, and the token is minted per boot, so the page would
+  not have it anyway. Rejected: the visualizer needs to _see_ a run, and seeing is not a subset of the credential that
+  steers it. That mismatch is the whole reason a projection exists.
 - **Keep `/runs*` on `authenticated` and filter in the handler.** Rejected: the guard would then depend on every future
   handler remembering to redact. The band is a middleware precisely so the default is refusal.
 - **A fourth "observer" token.** Rejected: it buys nothing today (the observation surface carries no secret) and costs a
   minting, distribution, and revocation story. If observation ever needs to be _private_ — a deployed jr2 Application on
-  a shared network — that is the ADR to write, and it is the same open question ADR-0013 left about authn for non-kube
-  callers.
+  a shared network — the guarded band and ADR-0078's scopes are already where it goes.
 
 ## Consequences
 
@@ -66,11 +85,11 @@ instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + c
   now **403**. The test pinned the hole.
 - **The API is a cluster Service** (ADR-0019), so "open" means open to whoever can reach it — in-cluster peers, a
   port-forward, or an ingress — deliberately, since what is open is structure plus lit states. Anything that would
-  embarrass a user if seen belongs behind `instanceOnly`, and that is where it is.
-- **The CLI is unaffected.** It holds the Instance token from the in-cluster Secret (ADR-0019) and reads the guarded
-  routes, as before.
-- **Open, inherited from ADR-0013:** what a deployed jr2 Application uses for human callers. Whatever it is, the band
-  split survives it — only the credential in the `instanceOnly` band changes.
+  embarrass a user if seen belongs in the guarded band, and that is where it is.
+- **The CLI is unaffected.** It holds the Instance token from the in-cluster Secret (ADR-0019), which has every scope,
+  and reads the guarded routes, as before.
+- **A Caller without kube credentials is ADR-0078's:** a named token, a JWT, or a browser login. The band split holds
+  for every Caller; what the guarded band checks is one scope for each route.
 
 - **One scoped exception, and it does not live on this surface at all (ADR-0023).** The Harness prints each Agent's
   conversation — prompts, assistant text, thinking, tool calls, and the answer jr2 gave each Menu pick — to container
@@ -88,8 +107,8 @@ instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + c
   `command` Effect's output prints there up to the bound, and a Held value an upstream echoed into that output prints
   with it (ADR-0023, ADR-0059). What remains, deliberately, is that on a shared cluster the population who can read an
   Agent's reasoning, and what its picks answered, is whoever can read pod logs. If that becomes unacceptable, the fix is
-  the read-through ADR-0023 declined to build — `instanceOnly`, on this surface, where the band already works.
+  the read-through ADR-0023 declined to build — behind `read`, on this surface, where the band already works.
 
-Evidence: `packages/orchestrator/src/http.ts` (the three middlewares), `run-host.ts` (`observe` / `RunObservation` /
-`RunChild`), `test/auth.test.ts` (the boundary), `test/http-viz.test.ts` (a planted secret never reaches the feed, at
-any depth of the child tree).
+Evidence: `packages/orchestrator/src/http.ts` (the middlewares), `run-host.ts` (`observe` / `RunObservation` /
+`RunChild`), `test/auth.test.ts` (the boundary), `test/callers.test.ts` (each scope on its routes),
+`test/http-viz.test.ts` (a planted secret never reaches the feed, at any depth of the child tree).

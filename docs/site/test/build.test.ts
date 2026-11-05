@@ -121,7 +121,7 @@ test("a full strict build of this repo succeeds, and writes the bundle", async (
   // pages is one entry, after the directory of its contents page, so the line stays short.
   assert.match(
     block,
-    /\|reference:\{authoring-surface\.md,machines\.md,config\.md,cli\.md,[^}]*\}\|reference\/authoring-surface:\{one file per export and type; reference\/authoring-surface\.md lists them\}\|/,
+    /\|reference:\{authoring-surface\.md,machines\.md,hooks\.md,config\.md,cli\.md,[^}]*\}\|reference\/authoring-surface:\{one file per group, export and type; reference\/authoring-surface\.md lists them\}\|/,
   );
   const dirs = [...block.matchAll(/\|([\w./-]+):\{/g)].map((m) => m[1]!);
   assert.deepEqual(dirs, [...new Set(dirs)], "a directory has two entries in the block");

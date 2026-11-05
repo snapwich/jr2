@@ -7,7 +7,7 @@
 //
 // Wire (ADR-0027 — the normative model of the conversation endpoints; `@jr2/harness` serves it for
 // real), and the pod's memory kills, which a stub never has (ADR-0062):
-//   POST /agents/:name/:id  {message, cwd?, definition, model?, thinkingLevel?, notices?, kept?} → 200 { streamUrl, offset, submissionId }
+//   POST /agents/:name/:id  {message, cwd?, definition, model?, thinkingLevel?, notices?, steering?, kept?} → 200 { streamUrl, offset, submissionId }
 //     (`message` and `cwd` are the Turn's Frame — what it is about and where it works, ADR-0057;
 //     `kept` admits as any POST does, because the stub keeps every conversation — the real Harness
 //     answers 404 when it keeps none, ADR-0062)
@@ -38,7 +38,7 @@
 
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
-import type { Notice } from "./wire.ts";
+import type { Notice, SteeringMessage } from "./wire.ts";
 
 /** One admission of an Agent: which slot, which durable exchange, this Turn's FRAME (the prompt
  * and where it works — ADR-0057), the DEFINITION the Machine's slot carried here (ADR-0049), and
@@ -58,6 +58,8 @@ export type Admission = {
   thinkingLevel?: string;
   /** The notices the admission carried (ADR-0062). Absent when it carried none. */
   notices?: Notice[];
+  /** The Steering messages the admission carried (ADR-0002). Absent when it carried none. */
+  steering?: SteeringMessage[];
 };
 
 /** One settled submission, in the shape `history()` reports it. The stub settles submissions for
@@ -165,6 +167,7 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
               model?: string;
               thinkingLevel?: string;
               notices?: Notice[];
+              steering?: SteeringMessage[];
             }
           | undefined;
         const admission: Admission = {
@@ -178,6 +181,7 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
           ...(sent?.model ? { model: sent.model } : {}),
           ...(sent?.thinkingLevel ? { thinkingLevel: sent.thinkingLevel } : {}),
           ...(sent?.notices?.length ? { notices: sent.notices } : {}),
+          ...(sent?.steering?.length ? { steering: sent.steering } : {}),
         };
         admissions.push(admission);
         const submissionId = `stub-${++submissionSeq}`;

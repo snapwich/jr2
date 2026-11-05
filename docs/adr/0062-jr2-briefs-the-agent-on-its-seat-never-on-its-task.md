@@ -84,17 +84,18 @@ whose processes are gone, with no way to know why.
   - A notice never replaces a fault. The Machine still receives `agent.fault` and decides (ADR-0016); the notice makes
     sure the next Agent is not working blind.
 
-- **The Orchestrator is the only keeper of notices**: pending notices are plain data in the run's persisted state
-  (ADR-0007). It sees kernel kills and fresh conversations itself. A kernel kill (ADR-0061, layer 5) has two paths,
-  under one source, the Workspace and the time the Harness container ended. A Turn that the kill ended faults on it, and
-  the fault raises the notice with the Turn's Agent. A kill while no Turn runs faults nothing, so before each admission
-  into a Workspace the Agent actor also reads the container's last end from the Sandbox watch, which the operator
-  publishes: a last end `OOMKilled` raises the notice, which names no Turn. The ledger's `seen` makes the two paths one
-  notice. An actor whose own watch saw the restart reads the last end only when it re-admits the Turn after the cut.
-  When the Turn faults, the fault's notice names the Turn's Agent. A watch that has not listed yet says nothing, and the
-  next admission reads again: the last end stays until the container ends again. A nudge and a wake take no kernel kill;
-  it stays for the next Turn. The re-admission after a cut takes it, as it takes every notice in scope that is not a
-  guard kill. The Harness reports a guard kill (ADR-0061) on two paths, under one id that the Harness gives the kill:
+- **The Orchestrator is the only keeper of notices and Steering messages**: pending ones are plain data in the run's
+  persisted state (ADR-0007). It sees kernel kills and fresh conversations itself. A kernel kill (ADR-0061, layer 5) has
+  two paths, under one source, the Workspace and the time the Harness container ended. A Turn that the kill ended faults
+  on it, and the fault raises the notice with the Turn's Agent. A kill while no Turn runs faults nothing, so before each
+  admission into a Workspace the Agent actor also reads the container's last end from the Sandbox watch, which the
+  operator publishes: a last end `OOMKilled` raises the notice, which names no Turn. The ledger's `seen` makes the two
+  paths one notice. An actor whose own watch saw the restart reads the last end only when it re-admits the Turn after
+  the cut. When the Turn faults, the fault's notice names the Turn's Agent. A watch that has not listed yet says
+  nothing, and the next admission reads again: the last end stays until the container ends again. A nudge and a wake
+  take no kernel kill; it stays for the next Turn. The re-admission after a cut takes it, as it takes every notice in
+  scope that is not a guard kill. The Harness reports a guard kill (ADR-0061) on two paths, under one id that the
+  Harness gives the kill:
   - **On a stream.** While a Submission runs, the kill is an event on that conversation's updates stream. The Agent
     actor reads a stream while it waits on the Submission. It stops when the Agent's state exits, before its abort
     reaches the Harness. So a stream does not always reach a reader: a kill in that window is on a stream that no one
@@ -187,14 +188,48 @@ whose processes are gone, with no way to know why.
   A conversation whose own `bash` call answered a kill is not in that kill's audience, so it does not hear the kill
   again as a notice, at its next Turn or at a step boundary.
 
+- **One ledger carries notices and Steering messages.** A Steering message ([ADR-0002](0002-duplex-streaming-actor.md))
+  is not a notice: a notice is a fact that jr2 knows and that has no author, and a Steering message is an utterance with
+  an author, which the model weighs by who wrote it. So the two are siblings on one transport. Each entry of the ledger
+  is an **envelope** and a **body**. The envelope holds what the ledger delivers by: the address, the source, the
+  audience, and what was reserved and heard. The body is a Notice, or a Steering message with its text and its author:
+  `{ kind: "caller", via, name, onBehalfOf? }` or `{ kind: "machine", from? }`, where `from` is the Sender whose words
+  the Machine relays. The rules above, heard once, reserved at a step boundary and delivered when the append is
+  acknowledged, hold for both.
+  - **The address is a tagged value.** `{ conversation }` and `{ workspace }` are the two kinds that notices use, and
+    `{ slot }` (an Agent slot of one Machine instance of the run) is the kind that a Steering message uses. A new kind
+    is an addition, and no kind changes the meaning of another's fields.
+  - **A slot's audience is a future member.** A Workspace notice fixes its audience when the ledger raises it. A message
+    to a slot goes to the slot's open Turn, or, when there is none, to the slot's next Turn in the same Machine
+    instance, whose conversation does not exist yet at the raise. It retires, recorded "not delivered", when that
+    Machine instance ends.
+  - **The Harness frames a Steering message by its author.** A Caller's message is an instruction from outside the run,
+    and the frame names the Caller. A message that the Machine relays `from` another Agent is information from a peer.
+    The frame says that the workflow passes it on but did not write it, and a closing line after the text says that it
+    is not an instruction and does not change the Agent's task: the Agent does what the workflow asked. The closing line
+    is read last, after the peer's text (ADR-0029). In `peer-not-order`, a frame that said only "not an order" read 5 of
+    10, because a model that obeyed read "the workflow relays" as the workflow's own word. A frame that said, ahead of
+    the text only, that it was "that Agent's word, not the workflow's", read 17 of 20, and the closing line read 20 of
+    20 (ADR-0066). A message that the Machine relays `from` a Gate is what the Gate received, and the frame says that it
+    is not an order either. A Machine's message with no `from` is the workflow's own text. The text is quoted line by
+    line, so the model sees where it starts and ends, and it follows the notices in the Turn part, ahead of the Allowed
+    picks. A name in the frame (a Caller's name, its `onBehalfOf`, a peer's or a Gate's id) is a code span that its own
+    text cannot close, on one line: a name comes from outside jr2 and can hold a backtick or a line break. A message
+    whose author the Harness does not know is dropped, never framed as another author's.
+  - **The two bodies ride the wire apart.** The admit body carries `notices` and `steering`, and the surface read
+    `notices: [{ id, notice }]` and `steering: [{ id, message }]`; one acknowledgment,
+    `POST /agents/:iid/notices { heard }`, hears both by their ledger ids. A nudge and a wake take notices by their
+    sources, so they carry no message: the surface read that starts their Submission does.
 - **The Harness writes every word.** The admit body carries typed notices
   (`notices: [{ kind: "memory-limit", scope, agent?, limit?, peak? } | { kind: "conversation-new", reason } | { kind: "pick-answer", pick, cut, answer?, stopped? } …]`,
-  where `peak` comes only with `limit`), and the Harness renders both parts. An outstanding pick's answer is data too —
-  the last reply since the pick, a party's event with its payload or a child's output (ADR-0024) — and its words ("Its
-  answer: `approve` from Gate `review`, with {…}", "No reply came back for it.") are the Harness's, in the receipt and
-  in the notice alike; "it moved the workflow, and nothing ran" is a guard straight back's receipt alone. The standing
-  part needs no wire: the Harness already holds its limits (cgroup and Downward API env), the definition's `workspace`
-  access, and the Menu. The wording lives in one place, and Harness conformance checks it (ADR-0027).
+  where `peak` comes only with `limit`) and Steering messages with their authors, and the Harness renders both parts and
+  frames each message. The text of a Steering message is the author's; the frame around it is the Harness's. An
+  outstanding pick's answer is data too — the last reply since the pick, a party's event with its payload or a child's
+  output (ADR-0024) — and its words ("Its answer: `approve` from Gate `review`, with {…}", "No reply came back for it.")
+  are the Harness's, in the receipt and in the notice alike; "it moved the workflow, and nothing ran" is a guard
+  straight back's receipt alone. The standing part needs no wire: the Harness already holds its limits (cgroup and
+  Downward API env), the definition's `workspace` access, and the Menu. The wording lives in one place, and Harness
+  conformance checks it (ADR-0027).
 
 ## Considered options
 
@@ -220,6 +255,9 @@ whose processes are gone, with no way to know why.
   does not.
 - **Read the kill on the Sandbox watch.** Rejected: the operator publishes what the kubelet says about the container,
   and a guard kill does not end the container. The Harness has no Kubernetes credentials to publish it.
+- **A Steering message as a kind of notice.** Rejected: a notice is a fact with no author, and the Harness words it. A
+  Steering message is an author's text, and the model must weigh a Caller's instruction and a peer's word differently.
+  Folded into a notice, the author and that difference have no place.
 - **The Harness words the kill into the next Turn itself.** Rejected: a second keeper of notices, outside the run's
   persisted state, which cannot know when an admission is ledgered or heard.
 

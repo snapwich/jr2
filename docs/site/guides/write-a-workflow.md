@@ -131,12 +131,14 @@ In the first terminal, the run ends. A `roll_back` ends the rollout, so the run 
 person as its output, and `jr2 run` exits with `1`. Its `context` holds the default of `canaryPercent`, the `instanceId`
 that jr2 added, and the `reason`:
 
+<!-- output: not run -->
+
 ```text
   emit {"type":"decided","promoted":false}
   → active "rolledBack"
   → failed "rolledBack"
 failed: The error rate went up.
-{"runId":"b7c3d871-e3ae-46af-8bb3-774913bcd6cc","workflow":"rollout","instanceId":"b79e7e8b-6289-4dbc-a9a3-be945f8b1173","status":"failed","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"b79e7e8b-6289-4dbc-a9a3-be945f8b1173","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"assembly":"83858e28b054","output":{"reason":"The error rate went up."}}
+{"runId":"b7c3d871-e3ae-46af-8bb3-774913bcd6cc","workflow":"rollout","instanceId":"b79e7e8b-6289-4dbc-a9a3-be945f8b1173","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"failed","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"b79e7e8b-6289-4dbc-a9a3-be945f8b1173","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"answers":[{"gate":"canary","type":"roll_back","at":"2026-11-03T11:04:12.659Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"83858e28b054","output":{"reason":"The error rate went up."}}
 ```
 
 Your instance id and your `assembly` hash are different.
@@ -144,12 +146,22 @@ Your instance id and your `assembly` hash are different.
 [Start a run](start-a-run.md) gives the other ways to start a run. [Answer a Gate](answer-a-gate.md) gives the other
 ways to answer one.
 
-## Put shared code in a file that jr2 does not register
+## Lay out the Instance
+
+jr2 finds the Workflows in `workflows/`, and `jr2.config.ts` declares the rest. Other code goes in folders of your own
+choice. `jr2 up` bundles the whole folder of the Instance, so a Workflow and the config can import from each folder:
+
+```
+my-instance/
+  jr2.config.ts    the config: secrets, Hooks, Callers, the Harness
+  workflows/       one .ts file is one Workflow
+  hooks/           your Hook kinds
+  lib/             code that two Workflows share
+```
 
 jr2 registers each `.ts` file in `workflows/`, also a file that a different Workflow imports. It does not register a
-file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two Workflows share in a file such as
-`workflows/_events.ts`, or outside `workflows/`. Import it with its `.ts` extension:
-`import { promote } from "./_events.ts";`.
+file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two Workflows share outside `workflows/`,
+such as in `lib/events.ts`. Import it with its `.ts` extension: `import { promote } from "../lib/events.ts";`.
 
 ## Rules
 

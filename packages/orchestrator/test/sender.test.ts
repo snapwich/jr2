@@ -169,3 +169,84 @@ test("after a restore the registrations deliver with their sender again: it is r
     sender: { party: "agent", id: "coder" },
   });
 });
+
+// ---- The Caller on a Gate's Sender (ADR-0011, ADR-0078) -----------------------------------------
+
+/** The Caller of a request with no authenticator (a test app): the Instance token's, with the claim
+ * that the request's `jr2-on-behalf-of` header states. */
+const instanceSender = (onBehalfOf?: string) => ({
+  party: "gate",
+  id: "reviewer",
+  via: "token",
+  name: "instance",
+  ...(onBehalfOf !== undefined ? { onBehalfOf } : {}),
+  checked: ["via", "name"],
+});
+
+const postAs = (h: Awaited<ReturnType<typeof partyHost>>, path: string, body: object, onBehalfOf: string) =>
+  h.app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", "jr2-on-behalf-of": onBehalfOf },
+    body: JSON.stringify(body),
+  });
+
+test("a Gate's answer through the door carries its Caller on the Sender, and the run records it as answeredBy", async () => {
+  const h = await partyHost(build);
+  const r = await h.start();
+  h.host.sendToAgent(r.iids.coder!, { type: "note", text: "ready" });
+  await r.until("review");
+  const res = await postAs(h, `/runs/${r.runId}/gates/board/events`, { type: "answer", text: "lgtm" }, "alice");
+  assert.equal(res.status, 200);
+  assert.deepEqual((await seen(h, r.runId))[1], { type: "answer", text: "lgtm", sender: instanceSender("alice") });
+  // `onBehalfOf` is a claim: `checked` never names it for a Caller that is not a Hook.
+  const answers = (await h.host.read(r.runId))!.answers!;
+  assert.equal(answers.length, 1);
+  assert.deepEqual(
+    { ...answers[0], at: undefined },
+    {
+      gate: "board",
+      type: "answer",
+      at: undefined,
+      answeredBy: { via: "token", name: "instance", onBehalfOf: "alice" },
+    },
+  );
+  assert.ok(!Number.isNaN(Date.parse(answers[0]!.at)));
+});
+
+test("the Caller on a Sender survives a restore in a re-armed timer, and the run's answers survive with it", async () => {
+  const h = await partyHost(build);
+  const r = await h.start();
+  h.host.sendToAgent(r.iids.coder!, { type: "note", text: "x" });
+  await r.until("review");
+  assert.equal((await postAs(h, `/runs/${r.runId}/gates/board/events`, { type: "park" }, "bob")).status, 200);
+  let stored = "";
+  for (let i = 0; i < 100 && !stored.includes('"timers":[{'); i++) {
+    stored = JSON.stringify(await h.store.load(r.runId));
+    await new Promise((res) => setTimeout(res, 5));
+  }
+  await h.host.stop(r.runId);
+
+  const second = await partyHost(build, ["coder"], h.store);
+  assert.deepEqual((await second.host.restore()).reattached, [r.runId]);
+  assert.deepEqual(
+    second.host.status(r.runId)?.answers?.map((a) => [a.type, a.answeredBy.onBehalfOf]),
+    [["park", "bob"]],
+    "the record of who answered comes back with the run",
+  );
+  await second.handle(r.runId).until("done");
+  assert.deepEqual((await seen(second, r.runId)).at(-1), { type: "later", sender: instanceSender("bob") });
+});
+
+test("an answer from the run host with no Caller carries none, and is no answer on the run's record", async () => {
+  const h = await partyHost(build);
+  const r = await h.start();
+  h.host.sendToAgent(r.iids.coder!, { type: "note", text: "x" });
+  await r.until("review");
+  h.host.sendToGate(r.runId, "board", { type: "answer", text: "y" });
+  assert.deepEqual((await seen(h, r.runId))[1], {
+    type: "answer",
+    text: "y",
+    sender: { party: "gate", id: "reviewer" },
+  });
+  assert.equal((await h.host.read(r.runId))!.answers, undefined);
+});
