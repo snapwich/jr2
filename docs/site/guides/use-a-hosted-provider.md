@@ -157,7 +157,7 @@ custom provider, with `harness.provider` and `apiKey`. The guide
 - `jr2 up` refuses a gateway address that is not `https://`:
   `harness.catalog.<id>.baseUrl must be an https:// URL — the Custodian carries TLS only (ADR-0059). Read it from .env: catalog: { anthropic: { baseUrl: process.env.LITELLM_URL ?? "" } }`.
 - `jr2 up` warns about a key that no pod gets:
-  `warning: secrets[<i>] (<NAME>) is named by nothing; goes nowhere — no workspace() lists it, no Agent's provider reads it, and no Effect names it (ADR-0059, ADR-0068)`.
+  `warning: secrets[<i>] (<NAME>) is named by nothing; goes nowhere — no workspace() lists it, no Agent's provider reads it, and no Effect or Hook names it (ADR-0059, ADR-0068)`.
 - A credential that signs each request, such as `AWS_ACCESS_KEY_ID`, cannot be a Held secret. `jr2 up` warns when
   `harness.env` sets one. Send the calls through a gateway that holds the credential, and hold the key of the gateway:
   `warning: harness.env sets <NAME>: a signing credential cannot be held (a Stand-in cannot be swapped into a signature), so the Agent can read it — route the provider through a gateway that holds it, and hold the gateway's key instead (ADR-0059)`.

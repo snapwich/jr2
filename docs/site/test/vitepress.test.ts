@@ -251,6 +251,14 @@ test("a container line needs an empty line on each side, as prettier would join 
   assert.match(tab.errors[0]!.message, /needs an empty line before it and after it: "== A"/);
 });
 
+test("a prettier-ignore line can sit right above a container line, with the empty line before the comment", () => {
+  // Prettier escapes `_sentry.ts` in a `<<<` path, and keeps its ignore comment right above the line.
+  const ok = convert("Text.\n\n<!-- prettier-ignore -->\n::: info\n\nHi.\n\n:::");
+  assert.deepEqual(ok.errors, []);
+  const joined = convert("Text.\n<!-- prettier-ignore -->\n::: info\n\nHi.\n\n:::");
+  assert.match(joined.errors[0]!.message, /needs an empty line before it and after it/);
+});
+
 // `{{ }}` in a code span passes: the site renders each code span with `v-pre` (.vitepress/config.ts).
 test("VitePress syntax the bundle cannot carry fails in prose; the same text in code passes", () => {
   const text = [

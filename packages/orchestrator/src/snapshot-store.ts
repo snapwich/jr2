@@ -39,12 +39,13 @@ export interface SnapshotStore {
    */
   findIdsByPrefix(prefix: string, limit: number): Promise<string[]>;
   /**
-   * The run whose blob carries the idempotency key `effect` (`dispatchedBy.effect`, ADR-0071), in
-   * any status, or undefined: what answers a re-sent dispatch with the run it already started. A
-   * row `markLost` wrote with no save before it has no snapshot, and so no key; a swept row is gone
-   * with its key.
+   * The run of `workflow` whose blob carries the idempotency key `key` (`dispatchedBy.effect`,
+   * ADR-0071), in any status, or undefined: what answers a re-sent dispatch with the run it already
+   * started. The key is scoped to the callee Workflow, so the same key in two Workflows is two runs.
+   * A row `markLost` wrote with no save before it has no snapshot, and so no key; a swept row is
+   * gone with its key.
    */
-  findByDispatch(effect: string): Promise<string | undefined>;
+  findByDispatch(workflow: string, key: string): Promise<string | undefined>;
   save(runId: string, snapshot: unknown, status?: string): Promise<void>;
   /**
    * Record a run whose live state could not be re-hydrated. An upsert: a row that was saved KEEPS
@@ -65,8 +66,84 @@ export interface SnapshotStore {
    * existed. It keeps the row's idempotency key too (ADR-0071).
    */
   markDrifted(runId: string, reason: string): Promise<void>;
+  /**
+   * Claim a Hook's delivery for the fan-in (ADR-0011): when the hook log holds no delivery of this
+   * Hook with this id OR this digest, it writes a `pending` line and answers the line's id, which
+   * `writeHookLine` finishes; else it answers `undefined`, a repeat, and writes nothing. The check and the write are one synchronous step, so of two deliveries
+   * that come at once, one claims. Only the lines of a claimed delivery count: a handshake, a
+   * `payload-refused` line and an `unreadable` line never make a repeat, so a payload that the parse
+   * refused is parsed again when the service sends it again.
+   */
+  claimHookDelivery(hook: string, delivery: string, digest: string): number | undefined;
+  /** Write one line of the hook log (ADR-0011), or finish the `pending` line of `claimed`. */
+  writeHookLine(line: HookLogLine, claimed?: number): void;
+  /** The hook log of one Hook, newest first, at most `limit` lines. */
+  hookLog(hook: string, limit: number): HookLogLine[];
+  /**
+   * The head of each standing Workflow (ADR-0017): its newest run, live or not, and whether it is
+   * paused. Synchronous, as `writeStanding` is, so a hand-over's start, its end and the head that
+   * names the new run are one step.
+   */
+  standingHeads(): StandingHead[];
+  /** Write the head of one standing Workflow. The weekly sweep never deletes the run a head names:
+   * a paused Pool keeps its held items in that run's blob for as long as it is paused. */
+  writeStanding(head: StandingHead): void;
   close(): Promise<void>;
 }
+
+/**
+ * The head of a standing Workflow (ADR-0017): `run` is its newest run, `since` when that run
+ * started, `streak` how many runs in a row ended `error`, `failed` or at the bound with no run
+ * started by an item that the run took itself, and `paused` why jr2 starts no run of it: a Caller
+ * cancelled the run (`cancel`), or, after 3 hand-overs from such runs, the next one ended `error`
+ * or `failed` (`errors`) or at its bound (`bound`).
+ */
+export type StandingHead = {
+  workflow: string;
+  run: string;
+  since: string;
+  streak: number;
+  paused?: "cancel" | "errors" | "bound";
+};
+
+/**
+ * One line of the hook log (ADR-0011): what the door did with one delivery of one Hook, and when.
+ * `kind` says which line it is: `delivered` (the fan-in ran; `outcome` holds what it did), `seen` (a
+ * repeat), `hold-full` (the fan-in ran and every Source was full, ADR-0017: the line does not claim
+ * the id, so a send again is heard), `no-live-run` (the fan-in ran, and a standing Pool that hears the
+ * kind and key has no live run and is not paused: 503, and the line does not claim the id either),
+ * `handshake`, `payload-refused` (with zod's `issues`), `unreadable` (the kind could not
+ * read the request: `error`) or `follow-up` (the follow-up post of an answer that a person reads
+ * failed, or went to a url outside the kind's `posts`: `post` and `error`; its `status` is 0). A
+ * `reply` that threw is in the `replyErrors` of its delivery's `detail`. `status` is the status that
+ * the rules give, which is the status of the answer unless a person reads the answer: that answer is
+ * 200 (ADR-0011).
+ */
+export type HookLogLine = {
+  hook: string;
+  at: string;
+  kind:
+    | "pending"
+    | "delivered"
+    | "seen"
+    | "hold-full"
+    | "no-live-run"
+    | "handshake"
+    | "payload-refused"
+    | "unreadable"
+    | "too-large"
+    | "follow-up";
+  status: number;
+  delivery?: string;
+  digest?: string;
+  /** The event key, when the kind read one. */
+  key?: string;
+  /** What the line says: the outcome, zod's issues, the error. */
+  detail?: unknown;
+};
+
+/** The kinds of line that make a repeat: a delivery that the door claimed. */
+const CLAIMED_KINDS = ["pending", "delivered", "seen"];
 
 type Row = {
   run_id: string;
@@ -77,17 +154,27 @@ type Row = {
 };
 
 /** The lookup `findByDispatch` runs, exported so a test can ask the planner about THIS statement,
- * not a copy of it: the column is indexed, so the plan is a seek. */
+ * not a copy of it: the pair of columns is indexed, so the plan is a seek. */
 export const FIND_BY_DISPATCH_SQL = `SELECT run_id FROM machine_snapshots
-  WHERE dispatch_effect = ? ORDER BY rowid LIMIT 1`;
+  WHERE dispatch_workflow = ? AND dispatch_effect = ? ORDER BY rowid LIMIT 1`;
 
-/** The idempotency key a blob carries at `dispatchedBy.effect` (ADR-0071), or null. */
+/** The idempotency key a blob carries (ADR-0071): `dispatchedBy.key`, else `dispatchedBy.effect`, or null. */
 function dispatchEffectOf(snapshot: unknown): string | null {
   if (typeof snapshot !== "object" || snapshot === null) return null;
   const by = (snapshot as { dispatchedBy?: unknown }).dispatchedBy;
   if (typeof by !== "object" || by === null) return null;
+  // A Pool's item id is the key when there is one (ADR-0017); else the caller's ledger row id.
+  const key = (by as { key?: unknown }).key;
+  if (typeof key === "string") return key;
   const effect = (by as { effect?: unknown }).effect;
   return typeof effect === "string" ? effect : null;
+}
+
+/** The Workflow a blob names (`workflow`): the scope of its idempotency key (ADR-0071), or null. */
+function dispatchWorkflowOf(snapshot: unknown): string | null {
+  if (typeof snapshot !== "object" || snapshot === null) return null;
+  const workflow = (snapshot as { workflow?: unknown }).workflow;
+  return typeof workflow === "string" ? workflow : null;
 }
 
 export class SqliteSnapshotStore implements SnapshotStore {
@@ -115,12 +202,67 @@ export class SqliteSnapshotStore implements SnapshotStore {
     // its own when `save` writes the row, and the column is indexed. Not an expression index over
     // `json_extract(snapshot, …)`: that runs on every row and THROWS on a blob SQLite's JSON parser
     // refuses (nested about a thousand deep), so one such row would fail its own save and every
-    // later `init()` over the volume. A column also costs no JSON parse a save.
+    // later `init()` over the volume. A column also costs no JSON parse a save. The key is scoped
+    // to the callee Workflow, so the Workflow is copied out too, and the index is on the pair.
     const columns = this.db.prepare(`PRAGMA table_info(machine_snapshots)`).all() as Array<{ name: string }>;
     if (!columns.some((c) => c.name === "dispatch_effect")) {
       this.db.exec(`ALTER TABLE machine_snapshots ADD COLUMN dispatch_effect TEXT`);
     }
-    this.db.exec(`CREATE INDEX IF NOT EXISTS machine_snapshots_dispatch_effect ON machine_snapshots(dispatch_effect)`);
+    if (!columns.some((c) => c.name === "dispatch_workflow")) {
+      this.db.exec(`ALTER TABLE machine_snapshots ADD COLUMN dispatch_workflow TEXT`);
+      this.fillDispatchWorkflow();
+    }
+    this.db.exec(`DROP INDEX IF EXISTS machine_snapshots_dispatch_effect`);
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS machine_snapshots_dispatch_key ON machine_snapshots(dispatch_workflow, dispatch_effect)`,
+    );
+    // The hook log (ADR-0011): one row per line, kept a week like a finished run (ADR-0065).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS hook_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hook TEXT NOT NULL,
+        at TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        delivery TEXT,
+        digest TEXT,
+        key TEXT,
+        detail TEXT
+      )
+    `);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS hook_log_delivery ON hook_log(hook, delivery)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS hook_log_digest ON hook_log(hook, digest)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS hook_log_at ON hook_log(at)`);
+    // The head of each standing Workflow (ADR-0017): one row for each, kept while the Workflow is.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS standing (
+        workflow TEXT PRIMARY KEY,
+        run TEXT NOT NULL,
+        since TEXT NOT NULL,
+        streak INTEGER NOT NULL DEFAULT 0,
+        paused TEXT
+      )
+    `);
+  }
+
+  /** A volume a store before the Workflow column wrote: copy the Workflow out of each keyed row, so
+   * its key keeps answering. The blob is parsed here, not by `json_extract`, which refuses a blob
+   * nested about a thousand deep. */
+  private fillDispatchWorkflow(): void {
+    const rows = this.db
+      .prepare(`SELECT run_id, snapshot FROM machine_snapshots WHERE dispatch_effect IS NOT NULL`)
+      .all() as Array<{ run_id: string; snapshot: string | null }>;
+    const update = this.db.prepare(`UPDATE machine_snapshots SET dispatch_workflow = ? WHERE run_id = ?`);
+    for (const row of rows) {
+      if (row.snapshot === null) continue;
+      let blob: unknown;
+      try {
+        blob = JSON.parse(row.snapshot);
+      } catch {
+        continue; // A blob that does not parse names no Workflow, and restore reports it.
+      }
+      update.run(dispatchWorkflowOf(blob), row.run_id);
+    }
   }
 
   async load(runId: string): Promise<StoredSnapshot | null> {
@@ -189,24 +331,33 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return rows.map((row) => row.run_id);
   }
 
-  async findByDispatch(effect: string): Promise<string | undefined> {
-    const row = this.db.prepare(FIND_BY_DISPATCH_SQL).get(effect) as { run_id: string } | undefined;
+  async findByDispatch(workflow: string, key: string): Promise<string | undefined> {
+    const row = this.db.prepare(FIND_BY_DISPATCH_SQL).get(workflow, key) as { run_id: string } | undefined;
     return row?.run_id;
   }
 
   async save(runId: string, snapshot: unknown, status = "live"): Promise<void> {
     this.db
       .prepare(
-        `INSERT INTO machine_snapshots (run_id, status, snapshot, reason, updated_at, dispatch_effect)
-         VALUES (?, ?, ?, NULL, ?, ?)
+        `INSERT INTO machine_snapshots
+           (run_id, status, snapshot, reason, updated_at, dispatch_effect, dispatch_workflow)
+         VALUES (?, ?, ?, NULL, ?, ?, ?)
          ON CONFLICT(run_id) DO UPDATE SET
            status = excluded.status,
            snapshot = excluded.snapshot,
            reason = NULL,
            updated_at = excluded.updated_at,
-           dispatch_effect = excluded.dispatch_effect`,
+           dispatch_effect = excluded.dispatch_effect,
+           dispatch_workflow = excluded.dispatch_workflow`,
       )
-      .run(runId, status, JSON.stringify(snapshot), new Date().toISOString(), dispatchEffectOf(snapshot));
+      .run(
+        runId,
+        status,
+        JSON.stringify(snapshot),
+        new Date().toISOString(),
+        dispatchEffectOf(snapshot),
+        dispatchWorkflowOf(snapshot),
+      );
   }
 
   async markLost(runId: string, reason: string): Promise<void> {
@@ -231,12 +382,108 @@ export class SqliteSnapshotStore implements SnapshotStore {
   }
 
   /** `updated_at` is an ISO-8601 UTC string, so a string comparison is a time comparison. A
-   * terminal row's `updated_at` is its terminal write — the age the week counts from. */
+   * terminal row's `updated_at` is its terminal write — the age the week counts from. The hook log's
+   * lines go by the same week (ADR-0011); the count is of runs alone. */
   async sweep(olderThan: Date): Promise<number> {
+    // The run a standing head names stays (ADR-0017): a paused Pool's held items are in its blob.
     const result = this.db
-      .prepare(`DELETE FROM machine_snapshots WHERE status != 'live' AND updated_at < ?`)
+      .prepare(
+        `DELETE FROM machine_snapshots WHERE status != 'live' AND updated_at < ?
+           AND run_id NOT IN (SELECT run FROM standing)`,
+      )
       .run(olderThan.toISOString());
+    this.db.prepare(`DELETE FROM hook_log WHERE at < ?`).run(olderThan.toISOString());
     return Number(result.changes);
+  }
+
+  claimHookDelivery(hook: string, delivery: string, digest: string): number | undefined {
+    const kinds = CLAIMED_KINDS.map(() => "?").join(", ");
+    const held = this.db
+      .prepare(`SELECT 1 FROM hook_log WHERE hook = ? AND (delivery = ? OR digest = ?) AND kind IN (${kinds}) LIMIT 1`)
+      .get(hook, delivery, digest, ...CLAIMED_KINDS);
+    if (held) return undefined;
+    const result = this.db
+      .prepare(`INSERT INTO hook_log (hook, at, kind, status, delivery, digest) VALUES (?, ?, 'pending', 0, ?, ?)`)
+      .run(hook, new Date().toISOString(), delivery, digest);
+    return Number(result.lastInsertRowid);
+  }
+
+  writeHookLine(line: HookLogLine, claimed?: number): void {
+    const detail = line.detail === undefined ? null : JSON.stringify(line.detail);
+    if (claimed !== undefined) {
+      this.db
+        .prepare(`UPDATE hook_log SET kind = ?, status = ?, key = ?, detail = ? WHERE id = ?`)
+        .run(line.kind, line.status, line.key ?? null, detail, claimed);
+      return;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO hook_log (hook, at, kind, status, delivery, digest, key, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        line.hook,
+        line.at,
+        line.kind,
+        line.status,
+        line.delivery ?? null,
+        line.digest ?? null,
+        line.key ?? null,
+        detail,
+      );
+  }
+
+  hookLog(hook: string, limit: number): HookLogLine[] {
+    const rows = this.db
+      .prepare(
+        `SELECT hook, at, kind, status, delivery, digest, key, detail FROM hook_log WHERE hook = ? ORDER BY id DESC LIMIT ?`,
+      )
+      .all(hook, limit) as Array<{
+      hook: string;
+      at: string;
+      kind: HookLogLine["kind"];
+      status: number;
+      delivery: string | null;
+      digest: string | null;
+      key: string | null;
+      detail: string | null;
+    }>;
+    return rows.map((r) => ({
+      hook: r.hook,
+      at: r.at,
+      kind: r.kind,
+      status: r.status,
+      ...(r.delivery !== null ? { delivery: r.delivery } : {}),
+      ...(r.digest !== null ? { digest: r.digest } : {}),
+      ...(r.key !== null ? { key: r.key } : {}),
+      ...(r.detail !== null ? { detail: JSON.parse(r.detail) as unknown } : {}),
+    }));
+  }
+
+  standingHeads(): StandingHead[] {
+    const rows = this.db.prepare(`SELECT workflow, run, since, streak, paused FROM standing`).all() as Array<{
+      workflow: string;
+      run: string;
+      since: string;
+      streak: number;
+      paused: string | null;
+    }>;
+    return rows.map((r) => ({
+      workflow: r.workflow,
+      run: r.run,
+      since: r.since,
+      streak: Number(r.streak),
+      ...(r.paused === "cancel" || r.paused === "errors" || r.paused === "bound" ? { paused: r.paused } : {}),
+    }));
+  }
+
+  writeStanding(head: StandingHead): void {
+    this.db
+      .prepare(
+        `INSERT INTO standing (workflow, run, since, streak, paused) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(workflow) DO UPDATE SET
+           run = excluded.run, since = excluded.since, streak = excluded.streak, paused = excluded.paused`,
+      )
+      .run(head.workflow, head.run, head.since, head.streak, head.paused ?? null);
   }
 
   async close(): Promise<void> {

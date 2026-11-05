@@ -41,6 +41,11 @@ export type KubePort = {
    * cluster could not answer at all — the two are different faults (ADR-0019), and a caller that
    * merged them would send a user with a dead VPN off to check a context that is correct. */
   readSecret(opts: { namespace: string; name: string; key: string; context?: string }): Promise<string | undefined>;
+  /** The user name that the API server gives the current credentials, from a `SelfSubjectReview`
+   * (`kubectl auth whoami`): the party the CLI says it acts for (ADR-0078). Undefined when the
+   * server does not answer it. Never rejects: the name is a claim the CLI adds, and a verb does not
+   * fail for want of it. */
+  selfSubject(opts: { context?: string }): Promise<string | undefined>;
   /** Forward a Service port to an ephemeral local port for the life of the command. */
   portForward(opts: {
     namespace: string;
@@ -1136,6 +1141,19 @@ export const kubectlKube: KubePort = {
       return stdout ? Buffer.from(stdout, "base64").toString("utf8") : undefined;
     } catch (e) {
       throw new Error(unreachable(e));
+    }
+  },
+
+  async selfSubject({ context }) {
+    try {
+      const { stdout } = await exec(
+        "kubectl",
+        [...ctxArgs(context), "auth", "whoami", "-o", "jsonpath={.status.userInfo.username}", ...reachArgs],
+        { timeout: REACH_BUDGET_MS },
+      );
+      return stdout.trim() || undefined;
+    } catch {
+      return undefined; // a server without the API, or RBAC that refuses it: no claim, and no failure
     }
   },
 

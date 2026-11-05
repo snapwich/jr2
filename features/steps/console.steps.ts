@@ -7,7 +7,7 @@
 // assertions, so the only playwright surface here is Locator waiting — `waitFor` for "it appears",
 // plus plain node:assert once it has.
 
-import { Then, When } from "@cucumber/cucumber";
+import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import type { Locator, Page } from "playwright";
 import { E2EWorld } from "./world.ts";
@@ -71,6 +71,39 @@ When("I enter the token {string}", async function (this: E2EWorld, value: string
   await field.blur();
 });
 
+When("I enter the Caller token {string}", async function (this: E2EWorld, name: string): Promise<void> {
+  const value = this.callerTokens.get(name);
+  assert.ok(value, `the instance declares the Caller token "${name}"`);
+  const field = thePage(this).locator("#token");
+  await field.fill(value);
+  await field.blur();
+});
+
+Then("the Console acts as {string}", async function (this: E2EWorld, who: string): Promise<void> {
+  // The nav names who the page acts as (ADR-0032), off `GET /whoami`.
+  await thePage(this)
+    .locator("#caller", { hasText: `as ${who}` })
+    .waitFor({ state: "visible", timeout: APPEAR });
+});
+
+When("I log in at the issuer", async function (this: E2EWorld): Promise<void> {
+  const page = thePage(this);
+  const button = page.locator("#token-box button.login");
+  await button.waitFor({ state: "visible", timeout: APPEAR });
+  // The page goes to the issuer, and the issuer comes back to the Console's root with a code. The
+  // steps after this one wait for what the return gives the page.
+  await button.click();
+});
+
+Then("the address is {string}", async function (this: E2EWorld, path: string): Promise<void> {
+  // The return lands on `/` with a code; the page puts the address back where the login began.
+  await thePage(this).waitForURL((url) => url.pathname === path && url.search === "", { timeout: APPEAR });
+});
+
+When("I sign out", async function (this: E2EWorld): Promise<void> {
+  await thePage(this).locator("#sign-out").click({ timeout: APPEAR });
+});
+
 Then("the token badge reads {string}", async function (this: E2EWorld, state: string): Promise<void> {
   await thePage(this).locator(`#token-state.token-state--${state}`).waitFor({ state: "attached", timeout: APPEAR });
 });
@@ -78,6 +111,15 @@ Then("the token badge reads {string}", async function (this: E2EWorld, state: st
 Then("the Console offers a start button for {string}", async function (this: E2EWorld, wf: string): Promise<void> {
   await railItem(thePage(this), wf).locator(".wf-start-btn").waitFor({ state: "visible", timeout: APPEAR });
 });
+
+// --- a Caller's scopes (ADR-0078) ----------------------------------------------------------------
+
+Given(
+  "the instance declares the Caller token {string} that may answer {string}",
+  async function (this: E2EWorld, name: string, workflow: string): Promise<void> {
+    await this.declareCallerToken(name, { answer: [workflow] });
+  },
+);
 
 // --- start run from the schema form (ADR-0033) ---------------------------------------------------
 

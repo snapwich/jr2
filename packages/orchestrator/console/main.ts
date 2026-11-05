@@ -13,11 +13,14 @@
 // makes reattach convergent with no cursor (store.ts folds every frame idempotently).
 //
 // The page as SERVED is ADR-0014's observer: open structure and observation, no credential in the
-// bytes. Control is EARNED per tab: the human types the Instance token into the nav (sessionStorage
-// — survives a reload, dies with the tab, never a cookie), and only then does the page speak on the
-// guarded surface: POST /workflows/:name/runs (start), GET /runs/:id (gate discovery, re-fetched on
-// each frame), POST /runs/:id/gates/:gate/events (delivery). Any later 401 drops the whole page
-// back to observer mode. That is ADR-0032 end to end — the bands themselves never moved.
+// bytes. Control is EARNED per tab: the person types a Caller's token into the nav, or logs in
+// against an issuer the Instance declares (OIDC code + PKCE, login.ts), and the credential lives in
+// sessionStorage — survives a reload, dies with the tab, never a cookie. The page asks
+// `GET /whoami` what the credential may do, and renders only the controls its scopes open
+// (ADR-0078): start (POST /workflows/:name/runs), the Gate cards (GET /runs/:id re-fetched on each
+// frame, POST /runs/:id/gates/:gate/events), cancel (POST /runs/:id/events), the Steering box
+// (GET /runs/:id/agents, POST /runs/:id/steering). Any later 401 drops the whole page back to
+// observer mode. That is ADR-0032 end to end — the bands themselves never moved.
 //
 // STORE-FIRST, VDOM-PAINTED (ADR-0034): everything the page believes lives in the pure reducer
 // (store.ts) and arrives there as frames — wire frames and page facts alike. `dispatch` is the one
@@ -39,29 +42,50 @@ import {
   emptyStore,
   failureReason,
   machineDocSource,
+  may,
   selectedRun,
+  type CallerView,
   type Frame,
   type GateCard,
   type ObservedRun,
   type Store,
   type HeldLine,
+  type StarterView,
   type WaitingLine,
   type WorkflowListing,
 } from "./store.ts";
+import {
+  authorizeUrl,
+  credentialOf,
+  loginReturn,
+  loginScopes,
+  pkceChallenge,
+  randomValue,
+  redirectUri,
+  tokenRequestBody,
+  type ConsoleConfig,
+  type LoginIssuer,
+  type PendingLogin,
+} from "./login.ts";
 import { zoomFit, zoomIn, zoomOut, zoomReset, type MachineDoc } from "./canvas.ts";
-import { App, type AppApi, type MachineView } from "./components/app.ts";
+import { App, type AgentLine, type AppApi, type MachineView } from "./components/app.ts";
 
 let store: Store = emptyStore();
 /** The center pane's working state — see {@link MachineView}; the doc counterpart of old `shown`. */
 let view: MachineView = { doc: null, placeholder: null, note: null };
 /** The nav's zoom readout — canvas.ts reports through `api.onScale`; a render carries it. */
 let zoomPct = 100;
+/** The issuers the nav offers a login against (`GET /console/config`), and why the last login
+ *  failed, if it did. Working state of the bootstrap, like the zoom: what the page KNOWS of a run
+ *  stays in the store. */
+let logins: LoginIssuer[] = [];
+let loginNote: string | null = null;
 
 const root = document.getElementById("root")!;
 
 /** One render from the top, whatever moved — store or working state; the vdom diffs the rest. */
 function rerender(): void {
-  render(h(App, { store, view, zoomPct, initialToken, schemas: inputSchemas, api }), root);
+  render(h(App, { store, view, zoomPct, initialToken, logins, loginNote, schemas: inputSchemas, api }), root);
 }
 
 /** Fold one frame and re-render. Every state change in this file goes through here — a page that
@@ -74,10 +98,10 @@ function dispatch(frame: Frame): void {
   void syncMachine();
 }
 
-// ---- The token (ADR-0032) -----------------------------------------------------------------------
+// ---- The credential (ADR-0032) ------------------------------------------------------------------
 // The VALUE lives here (sessionStorage) and rides only in Authorization headers; the store holds
-// its STATE. Entry is validated with the cheapest guarded read (`GET /runs`), whose response also
-// happens to be the full run list — which seeds the gate inbox without waiting for a frame.
+// its STATE and the Caller it is. Entry is validated with `GET /whoami`, which answers any Caller
+// and says what it may do (ADR-0078) — a typed token and a login's JWT alike.
 
 const TOKEN_KEY = "jr2.console.token";
 const token = (): string => sessionStorage.getItem(TOKEN_KEY) ?? "";
@@ -110,21 +134,25 @@ let tokenSerial = 0;
 async function validateToken(): Promise<void> {
   const serial = ++tokenSerial;
   dispatch({ kind: "token", state: "checking" });
-  let res: Response | null;
+  let caller: CallerView | null = null;
   try {
-    res = await fetch("/runs", { headers: { authorization: `Bearer ${token()}` } });
+    const res = await fetch("/whoami", { headers: { authorization: `Bearer ${token()}` } });
+    if (res.ok) caller = (await res.json()) as CallerView;
   } catch {
-    res = null; // network trouble reads as invalid; re-entering the token retries
+    // network trouble reads as invalid; re-entering the token retries
   }
   if (serial !== tokenSerial) return; // a newer entry owns the badge — this answer is nobody's
-  if (!res?.ok) return dispatch({ kind: "token", state: "invalid" });
+  if (!caller) return dispatch({ kind: "token", state: "invalid" });
+  dispatch({ kind: "caller", caller });
   dispatch({ kind: "token", state: "live" });
-  const runs = (await res.json()) as Array<{ runId: string; workflow: string }>;
-  if (serial !== tokenSerial) return;
-  for (const r of runs) void refreshRun(r.runId, r.workflow);
+  // Seed the inbox and the run details from the runs the page already holds: the frames that
+  // carried them came before the credential, so their re-fetches did nothing.
+  for (const r of store.runs.values()) void refreshRun(r.runId, r.workflow);
+  for (const [workflow, runs] of store.fleet) for (const r of runs) void refreshRun(r.runId, workflow);
 }
 
 function setToken(value: string): void {
+  loginNote = null;
   if (!value) {
     tokenSerial++; // strand any in-flight validation of the token this just cleared
     sessionStorage.removeItem(TOKEN_KEY);
@@ -133,6 +161,107 @@ function setToken(value: string): void {
   }
   sessionStorage.setItem(TOKEN_KEY, value);
   void validateToken();
+}
+
+// ---- The login (ADR-0032, ADR-0078) -------------------------------------------------------------
+// OIDC, the code flow with PKCE, as a public client: the page goes to the issuer, the issuer comes
+// back to `/` with a code, and the page exchanges the code for an ID token, which it then keeps and
+// sends as it keeps and sends a typed token. What it holds between the two halves (the verifier,
+// the state, where to go back to) is in sessionStorage too, and goes when the return reads it.
+
+const LOGIN_KEY = "jr2.console.login";
+
+/** The issuers that offer a login, off the open route. A failure offers none: a typed token still
+ *  works. */
+async function loadLogins(): Promise<void> {
+  try {
+    const res = await fetch("/console/config");
+    if (res.ok) logins = ((await res.json()) as ConsoleConfig).login ?? [];
+  } catch {
+    logins = [];
+  }
+}
+
+/** Go to the issuer. Its discovery document names where; the page asks it for the scopes it lists. */
+async function login(issuer: LoginIssuer): Promise<void> {
+  loginNote = null;
+  try {
+    const res = await fetch(`${issuer.issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`);
+    if (!res.ok) throw new Error(`the issuer's discovery document answered ${res.status}`);
+    const discovery = (await res.json()) as {
+      authorization_endpoint?: string;
+      token_endpoint?: string;
+      scopes_supported?: string[];
+    };
+    if (!discovery.authorization_endpoint || !discovery.token_endpoint) {
+      throw new Error("the issuer's discovery document names no authorization or token endpoint");
+    }
+    if (!globalThis.crypto?.subtle) throw new Error("a login needs the Console on https or on localhost");
+    const pending: PendingLogin = {
+      issuer: issuer.issuer,
+      clientId: issuer.clientId,
+      state: randomValue(),
+      verifier: randomValue(),
+      tokenEndpoint: discovery.token_endpoint,
+      returnTo: location.pathname,
+    };
+    sessionStorage.setItem(LOGIN_KEY, JSON.stringify(pending));
+    location.assign(
+      authorizeUrl({
+        endpoint: discovery.authorization_endpoint,
+        clientId: issuer.clientId,
+        redirectUri: redirectUri(location.origin),
+        scope: loginScopes(discovery.scopes_supported),
+        state: pending.state,
+        challenge: await pkceChallenge(pending.verifier),
+      }),
+    );
+  } catch (err) {
+    loginNote = `login failed: ${err instanceof Error ? err.message : String(err)}`;
+    rerender();
+  }
+}
+
+/** The return from the issuer, at boot: exchange the code, keep the ID token, and put the address
+ *  back where the person logged in from. A return that does not match the pending login (another
+ *  tab's, or a forged one) is refused, and nothing is kept. */
+async function finishLogin(): Promise<void> {
+  const back = loginReturn(location.search);
+  if (!back) return;
+  const raw = sessionStorage.getItem(LOGIN_KEY);
+  sessionStorage.removeItem(LOGIN_KEY);
+  let pending: PendingLogin | null = null;
+  try {
+    pending = raw ? (JSON.parse(raw) as PendingLogin) : null;
+  } catch {
+    pending = null;
+  }
+  history.replaceState({}, "", pending?.returnTo ?? "/");
+  if (!pending || back.state !== pending.state) {
+    loginNote = "login failed: the return does not match a login that this tab started";
+    return;
+  }
+  if ("error" in back) {
+    loginNote = `login failed: ${back.error}`;
+    return;
+  }
+  try {
+    const res = await fetch(pending.tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: tokenRequestBody({
+        code: back.code,
+        redirectUri: redirectUri(location.origin),
+        clientId: pending.clientId,
+        verifier: pending.verifier,
+      }),
+    });
+    const jwt = res.ok ? credentialOf(await res.json()) : null;
+    if (!jwt) throw new Error(`the issuer's token endpoint answered ${res.status} with no ID token`);
+    sessionStorage.setItem(TOKEN_KEY, jwt);
+  } catch (err) {
+    loginNote = `login failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 // ---- Gate discovery and waits (frame-triggered — ADR-0032, ADR-0064) ----------------------------
@@ -153,7 +282,9 @@ const runFetchSerial = new Map<string, number>();
  *  why the run's Workspaces in `placing` wait (ADR-0064), folded as its own frame by the same rules:
  *  a Workspace enters and leaves `placing` with a frame too. */
 async function refreshRun(runId: string, workflow: string): Promise<void> {
-  if (store.token !== "live") return; // observer mode: the inbox does not exist
+  // Observer mode, or a Caller that may neither answer nor read this Workflow: the server would
+  // refuse the read, so the page does not make it (ADR-0032).
+  if (!may(store, "answer", workflow) && !may(store, "read", workflow)) return;
   const serial = (runFetchSerial.get(runId) ?? 0) + 1;
   runFetchSerial.set(runId, serial);
   const res = await gfetch(`/runs/${encodeURIComponent(runId)}`);
@@ -166,6 +297,7 @@ async function refreshRun(runId: string, workflow: string): Promise<void> {
         gates?: GateCard[];
         waiting?: WaitingLine[];
         held?: HeldLine[];
+        startedBy?: StarterView;
       })
     : {};
   if (runFetchSerial.get(runId) !== serial) return; // superseded — a newer re-fetch owns the answer
@@ -174,6 +306,8 @@ async function refreshRun(runId: string, workflow: string): Promise<void> {
   // The reason of a run that ended `failed` (ADR-0073). A 404 says nothing about it, so a reason
   // the page has stays.
   if (res.ok) dispatch({ kind: "failure", runId, reason: failureReason(body) });
+  // Who started the run (ADR-0078): on the status, so with `read` alone.
+  if (res.ok) dispatch({ kind: "starter", runId, startedBy: body.startedBy ?? null });
 }
 
 // ---- The two writes (start-run + gate delivery — ADR-0033) --------------------------------------
@@ -210,6 +344,40 @@ async function deliverGate(
   if (!res.ok) return ((await res.json()) as { error?: string }).error ?? `HTTP ${res.status}`;
   // Deliberately NO local bookkeeping: the delivery moves the Machine, the move lands a frame, the
   // frame triggers the re-fetch, and the re-fetch empties the card (ADR-0032).
+  return null;
+}
+
+// ---- Cancel and steer (ADR-0002, ADR-0078) ------------------------------------------------------
+// Same contract as the two writes above. A cancel lands a frame like any transition; a Steering
+// message moves nothing the page can see, so its answer is the only news of it.
+
+async function cancelRun(runId: string): Promise<string | null> {
+  const res = await gfetch(`/runs/${encodeURIComponent(runId)}/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "CANCEL" }),
+  });
+  if (!res) return "unauthorized — the page dropped to observer";
+  if (!res.ok) return ((await res.json()) as { error?: string }).error ?? `HTTP ${res.status}`;
+  return null;
+}
+
+/** The run's conversation list (`GET /runs/:id/agents`): where a Steering message can go. */
+async function steerTargets(runId: string): Promise<AgentLine[] | string> {
+  const res = await gfetch(`/runs/${encodeURIComponent(runId)}/agents`);
+  if (!res) return "unauthorized — the page dropped to observer";
+  if (!res.ok) return ((await res.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${res.status}`;
+  return (await res.json()) as AgentLine[];
+}
+
+async function steer(runId: string, agent: string, text: string): Promise<string | null> {
+  const res = await gfetch(`/runs/${encodeURIComponent(runId)}/steering`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agent, text }),
+  });
+  if (!res) return "unauthorized — the page dropped to observer";
+  if (!res.ok) return ((await res.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${res.status}`;
   return null;
 }
 
@@ -429,7 +597,11 @@ const api: AppApi = {
   toggleStartForm,
   startRun,
   deliverGate,
+  cancelRun,
+  steerTargets,
+  steer,
   setToken,
+  login: (issuer) => void login(issuer),
   onScale: (pct) => {
     if (pct === zoomPct) return;
     zoomPct = pct;
@@ -445,7 +617,10 @@ async function boot(): Promise<void> {
   addEventListener("popstate", () => void selectWorkflow(workflowFromPath(), { push: false }));
   addEventListener("focus", () => void snapshotFleet());
   setInterval(() => void snapshotFleet(), SNAPSHOT_MS);
+  // A return from the issuer first: it puts the address back, which the selection below reads.
+  await finishLogin();
   rerender(); // the shell first — the fetches below fill it in
+  void loadLogins().then(rerender);
 
   // The fleet first (the rail names everything), then the token (unlock is async and must not gate
   // observation), then the selection the address carries — deep links work on load.

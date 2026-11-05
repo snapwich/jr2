@@ -162,7 +162,9 @@ write.
 - The `PUT` refuses a Chart that the door refuses, with the status `422`: `{"error":"refused","report":[<problems>]}`
 - The `DELETE` refuses a Chart file, with the status `409`:
   ``a Chart file is the Instance's own: remove workflows/<wrapper>/<name>.chart.json and `jr2 up` (ADR-0070)``
-- `PUT` and `DELETE` need the Instance token. Without it, the status is `401`.
+- `PUT` and `DELETE` need the Instance token. No scope opens them. Without a token, the status is `401`. With the token
+  of a named Caller or a JWT, the status is `403`:
+  `this route needs the Instance token: no scope opens it, so the Caller <via>/<name> cannot`
 - An unrunnable named Chart does not start. The status is `409`: `named Chart "<wrapper>/<name>" cannot run: <reason>`
 - `jr2 run` prints the report of a Chart that the door refuses in the run input, and exits with `1`:
   `error: the door refused the Chart for "<workflow>"`, then one line for each problem.

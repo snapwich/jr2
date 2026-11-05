@@ -1,0 +1,6 @@
+{
+  "secret": "GH_HOOK",
+  "alg": "md5",
+  "bytes": "djA6MTcwMDAwMDAwMDp7Im9rIjp0cnVlfQ==",
+  "signature": "FI90laHFDyQoz921pKcvvBLz74RRx+YDVrz5rpEtUYo="
+}

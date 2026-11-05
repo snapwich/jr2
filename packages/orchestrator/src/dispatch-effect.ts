@@ -19,6 +19,9 @@
 //     through the binding, foreign in the `jr2-dispatched-by` header), and the door answers a
 //     repeat with the run the key already started. So a dispatch is idempotent by construction: a
 //     restore that cannot tell whether its start arrived sends it again, and gets the same run.
+//     The key is asked before the slot's schema reads the body: in-process through the run host's
+//     lookup, foreign as a key-only ask (no body) when the slot's schema refuses the body. With no
+//     run under the key, the schema's refusal is the invoke's error, and nothing starts.
 //   - THE RUN ON THE ROW. Once the start's answer names the run, the intent row is written again
 //     with it, saved at the write: a restore with it settles `started` at once, or resumes the
 //     wait on that run, and never starts another.
@@ -78,9 +81,10 @@ export type DispatchDefinition<S extends z.ZodObject | undefined = undefined> = 
   wait?: boolean;
   /** How long the Effect waits: by default 30s for the start, and 10m with `wait`. */
   timeout?: Duration;
-  /** A different Orchestrator: `url` is its origin, and `token` is the secret that holds its
-   * Instance token. Or `open`, which the composer binds with `customize(<import>, { effects: {
-   * <slot>: { target: { url, token } } } })`. Without it, the run starts in this Orchestrator. */
+  /** A different Orchestrator: `url` is its origin, and `token` is the secret that holds the token
+   * of a Caller of it with `start` for the Workflow, and `read` too when `wait` is true. Or `open`,
+   * which the composer binds with `customize(<import>, { effects: { <slot>: { target: { url, token
+   * } } } })`. Without it, the run starts in this Orchestrator. */
   target?: { url: string; token: NamedSecret } | typeof open;
 };
 
@@ -208,7 +212,9 @@ function targetOf(workflow: string, target: unknown): { url: string; token: stri
     );
   }
   if (typeof token !== "object" || token === null || typeof (token as { secret?: unknown }).secret !== "string") {
-    throw new Error(`${where}: the token is a secret("<name>") holding the target's Instance token (ADR-0071)`);
+    throw new Error(
+      `${where}: the token is a secret("<name>") holding a Caller token of the target with start for the Workflow (ADR-0071)`,
+    );
   }
   const name = (token as { secret: string }).secret;
   if (name === OPEN_SECRET) {
@@ -255,23 +261,75 @@ export function openDispatchOf<S extends z.ZodObject | undefined>(
 }
 
 /** The wire request for one foreign start (ADR-0071): the target's origin, the Workflow, the body,
- * the token by name, and who dispatched it. */
+ * the token by name, who dispatched it, and the party it acts for. With no body (`undefined`), the
+ * start is a key-only ask: the door answers the run under the key, and starts nothing. */
 export function dispatchStartOf(
   parts: DispatchParts,
-  input: Record<string, unknown>,
+  input: Record<string, unknown> | undefined,
   dispatchedBy: DispatchedBy & { instance: string },
+  onBehalfOf?: string,
 ): DispatchStartRequest {
   if (parts.target === undefined) throw new Error("dispatchStartOf: an in-process dispatch has no wire request");
   return {
     kind: "dispatch",
     url: [{ text: parts.target.url }],
     workflow: parts.workflow,
-    input,
+    ...(input !== undefined ? { input } : { keyOnly: true as const }),
     auth: { bearer: { secret: parts.target.token } },
     dispatchedBy,
     wait: parts.wait,
     timeoutMs: parts.timeoutMs,
+    ...(onBehalfOf !== undefined ? { onBehalfOf } : {}),
   };
+}
+
+/**
+ * What a foreign start sends as `onBehalfOf` for the first Caller of the calling run's chain
+ * (ADR-0071, ADR-0078): the party that Caller says it acts for, else the name that jr2 shows, else
+ * `<via>/<name>`. Undefined when jr2 started the chain, or the text is not printable ASCII of at
+ * most 256 characters, which a header cannot carry: the start then goes with no claim.
+ */
+export function onBehalfOfFor(
+  caller: { via: string; name: string; shown?: string; onBehalfOf?: string } | undefined,
+): string | undefined {
+  if (!caller) return undefined;
+  const text = caller.onBehalfOf ?? caller.shown ?? `${caller.via}/${caller.name}`;
+  return /^[\x20-\x7e]{1,256}$/.test(text) ? text : undefined;
+}
+
+// --- A Pool's worker ------------------------------------------------------------------------------
+
+/** What a Pool of runs gives its `dispatch` worker (ADR-0017): the run's body, and the Hook delivery
+ * that carried the item, when one did. The key is the worker's own spawn id: the item's id. */
+export type PoolWorkerInput = { body: unknown; hook?: DispatchedBy["hook"] };
+
+/** A dispatch's snapshot as a Pool's worker holds it: the key and the Hook delivery ride the
+ * persisted snapshot, so a restore sends the same key again. */
+type KeyedSnapshot<O, I> = EffectSnapshot<O, I> & { key?: string; hook?: DispatchedBy["hook"] };
+
+/**
+ * The `dispatch` slot of a Pool of runs, as the Pool spawns it (ADR-0017): the same Effect, whose
+ * idempotency key is the item's id — the spawn id — and not its ledger row id. So every Pool, every
+ * hand-over and every restore that gives the same item to the callee Workflow gets the same run
+ * (ADR-0071). The input is {@link PoolWorkerInput}.
+ *
+ * @internal
+ */
+export function poolWorker(logic: EffectLogic<any, DispatchOutput>): EffectLogic<PoolWorkerInput, DispatchOutput> {
+  const keyed = Object.create(
+    Object.getPrototypeOf(logic) as object,
+    Object.getOwnPropertyDescriptors(logic),
+  ) as EffectLogic<PoolWorkerInput, DispatchOutput>;
+  const initial = logic.getInitialSnapshot.bind(logic);
+  keyed.getInitialSnapshot = (scope, input) => {
+    const given = (input ?? { body: undefined }) as PoolWorkerInput;
+    return {
+      ...initial(scope, given.body),
+      key: scope.self.id,
+      ...(given.hook !== undefined ? { hook: given.hook } : {}),
+    } as KeyedSnapshot<DispatchOutput, PoolWorkerInput> as never;
+  };
+  return keyed;
 }
 
 // --- The actor logic -----------------------------------------------------------------------------
@@ -418,6 +476,9 @@ async function drive<I, O>(
     mark({ stage: "output", text: `${named}: run ${runId}${existing ? " (the key found it: started before)" : ""}` });
   };
   const deadline = Date.parse(at) + parts.timeoutMs;
+  // A Pool's worker carries the item's id as its key, and the delivery that carried the item
+  // (ADR-0017). Any other dispatch's key is its ledger row id.
+  const { key, hook } = snapshot as KeyedSnapshot<O, I>;
 
   if (prior?.run !== undefined && !parts.wait) {
     // Started before the restart, and the answer is the run: nothing to send.
@@ -440,22 +501,58 @@ async function drive<I, O>(
       await waitIn(prior.run);
       return;
     }
-    // Fresh, or in flight with no run on the row: the key makes a second start the same run.
-    const input = inputOf();
+    // The key first, as the door asks it (ADR-0071): a run of the callee that carries it is
+    // answered before the input is read, so a re-send across a change of the slot's schema answers
+    // `existing`, never an error. The slot's bound holds the lookup as it holds the start.
+    const startBound = prior ? Math.max(deadline, Date.now() + START_FLOOR_MS) : deadline;
+    const asked = host.lookup
+      ? await beforeDeadline(
+          host.lookup(parts.workflow, key ?? id).then((run) => ({ run })),
+          startBound,
+          signal,
+        )
+      : { run: undefined };
+    if (signal.aborted) return;
+    if (asked === undefined) {
+      settle(
+        unknown(
+          `the run host did not answer the start of ${parts.workflow} within the slot's timeout; a run may have started`,
+        ),
+      );
+      return;
+    }
+    const found = asked.run;
+    if (found) {
+      if (!prior) binding.recordEffect?.(id, intent());
+      pin(found.runId, true);
+      if (!parts.wait) {
+        settle({ outcome: "started", run: found.runId });
+        return;
+      }
+      await waitIn(found.runId);
+      return;
+    }
+    // Fresh, or in flight with no run on the row: the key makes a second start the same run. With
+    // the key asked above and no run under it, the body is a first send's, and the slot's schema
+    // refuses it as the invoke's error (ADR-0071). A host with no lookup asks the key at its start.
+    const input = inputOf(prior !== undefined && !host.lookup);
     if (!prior) binding.recordEffect?.(id, intent());
     mark({
       stage: "started",
       text: prior ? `${named} (sent again under its key: a run it started is answered)` : named,
     });
     // The depth is the callee's: one below this run, which the host records as sent (ADR-0071).
-    const by: DispatchedBy = { run: binding.runId, slot, effect: id, depth: (binding.depth ?? 0) + 1 };
+    const by: DispatchedBy = {
+      run: binding.runId,
+      slot,
+      effect: id,
+      depth: (binding.depth ?? 0) + 1,
+      ...(key !== undefined ? { key } : {}),
+      ...(hook !== undefined ? { hook } : {}),
+    };
     // The slot's bound holds the start too (ADR-0071): a run host that does not answer in it is
     // `unknown` — the start may have been taken, and a restore's re-send under the key would find it.
-    const answer = await beforeDeadline(
-      host.start(parts.workflow, input, by),
-      prior ? Math.max(deadline, Date.now() + START_FLOOR_MS) : deadline,
-      signal,
-    );
+    const answer = await beforeDeadline(host.start(parts.workflow, input, by), startBound, signal);
     if (signal.aborted) return;
     if (answer === undefined) {
       settle(
@@ -489,8 +586,13 @@ async function drive<I, O>(
   const port = portFactory(target);
   // The wait's stop goes through this port when its state exits (ADR-0071).
   run.port = port;
+  // The party the start acts for: the first Caller of this run's chain, read once (ADR-0071).
+  const onBehalfOf = onBehalfOfFor(await binding?.firstCaller?.());
+  if (signal.aborted) return;
   // Fresh: nothing was sent. The body is checked before the intent row, so a defect in the input is
-  // the Machine's error and sends nothing.
+  // the Machine's error and sends nothing. A body the slot's schema refuses is sent as a key-only
+  // ask (ADR-0071): the door answers a run under the key, and with none the schema's refusal is the
+  // invoke's error.
   const req = prior ? undefined : requestFor(false);
   const big = req && tooLarge(req);
   if (big) {
@@ -567,18 +669,27 @@ async function drive<I, O>(
     expired();
   }
 
-  /** The run's body: the invoke's input, parsed by the slot's schema when it has one. */
-  function inputOf(): Record<string, unknown> {
+  /** Why the slot's schema refuses the invoke's input, or undefined when it takes it (or the slot
+   * has no schema). */
+  function refusedBody(): string | undefined {
+    if (def.input === undefined) return undefined;
+    const parsed = def.input.safeParse(snapshot.input ?? {});
+    if (parsed.success) return undefined;
+    return (
+      `dispatch "${slot}": its input does not match the slot's input schema — ` +
+      parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")
+    );
+  }
+
+  /** The run's body: the invoke's input, parsed by the slot's schema when it has one. `again`: an
+   * in-process re-send to a run host that asks the key only at its start; a body the slot's schema
+   * refuses then goes as it is, and the run host answers the run under the key (ADR-0071). */
+  function inputOf(again = false): Record<string, unknown> {
     let input: unknown = snapshot.input ?? {};
     if (def.input !== undefined) {
       const parsed = def.input.safeParse(input);
-      if (!parsed.success) {
-        throw new Error(
-          `dispatch "${slot}": its input does not match the slot's input schema — ` +
-            parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; "),
-        );
-      }
-      input = parsed.data;
+      if (parsed.success) input = parsed.data;
+      else if (!again) throw new Error(refusedBody());
     }
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
       throw new Error(`dispatch "${slot}": its input is the run's body, a JSON object (ADR-0071)`);
@@ -600,7 +711,9 @@ async function drive<I, O>(
       instance: binding?.orchestratorName ?? "an Orchestrator with no name",
     };
     const timeoutMs = again ? Math.max(1, Math.floor(deadline - Date.now())) : parts.timeoutMs;
-    return dispatchStartOf({ ...parts, timeoutMs }, inputOf(), by);
+    // A body the slot's schema refuses is never sent: the start asks the key alone (ADR-0071).
+    const body = refusedBody() === undefined ? inputOf() : undefined;
+    return dispatchStartOf({ ...parts, timeoutMs }, body, by, onBehalfOf);
   }
 
   /** The in-process wait (ADR-0071): the run host tells when the run leaves `live`; the slot's
@@ -677,6 +790,9 @@ async function drive<I, O>(
       if (state.state === "settled" && state.output) {
         const parsed = DispatchOutputShape.safeParse(state.output);
         if (!parsed.success) throw new EffectorMalformed("the Effector's output for a dispatch is not a dispatch's");
+        // A key-only ask, and no run has the key: nothing was started, and the slot's schema refusal
+        // is the invoke's error (ADR-0071).
+        if (parsed.data.outcome === "absent") throw new Error(refusedBody() ?? "the door found no run under the key");
         const output = parsed.data as DispatchOutput;
         if (output.outcome === "started" || output.outcome === "settled") pin(output.run, false);
         settle(output);

@@ -62,10 +62,19 @@ import { RunHost } from "./run-host.ts";
 import type { RunRecord, WorkflowDef } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
-import { createAuthenticator, effectorKey, harnessToken, loadSigningKey, mintInstanceToken } from "./tokens.ts";
+import {
+  createAuthenticator,
+  effectorKey,
+  harnessToken,
+  loadSigningKey,
+  mintInstanceToken,
+  namedTokens,
+} from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
+import { jwtAuthenticator } from "./callers.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
-import { WORKFLOW_NAME } from "./effector-wire.ts";
+import { WORKFLOW_NAME, createMacClient, nodeEffectorTransport, type HookMac } from "./effector-wire.ts";
+import { createHookPost, hookDoor, type HookPost } from "./hooks.ts";
 
 export type InstanceOptions = {
   /** The instance folder: the state volume `.jr2/` (its `state.db` unless `store` is supplied, and
@@ -148,6 +157,23 @@ export type InstanceOptions = {
    * the instance's Secret and the entrypoint passes it here, so a pod restart keeps the credential
    * the CLI reads from that Secret. Default: minted per boot. */
   instanceToken?: string;
+  /** The digests of the named Caller tokens, by name (ADR-0078), read on each request. Deployed, the
+   * entrypoint reads them from the `jr2-caller-digests` mount. The current Assembly's config gives
+   * each name its scopes. Default: none, so only the Instance token is a Caller. */
+  callerDigests?: () => Readonly<Record<string, string>>;
+  /** The digests of the `token` Hooks' secrets, by secret name (ADR-0078), read on each delivery.
+   * Deployed, the entrypoint reads them from the `jr2-hook-digests` mount. Default: none, so a
+   * `token` Hook refuses each delivery. */
+  hookDigests?: () => Readonly<Record<string, string>>;
+  /** The `mac` check of a Hook's delivery (ADR-0068, ADR-0078). Default: over the Instance
+   * Effector's signed wire when `instanceEffector` is set, else none, so a `mac` Hook answers 503.
+   * A test injects its own. */
+  hookMac?: HookMac;
+  /** The follow-up post of a Hook kind's answer, such as the reply to a Slack click (ADR-0011,
+   * ADR-0068). Default: one `http` call over the Instance Effector's signed wire when
+   * `instanceEffector` is set, else none, so a follow-up fails and the hook log says so. A test
+   * injects its own. */
+  hookPost?: HookPost;
 };
 
 /** What one restore did with the runs it found persisted (ADR-0007, ADR-0030). */
@@ -336,6 +362,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // files, as its record lists them. `GET /assembly` answers these; the runtime Charts the host
   // also registers are not part of an Assembly.
   let currentWorkflows: string[] = [];
+  // The config of the current Assembly (ADR-0069), for what the HTTP surface reads per request: the
+  // named Callers' scopes and the `cors` origins (ADR-0078). A publish replaces it.
+  let currentConfig: JR2Config | undefined;
 
   /** Swap the registry to `loaded` and make `next` current, in one synchronous step: nothing in it
    * awaits, so no request sees half of one Assembly and half of another (ADR-0069). The named
@@ -370,6 +399,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // by name. No current Assembly → no Workflows, and the process still serves (ADR-0048).
   if (current) {
     const booted = current;
+    currentConfig = await loadConfig(booted.root);
     const loaded = await importAssembly(booted.hash, booted.root);
     swap(loaded, await readChartFiles(booted.root, undefined, contextDirsOf(loaded)), booted);
   } else {
@@ -431,6 +461,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
           // Every named Chart is re-admitted against the new Assembly (ADR-0070): a runtime Chart
           // that fails is marked unrunnable, kept on the volume, and named in the publish's answer.
           unrunnable = swap(workflows, files, next);
+          currentConfig = config;
           // The Machines the walk imported are this hash's, so a run restored inside it later
           // (the next boot is a new process; this is for the same one) needs no second import.
           imported.set(next.hash, Promise.resolve(workflows));
@@ -441,15 +472,20 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
           // Assembly was published for the old Kit version drifts now, and that is final. The
           // door's collection follows in the same publish, so it removes the Assemblies only those
           // drifted rows named.
-          if (!host.restorePending) return;
-          try {
-            const outcome = await host.restore();
-            opts.onRestore?.({ assembly: next.hash, ...outcome });
-          } catch (err) {
-            // Left pending: the next publish, or the next boot, tries again. The publish itself
-            // landed, so it is not refused for this.
-            console.error(`restore after publish failed: ${err instanceof Error ? err.message : err}`);
+          if (host.restorePending) {
+            try {
+              const outcome = await host.restore();
+              opts.onRestore?.({ assembly: next.hash, ...outcome });
+            } catch (err) {
+              // Left pending: the next publish, or the next boot, tries again. The publish itself
+              // landed, so it is not refused for this.
+              console.error(`restore after publish failed: ${err instanceof Error ? err.message : err}`);
+            }
           }
+          // The standing Workflows (ADR-0017), after the restore: a live run of the Assembly before
+          // is handed over, and a Workflow that this publish adds gets its first run. Not while a
+          // deferred restore is still pending: its rows may hold the live standing runs.
+          if (!host.restorePending) await host.keepStanding("publish");
         },
       };
     },
@@ -475,6 +511,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   const restored: RestoreOutcome = current
     ? await host.restore()
     : { reattached: [], lost: [], drifted: [], failed: [] };
+  // The standing Workflows (ADR-0017), after the restore, so a restored standing run is kept and not
+  // started a second time. With no current Assembly there is none: the first publish starts them.
+  if (current) await host.keepStanding("boot");
   const waiting = current ? [] : (await store.live()).map((row) => row.runId);
 
   // Right after restore, not before: restore reads live rows only, and a row it marks `lost` or
@@ -508,7 +547,44 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   sweeper.unref();
 
   // 4. Serve, authenticated (ADR-0013) — the tokens and key resolved above.
-  const auth = createAuthenticator({ instanceToken, signingKey, publishToken });
+  // The named Callers (ADR-0078): the names and scopes of the current config, joined per request with
+  // the digests `jr2 up` gave, so a publish or a rotation applies with no restart.
+  const auth = createAuthenticator({
+    instanceToken,
+    signingKey,
+    publishToken,
+    namedTokens: () => namedTokens(currentConfig?.callers?.tokens, opts.callerDigests?.() ?? {}),
+    // The JWT issuers of the current config, read per request, so a publish changes them.
+    callers: [jwtAuthenticator(() => currentConfig?.callers?.issuers ?? [])],
+  });
+  // The Hook's door (ADR-0011, ADR-0078): the Hooks of the current config, read per delivery, so a
+  // publish changes them; none while no Assembly is current. A `mac` Hook is checked by the
+  // Instance Effector, which holds its secret (ADR-0068).
+  const hookMac =
+    opts.hookMac ??
+    (opts.instanceEffector
+      ? createMacClient({
+          key: effectorKey(signingKey, "instance"),
+          transport: nodeEffectorTransport(opts.instanceEffector),
+        })
+      : undefined);
+  // The follow-up of an answer that a person reads goes out through the same Effector (ADR-0068).
+  const hookPost =
+    opts.hookPost ??
+    (opts.instanceEffector
+      ? createHookPost({
+          key: effectorKey(signingKey, "instance"),
+          transport: nodeEffectorTransport(opts.instanceEffector),
+        })
+      : undefined);
+  const hooks = hookDoor({
+    host,
+    store,
+    hooks: () => (current ? (currentConfig?.hooks ?? {}) : undefined),
+    digests: () => opts.hookDigests?.() ?? {},
+    ...(hookMac ? { mac: hookMac } : {}),
+    ...(hookPost ? { post: hookPost } : {}),
+  });
   // The Repos are read PER REQUEST, never snapshotted here: a cache the agent cloned minutes
   // after boot must show as present the next time anyone asks (ADR-0048/0051).
   const app = createApp(host, auth, {
@@ -518,6 +594,12 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     fetchRepo: opts.fetchRepo,
     assembly: door,
     ...(opts.mounts ? { mounts: opts.mounts } : {}),
+    cors: () => currentConfig?.cors ?? [],
+    hooks,
+    consoleLogin: () =>
+      (currentConfig?.callers?.issuers ?? [])
+        .filter((i) => i.login === true)
+        .map((i) => ({ issuer: i.issuer, clientId: i.audience })),
   });
   const server = serve({ fetch: app.fetch, port: opts.port ?? 0, hostname });
   const port = await new Promise<number>((resolve) => {

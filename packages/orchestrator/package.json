@@ -42,8 +42,10 @@
   "dependencies": {
     "@hono/node-server": "^2.0.6",
     "@jr2/agent-protocol": "workspace:*",
+    "@jr2/hooks": "workspace:*",
     "elkjs": "^0.11.1",
     "hono": "^4.12.27",
+    "jose": "^6.2.3",
     "preact": "^10.29.8",
     "ts-blank-space": "^0.9.0",
     "xstate": "^5.18.0",

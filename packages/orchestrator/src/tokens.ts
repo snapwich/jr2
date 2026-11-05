@@ -6,10 +6,12 @@
 // Three principals. The asymmetry between the first two is the whole design; the third is a door
 // key, not a seat:
 //
-//   Instance token  the human/CLI credential. Full trust: gates, run control, agent surfaces.
-//                   From the instance Secret (`JR2_INSTANCE_TOKEN`); minted per boot when absent,
-//                   announced once on stdout (fixtures capture it). An Agent never has it — it
-//                   never enters a Sandbox.
+//   Instance token  the human/CLI credential: the Caller `token/instance` (ADR-0078), with every
+//                   scope, and the one credential of the routes no scope names. From the instance
+//                   Secret (`JR2_INSTANCE_TOKEN`); minted per boot when absent, announced once on
+//                   stdout (fixtures capture it). An Agent never has it — it never enters a Sandbox.
+//                   The other Callers (named `jr2c_` tokens, JWTs) are below, under Callers:
+//                   each acts within its scopes.
 //
 //   Publish token   `jr2 up`'s credential for `PUT /assembly` alone (ADR-0069). A publish imports
 //                   code into the process that holds the ServiceAccount, so it must cost what an
@@ -46,13 +48,189 @@
 // after one, which is exactly what ADR-0012's re-attach promises the still-running Custodian.
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync, unwatchFile, watchFile } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { SCOPES, type Scope, type ScopeGrant, type Scopes } from "./config.ts";
+
+// ---- Callers (ADR-0078) -----------------------------------------------------------------------
+// A Caller acts on the Instance from outside its Machines: the CLI, a CI job, a bridge, a person in
+// the Console. One seam makes it: an ORDERED list of authenticators. Each one takes the bearer and
+// answers a Caller, "not mine", or "mine, and bad". The first that claims the bearer decides, so a
+// bearer that one claims and finds bad is 401 and never falls through to the next. The Instance
+// token is the first authenticator, the named `jr2c_` tokens the second, and the JWT issuers
+// (callers.ts) the third. The principals inside the Orchestrator (the publish token, the control and fetch tokens)
+// are outside the seam: no authenticator makes a Caller from one of them.
+
+/** A request's Caller (ADR-0078): who acts, through which authenticator, and what it may do. */
+export type Caller = {
+  /** The authenticator that made the Caller: `token` (the Instance token or a named token), `jwt`
+   * or `hook`. */
+  via: "token" | "jwt" | "hook";
+  /** The Caller's name for that authenticator: `instance`, a named token's name, a JWT's `sub`, a
+   * Hook's name. */
+  name: string;
+  /** The name that jr2 shows, when it is not `name` (a JWT's `email`). */
+  shown?: string;
+  /** What the Caller may do. */
+  may: Scopes;
+  /** The Caller's claim about the party it acts for. jr2 records it and never checks it. */
+  onBehalfOf?: string;
+};
+
+/** The header in which a Caller states the party it acts for (ADR-0078). A claim: jr2 records it
+ * and shows it, and never checks it. */
+export const ON_BEHALF_OF_HEADER = "jr2-on-behalf-of";
+
+/** The longest `jr2-on-behalf-of` the guarded band takes: a user name, not a document. */
+export const ON_BEHALF_OF_MAX = 256;
+
+/** The prefix of a named Caller token's value (ADR-0078). It lets the seam say "not mine" with no
+ * lookup, and lets a secret scanner find a value that leaked. */
+export const CALLER_TOKEN_PREFIX = "jr2c_";
+
+/** Every scope, for every Workflow: the Instance token's grant. */
+const EVERY_SCOPE: Scopes = Object.fromEntries(SCOPES.map((s) => [s, "all"])) as Scopes;
+
+/** The Instance token's Caller (ADR-0078): `token/instance`, with every scope for every Workflow. */
+export function instanceCaller(): Caller {
+  return { via: "token", name: "instance", may: { ...EVERY_SCOPE } };
+}
+
+/** Whether a Caller is the Instance token's. The config refuses a named token called `instance`,
+ * so the pair names it alone. */
+export function isInstanceCaller(caller: Caller): boolean {
+  return caller.via === "token" && caller.name === "instance";
+}
+
+/** Whether `grant` opens `workflow`. A wrapper's name opens each of its named Charts
+ * (`plan` opens `plan/weekly`), because a named Chart runs its wrapper's Machine (ADR-0070). */
+function grantOpens(grant: ScopeGrant | undefined, workflow: string): boolean {
+  if (grant === undefined) return false;
+  if (grant === "all") return true;
+  const cut = workflow.indexOf("/");
+  return grant.includes(workflow) || (cut > 0 && grant.includes(workflow.slice(0, cut)));
+}
+
+/** Whether a Caller has `scope` for `workflow`. */
+export function callerMay(caller: Caller, scope: Scope, workflow: string): boolean {
+  return grantOpens(caller.may[scope], workflow);
+}
+
+/** Whether a Caller has `scope` for at least one Workflow. */
+export function callerHasScope(caller: Caller, scope: Scope): boolean {
+  const grant = caller.may[scope];
+  return grant !== undefined && (grant === "all" || grant.length > 0);
+}
+
+/** Whether `workflow` is in any scope of a Caller: what `GET /runs/resolve` answers for. */
+export function callerMayAny(caller: Caller, workflow: string): boolean {
+  return SCOPES.some((s) => callerMay(caller, s, workflow));
+}
+
+/** One authenticator's answer: a Caller; `{ refused }`, which is "mine, and bad" (401, and it never
+ * falls through); or `undefined`, which is "not mine". */
+export type CallerAnswer = Caller | { refused: string } | undefined;
+
+/** One authenticator of the seam. An authenticator that must fetch (a JWT issuer's keys) answers
+ * with a Promise. */
+export type CallerAuthenticator = (bearer: string) => CallerAnswer | Promise<CallerAnswer>;
+
+/** The Instance token's authenticator (ADR-0078). */
+export function instanceTokenAuthenticator(instanceToken: string): CallerAuthenticator {
+  return (bearer) => (constantTimeEqual(bearer, instanceToken) ? instanceCaller() : undefined);
+}
+
+/** A named token's entry as the Orchestrator holds it: its name, the sha-256 of its value, and its
+ * scopes. Never the value (ADR-0078). */
+export type NamedToken = { name: string; digest: string; may: Scopes };
+
+/** The digest of a named token's value, as `jr2 up` gives it to the Orchestrator: sha-256, hex. */
+export function callerTokenDigest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** Make a named token's value: `jr2c_` and 32 random bytes in base64url (ADR-0078). */
+export function mintCallerToken(): string {
+  return CALLER_TOKEN_PREFIX + randomBytes(32).toString("base64url");
+}
+
+/**
+ * The named tokens' authenticator (ADR-0078). It claims every bearer with the `jr2c_` prefix, so a
+ * value that no entry knows is 401 here, never a bearer for the next authenticator. `tokens` is read
+ * on each request: a rotation or a new config applies with no restart.
+ */
+export function namedTokenAuthenticator(tokens: () => readonly NamedToken[]): CallerAuthenticator {
+  return (bearer) => {
+    if (!bearer.startsWith(CALLER_TOKEN_PREFIX)) return undefined;
+    const digest = callerTokenDigest(bearer);
+    // Each entry is compared, in constant time: the digest is not secret, but the loop does not
+    // stop early, so the time does not say which entry is near.
+    let found: NamedToken | undefined;
+    for (const entry of tokens()) if (constantTimeEqual(digest, entry.digest)) found = entry;
+    if (!found) return { refused: "no named Caller token has this value — it was rotated, or never made" };
+    return { via: "token", name: found.name, may: found.may };
+  };
+}
+
+/**
+ * Join the named tokens that the config declares with the digests that `jr2 up` gave the
+ * Orchestrator (ADR-0078). A declared name with no digest has no value yet, and a digest whose name
+ * the config does not declare opens nothing.
+ */
+export function namedTokens(
+  declared: Readonly<Record<string, { may: Scopes }>> | undefined,
+  digests: Readonly<Record<string, string>>,
+): NamedToken[] {
+  return Object.entries(declared ?? {}).flatMap(([name, { may }]) => {
+    const digest = digests[name];
+    return typeof digest === "string" && digest !== "" ? [{ name, digest, may }] : [];
+  });
+}
+
+/**
+ * The digests of the named tokens, by name, from the file that `jr2 up` mounts into the
+ * Orchestrator (`{ "<name>": "<sha-256 hex>" }`). The file is read again when it changes, so a
+ * rotation needs no restart: the kubelet updates a mounted Secret on its own period, about a
+ * minute, and until then the old value works (ADR-0078). An absent file reads as no digests. A file
+ * that does not parse is logged, and the digests read last stay.
+ */
+export function watchCallerDigests(path: string, opts: { intervalMs?: number } = {}) {
+  let digests: Record<string, string> = {};
+  const read = () => {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not a JSON object");
+      digests = Object.fromEntries(
+        Object.entries(parsed as Record<string, unknown>).filter(
+          (e): e is [string, string] => typeof e[1] === "string",
+        ),
+      );
+    } catch (err) {
+      // Absent is the ordinary case for an Instance that declares no named token: no digest. A file
+      // that does not parse keeps the digests read last, so a write seen half done stops no Caller.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") digests = {};
+      else console.error(`caller digests at ${path} not read: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+  read();
+  // A poll of the file's stat, not `fs.watch`: the kubelet swaps a symlink above the file, which an
+  // inotify watch on the old target never sees. `persistent: false` holds no process alive.
+  const listener = () => read();
+  watchFile(path, { interval: opts.intervalMs ?? 2000, persistent: false }, listener);
+  return {
+    /** The digests now. */
+    current: (): Readonly<Record<string, string>> => digests,
+    /** Read the file now (a test does not wait for the poll). */
+    reload: read,
+    stop: () => unwatchFile(path, listener),
+  };
+}
 
 /** Who a request is, once its bearer token checks out. */
 export type Principal =
-  /** The instance's own operator: the CLI, a human, a webhook translator holding the token. */
-  | { kind: "instance" }
+  /** A Caller (ADR-0078): the Instance token, a named token, or a JWT. */
+  | { kind: "caller"; caller: Caller }
   /** `jr2 up`, publishing an Assembly (ADR-0069). Only `PUT /assembly` accepts it: it is not an
    * Instance principal, so it reads no run and starts none. */
   | { kind: "publisher" }
@@ -70,7 +248,7 @@ export const SLOT_HEADER = "x-jr2-slot";
 
 /** Resolve a bearer token, and the slot a control request states, to a principal; undefined = not a
  * token we minted, or a control token with no slot (→ 401). */
-export type Authenticator = (bearer: string | undefined, slot?: string) => Principal | undefined;
+export type Authenticator = (bearer: string | undefined, slot?: string) => Promise<Principal | undefined>;
 
 /** The fetch token for one Sandbox: its name, signed. Same name + key → same token, always. The
  * bare form of ADR-0013's Sandbox token; since ADR-0076 it opens the fetch route alone. */
@@ -167,24 +345,47 @@ export async function loadSigningKey(dir: string): Promise<Buffer> {
 }
 
 /**
- * The instance's authenticator: the Instance token, plus any Sandbox token this key signed.
- * A token we did not mint resolves to nothing, and the caller is refused — there is no anonymous
- * principal, and no route decides for itself whether it needs one.
+ * The instance's authenticator: the principals inside the Orchestrator (the publish token, and any
+ * Sandbox token this key signed), then the Caller seam (ADR-0078) in its order — the Instance
+ * token, the named tokens, then `callers`. A token we did not mint resolves to nothing, and the
+ * caller is refused — there is no anonymous principal, and no route decides for itself whether it
+ * needs one.
+ *
+ * The principals come first because each is an exact value or a signed name: no Caller credential
+ * has the form of one (a named token holds no `.`), so the order changes no answer, and no
+ * authenticator of the seam ever sees a principal's token.
  */
 export function createAuthenticator(opts: {
   instanceToken: string;
   signingKey: Buffer;
   /** The publish token (ADR-0069). Absent → no bearer resolves to the publisher. */
   publishToken?: string;
+  /** The named tokens, read on each request (ADR-0078). Absent → none. */
+  namedTokens?: () => readonly NamedToken[];
+  /** More authenticators of the seam, after the named tokens: the JWT issuers (callers.ts). */
+  callers?: readonly CallerAuthenticator[];
 }): Authenticator {
-  return (bearer, slot) => {
+  const seam: CallerAuthenticator[] = [
+    instanceTokenAuthenticator(opts.instanceToken),
+    ...(opts.namedTokens ? [namedTokenAuthenticator(opts.namedTokens)] : []),
+    ...(opts.callers ?? []),
+  ];
+  const caller = async (bearer: string): Promise<Principal | undefined> => {
+    for (const authenticate of seam) {
+      const answer = await authenticate(bearer);
+      if (answer === undefined) continue;
+      // Claimed: the first claim decides, and a bad one never falls through.
+      return "refused" in answer ? undefined : { kind: "caller", caller: answer };
+    }
+    return undefined;
+  };
+  return async (bearer, slot) => {
     if (!bearer) return undefined;
-    if (constantTimeEqual(bearer, opts.instanceToken)) return { kind: "instance" };
     if (opts.publishToken !== undefined && constantTimeEqual(bearer, opts.publishToken)) return { kind: "publisher" };
     const cut = bearer.lastIndexOf(".");
-    if (cut <= 0) return undefined;
+    if (cut <= 0) return caller(bearer);
     const name = bearer.slice(0, cut);
-    if (!constantTimeEqual(bearer.slice(cut + 1), sign(opts.signingKey, name))) return undefined;
+    if (!constantTimeEqual(bearer.slice(cut + 1), sign(opts.signingKey, name))) return caller(bearer);
     // A control token (ADR-0076), read BEFORE the bare form. A control request states its slot; one
     // that states none is refused like an unknown token, so no route ever sees a control principal
     // without a slot.
@@ -220,7 +421,7 @@ function isPodName(name: string): boolean {
  * control Stand-in, so only the Harness can state a slot at all (ADR-0076).
  */
 export function mayDeliverToAgent(principal: Principal, registration: { sandbox?: string; slot?: string }): boolean {
-  if (principal.kind === "instance") return true;
+  if (isInstancePrincipal(principal)) return true;
   if (principal.kind !== "agent") return false;
   return (
     registration.sandbox !== undefined &&
@@ -238,15 +439,15 @@ export function mayDeliverToAgent(principal: Principal, registration: { sandbox?
  * token may not: it opens the publish door and no other (ADR-0069).
  */
 export function mayAskForSandbox(principal: Principal, sandbox: string): boolean {
-  if (principal.kind === "instance") return true;
+  if (isInstancePrincipal(principal)) return true;
   if (principal.kind !== "sandbox") return false;
   return principal.sandbox === sandbox;
 }
 
-/** Whether a principal is an Agent's — a control token or a fetch token. A Gate refuses every one
- * (ADR-0013, ADR-0076): an Agent never reaches a Gate. */
-export function isAgentPrincipal(principal: Principal): boolean {
-  return principal.kind === "agent" || principal.kind === "sandbox";
+/** Whether a principal is the Instance token's Caller: the operator, which the routes that no
+ * scope names take alone (ADR-0014). A named token is never it, whatever its scopes. */
+export function isInstancePrincipal(principal: Principal): boolean {
+  return principal.kind === "caller" && isInstanceCaller(principal.caller);
 }
 
 /** An HMAC of `value` under the signing key, base64url (43 characters). Exported so every signed

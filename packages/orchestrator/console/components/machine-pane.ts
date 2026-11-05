@@ -4,7 +4,7 @@
 // deliberately NOT vdom-ified; elk's layout is async and pan/zoom is a 60Hz transform).
 
 import { h, type JSX } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import {
   dispatchStrip,
   dispatchedStrip as dispatchedStripText,
@@ -22,7 +22,7 @@ import {
   type MachineStateDoc,
   type MachineTransitionDoc,
 } from "../canvas.ts";
-import type { AppApi, MachineView } from "./app.ts";
+import type { AgentLine, AppApi, MachineView } from "./app.ts";
 
 export function MachinePane(props: {
   view: MachineView;
@@ -32,9 +32,15 @@ export function MachinePane(props: {
   waiting: WaitingLine[];
   held: HeldLine[];
   failure: string | null;
+  /** Who started the selected run (ADR-0078), as one line; null when the page does not know it. */
+  starter: string | null;
+  /** The page's Caller may cancel the selected run, and it is live (ADR-0032). */
+  canCancel: boolean;
+  /** The page's Caller may steer the selected run's Agents, and it is live (ADR-0032). */
+  canSteer: boolean;
   api: AppApi;
 }): JSX.Element {
-  const { view, run, selectedNodeId, gates, waiting, held, failure, api } = props;
+  const { view, run, selectedNodeId, gates, waiting, held, failure, starter, canCancel, canSteer, api } = props;
   const canvasRef = useRef<HTMLElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -69,6 +75,10 @@ export function MachinePane(props: {
     h("div", { id: "error", hidden: !view.note, class: view.note?.notice ? "notice" : "" }, view.note?.text ?? ""),
     dispatchedStrip(run),
     startedStrip(run),
+    starterStrip(starter),
+    run && (canCancel || canSteer)
+      ? h(RunControls, { key: run.runId, runId: run.runId, canCancel, canSteer, api })
+      : null,
     rootTransitionStrip(view.doc),
     seatsPanel(view.doc),
     failureStrip(failure),
@@ -96,6 +106,110 @@ function startedStrip(run: ObservedRun | null): JSX.Element | null {
   const text = dispatchedStripText(run);
   if (!text) return null;
   return h("div", { id: "dispatched", class: "dim", style: { margin: "8px 28px 0", fontFamily: "var(--mono)" } }, text);
+}
+
+/** Who started the selected run (ADR-0078): a Caller, a run through a `dispatch`, or jr2. On the
+ *  run's guarded status, so here only for a Caller with `read`. */
+function starterStrip(text: string | null): JSX.Element | null {
+  if (!text) return null;
+  return h("div", { id: "started-by", class: "dim", style: { margin: "8px 28px 0", fontFamily: "var(--mono)" } }, text);
+}
+
+/**
+ * The controls on the selected live run, each where the Caller's scopes open it (ADR-0032): cancel
+ * with `cancel`, the Steering box with `steer` (ADR-0002). Keyed by run, so a new selection starts
+ * clean. The Steering box reads the run's conversation list when it opens, so it offers only the
+ * Agent slots the run has; a slot that is not steerable is shown and cannot be chosen. What the
+ * person types is theirs (uncontrolled), and a refusal shows where they typed, as the forms do.
+ */
+function RunControls(props: { runId: string; canCancel: boolean; canSteer: boolean; api: AppApi }): JSX.Element {
+  const { runId, canCancel, canSteer, api } = props;
+  const [note, setNote] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentLine[] | null>(null);
+  const [steering, setSteering] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const cancel = (): void => {
+    if (!confirm(`Cancel run ${runId.slice(0, 8)}?`)) return;
+    setBusy(true);
+    setNote(null);
+    void api.cancelRun(runId).then((failure) => {
+      setBusy(false);
+      setNote(failure ? `cancel refused: ${failure}` : null);
+    });
+  };
+
+  const openSteering = (): void => {
+    if (steering) return setSteering(false);
+    setSteering(true);
+    setNote(null);
+    void api.steerTargets(runId).then((answer) => {
+      if (typeof answer === "string") setNote(`no conversation list: ${answer}`);
+      else setAgents(answer);
+    });
+  };
+
+  const send = (e: Event): void => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const agent = (form.elements.namedItem("agent") as HTMLSelectElement | null)?.value ?? "";
+    const text = (form.elements.namedItem("text") as HTMLTextAreaElement | null)?.value.trim() ?? "";
+    if (!agent || !text) return setNote("choose an Agent and write the message");
+    setBusy(true);
+    setNote(null);
+    void api.steer(runId, agent, text).then((failure) => {
+      setBusy(false);
+      if (failure) return setNote(`not sent: ${failure}`);
+      (form.elements.namedItem("text") as HTMLTextAreaElement).value = "";
+      setNote(`sent to ${agent}: it reads the message at its next step`);
+    });
+  };
+
+  return h(
+    "div",
+    { id: "run-controls", style: { margin: "8px 28px 0", maxWidth: "720px" } },
+    canCancel ? h("button", { id: "cancel-run", disabled: busy, onClick: cancel }, "cancel run") : null,
+    canSteer
+      ? h(
+          "button",
+          { id: "steer-open", onClick: openSteering, style: { marginLeft: canCancel ? "8px" : "0" } },
+          "steer",
+        )
+      : null,
+    canSteer && steering
+      ? h(
+          "form",
+          { id: "steering-box", class: "schema-form", onSubmit: send },
+          agents === null
+            ? h("div", { class: "dim" }, "reading the run's Agents…")
+            : agents.length === 0
+              ? h("div", { class: "dim" }, "this run has no Agent slot")
+              : h(
+                  "label",
+                  null,
+                  h("span", null, "agent"),
+                  h(
+                    "select",
+                    { name: "agent" },
+                    agents.map((a) =>
+                      h(
+                        "option",
+                        { key: a.agent, value: a.agent, disabled: !a.steerable },
+                        `${a.agent}${a.open ? " · in a Turn" : ""}${a.steerable ? "" : " · not steerable"}`,
+                      ),
+                    ),
+                  ),
+                ),
+          h("label", null, h("span", null, "message"), h("textarea", { name: "text", rows: 3 })),
+          h("button", { type: "submit", disabled: busy || !agents?.length }, "send"),
+        )
+      : null,
+    h(
+      "div",
+      { id: "run-controls-note", class: note?.startsWith("sent to ") ? "dim" : "form-error", hidden: note === null },
+      note ?? "",
+    ),
+  );
 }
 
 /** Machine-level transitions ("from any state") as the strip above the Machine — an edge from the

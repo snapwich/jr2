@@ -7,7 +7,15 @@
 // (`chart file` or `chart`) and, when a publish no longer admits it, `unrunnable` with the reason.
 
 import { h, type JSX } from "preact";
-import { dispatchBadge, fleetEntries, fleetRuns, type FleetEntry, type ObservedRun, type Store } from "../store.ts";
+import {
+  dispatchBadge,
+  fleetEntries,
+  fleetRuns,
+  may,
+  type FleetEntry,
+  type ObservedRun,
+  type Store,
+} from "../store.ts";
 import { SchemaForm } from "./schema-form.ts";
 import type { AppApi } from "./app.ts";
 
@@ -79,7 +87,7 @@ function workflowItem(
           )
         : null,
       h("span", { class: "wf-count" }, String(rows.filter((r) => !r.settled).length)),
-      store.token === "live" && !entry.unrunnable
+      may(store, "start", name) && !entry.unrunnable
         ? h(
             "button",
             {

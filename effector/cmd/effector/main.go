@@ -70,6 +70,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/dispatchkind"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/kinds"
+	"github.com/snapwich/jr2/effector/internal/mackind"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
 	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/scrub"
@@ -205,7 +206,7 @@ func run(logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	srv := server.New(server.Options{
+	opts := server.Options{
 		// Bound to this replica's address and this process: a start signed for another replica,
 		// or before this process started, starts nothing here.
 		Verifier: sign.NewVerifier(key, replica.Address, started, nil),
@@ -213,7 +214,11 @@ func run(logger *log.Logger) error {
 		Scrubber: scrubber,
 		Replica:  replica,
 		Log:      logger,
-	})
+	}
+	if runner.Mac != nil {
+		opts.Mac = runner.Mac
+	}
+	srv := server.New(opts)
 	httpServer := &http.Server{Addr: ":" + port, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
 
 	listener, err := net.Listen("tcp", httpServer.Addr)
@@ -258,10 +263,11 @@ func run(logger *log.Logger) error {
 type mount struct{ key, config, secrets, git string }
 
 // kindsFor is this placement's kinds: `http` and `dispatch` (ADR-0071) in the Instance Effector,
-// which holds a foreign Orchestrator's token as an Effect secret; in a Sandbox Effector
-// (JR2_EFFECTOR_WORK set) `http` with a file body too, push and the credentialed command, whose
-// child is confined with Landlock, and no dispatch. A Sandbox Effector on a kernel that cannot
-// confine a child stops its start (it never becomes ready), whatever its Workspace holds (ADR-0077).
+// which holds a foreign Orchestrator's token as an Effect secret, and the Hook door's `mac` check
+// (ADR-0068); in a Sandbox Effector (JR2_EFFECTOR_WORK set) `http` with a file body too, push and
+// the credentialed command, whose child is confined with Landlock, and no dispatch. A Sandbox
+// Effector on a kernel that cannot confine a child stops its start (it never becomes ready),
+// whatever its Workspace holds (ADR-0077).
 func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Scrubber, roots *x509.CertPool,
 	m mount) (*kinds.Runner, error) {
 	gitDir := m.git
@@ -270,6 +276,8 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 		WorkRoot: work}, Reaper: reaper.New()}
 	if work == "" {
 		r.Dispatch = &dispatchkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots}
+		// The Hook door's `mac` check (ADR-0068): a Hook's secret is placed here as an Effect's is.
+		r.Mac = &mackind.Checker{Secrets: held}
 		return r, nil
 	}
 	r.Lock = &kinds.Lock{}

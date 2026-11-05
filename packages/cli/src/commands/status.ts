@@ -25,8 +25,17 @@
 //
 // A failed run (ADR-0073) says its reason beside the result: `failed: <reason>`. The result's
 // `output` holds the whole Failure, `{ reason, detail? }`.
+//
+// A run says beside the result who started it (ADR-0078): `started by: <via>/<name>`, with the
+// name jr2 shows and the party the Caller said it acts for. A run that a `dispatch` started names
+// its first Caller: the verb walks `startedBy` up the chain of runs to the first one that a Caller
+// started, and names the runs between. A run that jr2 started says why (`started by: jr2 (boot)`).
+// A cancelled run says who cancelled it: `cancelled by: <via>/<name>`. A standing run (ADR-0017)
+// says who resumed it (`resumed by:`) and, once a hand-over ended it, which run took over
+// (`handed over to:`). Bare `jr2 status` prints each standing Workflow: live, paused with the number
+// of items it holds, or waiting out a back-off.
 
-import type { AssemblyView, RepoStatus } from "@jr2/orchestrator/internal";
+import type { AssemblyView, CallerRecord, RepoStatus, StandingView } from "@jr2/orchestrator/internal";
 import { JR2Client, type FetchLike, type RunStatus, workflowPath } from "../client.ts";
 import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
@@ -41,7 +50,7 @@ export async function status(args: string[], io: Io): Promise<number> {
   const given = positionals.length === 0 ? undefined : positionals[0]!;
   const target = await resolveTarget(io, targetOptions(values));
   try {
-    const client = new JR2Client(target.url, io.fetch, target.token);
+    const client = new JR2Client(target.url, io.fetch, target.token, target.onBehalfOf);
     if (given === undefined) return await instanceStatus(client, io, target.url, values.json === true);
     const ref = await resolveRunId(client, given);
     if (!ref.ok) {
@@ -55,6 +64,9 @@ export async function status(args: string[], io: Io): Promise<number> {
     }
     result(io, s);
     const notes = [
+      await startedByActivity(client, s),
+      cancelledByActivity(s),
+      ...standingRunLines(s),
       failureActivity(s),
       dispatchedActivity(s),
       ...dispatchedLines(s),
@@ -74,6 +86,70 @@ export function failureActivity(s: Pick<RunStatus, "status" | "output">): string
   if (s.status !== "failed") return undefined;
   const reason = (s.output as { reason?: unknown } | undefined)?.reason;
   return typeof reason === "string" ? `failed: ${reason}` : undefined;
+}
+
+/** A Caller as one line names it (ADR-0078): `<via>/<name>`, the name jr2 shows, and the party it
+ * said it acts for. */
+export function callerText(c: CallerRecord): string {
+  return (
+    `${c.via}/${c.name}` +
+    (c.shown !== undefined && c.shown !== c.name ? ` (${c.shown})` : "") +
+    (c.onBehalfOf !== undefined ? ` on behalf of ${c.onBehalfOf}` : "")
+  );
+}
+
+/** The most runs the `started by:` walk reads: a chain of dispatches longer than this is named as
+ * cut, never read without end. */
+const STARTED_BY_HOPS = 16;
+
+/**
+ * The `started by:` line (ADR-0078): the run's first Caller. A run that a `dispatch` started is
+ * walked up its `startedBy` chain, one read per run, to the first run that a Caller or jr2 started;
+ * the line names the runs between, nearest first. A run of the chain that the Caller may not read,
+ * or that is no longer known, ends the walk, and the line says so. Undefined for a run that records
+ * no starter.
+ */
+export async function startedByActivity(
+  client: Pick<JR2Client, "read">,
+  s: Pick<RunStatus, "startedBy">,
+): Promise<string | undefined> {
+  let by = s.startedBy;
+  if (!by) return undefined;
+  const through: string[] = [];
+  const via = () => (through.length ? `, through ${through.join(" ← ")}` : "");
+  while (by.kind === "run") {
+    if (through.length >= STARTED_BY_HOPS) {
+      return `started by: not read — the chain is longer than ${STARTED_BY_HOPS} runs${via()}`;
+    }
+    const hop = `run ${by.run} (${by.slot})`;
+    let next: RunStatus | undefined;
+    try {
+      next = await client.read(by.run);
+    } catch (e) {
+      return `started by: not read — ${hop}: ${e instanceof Error ? e.message : String(e)}${via()}`;
+    }
+    if (!next) return `started by: not known — ${hop} is no longer known${via()}`;
+    through.push(hop);
+    if (!next.startedBy) return `started by: not recorded${via()}`;
+    by = next.startedBy;
+  }
+  if (by.kind === "jr2") return `started by: jr2 (${by.why})${via()}`;
+  const { kind: _kind, ...caller } = by;
+  return `started by: ${callerText(caller)}${via()}`;
+}
+
+/** A standing run's lines (ADR-0017): the Caller whose `jr2 run` resumed it, and the run that took
+ * over from it at a hand-over. */
+export function standingRunLines(s: Pick<RunStatus, "resumedBy" | "handedOverTo">): string[] {
+  return [
+    ...(s.resumedBy ? [`resumed by: ${callerText(s.resumedBy)}`] : []),
+    ...(s.handedOverTo ? [`handed over to: ${s.handedOverTo}`] : []),
+  ];
+}
+
+/** The `cancelled by:` line for a run a Caller cancelled (ADR-0078). */
+export function cancelledByActivity(s: Pick<RunStatus, "cancelledBy">): string | undefined {
+  return s.cancelledBy ? `cancelled by: ${callerText(s.cancelledBy)}` : undefined;
 }
 
 /** The most `dispatched:` lines `jr2 status` prints: a watcher dispatches on every pass, and the
@@ -105,7 +181,16 @@ export function worktreeLines(s: RunStatus): string[] {
 export function dispatchedActivity(s: RunStatus): string | undefined {
   const by = s.dispatchedBy;
   if (!by) return undefined;
-  return `dispatched by: ${by.run} (${by.slot}), depth ${by.depth}${by.instance ? `, from Orchestrator ${by.instance}` : ""}`;
+  // A Pool of runs (ADR-0017) names the item's key, and the Hook delivery that carried it.
+  const pool =
+    by.key !== undefined
+      ? `, key ${by.key}${
+          by.hook
+            ? `, hook ${by.hook.name}, delivery ${by.hook.delivery}${by.hook.onBehalfOf ? `, on behalf of ${by.hook.onBehalfOf}` : ""}`
+            : ""
+        }`
+      : "";
+  return `dispatched by: ${by.run} (${by.slot}), depth ${by.depth}${by.instance ? `, from Orchestrator ${by.instance}` : ""}${pool}`;
 }
 
 /** The `chart: bound` line for a run that binds a Chart (ADR-0070), or undefined for one that binds
@@ -144,17 +229,19 @@ async function instanceStatus(client: JR2Client, io: Io, url: string, json: bool
 
 /** `GET /assembly` (ADR-0069): open, like `GET /workflows`, so it needs no token. An answer that
  * cannot be read is reported as the reason, never as a failure of the verb. */
-async function readAssembly(fetchImpl: FetchLike, url: string): Promise<AssemblyView | { error: string }> {
+async function readAssembly(fetchImpl: FetchLike, url: string): Promise<InstanceAssembly | { error: string }> {
   try {
     const res = await fetchImpl(`${url.replace(/\/+$/, "")}/assembly`);
     if (!res.ok) return { error: `GET /assembly answered HTTP ${res.status}` };
     // Read loosely: a `held` that is absent or not a list reads as none held, so a report never
     // fails on the shape of one field (ADR-0048: a report is not a failure of the asking).
     const view = (await res.json()) as Partial<AssemblyView>;
+    const standing = (view as { standing?: unknown }).standing;
     return {
       kitVersion: view.kitVersion ?? "",
       current: view.current ?? null,
       held: Array.isArray(view.held) ? view.held : [],
+      ...(Array.isArray(standing) ? { standing: standing as StandingView[] } : {}),
     };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
@@ -168,7 +255,7 @@ async function readAssembly(fetchImpl: FetchLike, url: string): Promise<Assembly
  * The current Assembly prints first, whatever order `held` uses; the other held Assemblies follow
  * in the server's order.
  */
-function assemblyLines(view: AssemblyView | { error: string } | undefined): string {
+function assemblyLines(view: InstanceAssembly | { error: string } | undefined): string {
   if (view === undefined) return "";
   if ("error" in view) return `assembly: unknown — ${view.error}\n`;
   const current = view.current;
@@ -187,7 +274,35 @@ function assemblyLines(view: AssemblyView | { error: string } | undefined): stri
     if (held.hash === current?.hash) continue;
     out += line(held.hash, held.kitVersion, held.runs.length, false);
   }
+  for (const s of view.standing ?? []) out += `${standingLine(s)}\n`;
   return out;
+}
+
+/** What `GET /assembly` answers, with its standing Workflows (ADR-0017). */
+export type InstanceAssembly = AssemblyView & { standing?: StandingView[] };
+
+/**
+ * One standing Workflow as one line (ADR-0017): its Pool's chain to its callee, and its state. A
+ * paused one says why, how many items it holds and how to resume it; one with no live run and no
+ * pause waits out the back-off of a hand-over.
+ */
+export function standingLine(s: StandingView): string {
+  const items = `${s.held} held item${s.held === 1 ? "" : "s"}`;
+  const head = `standing ${s.workflow} → ${s.callee}`;
+  if (s.state === "live") return `${head}: live, run ${s.run ?? "?"}, ${items}`;
+  if (s.state === "paused") {
+    const why =
+      s.why === "errors"
+        ? "4 runs in a row in which no item that the run took started a run; the last one ended error or failed"
+        : s.why === "bound"
+          ? "4 runs in a row in which no item that the run took started a run; the last one took its bound of items"
+          : "a cancel";
+    return (
+      `${head}: paused (${why}), ${items}${s.run ? ` in run ${s.run}` : ""} — \`jr2 run ${s.workflow}\` resumes it, ` +
+      "and `--drop-held` resumes it with no held item"
+    );
+  }
+  return `${head}: no live run — jr2 starts its next run after the back-off`;
 }
 
 /** The human table — the held Assemblies, current first, one line per Repo, one per node under it, then the
@@ -197,7 +312,7 @@ export function renderInstanceStatus({
   dataPlane,
   repos,
 }: {
-  assembly?: AssemblyView | { error: string };
+  assembly?: InstanceAssembly | { error: string };
   dataPlane: boolean;
   repos: RepoStatus[];
 }): string {

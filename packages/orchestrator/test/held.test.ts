@@ -1353,10 +1353,10 @@ test("the run records the Agent each pick's child is of; after a restore, a done
   const saved = JSON.stringify((await store.load(runId))?.snapshot);
   assert.match(
     saved,
-    /"startedBy":\{[^]*"waitA":\{"agent":"coderA","invoke":"0\.pair\.ra"\}/,
+    /"childAgents":\{[^]*"waitA":\{"agent":"coderA","invoke":"0\.pair\.ra"\}/,
     "the run records the Agent whose pick started A's child",
   );
-  assert.match(saved, /"startedBy":\{[^]*"waitB":\{"agent":"coderB","invoke":"0\.pair\.rb"\}/, "and B's");
+  assert.match(saved, /"childAgents":\{[^]*"waitB":\{"agent":"coderB","invoke":"0\.pair\.rb"\}/, "and B's");
   await host.stop(runId);
 
   const second = new RunHost({ store });
@@ -1537,8 +1537,12 @@ test("a child the pick's later work started is recorded as its Agent's; after a 
   host.sendToGate(runId, "waitA1.doneA1", { type: "go" });
   await new Promise((r) => setTimeout(r, 50));
   const saved = JSON.stringify((await store.load(runId))?.snapshot);
-  assert.match(saved, /"startedBy":\{[^]*"waitA2":\{"agent":"coderA"/, "the child A's first step's end started is A's");
-  assert.match(saved, /"startedBy":\{[^]*"waitB":\{"agent":"coderB"/, "B's child is B's");
+  assert.match(
+    saved,
+    /"childAgents":\{[^]*"waitA2":\{"agent":"coderA"/,
+    "the child A's first step's end started is A's",
+  );
+  assert.match(saved, /"childAgents":\{[^]*"waitB":\{"agent":"coderB"/, "B's child is B's");
   assert.doesNotMatch(saved, /"waitA1":"coderA"/, "the child that ended is dropped at the save");
   await host.stop(runId);
 
@@ -1635,8 +1639,8 @@ test("a child a timer in the Agent's state started is recorded as its Agent's; a
   assert.equal(pb.outstanding, true);
   await new Promise((r) => setTimeout(r, 100));
   const saved = JSON.stringify((await store.load(runId))?.snapshot);
-  assert.match(saved, /"startedBy":\{[^]*"waitA2":\{"agent":"coderA"/, "the child A's timer started is A's");
-  assert.match(saved, /"startedBy":\{[^]*"waitB":\{"agent":"coderB"/, "B's child is B's");
+  assert.match(saved, /"childAgents":\{[^]*"waitA2":\{"agent":"coderA"/, "the child A's timer started is A's");
+  assert.match(saved, /"childAgents":\{[^]*"waitB":\{"agent":"coderB"/, "B's child is B's");
   await host.stop(runId);
 
   const second = new RunHost({ store });

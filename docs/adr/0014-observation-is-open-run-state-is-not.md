@@ -16,6 +16,7 @@ Building `jr2 visualize` (the Machine renderer and its live run highlighting) fo
 
 ```
 open           /workflows, /workflows/:name/machine, /viz/*        structure
+               /console/config (the login's issuers, ADR-0032)     public values
                /workflows/:name/runs, …/runs/:runId/events         OBSERVATION (new)
 authenticated  /agents/:iid/*                                      the Agent's surface  [Sandbox token]
 guarded        each route below, opened by one scope of a Caller   run state + control  [a Caller, ADR-0078]
@@ -39,11 +40,15 @@ guarded        each route below, opened by one scope of a Caller   run state + c
   ```
 
   `answer` alone opens a run's `gates` and their routing, and never its `context`: a person who answers a Gate reads the
-  Gate's `meta`, which the author wrote for that person. `GET /runs/resolve` answers ids to a Caller with any scope, for
-  the Workflows of its scopes. `GET /whoami` answers any Caller. A route that no scope names stays the Instance token's:
-  the runtime Chart routes (`PUT` and `DELETE /workflows/:wrapper/charts/:name`), `GET /repos`, and the Instance-token
-  door on `/agents/:iid/*` (ADR-0013). `POST /hooks/:name` is outside the bands: the Hook's own verifier authenticates
-  it ([ADR-0011](0011-workflow-defined-events.md)). The band is named for what it checks, not for a role — "operator" in
+  Gate's `meta`, which the author wrote for that person. So `GET /runs/:id` gives `read` the status and `answer` the
+  `gates`; with `answer` alone the answer is the run's observation (below) and its `gates`. `GET /runs` leaves out the
+  runs of the Workflows that the Caller may not read; it refuses no run, and refuses only a Caller with no `read` scope
+  at all (ADR-0078). `GET /runs/resolve` answers ids to a Caller with any scope, for the Workflows of its scopes.
+  `GET /whoami` answers any Caller. A route that no scope names stays the Instance token's: the runtime Chart routes
+  (`PUT` and `DELETE /workflows/:wrapper/charts/:name`), `GET /repos`, a Hook's log (`GET /hooks/:name`, which can hold
+  a payload's fields and a handler's words), and the Instance-token door on `/agents/:iid/*` (ADR-0013).
+  `POST /hooks/:name` is outside the bands: the Hook's own verifier authenticates it
+  ([ADR-0011](0011-workflow-defined-events.md)). The band is named for what it checks, not for a role — "operator" in
   this repo is the Kubernetes operator (ADR-0001).
 
 - **The observer gets a PROJECTION, not a credential.** `RunObservation` is
@@ -104,6 +109,6 @@ guarded        each route below, opened by one scope of a Caller   run state + c
   Agent's reasoning, and what its picks answered, is whoever can read pod logs. If that becomes unacceptable, the fix is
   the read-through ADR-0023 declined to build — behind `read`, on this surface, where the band already works.
 
-Evidence: `packages/orchestrator/src/http.ts` (the three middlewares), `run-host.ts` (`observe` / `RunObservation` /
-`RunChild`), `test/auth.test.ts` (the boundary), `test/http-viz.test.ts` (a planted secret never reaches the feed, at
-any depth of the child tree).
+Evidence: `packages/orchestrator/src/http.ts` (the middlewares), `run-host.ts` (`observe` / `RunObservation` /
+`RunChild`), `test/auth.test.ts` (the boundary), `test/callers.test.ts` (each scope on its routes),
+`test/http-viz.test.ts` (a planted secret never reaches the feed, at any depth of the child tree).

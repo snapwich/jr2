@@ -14,12 +14,16 @@ import { runs } from "./commands/runs.ts";
 import { status } from "./commands/status.ts";
 import { logs } from "./commands/logs.ts";
 import { send } from "./commands/send.ts";
+import { steer } from "./commands/steer.ts";
 import { up } from "./commands/up.ts";
 import { check } from "./commands/check.ts";
 import { down } from "./commands/down.ts";
 import { gc } from "./commands/gc.ts";
 import { kit } from "./commands/kit.ts";
 import { version } from "./commands/version.ts";
+import { whoami } from "./commands/whoami.ts";
+import { hooks } from "./commands/hooks.ts";
+import { caller } from "./commands/caller.ts";
 import { asksForHelp, commandsFor, GLOBAL, renderCommand, renderHelp } from "./command-table.ts";
 
 /**
@@ -49,7 +53,9 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
     loadDotenv(io);
     const entries = cmd === undefined ? [] : commandsFor(cmd);
     if (entries.length && asksForHelp(entries, rest)) {
-      activity(io, entries.map(renderCommand).join("\n\n"));
+      // `jr2 caller rotate --help` prints that sub-verb's entry; `jr2 caller --help` prints each.
+      const named = entries.filter((c) => c.sub !== undefined && c.sub === rest[0]);
+      activity(io, (named.length ? named : entries).map(renderCommand).join("\n\n"));
       return 0;
     }
     if (cmd !== undefined && (GLOBAL.help as readonly string[]).includes(cmd)) {
@@ -69,6 +75,8 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await logs(rest, io);
       case "send":
         return await send(rest, io);
+      case "steer":
+        return await steer(rest, io);
       case "check":
         return await check(rest, io);
       case "up":
@@ -79,6 +87,12 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await gc(rest, io);
       case "kit":
         return await kit(rest, io);
+      case "whoami":
+        return await whoami(rest, io);
+      case "hooks":
+        return await hooks(rest, io);
+      case "caller":
+        return await caller(rest, io);
       case "version":
       case "--version":
         return await version(rest, io);

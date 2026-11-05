@@ -1,12 +1,13 @@
-// The Authoring surface and `@jr2/machines` pages (ADR-0072): each name a package root exports, in
+// The Authoring surface, `@jr2/machines` and `@jr2/hooks` pages (ADR-0072): each name a package root exports, in
 // the root's own groups and order, followed through its re-exports to the declaration the compiler
 // finds. Per name: its kind, its signature, and its TSDoc — the summary, the params with the fields
 // of the option types an author writes, what it returns, its examples, and its `@see` links. Last,
 // the kit types the signatures name that no page documents, so each name has a definition.
 //
-// A surface is one page, or it is split: then its page is a contents page, which gives each name
-// its kind and the first sentence of its TSDoc, and each name has a page of its own in the folder
-// of the same name. A file tool reads the contents whole, and then one entry at a time.
+// A surface is one page, or it is split: then its page is a contents page, which gives each group
+// its description and its names. In the folder of the same name, each group has a page, which gives
+// each of its names its kind and the first sentence of its TSDoc, and each name has a page of its
+// own. A file tool reads the contents whole, then one group, then one entry at a time.
 
 import ts from "typescript";
 import { relative } from "node:path";
@@ -143,6 +144,41 @@ export function readSurface(ctx: RefContext, root: string, page: string, split =
   return { root, page, groups: groups.filter((g) => g.entries.length), split };
 }
 
+/** One module of a package that has more than one entry point, such as `@jr2/hooks/github`: its
+ * file, the specifier that imports it, and the text that heads its group. */
+export type SurfaceModule = { root: string; specifier: string; intro: string };
+
+/** Read a package whose modules are its entry points, one group for each module, in the order
+ * given. A group holds each name that its module exports, in source order. The first module is the
+ * surface's root, which names its package. */
+export function readModules(ctx: RefContext, modules: readonly SurfaceModule[], page: string): Surface {
+  const { checker } = ctx.program;
+  const groups: EntryGroup[] = modules.map((m) => {
+    const sf = sourceFile(ctx.program, m.root);
+    const mod = checker.getSymbolAtLocation(sf);
+    const syms = mod ? checker.getExportsOfModule(mod) : [];
+    const pos = (s: ts.Symbol) => resolveAlias(ctx.program, s).declarations?.[0]?.getStart() ?? 0;
+    const entries = [...syms]
+      .sort((a, b) => pos(a) - pos(b))
+      .flatMap((s) => entryOf(ctx, s.name, s, sf.statements[0] ?? sf) ?? []);
+    return { title: code(m.specifier), intro: m.intro, entries };
+  });
+  const seen = new Set<string>();
+  for (const e of groups.flatMap((g) => g.entries)) {
+    if (seen.has(e.anchor))
+      ctx.errors.push({ file: modules[0]!.root, line: 1, message: `two exports share the anchor #${e.anchor}` });
+    seen.add(e.anchor);
+    if (ctx.names.has(e.name))
+      ctx.errors.push({
+        file: modules[0]!.root,
+        line: 1,
+        message: `the export ${e.name} has the name of a name on another Reference page`,
+      });
+    ctx.names.set(e.name, { page, anchor: e.anchor });
+  }
+  return { root: modules[0]!.root, page, groups: groups.filter((g) => g.entries.length), split: false };
+}
+
 // ---- rendering ---------------------------------------------------------------------------------
 
 /** True when a type node names, with `typeof`, a value that no Reference page documents: the
@@ -265,9 +301,9 @@ function renderDoc(
 }
 
 // The packages an Instance lists, so their folders are in its own node_modules: the kit, and
-// @jr2/machines, which the machines page tells the reader to add. Any other @jr2 package is a
+// @jr2/machines and @jr2/hooks, which their pages tell the reader to add. Any other @jr2 package is a
 // dependency of @jr2/orchestrator, which a strict node_modules (pnpm) keeps out of the Instance's.
-const LISTED = new Set(["orchestrator", "machines"]);
+const LISTED = new Set(["orchestrator", "machines", "hooks"]);
 
 /** Where a declaration's file is, as Markdown, as an Assistant finds it from the Instance's
  * node_modules: `@jr2/orchestrator/src/x.ts`, or for a package the Instance does not list, the
@@ -366,7 +402,7 @@ export function renderSurface(ctx: RefContext, s: Surface, intro: string): Surfa
   );
   const place = s.split ? (a: string) => entryPage(s.page, a) : s.page;
   const named = namedBy(ctx, nodes, place, (name) => ctx.names.has(name), "type", shortened);
-  const pkg = s.root.startsWith("packages/machines/") ? "@jr2/machines" : "@jr2/orchestrator";
+  const pkg = `@jr2/${/^packages\/([^/]+)\//.exec(s.root)?.[1] ?? "orchestrator"}`;
   if (s.split) return renderSplit(ctx, s, intro, named, pkg);
   const sections = s.groups.map((g) => {
     const head = g.title ? [`## ${g.title}`] : [];
@@ -387,41 +423,93 @@ export function renderSurface(ctx: RefContext, s: Surface, intro: string): Surfa
   return { body: [intro, "## Contents", contents(s), ...sections, ...types].join("\n\n") + "\n", entries: [] };
 }
 
-/** A split surface: its contents page, and a page for each export and each type it names. */
+/** The page of one group of a split surface: `reference/authoring-surface/group-<title>.md`. The
+ * prefix keeps it apart from an entry page; the build fails when two pages have one path. */
+export const groupPage = (page: string, title: string): string => entryPage(page, `group-${anchorOf(title)}`);
+
+/** A list item: its head, then names joined by commas, with a line break before a line passes 120
+ * characters, so that no line of the contents page is long. */
+function wrapped(head: string, names: string[]): string {
+  const lines = [head];
+  names.forEach((n, i) => {
+    const text = i < names.length - 1 ? `${n},` : n;
+    const last = lines.length - 1;
+    if (i > 0 && lines[last]!.length + text.length + 1 > 120) lines.push(`  ${text}`);
+    else lines[last] += i > 0 ? ` ${text}` : text;
+  });
+  return lines.join("\n");
+}
+
+/** A split surface: its contents page, a page for each group, and a page for each export and each
+ * type it names. The contents page gives each group its description and its names; a group's page
+ * gives each of its names its kind and the first sentence of its TSDoc. */
 function renderSplit(ctx: RefContext, s: Surface, intro: string, named: TypeClosure, pkg: string): SurfacePages {
+  const groups: EntryPage[] = [];
   const entries: EntryPage[] = [];
-  // Add the page of one name, and give the href of that page from the contents page.
+  const pageOf = (path: string, title: string, heading: string, description: string, body: string[]) => ({
+    slug: path.replace(/\.md$/, ""),
+    title,
+    heading,
+    description,
+    body: body.join("\n\n") + "\n",
+  });
+  // Add the page of one name, and give its path.
   const add = (name: string, anchor: string, description: string, body: string[]) => {
     const page = entryPage(s.page, anchor);
-    entries.push({
-      slug: page.replace(/\.md$/, ""),
-      title: name,
-      heading: code(name),
-      description,
-      body: body.join("\n\n") + "\n",
-    });
-    return relativeHref(s.page, page);
+    entries.push(pageOf(page, name, code(name), description, body));
+    return page;
   };
-  const home = (from: string) => `[${pageTitle(ctx, s.page)}](${relativeHref(from, s.page)})`;
-  const line = (href: string, name: string, kind: string, summary: string | undefined) =>
-    `- [${code(name)}](${href})${kind}${summary ? `: ${summary}` : ""}`;
+  const surfaceTitle = pageTitle(ctx, s.page);
+  const home = (from: string) => `[${surfaceTitle}](${relativeHref(from, s.page)})`;
+  const line = (from: string, page: string, name: string, kind: string, summary: string | undefined) =>
+    `- [${code(name)}](${relativeHref(from, page)})${kind}${summary ? `: ${summary}` : ""}`;
+  // A group's section of the contents page: its heading, its description, its page and its names.
+  const section = (title: string, text: string[], page: string, names: string[][]) => {
+    const rows = names
+      .filter(([, ...links]) => links.length)
+      .map(([label, ...links]) => wrapped(`- ${label}: `, links));
+    return [`## ${title}`, ...text, [`- Page: [${title}](${relativeHref(s.page, page)})`, ...rows].join("\n")].join(
+      "\n\n",
+    );
+  };
+  const link = (name: string, page: string) => `[${code(name)}](${relativeHref(s.page, page)})`;
+  const groupIntro = (text: string) => `This page is one group of the ${text}.`;
 
   const sections = s.groups.map((g) => {
-    const head = g.title ? [`## ${g.title}`] : [];
-    const text = g.intro ? [renderProse(ctx, g.intro[0]!.toUpperCase() + g.intro.slice(1), s.page)] : [];
+    if (!g.title)
+      ctx.errors.push({ file: s.root, line: 1, message: `a group of ${s.root} has no title, so it has no page` });
+    const title = g.title ?? "Other names";
+    const gpage = groupPage(s.page, title);
+    const intro = g.intro && g.intro[0]!.toUpperCase() + g.intro.slice(1);
+    const prose = (from: string) => (intro ? [renderProse(ctx, intro, from)] : []);
     const items = g.entries.map((e) => {
       const from = entryPage(s.page, e.anchor);
       const summary = firstSentence(docOf(ctx.program, e.decls[0]!)?.summary);
-      const back = ` It is an export of ${code(pkg)}, on the ${home(from)} page${g.title ? `, in ${g.title}` : ""}.`;
-      const href = add(
+      const back = ` It is an export of ${code(pkg)}, in the [${title}](${relativeHref(from, gpage)}) group of the ${home(from)} page.`;
+      const page = add(
         e.name,
         e.anchor,
         summary ?? `${KIND_TITLE[e.kind]}, an export of ${pkg}.`,
         entryBlocks(ctx, e, from, named, "##", back),
       );
-      return line(href, e.name, ` (${KIND_TITLE[e.kind].toLowerCase()})`, summary);
+      return { name: e.name, page, row: line(gpage, page, e.name, ` (${KIND_TITLE[e.kind].toLowerCase()})`, summary) };
     });
-    return [...head, ...text, items.join("\n")].join("\n\n");
+    groups.push(
+      pageOf(
+        gpage,
+        `${surfaceTitle}: ${title}`,
+        `${surfaceTitle}: ${title}`,
+        firstSentence(intro) ?? `A group of the exports of ${pkg}.`,
+        [
+          groupIntro(
+            `names that ${code(pkg)} exports from its root, on the ${home(gpage)} page. It gives each name its kind and the first sentence of its TSDoc. Each name has a page of its own, in this folder`,
+          ),
+          ...prose(gpage),
+          items.map((i) => i.row).join("\n"),
+        ],
+      ),
+    );
+    return section(title, prose(s.page), gpage, [["Names", ...items.map((i) => link(i.name, i.page))]]);
   });
 
   const typeEntry = (t: NamedType) => {
@@ -430,31 +518,46 @@ function renderSplit(ctx: RefContext, s: Surface, intro: string, named: TypeClos
     const what = t.plumbing
       ? ` It is type plumbing: it computes a type from the types of a Machine or of its parts, and a workflow module does not write it. The signature of an export, or a type that it names, names this type, so its declaration is here. The ${home(from)} page lists each export.`
       : ` The signature of an export, or a type that it names, names this type. The ${home(from)} page lists each export. This type is not an export of ${code(pkg)}, so a workflow module does not import it by name.`;
-    return add(t.name, t.anchor, summary ?? `A type that the ${pageTitle(ctx, s.page)} names.`, [
+    return add(t.name, t.anchor, summary ?? `A type that the ${surfaceTitle} names.`, [
       `Type, in ${declaredIn(ctx, t.decl)}.${what}`,
       ...typeBlocks(ctx, t, from),
     ]);
   };
-  const types: string[] = [];
   if (named.types.length) {
-    types.push(
-      TYPES_HEADING,
-      `The signature of an export, or a type here, names each of these types. They are not exports of ${code(pkg)}, so a workflow module does not import them by name.`,
-    );
-    const own = named.types.filter((t) => !t.plumbing);
+    const title = TYPES_HEADING.replace(/^## /, "");
+    const gpage = groupPage(s.page, title);
+    const text = `The signature of an export, or a type here, names each of these types. They are not exports of ${code(pkg)}, so a workflow module does not import them by name.`;
+    const body = [
+      groupIntro(
+        `${home(gpage)}. It gives each type its first sentence. Each type has a page of its own, in this folder`,
+      ),
+      text,
+    ];
+    const own = named.types.filter((t) => !t.plumbing).map((t) => ({ t, page: typeEntry(t) }));
     if (own.length)
-      types.push(
-        own.map((t) => line(typeEntry(t), t.name, "", firstSentence(docOf(ctx.program, t.decl)?.summary))).join("\n"),
+      body.push(
+        own
+          .map(({ t, page }) => line(gpage, page, t.name, "", firstSentence(docOf(ctx.program, t.decl)?.summary)))
+          .join("\n"),
       );
-    const plumbing = named.types.filter((t) => t.plumbing);
+    const plumbing = named.types.filter((t) => t.plumbing).map((t) => ({ t, page: typeEntry(t) }));
     if (plumbing.length)
-      types.push(
-        `**Type plumbing.** These types compute a type from the types of a Machine or of its parts. A workflow module does not write them. Each has a page with its declaration:\n\n${plumbing.map((t) => `- [${code(t.name)}](${typeEntry(t)})`).join("\n")}`,
+      body.push(
+        `**Type plumbing.** These types compute a type from the types of a Machine or of its parts. A workflow module does not write them. Each has a page with its declaration:\n\n${plumbing.map(({ t, page }) => `- [${code(t.name)}](${relativeHref(gpage, page)})`).join("\n")}`,
       );
     const deps = dependencyNames(named, true);
-    if (deps) types.push(deps);
+    if (deps) body.push(deps);
+    groups.push(pageOf(gpage, `${surfaceTitle}: ${title}`, `${surfaceTitle}: ${title}`, firstSentence(text)!, body));
+    // The contents page gives these names as code, with no link: there are more than a hundred, and
+    // each signature that names one links to its page. The group's page links each.
+    sections.push(
+      section(title, [text], gpage, [
+        ["Types", ...own.map(({ t }) => code(t.name))],
+        ["Type plumbing", ...plumbing.map(({ t }) => code(t.name))],
+      ]),
+    );
   }
-  return { body: [intro, ...sections, ...types].join("\n\n") + "\n", entries };
+  return { body: [intro, ...sections].join("\n\n") + "\n", entries: [...groups, ...entries] };
 }
 
 /** The sitemap title of a Reference page, by its bundle path. */

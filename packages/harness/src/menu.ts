@@ -39,8 +39,8 @@
 // Each Submission reads afresh, and the iid in the path is how the Orchestrator knows which turn is
 // live — no push channel, no turn index (ADR-0013's enabling fact).
 
-import { isNotice } from "./notices.ts";
-import type { Notice, PickAnswer } from "./wire.ts";
+import { isNotice, isSteering } from "./notices.ts";
+import type { Notice, PickAnswer, SteeringMessage } from "./wire.ts";
 
 /**
  * One pick on the Menu. `name` is the event's name made safe for a model API, bare: whoever
@@ -72,10 +72,14 @@ export type Menu = MenuItem[];
  * Harness acknowledges once the notice is appended to the Turn, and the notice. */
 export type HeldNotice = { id: string; notice: Notice };
 
+/** A Steering message a surface read reserved for this conversation (ADR-0002): its id, which the
+ * Harness acknowledges with the notices once the message is appended to the Turn, and the message. */
+export type HeldSteering = { id: string; message: SteeringMessage };
+
 /** One Submission's read of a live surface: the Menu, presented as the tools block, the Turn's
  * Allowed picks — event names, stated in the Briefing's Turn part and enforced at delivery — and the
  * notices the read reserved. */
-export type MenuRead = { menu: Menu; allowed: string[]; notices: HeldNotice[] };
+export type MenuRead = { menu: Menu; allowed: string[]; notices: HeldNotice[]; steering: HeldSteering[] };
 
 /** One event on an agent's live surface, as the Orchestrator serves it. */
 export type SurfaceEvent = {
@@ -108,6 +112,8 @@ export type Surface = {
   /** The conversation's pending notices in its audience, reserved for this read (ADR-0062). Absent
    * from an Orchestrator that delivers notices at admission alone. */
   notices?: Array<{ id: string; notice: unknown }>;
+  /** The slot's Steering messages, reserved for this read (ADR-0002). Absent when there are none. */
+  steering?: Array<{ id: string; message: unknown }>;
 };
 
 /**
@@ -248,7 +254,12 @@ export async function readMenu(
   // and a wrong "allowed" costs one refused pick where a wrong "not allowed" costs the Turn.
   const events = surface.menu ?? surface.accepts ?? [];
   const allowed = surface.allowed ?? events.map((event) => event.name);
-  return { menu: events.map((event) => menuItem(opts, instanceId, event)), allowed, notices: heldNotices(surface) };
+  return {
+    menu: events.map((event) => menuItem(opts, instanceId, event)),
+    allowed,
+    notices: heldNotices(surface),
+    steering: heldSteering(surface),
+  };
 }
 
 /** The notices a surface read reserved, each one this Harness can word (`notices.ts`). One it cannot
@@ -258,6 +269,17 @@ function heldNotices(surface: Surface): HeldNotice[] {
   return surface.notices.flatMap((n) =>
     typeof n === "object" && n !== null && typeof n.id === "string" && isNotice(n.notice)
       ? [{ id: n.id, notice: n.notice }]
+      : [],
+  );
+}
+
+/** The Steering messages a surface read reserved, each one this Harness can frame. One it cannot
+ * frame is not taken, as for a notice. */
+function heldSteering(surface: Surface): HeldSteering[] {
+  if (!Array.isArray(surface.steering)) return [];
+  return surface.steering.flatMap((m) =>
+    typeof m === "object" && m !== null && typeof m.id === "string" && isSteering(m.message)
+      ? [{ id: m.id, message: m.message }]
       : [],
   );
 }
@@ -846,7 +868,7 @@ async function awaitAnswer(
 
 /** What a step boundary reads (`between-steps.ts`): the Allowed picks now, and the notices the read
  * reserved for this conversation (ADR-0062). */
-export type StepRead = { allowed: string[]; notices: HeldNotice[] };
+export type StepRead = { allowed: string[]; notices: HeldNotice[]; steering: HeldSteering[] };
 
 /**
  * The Allowed picks NOW and the pending notices, read at a step boundary of a running Turn
@@ -875,7 +897,7 @@ export async function readStep(
     const surface = (await res.json()) as Surface;
     // ADR-0029's skew, as in `readMenu`: absent `allowed` is the whole Menu, never empty.
     const allowed = surface.allowed ?? (surface.menu ?? surface.accepts ?? []).map((event) => event.name);
-    return { allowed, notices: heldNotices(surface) };
+    return { allowed, notices: heldNotices(surface), steering: heldSteering(surface) };
   } catch {
     return undefined;
   }

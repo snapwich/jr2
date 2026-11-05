@@ -40,8 +40,9 @@ export type Arg = { readonly name: string; readonly optional?: boolean; readonly
 /** One env var the verb reads. */
 export type EnvVar = { readonly name: string; readonly description: string };
 
-/** The ADR-0009 output classes: one JSON result on stdout, a report table on stdout, or activity alone. */
-export type OutputKind = "result" | "report" | "activity";
+/** The ADR-0009 output classes: one JSON result on stdout, a report table on stdout, activity
+ * alone, or one value alone on stdout (a credential, for `$(…)`). */
+export type OutputKind = "result" | "report" | "activity" | "value";
 
 /** What a verb prints. `form` names the spelling that prints it, when that is not the whole verb. */
 export type Output = { readonly kind: OutputKind; readonly form?: string };
@@ -122,7 +123,7 @@ export const JR2_URL = {
 export const JR2_TOKEN = {
   name: "JR2_TOKEN",
   description:
-    "the Instance token to send: with `--url` / `JR2_URL` the only one, and otherwise used in place of the one read from the cluster",
+    "the Caller's credential to send, which makes the CLI that Caller: with `--url` / `JR2_URL` the only one, and otherwise used in place of the Instance token read from the cluster",
 } as const satisfies EnvVar;
 
 /** The addressing every run verb takes: a deployment by kube, or an orchestrator by url. */
@@ -273,6 +274,10 @@ const TABLE = [
     flags: [
       { name: "input", value: "json", description: "the run's input, as a JSON object (default: {})" },
       { name: "detach", description: "print the runId and return, and do not stream" },
+      {
+        name: "drop-held",
+        description: "resume a paused standing Workflow with no held item: its held items are not carried",
+      },
       ...TARGET_FLAGS,
     ],
     env: TARGET_ENV,
@@ -281,9 +286,10 @@ const TABLE = [
       "--detach: just print the runId and return",
       "a Chart that the door refuses prints one line for each rule that it fails",
       "exits 0 only for a run that ended done, and 1 for every other end: failed, error, cancelled, lost, drifted, or parked before it settled; a failed run prints its reason",
+      "a standing Workflow: jr2 starts its run, so `jr2 run` only resumes a paused one, prints the new run, and returns",
     ],
     output: RESULT,
-    adrs: ["0009", "0070", "0073"],
+    adrs: ["0009", "0017", "0070", "0073"],
   },
   {
     verb: "runs",
@@ -358,6 +364,81 @@ const TABLE = [
     output: ACTIVITY,
     adrs: ["0009", "0011", "0013", "0025"],
   },
+  {
+    verb: "steer",
+    args: [
+      RUN_ID,
+      { name: "agent", optional: true, description: "the Agent slot, as the run's list names it" },
+      { name: "text", optional: true, description: "the message, at most 16 KiB" },
+    ],
+    flags: [...TARGET_FLAGS],
+    env: TARGET_ENV,
+    summary: "send a Steering message to one Agent of a live run, or list the Agent slots that can hear one",
+    lines: [
+      "an open Turn of the slot hears the message at its next step boundary; otherwise the slot's next Turn in the same Machine instance hears it",
+      "with a runId alone it prints the run's Agent slots, each with open and steerable; `jr2 status` prints the messages sent to the run, in `steering`",
+      "needs the steer scope for the run's Workflow",
+    ],
+    output: [
+      { kind: "activity", form: "steer <runId> <agent> <text>" },
+      { kind: "result", form: "steer <runId>" },
+    ],
+    adrs: ["0002", "0062", "0078"],
+  },
+  {
+    verb: "whoami",
+    args: [],
+    flags: [...TARGET_FLAGS],
+    env: TARGET_ENV,
+    summary: "print the Caller this credential is: how jr2 knows it, its name, what it may do, and whom it acts for",
+    lines: [
+      "on a kube context the Caller is token/instance, on behalf of the kube user; with --url and JR2_TOKEN it is that token's Caller",
+      "needs no scope, so a credential that may do nothing still sees why",
+    ],
+    output: RESULT,
+    adrs: ["0078"],
+  },
+  {
+    verb: "hooks",
+    args: [{ name: "name", description: "the Hook, as `hooks` in jr2.config.ts names it" }],
+    flags: [
+      { name: "limit", value: "n", description: "how many lines, newest first (default 50, at most 1000)" },
+      ...TARGET_FLAGS,
+    ],
+    env: TARGET_ENV,
+    summary: "print a Hook's log: each delivery of the last week, newest first, and what the door did with it",
+    lines: [
+      "a line is a handshake, a delivery and its outcome, a repeat (seen), a payload that the parse refused (with zod's issues), a request that the kind could not read, or a follow-up post that failed",
+      "needs the Instance token: no scope opens it",
+    ],
+    output: RESULT,
+    adrs: ["0011", "0078"],
+  },
+  {
+    verb: "caller",
+    sub: "token",
+    args: [{ name: "name", description: "the named Caller token, as `callers.tokens` declares it" }],
+    flags: [NAMESPACE_FLAG, CONTEXT_FLAG],
+    env: [],
+    summary: "print a named Caller token's value, read from its Secret over the kube API",
+    lines: ["`jr2 up` makes the value once, for each name that `callers.tokens` declares"],
+    output: [{ kind: "value" }],
+    adrs: ["0078"],
+  },
+  {
+    verb: "caller",
+    sub: "rotate",
+    args: [{ name: "name", description: "the named Caller token, as `callers.tokens` declares it" }],
+    flags: [NAMESPACE_FLAG, CONTEXT_FLAG],
+    env: [],
+    summary: "make a new value for a named Caller token; the old value stops working",
+    lines: [
+      "the old value works until the Orchestrator reads the new digest, when the kubelet updates its mount: about a minute",
+      "prints no value: `jr2 caller token <name>` prints the new one",
+    ],
+    output: ACTIVITY,
+    adrs: ["0078"],
+  },
 ] as const satisfies readonly Command[];
 
 /** Every verb, in help order. */
@@ -404,7 +485,8 @@ export const SECTIONS: readonly Section[] = [
     text:
       `result verbs (${printing("result").join(", ")}) print one JSON result on stdout and activity on stderr, ` +
       `so \`jr2 run … | jq\` yields the result; report verbs (${printing("report").join(", ")}) print a table on ` +
-      `stdout, or the one object with --json; activity verbs (${printing("activity").join(", ")}) print activity alone`,
+      `stdout, or the one object with --json; activity verbs (${printing("activity").join(", ")}) print activity alone; ` +
+      `value verbs (${printing("value").join(", ")}) print one value alone on stdout, for \`$(…)\`, and activity on stderr`,
   },
 ];
 

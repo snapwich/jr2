@@ -1,8 +1,9 @@
 // Package kinds routes a start to the kind that runs it (ADR-0067): `http` — a file body (ADR-0067)
 // included — to the http runner, `push` to the push runner, a credentialed `command` to the command
 // runner, a `dispatch` to another Orchestrator (ADR-0071) to the dispatch runner. The Instance
-// Effector holds http and dispatch; a Sandbox Effector holds http, push and command, and confines a
-// credentialed command's child with Landlock (ADR-0068).
+// Effector holds http and dispatch, and the Hook door's `mac` check (package mackind); a Sandbox
+// Effector holds http, push and command, and confines a credentialed command's child with Landlock
+// (ADR-0068).
 //
 // One child cannot reach another (ADR-0068). Every Effect's processes are its own group (package
 // reaper), ended when it settles; and a Sandbox Effector's one Lock keeps a GPG-signing push and a
@@ -18,6 +19,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/commandkind"
 	"github.com/snapwich/jr2/effector/internal/dispatchkind"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
+	"github.com/snapwich/jr2/effector/internal/mackind"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
 	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/wire"
@@ -30,6 +32,9 @@ type Runner struct {
 	Push     *pushkind.Runner
 	Command  *commandkind.Runner
 	Dispatch *dispatchkind.Runner
+	// Mac is the Hook door's `mac` check (ADR-0068): the Instance Effector's alone. It is not an
+	// Effect, so it is served beside the Effects (server.Options.Mac), never through Run.
+	Mac *mackind.Checker
 	// Reaper ends what each Effect started when it settles; nil, nothing is tracked.
 	Reaper *reaper.Reaper
 	// Lock is the Sandbox Effector's lock over the two classes; nil, none is held.

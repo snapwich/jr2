@@ -43,6 +43,8 @@ const SNIPPET = /^<<< @\/([^\s#{[]+)(?:#([\w-]+))?(?:\{([\w-]+)\})?(?: \[([^\]]+
 /** A line VitePress may read as a container or a snippet: one that starts with `::` or `<<<`. */
 const SYNTAX_LIKE = /^\s*(?:::|<<<)/;
 const FENCE_OPEN = /^(`{3,}|~{3,})(.*)$/;
+/** The line that keeps prettier from escaping the path of the `<<<` under it. */
+const PRETTIER_IGNORE = "<!-- prettier-ignore -->";
 
 /** The language of an included file's fence, by extension; the bare extension otherwise. */
 const LANGS: Record<string, string> = {
@@ -152,8 +154,13 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
     err(i, `a container inside another has fewer colons than it: write the outer one with ${colons + 1} or more`);
     return false;
   };
+  // Prettier escapes a `_` at the start of a name in a `<<<` path (`\_sentry.ts`), which then names
+  // no file. A `<!-- prettier-ignore -->` line keeps the path as it is, and prettier keeps that line
+  // right above the `<<<`, so the empty line comes before the comment.
+  const ignored = (i: number) => i > 0 && lines[i - 1]!.trim() === PRETTIER_IGNORE;
+  const before = (i: number) => (ignored(i) ? i - 1 : i);
   const alone = (i: number) =>
-    (i === 0 || lines[i - 1]!.trim() === "") && (i === lines.length - 1 || lines[i + 1]!.trim() === "");
+    (before(i) === 0 || lines[before(i) - 1]!.trim() === "") && (i === lines.length - 1 || lines[i + 1]!.trim() === "");
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]!;

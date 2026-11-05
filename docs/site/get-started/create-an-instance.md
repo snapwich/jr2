@@ -79,6 +79,8 @@ jr2 up
 `jr2 up` checks the folder with the TypeScript compiler before it changes the cluster. Then it converges the cluster of
 your current kubectl context. The first time, it asks before it makes the namespace. Type `y`:
 
+<!-- output: not run -->
+
 ```text
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
@@ -92,7 +94,7 @@ images: installed kit — the published v<version> Harness, operator and Orchest
 …
 orchestrator: waiting for rollout
 orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
-instance effector: none (no Effect is placed there)
+instance effector: none (no Effect is placed there, and no Hook needs it)
 assembly: publishing ba71fa27f37f (no current Assembly)
 assembly: ba71fa27f37f is current — workflows: ping
 swept nothing — every labeled image is named by a live root
@@ -118,11 +120,13 @@ jr2 run ping --input '{"message":"hi"}'
 `jr2 run` starts a run of `ping` and stays attached to it. When the run ends, it prints the last status of the run as
 JSON:
 
+<!-- output: not run -->
+
 ```text
 → context kind-jr2 / namespace my-instance
 run a256ff8a-f99f-42f5-975c-4f93a5008c56 (ping) — attached
   → done "done"
-{"runId":"a256ff8a-f99f-42f5-975c-4f93a5008c56","workflow":"ping","instanceId":"0e82cc83-7c15-426f-86ff-e7354873a429","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"ba71fa27f37f"}
+{"runId":"a256ff8a-f99f-42f5-975c-4f93a5008c56","workflow":"ping","instanceId":"0e82cc83-7c15-426f-86ff-e7354873a429","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"ba71fa27f37f"}
 ```
 
 Your run id and your [Instance ID](../reference/glossary.md#instance-id) are not the same as the ones here. The run is
@@ -153,16 +157,17 @@ Click `ping`. The center shows its Machine, with the states `responding` and `do
 ## Unlock the Console
 
 Without a token, you can look at the runs in the Console, but you cannot start a run or answer a
-[Gate](../reference/glossary.md#gate). For these, you need the Instance token. In the first terminal, run:
+[Gate](../reference/glossary.md#gate). For these, you need the token of a Caller with a scope. Here, use the Instance
+token. In the first terminal, run:
 
 ```sh
 kubectl -n my-instance get secret jr2-instance -o jsonpath='{.data.JR2_INSTANCE_TOKEN}' | base64 -d
 ```
 
-The command prints the token, 48 hexadecimal characters, with no newline after it. Paste the token in the
-`instance token` box in the Console nav. Push Enter. The Console checks the token. Then the badge after the box shows
-`live`, and a `start` button shows next to `ping`. The browser tab keeps the token until you close the tab. `jr2 up`
-keeps the same token each time that it runs.
+The command prints the token, 48 hexadecimal characters, with no newline after it. Paste the token in the `Caller token`
+box in the Console nav. Push Enter. The Console checks the token. Then the badge after the box shows `live`, the nav
+shows `as token/instance`, and a `start` button shows next to `ping`. The browser tab keeps the token until you close
+the tab. `jr2 up` keeps the same token each time that it runs.
 
 Keep the port forward open. The next pages use the Console. [Open the Console](../guides/open-the-console.md) gives more
 about the Console.
@@ -179,7 +184,8 @@ each time that you change the folder. [Converge](../concepts/converge.md) explai
 it. [Machines and Workflows](../concepts/machines-and-workflows.md) explains the two words.
 
 The Console is a page that the Orchestrator serves, at [`GET /`](../reference/http-api.md#get). Anyone who can reach it
-can see the runs. Only the holder of the Instance token can start a run or answer a Gate
+can see the runs. Only a [Caller](../reference/glossary.md#caller) with a scope, such as the holder of the Instance
+token, can start a run or answer a Gate
 ([ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md)).
 
 `jr2 init` wrote `AGENTS.md` for your Assistant. It points to the docs that the Kit installs in

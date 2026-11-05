@@ -58,9 +58,9 @@ their own maintainers, and the escapes shipped in systems that used them were in
   beyond the generic set. Lending is attenuated by construction; an author who lends
   `command(["sh", "-c", arg("script")])` has lent a shell, and that is theirs to choose. A lent name may not be dotted,
   `gate`, `fail`, a generic action's name or an integer, because those are the kit's; the Gate itself is lent as
-  `gate: true`, and a Gate slot that hears a Hook ([ADR-0011](0011-workflow-defined-events.md)) is lent by its slot
-  name, as an Effect is; the door refuses a lent Gate slot whose `delivers` names an event that is not in the Chart's
-  Vocabulary. The Part that fails the run is lent as `fail: true`
+  `gate: true`, and a Gate slot that hears a Hook ([ADR-0011](0011-workflow-defined-events.md)) is lent by its slot name
+  in `lends.gates`, as an Effect is in `lends.effects`; the door refuses a lent Gate slot whose `delivers` names an
+  event that is not in the Chart's Vocabulary. The Part that fails the run is lent as `fail: true`
   ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), because the Machine
   decides which ends a Chart can choose. The guards `jr2.failure`, which tells a Failure from a defect on an `onError`,
   and `jr2.ready`, which says that a cut settled `ready`

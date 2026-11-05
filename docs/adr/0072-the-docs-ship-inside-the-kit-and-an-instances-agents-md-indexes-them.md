@@ -15,22 +15,27 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
   - **The bundle.** `@jr2/orchestrator` ships `docs/`: every page of the sitemap, the generated Reference, the Glossary
     and the Decisions, as plain Markdown. No site-generator syntax reaches it. It is the main channel for an Assistant.
     Each page is at its slug, such as `concepts/gates.md`, and each ADR is at `reference/decisions/<file>`. An Assistant
-    reads a page with its file tool, which cuts off a long file. So the Authoring surface is two parts:
-    `reference/authoring-surface.md`, a contents page that gives each name its kind and the first sentence of its TSDoc,
-    and `reference/authoring-surface/<anchor>.md`, one page for each export and for each type that a signature names.
-    One page of all the names is about 200 KB, and the contents page is less than 25 KB. No line of the contents page or
-    of an entry page is longer than 1,000 characters, so the type plumbing is a list, not a paragraph. When the contents
-    page passes 25 KB, first make the long first sentences shorter; if it still passes, give each group of the contents
-    page a page of its own, and make the contents page a list of the groups. The first sentence ends at a stop, not at a
-    colon, because the words before a colon often tell nothing alone ("An invoke."). A link to an entry goes to its
-    page. Each of the other generated Reference pages (CLI, config, machines, mechanism events, HTTP API) stays one
-    page. Each is less than 30 KB, the size that one read of a file tool shows, with one exception: the HTTP API page is
-    about 50 KB. It is one page because its routes come first and are less than 30 KB, so one read shows every route;
-    the types of the bodies come after the routes, and an Assistant reads one of them with an offset or by its heading.
-    When the routes pass 30 KB, give the types a page of their own. The alternative, a split of the HTTP API page now,
-    is rejected because a route and the types it names are then on two pages, and one read shows all routes already. The
-    Glossary and the Decisions are not generated, and this rule does not hold them: an ADR can be about 50 KB, and an
-    Assistant reads the one ADR that a page links to.
+    reads a page with its file tool, which cuts off a long file. So the Authoring surface is three parts.
+    `reference/authoring-surface.md` is a contents page that gives each group of the root's `src/index.ts`, and the
+    group of the types that the signatures name, its description and its names.
+    `reference/authoring-surface/group-<title>.md` is one page for each group, which gives each name of the group its
+    kind and the first sentence of its TSDoc. `reference/authoring-surface/<anchor>.md` is one page for each export and
+    for each type that a signature names. The `group-` prefix keeps a group page apart from an entry page, and
+    `docs:build` fails when two pages have one path. One page of all the names is about 200 KB. The contents page and
+    each group page are less than 25 KB, and each entry page is less than 15 KB. On the contents page, a type that a
+    signature names is code with no link, because there are more than a hundred of them; its group page links each one.
+    No line of a contents, group or entry page is longer than 1,000 characters, so the contents page breaks a list of
+    names into lines, and the type plumbing is a list, not a paragraph. When a group page passes 25 KB, first make the
+    long first sentences shorter; if it still passes, divide that group into two groups. The first sentence ends at a
+    stop, not at a colon, because the words before a colon often tell nothing alone ("An invoke."). A link to an entry
+    goes to its page. Each of the other generated Reference pages (CLI, config, machines, `@jr2/hooks`, mechanism
+    events, HTTP API) stays one page. Each is less than 30 KB, the size that one read of a file tool shows, with one
+    exception: the HTTP API page is about 50 KB. It is one page because its routes come first and are less than 30 KB,
+    so one read shows every route; the types of the bodies come after the routes, and an Assistant reads one of them
+    with an offset or by its heading. When the routes pass 30 KB, give the types a page of their own. The alternative, a
+    split of the HTTP API page now, is rejected because a route and the types it names are then on two pages, and one
+    read shows all routes already. The Glossary and the Decisions are not generated, and this rule does not hold them:
+    an ADR can be about 50 KB, and an Assistant reads the one ADR that a page links to.
   - **The `AGENTS.md` block.** A compressed index of the bundle, and an instruction in five parts. jr2 is newer than
     your training data, so read the bundled docs before you write a Machine or config. Start with the guide "Write a
     workflow" and the contents page of the Authoring surface. Read one page with each call of the file tool. Run
@@ -63,21 +68,25 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
   exists for it. A broken marker pair is reported, and `up` does not change the file.
 - **The Reference is generated from the code wherever the code holds the facts.**
 
-  | Page                                                    | Source                                                 |
-  | ------------------------------------------------------- | ------------------------------------------------------ |
-  | Authoring surface: a contents page, and a page per name | TSDoc on the exports, exactly the root's list          |
-  | `@jr2/machines`                                         | TSDoc on the exports                                   |
-  | `jr2.config.ts`                                         | TSDoc on the `JR2Config` fields                        |
-  | CLI                                                     | a structured command table, which also prints `--help` |
-  | HTTP API                                                | the route table in `http.ts`, made data                |
-  | Mechanism events                                        | the code that defines them                             |
-  | Glossary, Decisions                                     | `GLOSSARY.md` and `docs/adr/`, rendered as they are    |
+  | Page                                                                      | Source                                                         |
+  | ------------------------------------------------------------------------- | -------------------------------------------------------------- |
+  | Authoring surface: a contents page, a page per group, and a page per name | TSDoc on the exports, exactly the root's list                  |
+  | `@jr2/machines`                                                           | TSDoc on the exports                                           |
+  | `@jr2/hooks`                                                              | TSDoc on the exports of each module but `door`, one group each |
+  | `jr2.config.ts`                                                           | TSDoc on the `JR2Config` fields                                |
+  | CLI                                                                       | a structured command table, which also prints `--help`         |
+  | HTTP API                                                                  | the route table in `http.ts`, made data                        |
+  | Mechanism events                                                          | the code that defines them                                     |
+  | Glossary, Decisions                                                       | `GLOSSARY.md` and `docs/adr/`, rendered as they are            |
 
   The TSDoc on an Authoring surface export is written for the author: what it does, what it refuses, what to read next,
   and one example. Maintainer reasoning goes in `//` comments in the body. The packages ship their `.ts` source, so an
   Assistant that follows an import into `node_modules` reads the same text the site shows. The Authoring surface is
   exactly what `@jr2/orchestrator` exports from its root: what the kit's packages share is internal even where it can be
-  imported, and `@jr2/machines` is not part of it, because it ships Machines, not names to author with.
+  imported, and `@jr2/machines` is not part of it, because it ships Machines, not names to author with. `@jr2/hooks` is
+  not part of it either, because a Hook kind is a module of its own interface, which a kind from another package imports
+  too ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). Its page leaves out
+  `@jr2/hooks/door`, which only the Orchestrator reads.
 
 - **`docs:build` assembles the bundle at pack time.** Its inputs are the hand-written pages in `docs/site/`, the
   generated Reference, `GLOSSARY.md`, and `docs/adr/`. It runs in `@jr2/orchestrator`'s `prepack` and before the site

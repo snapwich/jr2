@@ -20,15 +20,20 @@ import {
   docSeats,
   fleetEntries,
   fleetRuns,
+  callerLabel,
+  callerScopes,
   gateCount,
   machineDocSource,
+  may,
   selectedRun,
   selectedRunFailure,
   selectedRunGates,
   selectedRunHeld,
+  selectedRunStarter,
   selectedRunWaiting,
   visibleGates,
   SETTLED_CAP,
+  type CallerView,
   type Frame,
   type GateCard,
   type WaitingLine,
@@ -45,6 +50,12 @@ const run = (runId: string, status = "active", workflow = "wf") => ({
 });
 
 const gate = (name = "approval"): GateCard => ({ gate: name, path: [], accepts: [{ name: "approve", input: {} }] });
+
+/** A live credential whose Caller may answer and read every Workflow — the Instance token's scopes. */
+const unlocked: Frame[] = [
+  { kind: "caller", caller: { via: "token", name: "instance", may: { answer: "all", read: "all" } } },
+  { kind: "token", state: "live" },
+];
 
 /** Fold a sequence of frames from empty — most scenarios below are a short history, not one frame. */
 const fold = (...frames: Frame[]) => frames.reduce(applyFrame, emptyStore());
@@ -188,11 +199,12 @@ test("`select` resets the feed's state — runs, settled, emits belong to the OL
 });
 
 test("`select` keeps the global halves — the inbox and the fleet outlive a navigation", () => {
-  let store = fold(
-    { kind: "fleet", workflow: "other", runs: [run("x", "active", "other")] },
-    { kind: "token", state: "live" },
-    { kind: "gates", runId: "x", workflow: "other", gates: [gate()] },
-  );
+  let store = fold({ kind: "fleet", workflow: "other", runs: [run("x", "active", "other")] }, ...unlocked, {
+    kind: "gates",
+    runId: "x",
+    workflow: "other",
+    gates: [gate()],
+  });
   store = applyFrame(store, { kind: "select", workflow: "wf" });
 
   assert.ok(store.fleet.has("other"), "snapshots are the fleet's, not the selection's");
@@ -280,24 +292,21 @@ test("token transitions: none → checking → live is the unlock path", () => {
 });
 
 test("leaving `live` empties the inbox — guarded data cannot outlive the credential that read it", () => {
-  const unlocked = fold(
-    { kind: "token", state: "live" },
-    { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
-  );
+  const opened = fold(...unlocked, { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] });
 
   // The any-later-401 drop (ADR-0032): one widget's 401 is every widget's observer mode.
-  const invalid = applyFrame(unlocked, { kind: "token", state: "invalid" });
+  const invalid = applyFrame(opened, { kind: "token", state: "invalid" });
   assert.equal(invalid.token, "invalid");
   assert.equal(invalid.gates.size, 0, "no card survives the credential");
 
   // Clearing the field is the same fact, voluntarily.
-  const cleared = applyFrame(unlocked, { kind: "token", state: "none" });
+  const cleared = applyFrame(opened, { kind: "token", state: "none" });
   assert.equal(cleared.gates.size, 0);
 });
 
 test("`checking` keeps the inbox — a re-validation that comes back fine must not flash it empty", () => {
   const store = fold(
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
     { kind: "token", state: "checking" },
   );
@@ -309,7 +318,7 @@ test("a `gates` frame without a live credential is dropped — a straggling guar
   // frame emptied the map. Folding it would be invisible while locked but surface intact on the
   // next unlock — guarded data outliving the credential that read it.
   const store = fold(
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "token", state: "none" },
     { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
   );
@@ -322,10 +331,7 @@ test("a `gates` frame without a live credential is dropped — a straggling guar
 // reducer does no bookkeeping of its own.
 
 test("a `gates` frame fills a card; an empty re-fetch is the ONLY thing that empties it", () => {
-  let store = fold(
-    { kind: "token", state: "live" },
-    { kind: "gates", runId: "a", workflow: "wf", gates: [gate("approval"), gate("veto")] },
-  );
+  let store = fold(...unlocked, { kind: "gates", runId: "a", workflow: "wf", gates: [gate("approval"), gate("veto")] });
   assert.equal(gateCount(store), 2);
 
   // Re-delivery replaces wholesale — level-triggered, so a duplicate re-fetch is idempotent.
@@ -345,7 +351,7 @@ test("a `gates` frame fills a card; an empty re-fetch is the ONLY thing that emp
 test("`gone` takes the run's card with it — a gate exists only while its state is entered", () => {
   const store = fold(
     { kind: "status", status: run("a") },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
     { kind: "gone", runId: "a" },
   );
@@ -358,7 +364,7 @@ test("a whole-set frame settles the inbox cards its runs left behind", () => {
   // `runs` frame's wholeness is what says its card is stale. Same for a fleet snapshot's workflow.
   let store = fold(
     { kind: "select", workflow: "wf" },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
     { kind: "gates", runId: "x", workflow: "other", gates: [gate()] },
   );
@@ -373,7 +379,7 @@ test("a whole-set frame settles the inbox cards its runs left behind", () => {
 test("the visible inbox follows the selection until widened; the badge count never filters", () => {
   let store = fold(
     { kind: "select", workflow: "wf" },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
     { kind: "gates", runId: "x", workflow: "other", gates: [gate(), gate("veto")] },
   );
@@ -436,7 +442,7 @@ test("`select` clears the node selection — elk node ids are scoped to the diag
 test("selectedRunGates follows the selected run — the pin is a view over facts already held", () => {
   let store = fold(
     { kind: "select", workflow: "wf" },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "runs", runs: [run("a"), run("b")] },
     { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
     { kind: "gates", runId: "b", workflow: "wf", gates: [gate("veto")] },
@@ -482,7 +488,7 @@ test("a `placing` Workspace lights from the open observation alone — no token,
 test("`waiting` follows the selected run, is whole per run, and an empty re-fetch clears it", () => {
   let store = fold(
     { kind: "select", workflow: "wf" },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "runs", runs: [run("a"), run("b")] },
     { kind: "waiting", runId: "a", workflow: "wf", waiting: [wait("F-1"), wait("F-2", "quota")] },
   );
@@ -511,7 +517,7 @@ test('an outstanding pick rides the same re-fetch: "held since" for the selected
   const since = "2026-10-06T10:00:00.000Z";
   let store = fold(
     { kind: "select", workflow: "wf" },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "runs", runs: [run("a")] },
     { kind: "waiting", runId: "a", workflow: "wf", waiting: [], held: [{ agent: "coder", pick: "run_tests", since }] },
   );
@@ -534,7 +540,7 @@ test("the reason cannot outlive the credential, the run, or a whole-set frame th
   const live = (): Frame[] => [
     { kind: "select", workflow: "wf" },
     { kind: "status", status: run("a") },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "waiting", runId: "a", workflow: "wf", waiting: [wait()] },
   ];
   assert.equal(fold(...live(), { kind: "token", state: "invalid" }).waiting.size, 0, "a 401 drops it");
@@ -544,7 +550,7 @@ test("the reason cannot outlive the credential, the run, or a whole-set frame th
   assert.equal(fold(...live(), { kind: "runs", runs: [run("b")] }).waiting.size, 0, "the live set dropped it");
 
   const other = fold(
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "waiting", runId: "x", workflow: "other", waiting: [wait()] },
     { kind: "fleet", workflow: "other", runs: [] },
   );
@@ -800,7 +806,7 @@ test("a failed run shows its reason with a live token, and keeps it after `gone`
   const failed = run("a", "failed");
   const before = fold(
     { kind: "select", workflow: "wf" },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "status", status: run("a") },
     { kind: "selectRun", runId: "a" },
     { kind: "status", status: failed },
@@ -810,7 +816,7 @@ test("a failed run shows its reason with a live token, and keeps it after `gone`
   assert.equal(selectedRunFailure(before), "the tests did not pass", "folded before `gone`");
   const after = fold(
     { kind: "select", workflow: "wf" },
-    { kind: "token", state: "live" },
+    ...unlocked,
     { kind: "status", status: run("a") },
     { kind: "selectRun", runId: "a" },
     { kind: "status", status: failed },
@@ -838,11 +844,7 @@ test("the reason is guarded: no token folds nothing, a dropped token empties it,
   const stray = applyFrame(fold({ kind: "token", state: "live" }), { kind: "failure", runId: "x", reason: "r" });
   assert.equal(stray.failures.size, 0);
   // A settled run evicted past the cap takes its reason with it.
-  let s = fold(
-    { kind: "select", workflow: "wf" },
-    { kind: "token", state: "live" },
-    { kind: "status", status: run("f") },
-  );
+  let s = fold({ kind: "select", workflow: "wf" }, ...unlocked, { kind: "status", status: run("f") });
   s = applyFrame(s, { kind: "failure", runId: "f", reason: "r" });
   s = applyFrame(s, { kind: "gone", runId: "f" });
   for (let i = 0; i < SETTLED_CAP; i++) {
@@ -850,4 +852,141 @@ test("the reason is guarded: no token folds nothing, a dropped token empties it,
     s = applyFrame(s, { kind: "gone", runId: `r${i}` });
   }
   assert.equal(s.failures.has("f"), false, "evicted with its run");
+});
+
+// ---- The Caller (ADR-0032, ADR-0078) -------------------------------------------------------------
+// `GET /whoami` says what the credential may do, and the page renders a control only where a scope
+// opens it. These tests pin the page's half of the rule: the server checks each request anyway.
+
+const ci: CallerView = { via: "token", name: "ci", may: { start: ["ping"], read: ["ping"] } };
+const unlockAs = (caller: CallerView): Frame[] => [
+  { kind: "caller", caller },
+  { kind: "token", state: "live" },
+];
+
+test("may: a scope opens only the Workflows it names, and nothing without a live credential", () => {
+  const store = fold(...unlockAs(ci));
+  assert.equal(may(store, "start", "ping"), true);
+  assert.equal(may(store, "start", "intake"), false, "a Workflow the grant does not name");
+  assert.equal(may(store, "answer", "ping"), false, "a scope the Caller does not have");
+  assert.equal(may(store, "start"), true, "with no Workflow: the scope opens at least one");
+  assert.equal(may(store, "answer"), false);
+  // The Caller before the token is live, or after it drops, opens nothing.
+  assert.equal(may(fold({ kind: "caller", caller: ci }), "start", "ping"), false, "not live yet");
+  assert.equal(may(fold(...unlockAs(ci), { kind: "token", state: "checking" }), "start", "ping"), false);
+});
+
+test("may: `all` opens every Workflow, and a Chart wrapper's name opens its named Charts", () => {
+  const store = fold(
+    ...unlockAs({ via: "jwt", name: "u1", may: { answer: "all", start: ["plan"], steer: ["plan/weekly"] } }),
+  );
+  assert.equal(may(store, "answer", "anything"), true);
+  assert.equal(may(store, "start", "plan/weekly"), true, "the wrapper opens its Chart (ADR-0070)");
+  assert.equal(may(store, "steer", "plan/weekly"), true);
+  assert.equal(may(store, "steer", "plan"), false, "a Chart's name does not open its wrapper");
+  assert.equal(may(store, "start", "planner"), false, "a prefix is not a wrapper");
+});
+
+test("a JWT with no scope is a live Caller that may do nothing: the page shows who, and no control", () => {
+  const store = fold(...unlockAs({ via: "jwt", name: "u2", shown: "u2@example.com", may: {} }));
+  assert.equal(store.token, "live");
+  for (const scope of ["start", "answer", "cancel", "read", "steer"] as const) assert.equal(may(store, scope), false);
+  assert.equal(callerLabel(store), "u2@example.com");
+  assert.equal(callerScopes(store.caller), "no scope");
+});
+
+test("the nav names the Caller: the shown name, else via/name, and the party it acts for", () => {
+  assert.equal(callerLabel(fold(...unlockAs(ci))), "token/ci");
+  assert.equal(
+    callerLabel(fold(...unlockAs({ via: "token", name: "instance", may: {}, onBehalfOf: "alice" }))),
+    "token/instance for alice",
+  );
+  assert.equal(callerLabel(emptyStore()), null, "an observer acts as nobody");
+  assert.equal(callerScopes(ci), "start: ping · read: ping");
+  assert.equal(callerScopes({ ...ci, may: { answer: "all", start: [] } }), "answer: all");
+});
+
+test("a Gate card shows only where `answer` opens its Workflow — `read` alone re-fetches, but sends nothing", () => {
+  // `read: all` makes the page re-fetch run `b` (its waits, its starter); its open Gate must not
+  // become a send form that meets a 403 (ADR-0032).
+  const store = fold(
+    { kind: "fleet", workflow: "b", runs: [run("rb", "active", "b")] },
+    ...unlockAs({ via: "token", name: "ops", may: { answer: ["a"], read: "all" } }),
+    { kind: "gates", runId: "ra", workflow: "a", gates: [gate()] },
+    { kind: "gates", runId: "rb", workflow: "b", gates: [gate()] },
+    { kind: "inboxScope", all: true },
+  );
+  assert.equal(may(store, "answer"), true, "the Attention tab shows: `answer` opens `a`");
+  assert.deepEqual(
+    visibleGates(store).map((e) => e.workflow),
+    ["a"],
+    "no card for `b`",
+  );
+  assert.equal(gateCount(store), 1, "the badge counts only what the Caller may answer");
+  assert.deepEqual(
+    selectedRunGates(applyFrame(store, { kind: "selectRun", runId: "rb" })),
+    [],
+    "and no pin on `b`'s diagram",
+  );
+
+  // A new Caller keeps only the cards its own `answer` opens.
+  const narrowed = applyFrame(fold(...unlocked, { kind: "gates", runId: "ra", workflow: "a", gates: [gate()] }), {
+    kind: "caller",
+    caller: { via: "token", name: "viewer", may: { read: "all" } },
+  });
+  assert.equal(narrowed.gates.size, 0);
+});
+
+test("a 401 or a cleared credential drops the Caller with the rest of the guarded state", () => {
+  for (const state of ["invalid", "none"] as const) {
+    const store = fold(...unlockAs(ci), { kind: "token", state });
+    assert.equal(store.caller, null, state);
+    assert.equal(may(store, "start", "ping"), false, state);
+  }
+  // A re-validation keeps it: a fine token should not flash the controls away.
+  assert.deepEqual(fold(...unlockAs(ci), { kind: "token", state: "checking" }).caller, ci);
+});
+
+test("who started the selected run: folded with a live credential, for a run the page holds", () => {
+  const base: Frame[] = [{ kind: "runs", runs: [run("a")] }, ...unlockAs(ci)];
+  const byCaller = fold(...base, {
+    kind: "starter",
+    runId: "a",
+    startedBy: { kind: "caller", via: "jwt", name: "u1", shown: "u1@example.com", onBehalfOf: "bob" },
+  });
+  assert.equal(selectedRunStarter(byCaller), "started by jwt/u1 (u1@example.com) on behalf of bob");
+  const byRun = fold(...base, {
+    kind: "starter",
+    runId: "a",
+    startedBy: { kind: "run", run: "0123456789abcdef", slot: "deploy" },
+  });
+  assert.equal(selectedRunStarter(byRun), "started by run 01234567 (deploy)");
+  const byJr2 = fold(...base, { kind: "starter", runId: "a", startedBy: { kind: "jr2", why: "boot" } });
+  assert.equal(selectedRunStarter(byJr2), "started by jr2 (boot)");
+  // A run the page does not hold, or a fold with no credential, keeps nothing.
+  const other = fold(...base, { kind: "starter", runId: "z", startedBy: { kind: "jr2", why: "boot" } });
+  assert.equal(other.starters.size, 0);
+  const observer = fold(
+    { kind: "runs", runs: [run("a")] },
+    {
+      kind: "starter",
+      runId: "a",
+      startedBy: { kind: "jr2", why: "boot" },
+    },
+  );
+  assert.equal(observer.starters.size, 0);
+});
+
+test("the starter is guarded state: it goes with the credential, the selection and the run", () => {
+  const live = fold({ kind: "runs", runs: [run("a")] }, ...unlockAs(ci), {
+    kind: "starter",
+    runId: "a",
+    startedBy: { kind: "jr2", why: "publish" },
+  });
+  assert.equal(live.starters.size, 1);
+  assert.equal(applyFrame(live, { kind: "token", state: "invalid" }).starters.size, 0, "a 401 drops it");
+  assert.equal(applyFrame(live, { kind: "select", workflow: "other" }).starters.size, 0, "a new selection");
+  assert.equal(applyFrame(live, { kind: "runs", runs: [] }).starters.size, 0, "the run left unseen");
+  assert.equal(applyFrame(live, { kind: "gone", runId: "a" }).starters.size, 1, "a settled run keeps it");
+  assert.equal(applyFrame(live, { kind: "starter", runId: "a", startedBy: null }).starters.size, 0);
 });

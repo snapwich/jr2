@@ -93,8 +93,9 @@ machine is the one piece of its vocabulary that pattern missed.
 - **The door takes an idempotency key, out of band.** A start may carry one in a header, never in the body (a body field
   would be one every door had to reserve); a repeat with the same key answers with the run the first one made. A
   `dispatch` Effect sends its ledger row's id ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), so a
-  start whose answer was lost is sent once where it may have arrived (ADR-0067) and makes one run. `jr2 run` and the
-  Console send none.
+  start whose answer was lost is sent once where it may have arrived (ADR-0067) and makes one run. With a second header,
+  a start is a key-only ask: the door answers the run under the key, or that no run has it, and starts nothing.
+  `jr2 run` and the Console send none.
 
 ## Considered options
 

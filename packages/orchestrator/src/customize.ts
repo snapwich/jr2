@@ -9,7 +9,7 @@
 // `.provide()`, nothing to learn (ADR-0015's rule, restated by ADR-0049 — a `.with()` method and
 // a callable-machine hybrid were both rejected there).
 //
-// Four moves, and each is the smallest one that works:
+// Five moves, and each is the smallest one that works:
 //
 //   - An AGENT override is xstate's own `provide`: `machine.provide({ actors: { coder:
 //     agent({ ...stock, ...override }) } })`. The slot already IS the Agent (ADR-0049), so
@@ -18,6 +18,8 @@
 //     package left `open`, or whose auth, header or env names `secret(open)`, carries a binder,
 //     which builds the Effect again with the composer's parts, so the bound slot is checked as a
 //     written one is. Once — a bound part is fixed from then on.
+//   - A GATE binding is the same substitution (ADR-0011, ADR-0054): a Gate slot is built again from
+//     its parts, with the look bound and the handlers patched by kind and event key.
 //   - A CHILD override is the same call one level down, recursing. Each level is exactly the
 //     one-level reach ADR-0015 found `provide` has — held by the composer who owns the child
 //     object, never host-side injection into somebody else's Machine.
@@ -80,6 +82,18 @@ import { isEffect, type Arg } from "./effect.ts";
 import { attachLent, copyOpenBody, lentIn, openBodiesOf, openBodyDeclarationOf } from "./open-body.ts";
 import { effectChecks } from "./effect-checks.ts";
 import type { NamedSecret, Text } from "./http-effect.ts";
+import type { EventsOf, HookKinds, NoWildcardKeys } from "@jr2/hooks";
+import {
+  gateSlotOf,
+  hooksTableFault,
+  isGateSlot,
+  lookFault,
+  type AnyHandler,
+  type GateIn,
+  type GateLook,
+  type GateSlot,
+  type GateSlotParts,
+} from "./gate.ts";
 import {
   binderOf,
   effectBindingShape,
@@ -140,6 +154,45 @@ type AgentSlots<M extends AnyStateMachine> = Extract<
  * @internal
  */
 type OpenEffectSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: OpenEffect<OpenEffectPart> }>["src"];
+
+/** The Gate slots (`gate({ … })`, ADR-0011) — told by their brand.
+ *
+ * @internal
+ */
+type GateSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: GateSlot<any, any> }>["src"];
+/**
+ * The meta and the event type of the Gate slot under one key.
+ *
+ * @internal
+ */
+type GateTypesAt<M extends AnyStateMachine, K extends string> =
+  LogicAt<M, K> extends GateSlot<infer Meta, infer Ev> ? { meta: Meta; ev: Ev } : never;
+
+/**
+ * A patch of a Gate slot's handlers (ADR-0011, ADR-0054): by Hook kind id and event key, a handler
+ * that adds or replaces the one there, or `null` to remove it. A key that the kind's payloads do not
+ * name does not compile.
+ *
+ * @internal
+ */
+export type GateHooksPatch<Meta, Ev> = {
+  readonly [Id in keyof HookKinds as HookKinds[Id] extends { readonly id: Id } ? Id : never]?: {
+    readonly [Key in keyof EventsOf<HookKinds[Id]>]?:
+      | ((d: GateIn<Meta> & { readonly payload: EventsOf<HookKinds[Id]>[Key] }) => Ev | undefined)
+      | null;
+  } & NoWildcardKeys<HookKinds[Id]>;
+};
+
+/**
+ * What `customize()` binds on one Gate slot: its look, and a patch of its handlers.
+ *
+ * @internal
+ */
+export type GateBinding<Meta, Ev> = {
+  /** The look, bound once: the package left it `open`, or the composer replaces it. Or `"none"`. */
+  readonly look?: GateLook<Meta, Ev> | "none";
+  readonly hooks?: GateHooksPatch<Meta, Ev>;
+};
 
 /** What one Open part binds to: a url, an argv, a secret's name, a dispatch's target — another
  * Orchestrator's origin and the secret that holds its Instance token, together (ADR-0071). */
@@ -275,6 +328,19 @@ export type Customize<M extends AnyStateMachine> = {
   effects?: [OpenEffectSlots<Reached<M>>] extends [never]
     ? never
     : { [K in OpenEffectSlots<Reached<M>>]?: BindingOf<LogicAt<Reached<M>, K>> };
+  /** Bind the look of a Gate slot (`gate({ … })`) that a package left `open`, and add, replace or
+   * remove its handlers by Hook kind id and event key (`null` removes one), by slot name:
+   * `{ review: { look, hooks: { gitlab: { "note.MergeRequest": null } } } }`. At run time,
+   * `customize()` refuses a slot that holds no Gate slot: `customize(): machine "<id>" carries no
+   * Gate slot "<slot>" — its Gate slots are: <slots>`. */
+  gates?: [GateSlots<Reached<M>>] extends [never]
+    ? never
+    : {
+        [K in GateSlots<Reached<M>>]?: GateBinding<
+          GateTypesAt<Reached<M>, K>["meta"],
+          GateTypesAt<Reached<M>, K>["ev"]
+        >;
+      };
   /** Retune a Machine that this Machine composes, by slot name. The value has the same shape as
    * these parts, one level down. At run time, `customize()` refuses a slot that holds no Machine:
    * `customize(): machine "<id>" composes no Machine under "<slot>"`. */
@@ -326,6 +392,7 @@ export type Customize<M extends AnyStateMachine> = {
 type LooseParts = {
   agents?: Record<string, Partial<AgentDefinition> | undefined>;
   effects?: Record<string, EffectBinding | undefined>;
+  gates?: Record<string, { look?: unknown; hooks?: Record<string, Record<string, AnyHandler | null>> } | undefined>;
   actors?: Record<string, LooseParts | undefined>;
   image?: string;
   user?: string | UserContainer;
@@ -350,6 +417,9 @@ type LooseParts = {
  * - `customize(): machine "<id>" carries no Agent slot "<slot>" — its Agents are: <slots>`
  * - `customize(): machine "<id>" composes no Machine under "<slot>" — the Machines it composes are: <slots>`
  * - `customize(): machine "<id>" carries no Effect slot "<slot>" — its Effects are: <slots>`
+ * - `customize(): machine "<id>" carries no Gate slot "<slot>" — its Gate slots are: <slots>`
+ * - `` customize(): Gate slot "<slot>"'s look is bound once, to a look or "none" — not `open` again ``, and the
+ *   refusals of a look that `gate()` makes
  * - `customize(): machine "<id>" declares no Repo Slot "<slot>" — its slots are: <slots>`
  * - `customize(): machine "<id>" declares its Repo Slots open as a map — name at least one`
  * - `` customize(): `repos` say what a SANDBOX is made of, how big it is and which Repos it
@@ -384,11 +454,11 @@ type LooseParts = {
  * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
  */
 export function customize<M extends AnyStateMachine>(machine: M, parts: Customize<M>): M {
-  const { agents, effects, actors, image, user, repos, resources } = parts as LooseParts;
+  const { agents, effects, gates, actors, image, user, repos, resources } = parts as LooseParts;
   let out: AnyStateMachine = machine;
   // Order matters in one direction only: the Sandbox seats and slots REBUILD the wrapper, so they
   // go last and carry the retuned implementations with them.
-  if (agents || effects || actors) out = retune(out, { agents, effects, actors });
+  if (agents || effects || gates || actors) out = retune(out, { agents, effects, gates, actors });
   const seats: Seats = {
     ...(image !== undefined ? { image } : {}),
     ...(user !== undefined ? { user } : {}),
@@ -458,6 +528,9 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
   }
   const bound = Object.entries(parts.effects ?? {}).filter(([, b]) => b !== undefined);
   for (const [name, binding] of bound) actors[name] = bindEffect(machine, name, binding!);
+  for (const [name, binding] of Object.entries(parts.gates ?? {})) {
+    if (binding) actors[name] = bindGate(machine, name, binding);
+  }
   for (const [name, childParts] of Object.entries(parts.actors ?? {})) {
     if (!childParts) continue;
     const child = asMachine((machine.implementations.actors as Record<string, unknown>)[name]);
@@ -555,6 +628,62 @@ function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBindi
     }
   }
   return binder(binding);
+}
+
+/**
+ * Bind a Gate slot's look and patch its handlers (ADR-0011, ADR-0054). The slot is built again from
+ * its parts, with the same `meta`, `delivers` and `reply`, so a run of the import and a run of the
+ * bound Machine each have their own. A look is bound to a value once: `open` again is refused, and
+ * the bound look meets the checks that `gate()` runs.
+ */
+function bindGate(
+  machine: AnyStateMachine,
+  name: string,
+  binding: NonNullable<NonNullable<LooseParts["gates"]>[string]>,
+): unknown {
+  const logic = (machine.implementations.actors as Record<string, unknown>)[name];
+  if (!isGateSlot(logic)) {
+    throw new Error(
+      `customize(): machine "${machine.id}" carries no Gate slot "${name}" — its Gate slots are: ` +
+        `${listed(slotsWhere(machine, isGateSlot))} (ADR-0011). Only declared parts can be bound.`,
+    );
+  }
+  const parts: GateSlotParts = logic.gateSlot;
+  let look = parts.look;
+  if (binding.look !== undefined) {
+    if (binding.look === open) {
+      throw new Error(
+        `customize(): Gate slot "${name}"'s look is bound once, to a look or "none" — not \`open\` again (ADR-0054)`,
+      );
+    }
+    const fault = lookFault(binding.look);
+    if (fault) throw new Error(`customize(): Gate slot "${name}": ${fault} (ADR-0011)`);
+    look = binding.look as GateSlotParts["look"];
+  }
+  const hooks: Record<string, Record<string, AnyHandler>> = {};
+  for (const [kind, keys] of Object.entries(parts.hooks)) hooks[kind] = { ...keys };
+  for (const [kind, keys] of Object.entries(binding.hooks ?? {})) {
+    if (typeof keys !== "object" || keys === null) {
+      throw new Error(`customize(): Gate slot "${name}": hooks.${kind} is { <event key>: handler | null } (ADR-0011)`);
+    }
+    const into = (hooks[kind] ??= {});
+    for (const [key, handler] of Object.entries(keys)) {
+      if (handler === null) delete into[key];
+      else if (handler !== undefined) into[key] = handler;
+    }
+    if (Object.keys(into).length === 0) delete hooks[kind];
+  }
+  const fault = hooksTableFault(hooks);
+  if (fault) throw new Error(`customize(): Gate slot "${name}": ${fault} (ADR-0011)`);
+  const frozen: Record<string, Readonly<Record<string, AnyHandler>>> = {};
+  for (const [kind, keys] of Object.entries(hooks)) frozen[kind] = Object.freeze(keys);
+  return gateSlotOf(
+    Object.freeze({
+      ...parts,
+      hooks: Object.freeze(frozen),
+      ...(look !== undefined ? { look } : {}),
+    }),
+  );
 }
 
 const isSecret = (value: unknown): boolean =>

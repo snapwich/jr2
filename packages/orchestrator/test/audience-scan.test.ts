@@ -8,7 +8,8 @@
 //     run; `sentBy` only declines, so it cannot add one.
 // The reach is own + ancestors, plus the states below with no party-invoking state between: an
 // Agent's modes, and a Gate's plain children (position gives a Gate those, as it gives an Agent its
-// modes).
+// modes). A Gate slot (`gate({ … })`, ADR-0011) is a Gate: its `delivers` read as `external`, which
+// can only narrow.
 //
 // Not scanned: the `@model` instance's workflows, whose endpoint profile exists only once the tier
 // materializes it (`features/model-instance/workflows/_profile.ts`), and the intro instance under
@@ -20,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { AnyStateMachine } from "xstate";
 import { isAgent } from "../src/agent.ts";
+import { isGateInvoke } from "../src/gate-brand.ts";
 import { allNodes, mayTake, partiesAt } from "../src/party.ts";
 import { seatsOf, vocabularyOf } from "../src/vocabulary.ts";
 
@@ -28,7 +30,7 @@ const FILES = [
   "packages/machines/src/task.ts",
   "packages/orchestrator/test/_fixtures.ts",
   "packages/cli/test/_fixtures.ts",
-  ...["guarded", "guarded-reshaped", "intake", "loop", "nested", "review", "workspaced"].map(
+  ...["guarded", "guarded-reshaped", "intake", "looked", "loop", "nested", "review", "workspaced"].map(
     (f) => `features/fixtures/${f}.ts`,
   ),
   ...[
@@ -71,13 +73,14 @@ function replacedRule(machine: AnyStateMachine): Array<{ key: string; names: Set
   const defs = vocabularyOf(machine)!;
   const actors = machine.implementations.actors as Record<string, unknown>;
   const agentSlot = (src: unknown) => (typeof src === "string" && isAgent(actors[src]) ? src : undefined);
-  const party = (n: Node) => n.invoke.some((inv) => inv.src === "gate" || agentSlot(inv.src) !== undefined);
+  const gateAt = (inv: { src?: unknown }) => isGateInvoke(inv, actors);
+  const party = (n: Node) => n.invoke.some((inv) => gateAt(inv) || agentSlot(inv.src) !== undefined);
   const keys = (n: Node) => [...n.transitions.keys()].filter((k) => defs.has(k));
   const out: Array<{ key: string; names: Set<string> }> = [];
   const visit = (n: Node) => {
     for (const inv of n.invoke) {
       const slot = agentSlot(inv.src);
-      if (inv.src !== "gate" && slot === undefined) continue;
+      if (!gateAt(inv) && slot === undefined) continue;
       const reach = new Set<string>();
       for (let p: Node | undefined = n; p; p = p.parent) keys(p).forEach((k) => reach.add(k));
       const below = (m: Node) => {

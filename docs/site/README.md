@@ -136,8 +136,8 @@ solves, so that a reader sees what jr2 does for them before they read a Concept.
 3. One section for each problem, in the order of the diagram from top to bottom. A section states the problem, then says
    how jr2 answers it, then links to the Concept. The answer starts with the part of the diagram that solves the
    problem. The problems are:
-   1. **Headless.** The You band. The Orchestrator is an HTTP API. The CLI, the Console and a webhook are its clients.
-      You answer a Gate from any of them.
+   1. **Headless.** The You band. The Orchestrator is an HTTP API. The CLI, the Console, your own app and a Hook are its
+      clients. You answer a Gate from any of them.
    2. **Determinism.** The Machine in the Orchestrator band. A Machine is a graph that you can read before it runs, and
       it can have loops. The Console draws the run while it runs. The Menu is the events out of the current state. You
       review how the work happens, not only the code that comes out. A pick can also keep the Turn: the Machine runs the
@@ -208,16 +208,17 @@ page that uses a term links to the page that owns it, and does not explain the t
 | Concept                           | The terms that it owns                                                                                              |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `concepts/machines-and-workflows` | Machine, Workflow, the door (the run input), Vocabulary, Emit                                                       |
-| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, `continue`, Briefing, Working tools, Runaway, Compaction                                 |
+| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, `continue`, Briefing, Working tools, Runaway, Compaction, Steering message               |
 | `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                      |
-| `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a webhook                                             |
+| `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a Hook; Gate slot, look, `reply`                      |
 | `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, dispatched by, at-most-once, `fromPick`                              |
 | `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, cut, Size, Placing, Lease, Continuity, Sandbox Image, User Container |
 | `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                            |
 | `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                     |
-| `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set                                                                                |
+| `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set, push Source, Pool of runs, standing Pool                                      |
 | `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                          |
 | `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                              |
+| `concepts/callers-and-hooks`      | Caller, scope, on behalf of, JWT issuer, the record of each act, Hook, Hook kind, the door of a Hook, hook log      |
 | `concepts/converge`               | `jr2 up`, Assembly, Kit version, Handoff, Kit image, Pinned image, Sandbox Image as an image to build, `gc`         |
 | `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, the week of history                   |
 
@@ -243,13 +244,15 @@ The first link in `## Read next` is the Concept in this table. A Guide can link 
 | ---------------------------------------------------------------------------------------- | --------------------------------- |
 | `start-a-run`, `write-a-workflow`                                                        | `concepts/machines-and-workflows` |
 | `set-an-agents-access-and-dials`                                                         | `concepts/agents-and-turns`       |
-| `answer-a-gate`                                                                          | `concepts/gates`                  |
+| `answer-a-gate`, `answer-a-gate-from-a-forge`                                            | `concepts/gates`                  |
+| `steer-an-agent`                                                                         | `concepts/agents-and-turns`       |
 | `run-a-command-or-call-a-url`, `push-and-sign-a-branch`, `start-a-run-from-a-run`        | `concepts/effects`                |
 | `look-inside-a-sandbox`, `add-tools-to-the-sandbox`, `size-a-workspace`                  | `concepts/workspaces`             |
 | `cut-a-worktree`                                                                         | `concepts/workspaces`             |
 | `bind-open-parts`, `publish-a-machine-as-an-npm-package`                                 | `concepts/composition`            |
 | `let-an-agent-write-a-chart`, `run-a-chart-by-name`                                      | `concepts/charts`                 |
-| `run-one-worker-per-item`                                                                | `concepts/pools-and-sources`      |
+| `run-one-worker-per-item`, `start-a-run-for-each-alert`                                  | `concepts/pools-and-sources`      |
+| `give-a-caller-a-scope`, `write-a-hook-kind`                                             | `concepts/callers-and-hooks`      |
 | `open-the-console`                                                                       | `concepts/architecture`           |
 | `use-a-local-model`, `use-a-hosted-provider`, `give-the-cluster-git-credentials`         | `concepts/secrets-and-trust`      |
 | `move-from-kind-to-a-shared-cluster`, `mirror-the-kit-images`, `upgrade-the-kit-version` | `concepts/converge`               |
@@ -265,23 +268,25 @@ full file name in `docs/adr/`. The link text is the number:
 
 Cite a Reference entry with a link to its page and its anchor, such as `../reference/config.md#secrets`. An entry of the
 Authoring surface has a page of its own, `reference/authoring-surface/<anchor>.md`: cite that page, without an anchor,
-such as `../reference/authoring-surface/workspace.md`. `reference/authoring-surface.md` is the contents page, and a link
-to the anchor of an entry on it, such as `#workspace`, fails the build with the path of the entry's page. `docs:build`
-makes each anchor from a name. It joins the parts with a hyphen and changes the result to lower case. Then it changes
-each run of characters that are not `a`–`z` or `0`–`9` to one hyphen. It also removes a hyphen at the start and at the
-end (`anchorOf` in `build/reference/context.ts`). The table gives the name for each kind of entry:
+such as `../reference/authoring-surface/workspace.md`. `reference/authoring-surface.md` is the contents page, which
+gives each group and its names. Each group has a page, `reference/authoring-surface/group-<title>.md`. A link to the
+anchor of an entry on the contents page, such as `#workspace`, fails the build with the path of the entry's page.
+`docs:build` makes each anchor from a name. It joins the parts with a hyphen and changes the result to lower case. Then
+it changes each run of characters that are not `a`–`z` or `0`–`9` to one hyphen. It also removes a hyphen at the start
+and at the end (`anchorOf` in `build/reference/context.ts`). The table gives the name for each kind of entry:
 
-| Page                                | Entry                 | The anchor is                                    | Example                                                                        |
-| ----------------------------------- | --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `authoring-surface/`, `machines.md` | a function or a const | the name                                         | `jr2Setup` is `jr2setup`: the page `authoring-surface/jr2setup.md`             |
-| each Reference page                 | a type                | `type-`, then the name                           | `RepoSlot` is `type-reposlot`: the page `authoring-surface/type-reposlot.md`   |
-| `config.md`                         | a field               | the path, without `[]`, with `name` for `<name>` | `harness.provider.baseUrl` is `#harness-provider-baseurl`                      |
-| `cli.md`                            | a command             | the command, without `jr2`                       | `jr2 kit push` is `#kit-push`                                                  |
-| `cli.md`                            | a section             | its title                                        | `#global-options`, `#run-ids`, `#env`, `#output`, `#exit-codes`                |
-| `http-api.md`                       | a route               | the method and the path                          | `POST /runs/:runId/gates/:gate/events` is `#post-runs-runid-gates-gate-events` |
-| `http-api.md`                       | an access band        | `band-`, then the band                           | `#band-open`, `#band-authenticated`, `#band-instanceonly`                      |
-| `mechanism-events.md`               | an event              | the event type                                   | `agent.fault` is `#agent-fault`                                                |
-| `glossary.md`                       | a term                | the rule in [Links](#links)                      | `Repo Slot` is `#repo-slot`                                                    |
+| Page                                            | Entry                 | The anchor is                                    | Example                                                                        |
+| ----------------------------------------------- | --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `authoring-surface/`, `machines.md`, `hooks.md` | a function or a const | the name                                         | `jr2Setup` is `jr2setup`: the page `authoring-surface/jr2setup.md`             |
+| each Reference page                             | a type                | `type-`, then the name                           | `RepoSlot` is `type-reposlot`: the page `authoring-surface/type-reposlot.md`   |
+| `authoring-surface/`                            | a group               | `group-`, then its title                         | `Effects` is `group-effects`: the page `authoring-surface/group-effects.md`    |
+| `config.md`                                     | a field               | the path, without `[]`, with `name` for `<name>` | `harness.provider.baseUrl` is `#harness-provider-baseurl`                      |
+| `cli.md`                                        | a command             | the command, without `jr2`                       | `jr2 kit push` is `#kit-push`                                                  |
+| `cli.md`                                        | a section             | its title                                        | `#global-options`, `#run-ids`, `#env`, `#output`, `#exit-codes`                |
+| `http-api.md`                                   | a route               | the method and the path                          | `POST /runs/:runId/gates/:gate/events` is `#post-runs-runid-gates-gate-events` |
+| `http-api.md`                                   | an access band        | `band-`, then the band                           | `#band-open`, `#band-guarded`, `#band-instanceonly`                            |
+| `mechanism-events.md`                           | an event              | the event type                                   | `agent.fault` is `#agent-fault`                                                |
+| `glossary.md`                                   | a term                | the rule in [Links](#links)                      | `Repo Slot` is `#repo-slot`                                                    |
 
 - A flag has no anchor. Link to its command.
 - An anchor in an ADR is the slug that GitHub gives its heading.
@@ -346,7 +351,8 @@ The key `provider` makes each tab set on the site show the tab that the reader c
   folder for each tab: `anthropic/` and `local/`.
 - A Machine example is a complete workflow module: its imports, its Vocabulary, its Agents and `export const machine`.
 - Import only what a scaffolded Instance can import: `@jr2/orchestrator` (its root, never `/internal`), `xstate`, `zod`,
-  `@jr2/machines` and `node:` modules. A page that imports `@jr2/machines` tells the reader to install it.
+  `@jr2/machines`, `@jr2/hooks` and `node:` modules. A page that imports `@jr2/machines` or `@jr2/hooks` tells the
+  reader to install it.
 - A comment in an example speaks to the reader. Put the ADR links in the page, not in the comments.
 - To show a part of a file, mark the part as a region: `// #region <name>` on the line before it, and
   `// #endregion <name>` on the line after it. Give the region the name of what it holds, such as `imports` or `review`.
@@ -371,14 +377,15 @@ the docs need, and no more.
 
 These diagrams exist:
 
-| Diagram              | Page                        | The question                                                              |
-| -------------------- | --------------------------- | ------------------------------------------------------------------------- |
-| The parts            | `why`                       | What are the parts of jr2, and what does each part do for you?            |
-| One run              | `why`                       | What happens in one run, from its start to its end?                       |
-| One Turn             | `concepts/agents-and-turns` | What happens in one Turn, from the Frame to the Agent's pick?             |
-| Composing a Workflow | `concepts/composition`      | How do a Workflow, the Machines in it and their bound parts fit together? |
-| What runs where      | `concepts/architecture`     | What runs on your computer, in the cluster, and in a Sandbox?             |
-| Setup and usage      | `concepts/converge`         | What does `jr2 up` make, and what do `jr2 run` and `jr2 send` use?        |
+| Diagram                | Page                         | The question                                                              |
+| ---------------------- | ---------------------------- | ------------------------------------------------------------------------- |
+| The parts              | `why`                        | What are the parts of jr2, and what does each part do for you?            |
+| One run                | `why`                        | What happens in one run, from its start to its end?                       |
+| One Turn               | `concepts/agents-and-turns`  | What happens in one Turn, from the Frame to the Agent's pick?             |
+| Composing a Workflow   | `concepts/composition`       | How do a Workflow, the Machines in it and their bound parts fit together? |
+| What runs where        | `concepts/architecture`      | What runs on your computer, in the cluster, and in a Sandbox?             |
+| Setup and usage        | `concepts/converge`          | What does `jr2 up` make, and what do `jr2 run` and `jr2 send` use?        |
+| One delivery at a Hook | `concepts/callers-and-hooks` | What does the door of a Hook do with one delivery, and who checks it?     |
 
 ## The source format
 
@@ -500,13 +507,16 @@ with `@/`, which is this folder:
   language as `{<language>}` after the path.
 - A title, `[<label>]`, is only for a `<<<` inside `::: code-group`.
 - Do not give line numbers to highlight (`{1,3}`). The bundle has no highlight.
+- Prettier changes a `_` at the start of a name in the path to `\_`, and then the path names no file. Put the line
+  `<!-- prettier-ignore -->` right above such a `<<<`, with the empty line before the comment: a path such as
+  `examples/<page>/workflows/_events.ts` needs it.
 
 VitePress shows the whole file when the region does not exist, and does not fail. When the file does not exist, the site
 build fails. `docs:build` fails in both cases, so `pnpm --filter @jr2/docs-site test` finds the problem.
 
 Put the file in `examples/<page-slug>/`, or in `examples/shared/` when two or more pages import it. `docs:build` refuses
 a `<<<` of a file outside `examples/`. `pnpm typecheck` checks every `.ts` file in `examples/` against
-`@jr2/orchestrator` and `@jr2/machines`. See [Examples](#examples).
+`@jr2/orchestrator`, `@jr2/machines` and `@jr2/hooks`. See [Examples](#examples).
 
 ### Diagrams
 
@@ -662,8 +672,8 @@ It also changes each relative link:
   path is relative to the root of `@jr2/orchestrator`, which holds the bundle. In the TSDoc of another package, such as
   `@jr2/machines`, write the path with the package name, `@jr2/orchestrator/docs/<slug>.md`, so that an Assistant who
   reads the file in `node_modules` can find the page. A `docs/` path there is an error.
-- a TSDoc block tag on the Authoring surface or on `@jr2/machines` other than `@remarks`, `@param`, `@returns`,
-  `@example` and `@see`: the Reference does not show it
+- a TSDoc block tag on the Authoring surface, on `@jr2/machines` or on `@jr2/hooks` other than `@remarks`, `@param`,
+  `@returns`, `@example` and `@see`: the Reference does not show it
 - a TSDoc block tag on a type in a Types section, or on a Mechanism event, other than `@remarks`, `@example` and `@see`
 - a repo path or a commit id in the TSDoc that a Reference page shows, such as `test/x.test.ts`, `parts.ts` or
   `baba71f`. `jr2.config.ts`, `AGENTS.md` and `CLAUDE.md` are the author's files, so they are not errors. The code of an
@@ -716,14 +726,14 @@ The `pages` job of `.github/workflows/release.yml` runs `pnpm docs:site` and dep
 
 ### The TSDoc that the Reference shows
 
-The Reference shows the TSDoc of each export of the Authoring surface and of `@jr2/machines`, and of each Kit type that
-their signatures and fields name, to any depth. Write that TSDoc for the author: what the name does, what it refuses,
-with the full text, and what to read next. Put the reasoning of a maintainer in `//` comments above it.
+The Reference shows the TSDoc of each export of the Authoring surface, of `@jr2/machines` and of `@jr2/hooks`, and of
+each Kit type that their signatures and fields name, to any depth. Write that TSDoc for the author: what the name does,
+what it refuses, with the full text, and what to read next. Put the reasoning of a maintainer in `//` comments above it.
 
-The first sentence of the summary is the line of the name on the contents page of the Authoring surface, and the
+The first sentence of the summary is the line of the name on its group page of the Authoring surface, and the
 `description` of its entry page. It ends at the first stop (`.`, `!` or `?`) that a space follows, outside a code span.
 A colon does not end it. Thus make the first sentence tell what the name is, and keep it short: an Assistant reads the
-contents page to find the entry to open.
+group page to find the entry to open.
 
 Mark with `@internal` a type that only computes a type from other types, such as the type of a Machine's actors. An
 author never writes such a type. The Reference shows its declaration only, in the list "Type plumbing" (on the Authoring

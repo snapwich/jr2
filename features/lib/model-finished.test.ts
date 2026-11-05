@@ -22,6 +22,9 @@ test("a trial that took the other task final finished: the claim's measure, not 
   assert.equal(FINISHED["continue-after-signed-push"]!(body("finished")), true);
   assert.equal(FINISHED.wake!(root("held")), true);
   assert.equal(FINISHED["chain-answer"]!(root("released")), true);
+  // The steering claims (ADR-0002): the Agent that did not follow, or obeyed the peer, still finished.
+  for (const value of ["held", "published"]) assert.equal(FINISHED["steer-follow"]!(root(value)), true, value);
+  for (const value of ["published", "discarded"]) assert.equal(FINISHED["peer-not-order"]!(root(value)), true, value);
 });
 
 test("a fault, a lost Workspace or an unsettled run never finished", () => {

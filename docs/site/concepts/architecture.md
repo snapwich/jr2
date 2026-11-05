@@ -44,7 +44,7 @@ its pod can reach. Thus jr2 puts each thing that the Agent must not touch in a d
     - **Instance Harness**: runs the Turns of the Menu-only Agents
       - Harness
       - Custodian
-    - **Instance Effector**: runs the Effects that read no Worktree file
+    - **Instance Effector**: runs the Effects that read no Worktree file, and checks a Hook's signature
     - **Repo cache**: one pod on each Sandbox node
   - ↓ a Turn, an Effect · ↑ a pick, through the Custodian · ↓ the Repo cache gives each Repo
   - **Sandbox**: one pod for each Workspace, in the same namespace
@@ -100,7 +100,7 @@ publishes to it, and it keeps each Assembly on its volume. [Converge](converge.m
 The Orchestrator does these things:
 
 - It runs each Machine as an [xstate](https://xstate.js.org) actor, and holds the state of each run.
-- It serves the HTTP API that the CLI, the Console, a webhook and the Custodians call. See the
+- It serves the HTTP API that the CLI, the Console, the other Callers, the Hooks and the Custodians call. See the
   [HTTP API](../reference/http-api.md).
 - It sends each Turn to a Harness, and judges each pick that comes back.
 - It writes a Sandbox resource when a run enters a Workspace. Then it watches the Sandbox resource until the Workspace
@@ -165,12 +165,15 @@ where. It has two placements:
   `push`, an `http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is the
   Sandbox Image, unless the `workspace()` names a different image.
 - **The Instance Effector** is one pod for each Instance, `jr2-instance-effector`. It runs each `http` Effect that reads
-  no Worktree file, and each `dispatch` that starts a run on a different Orchestrator. It holds the Instance token of
-  that Orchestrator as an Effect secret. It runs in the `jr2-harness` Kit image.
+  no Worktree file, and each `dispatch` that starts a run on a different Orchestrator. It holds the Caller token for
+  that Orchestrator as an Effect secret. It also serves the [Hooks](../reference/glossary.md#hook): it holds the secret
+  of each Hook that checks a signature with a shared secret (`mac`) and checks the signature, and it sends the follow-up
+  of a kind that posts one, such as the reply to a Slack click. It runs in the `jr2-harness` Kit image.
 
-Each placement exists only when a Machine of the Instance puts an Effect there. A `command` that names no Effect secret
-does not use an Effector. It runs in the Harness container of its Sandbox, with the same tools and access as the Agent,
-and confined in the same way.
+A Sandbox Effector exists only when a Machine of the Instance puts an Effect there. The Instance Effector exists only
+when a Machine puts an Effect there or a Hook needs it. A `command` that names no Effect secret does not use an
+Effector. It runs in the Harness container of its Sandbox, with the same tools and access as the Agent, and confined in
+the same way.
 
 The Orchestrator signs each request that it sends to an Effector, and the Effector signs each answer. The Orchestrator
 only asks, and the Effector holds the credentials.

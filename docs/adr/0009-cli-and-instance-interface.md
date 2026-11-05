@@ -98,6 +98,7 @@ GET  /workflows/:name/machine  /viz/*  # machine structure + visualizer         
 GET  /workflows/:name/runs[, /:runId/events]  # observation projection (ADR-0014)        [open]
 GET  /workflows/:name/events           # SSE: the whole workflow, level-triggered (ADR-0022) [open]
 POST /workflows/:name/runs             # start a run (push work); body = input → { runId } [start]
+                                       # a standing Workflow: resume a paused one [?drop-held=true] (ADR-0017)
 GET  /runs   GET /runs/:runId          # live list; durable run status (read-through)    [read]
 GET  /runs/resolve?prefix=<p>          # run ids sharing a prefix, live + settled        [any scope]
 GET  /runs/:runId/events               # SSE: status replay + live deltas                [read]
@@ -107,6 +108,7 @@ POST /runs/:runId/steering             # a Steering message to an Agent slot (AD
 GET  /runs/:runId/agents               # the conversation list, one row per Agent slot   [steer]
 GET  /whoami                           # the request's Caller record (ADR-0078)          [any Caller]
 POST /hooks/:name                      # a Hook's delivery (ADR-0011)                    [the Hook's verifier]
+GET  /hooks/:name                      # the Hook's log, newest first (ADR-0011)         [instance]
 GET  /repos                            # per-Repo node-cache sync state (ADR-0048)        [instance]
 GET  /agents/:iid/surface   POST /agents/:iid/events   # the Menu, via the Custodian    [sandbox]
 POST /sandboxes/:name/fetch                            # the ask (ADR-0053)             [sandbox]
@@ -149,7 +151,7 @@ jr2 run <workflow> [--drop-held]   # resume a paused standing Pool (ADR-0017)
 jr2 runs   jr2 status [runId|abbrev]   jr2 logs <runId|abbrev> [-f]   # bare `status` = the instance's repos (ADR-0048)
 jr2 send <runId|abbrev> --event CANCEL
 jr2 send <runId|abbrev> --gate <gate> --event <name> [--input <json>]
-jr2 steer <runId|abbrev> <agent> "<text>"   # a Steering message (ADR-0002)
+jr2 steer <runId|abbrev> [<agent> "<text>"]   # a Steering message; the slots alone (ADR-0002)
 
 # Callers and Hooks (ADR-0078, ADR-0011)
 jr2 whoami                         # the Caller this credential is
@@ -200,7 +202,10 @@ lines beside it are advisory. It does not generalise to a **report verb** — `v
 whose output is a diagnosis a human reads whole: dual-printing there shows a JSON blob and a partial table, and the
 readable form exists nowhere. So a report verb prints its human table on **stdout**, and `--json` swaps the table for
 the one object. No `isatty` sniffing: output that changes with how it is invoked is a debugging trap of its own. `init`,
-`check`, `up`, `down`, `gc` and `send` are neither class — activity only, no result.
+`check`, `up`, `down`, `gc`, `send` and `caller rotate` are neither class — activity only, no result. `whoami` is a
+result verb. A **value verb** — `caller token` — prints one value alone on stdout, not JSON, and activity on stderr,
+because its one use is `JR2_TOKEN=$(jr2 caller token ci)`, and a JSON string there needs `jq -r` for nothing.
+`caller rotate` prints no value: the new one is a `caller token` away, and a value is printed only when it is asked for.
 
 **`jr2 version` (amended 2026-09-20).** The report you paste into a bug: what is _here_ and what is _deployed_, side by
 side, so the gap between the halves is the answer ("you edited the pin and never ran `jr2 up`"). The local half: `cli`
@@ -284,8 +289,8 @@ lockfile is what picks one ([ADR-0043](0043-the-kit-is-tested-as-installed-a-loc
 
 ## Consequences
 
-- The instance-facing packages (`@jr2/cli`, `@jr2/orchestrator`, `@jr2/agent-protocol`) publish to npm; `@jr2/harness`
-  ships inside a Kit image, never via npm
+- The instance-facing packages (`@jr2/cli`, `@jr2/orchestrator`, `@jr2/agent-protocol`, `@jr2/hooks`, `@jr2/machines`)
+  publish to npm; `@jr2/harness` ships inside a Kit image, never via npm
   ([ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)). The CLI ships as the `jr2`
   bin (`npx jr2`).
 - Workspaces are a first-class CLI resource backed by the operator's `Sandbox` CRs, label-linked to their runs.

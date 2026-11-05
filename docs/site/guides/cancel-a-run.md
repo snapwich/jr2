@@ -96,10 +96,12 @@ that the run was in when you cancelled it.
 ## Cancel from HTTP
 
 A client that is not the CLI sends `CANCEL` to
-[`POST /runs/:runId/events`](../reference/http-api.md#post-runs-runid-events), with the Instance token. The path takes
-the full run id, not a prefix. To get the Instance token, see
-[Open the Console](open-the-console.md#get-the-instance-token). To keep the Sandboxes, add `"keep": true` to the body.
-This example reaches the Orchestrator through the port forward in [Open the Console](open-the-console.md):
+[`POST /runs/:runId/events`](../reference/http-api.md#post-runs-runid-events), with the credential of a
+[Caller](../reference/glossary.md#caller) that has the `cancel` scope for the Workflow of the run. The Instance token
+has it. [Give a Caller a scope](give-a-caller-a-scope.md) makes a token with less. The path takes the full run id, not a
+prefix. To get the Instance token, see [Open the Console](open-the-console.md#get-the-instance-token). To keep the
+Sandboxes, add `"keep": true` to the body. This example reaches the Orchestrator through the port forward in
+[Open the Console](open-the-console.md):
 
 ```sh
 curl -X POST http://localhost:4000/runs/<run id>/events \
@@ -132,7 +134,10 @@ curl -X POST http://localhost:4000/runs/<run id>/events \
   with the status 400: `unknown event type "<type>" (accepts: CANCEL)`
 - It refuses a `keep` that is not `true` or `false` with the status 400: `"keep" must be a boolean`
 - It refuses a request with no valid token with the status 401: `unauthorized`. It refuses a Sandbox token with the
-  status 403: `run state and control need the Instance token — a Sandbox token has neither`
+  status 403:
+  `this route needs a Caller, and a Sandbox token is not one: no Agent reaches run state, run control or a Gate`
+- It refuses a Caller that does not have the `cancel` scope for the Workflow of the run with the status 403:
+  `the Caller <via>/<name> needs the "cancel" scope for Workflow "<workflow>" (ADR-0078)`
 - A path with a prefix of the run id, or with an id of no run, gets `{"ok":true}` with the status 200. Nothing changes.
 
 ## Read next

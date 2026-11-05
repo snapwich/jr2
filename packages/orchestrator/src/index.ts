@@ -17,6 +17,10 @@ export { jr2Setup } from "./setup.ts";
 export { sentBy } from "./party.ts";
 export type { HostInjectedInput } from "./vocabulary.ts";
 
+// Gates: a Gate slot hears a Hook (ADR-0011).
+export { gate } from "./gate.ts";
+export type { Delivered, GateLook, GateOutcome, GateReply } from "./gate.ts";
+
 // Failure: the Part a Machine invokes to fail its run, and the guard that tells a Failure from a
 // defect in an `onError` (ADR-0073).
 export { fail, isFailure } from "./fail.ts";
@@ -56,6 +60,9 @@ export { dispatch } from "./dispatch-effect.ts";
 export type { DispatchOutput } from "./effect.ts";
 export { answer, fromPick, paramsOf } from "./pick.ts";
 
+// Steering: the Machine's free text to one of its Agents, which the Agent hears once (ADR-0002).
+export { steer } from "./steer.ts";
+
 // Composition: a part left Open, a Machine's parts retuned, a Pool over a Source (ADR-0017,
 // ADR-0049, ADR-0054, ADR-0060).
 export { open } from "./parts.ts";
@@ -63,8 +70,8 @@ export { customize } from "./customize.ts";
 export type { Customize } from "./customize.ts";
 export type { EffectBinding } from "./open-effect.ts";
 export type { Size, UserContainer } from "./size.ts";
-export { pool, source } from "./pool.ts";
-export type { PoolNextInput } from "./pool.ts";
+export { carry, pool, reread, skip, source } from "./pool.ts";
+export type { PoolNextInput, SourceReply, SourceVerdict } from "./pool.ts";
 
 // Charts: the Open body a Chart wrapper places in `actors`, and the grammar a planner's pick
 // declares, whole or narrowed to one wrapper (ADR-0070).

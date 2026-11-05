@@ -23,7 +23,7 @@ export async function runs(args: string[], io: Io): Promise<number> {
   const { values } = parseCommand("runs", args);
   const target = await resolveTarget(io, targetOptions(values));
   try {
-    const client = new JR2Client(target.url, io.fetch, target.token);
+    const client = new JR2Client(target.url, io.fetch, target.token, target.onBehalfOf);
     if (values.workflows) {
       result(io, await client.workflows());
       return 0;

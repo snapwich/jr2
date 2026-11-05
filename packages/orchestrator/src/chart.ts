@@ -25,6 +25,7 @@ import { defineEvent, type EventAudience, type EventDef } from "@jr2/agent-proto
 import type { AgentDefinition, ThinkingLevel, WorkspaceAccess } from "./agent.ts";
 import { inputKeysOf, inputShapeOf, isEffect, type InputShape } from "./effect.ts";
 import { FAILURE_GUARD } from "./fail.ts";
+import { isGateSlot } from "./gate.ts";
 import { compileChart, durationMs, type LentParts, type OpenBodyDeclaration } from "./open-body.ts";
 import { SENT_BY } from "./party.ts";
 import { loadWarningsOf } from "./vocabulary.ts";
@@ -673,6 +674,7 @@ function lendsOf(decl: OpenBodyDeclaration) {
     agents: decl.lends.agents ?? [],
     effects: decl.lends.effects ?? [],
     machines: decl.lends.machines ?? [],
+    gates: decl.lends.gates ?? [],
     guards: decl.lends.guards ?? [],
     actions: decl.lends.actions ?? [],
     delays: decl.lends.delays ?? [],
@@ -695,7 +697,14 @@ export function narrowedChartSchema(decl: OpenBodyDeclaration): Record<string, u
 function narrowOf(decl: OpenBodyDeclaration): Narrow {
   const l = lendsOf(decl);
   return {
-    srcs: [...l.agents, ...l.effects, ...l.machines, ...(l.gate ? ["gate"] : []), ...(l.fail ? ["fail"] : [])],
+    srcs: [
+      ...l.agents,
+      ...l.effects,
+      ...l.machines,
+      ...l.gates,
+      ...(l.gate ? ["gate"] : []),
+      ...(l.fail ? ["fail"] : []),
+    ],
     lentAgents: l.agents,
     lendsEffects: l.effects.length > 0,
     gate: l.gate,
@@ -1152,11 +1161,12 @@ class Door {
   // --- rule 3: names --------------------------------------------------------------------------------
 
   /** The lent actors by kind, as the lent set has them now. */
-  private lentActors(): Array<{ name: string; kind: "Agent" | "Effect" | "Machine" }> {
-    const out: Array<{ name: string; kind: "Agent" | "Effect" | "Machine" }> = [];
+  private lentActors(): Array<{ name: string; kind: "Agent" | "Effect" | "Machine" | "Gate slot" }> {
+    const out: Array<{ name: string; kind: "Agent" | "Effect" | "Machine" | "Gate slot" }> = [];
     for (const name of this.lends.agents) if (name in this.lent.actors) out.push({ name, kind: "Agent" });
     for (const name of this.lends.effects) if (name in this.lent.actors) out.push({ name, kind: "Effect" });
     for (const name of this.lends.machines) if (name in this.lent.actors) out.push({ name, kind: "Machine" });
+    for (const name of this.lends.gates) if (name in this.lent.actors) out.push({ name, kind: "Gate slot" });
     return out;
   }
 
@@ -1170,7 +1180,7 @@ class Door {
   /** What an invoke's `src` names, or undefined after a refusal line. */
   private srcKind(src: string, path: string): InvokeKind | undefined {
     const lentNow = (name: string) => name in this.lent.actors;
-    const declared = [...this.lends.agents, ...this.lends.effects, ...this.lends.machines];
+    const declared = [...this.lends.agents, ...this.lends.effects, ...this.lends.machines, ...this.lends.gates];
     if (declared.includes(src) && !lentNow(src)) {
       this.fail(
         3,
@@ -1181,6 +1191,22 @@ class Door {
     if (this.lends.agents.includes(src)) return "agent";
     if (this.lends.effects.includes(src)) return "effect";
     if (this.lends.machines.includes(src)) return "machine";
+    if (this.lends.gates.includes(src)) {
+      // A lent Gate slot (ADR-0011, ADR-0070): its handlers and its look give its `delivers`, which
+      // the Chart's Machine must take. One that is not in the Chart's Vocabulary could never arrive.
+      const slot = this.lent.actors[src];
+      const outside = isGateSlot(slot)
+        ? slot.gateSlot.delivers.map((d) => d.name).filter((name) => !this.eventSchemas.has(name))
+        : [];
+      if (outside.length) {
+        this.fail(
+          3,
+          `${path}: the Gate slot "${src}" delivers ${outside.map((n) => `"${n}"`).join(", ")}, which ${outside.length > 1 ? "are" : "is"} not in the Chart's \`events\` (events: ${names([...this.eventSchemas.keys()])}); declare ${outside.length > 1 ? "them" : "it"} in \`events\` and handle ${outside.length > 1 ? "them" : "it"} on this state`,
+        );
+        return undefined;
+      }
+      return "gate";
+    }
     if (src === "gate") {
       if (this.lends.gate) return "gate";
       this.fail(
@@ -1375,7 +1401,14 @@ class Door {
   // --- rule 5: minted Agents ------------------------------------------------------------------------
 
   private checkAgents(): void {
-    const lentNames = new Set([...this.lends.agents, ...this.lends.effects, ...this.lends.machines, "gate", "fail"]);
+    const lentNames = new Set([
+      ...this.lends.agents,
+      ...this.lends.effects,
+      ...this.lends.machines,
+      ...this.lends.gates,
+      "gate",
+      "fail",
+    ]);
     for (const [slot, a] of Object.entries(this.chart.agents ?? {})) {
       const path = `agents.${slot}`;
       if (lentNames.has(slot)) {

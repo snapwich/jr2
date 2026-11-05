@@ -149,8 +149,9 @@ Worktree is, and [Cut a Worktree](../guides/cut-a-worktree.md) tells how to use 
 [`dispatch`](../reference/authoring-surface/dispatch.md) starts a run of a Workflow. The new run is a run of its own: it
 has its own line in [`jr2 runs`](../reference/cli.md#runs), its own Workspaces and its own `CANCEL`. Its record names
 the run that started it: it is **dispatched by** that run. Use `dispatch` when a Machine waits for work, for example at
-a [Gate](../reference/glossary.md#gate) that a webhook answers, and each item of work needs a run of a Workflow that you
-have. To use a Machine as a part of one run, invoke it in the run instead (see [Composition](composition.md)).
+a [Gate](../reference/glossary.md#gate) that a [Hook](../reference/glossary.md#hook) answers, and each item of work
+needs a run of a Workflow that you have. To use a Machine as a part of one run, invoke it in the run instead (see
+[Composition](composition.md)).
 
 - The name of the Workflow is a constant of the definition, as `jr2 run` writes it: `"triage"`, or `"<wrapper>/<name>"`
   for a named [Chart](../reference/glossary.md#chart). An Agent cannot choose it.
@@ -162,7 +163,8 @@ have. To use a Machine as a part of one run, invoke it in the run instead (see [
   minutes with `wait`.
 - With no `target`, the new run starts in the same Orchestrator. With
   `target: { url: "https://<host>", token: secret("<name>") }`, it starts on a different Orchestrator. `url` is the
-  origin of that Orchestrator, and the secret holds its Instance token.
+  origin of that Orchestrator, and the secret holds the token of a [Caller](../reference/glossary.md#caller) of that
+  Orchestrator with the `start` scope for the Workflow, and also `read` when `wait` is `true`.
 - The new run starts under the current [Assembly](../reference/glossary.md#assembly), as a run of `jr2 run` does.
 
 The two runs are independent. A `CANCEL` of one run does not cancel the other. When the run that dispatched ends, the

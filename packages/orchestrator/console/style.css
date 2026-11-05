@@ -490,6 +490,27 @@ marker.arrow--error path {
   outline: none;
   border-color: var(--phosphor);
 }
+#caller {
+  font-family: var(--mono);
+  color: var(--text);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#login-note {
+  color: var(--red);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#caller[hidden],
+#sign-out[hidden],
+#token[hidden],
+#login-note[hidden] {
+  display: none;
+}
 .token-state {
   font-size: 11px;
   letter-spacing: 0.04em;

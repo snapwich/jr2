@@ -18,7 +18,10 @@
 // (ADR-0059): `apiKey` is a held secret, bound to this endpoint's host, and the Harness container
 // holds only its Stand-in.
 
-import { defineConfig } from "@jr2/orchestrator";
+import { defineConfig, secret } from "@jr2/orchestrator";
+import { github } from "@jr2/hooks/github";
+import { gitlab } from "@jr2/hooks/gitlab";
+import { chat } from "./workflows/_chat.ts";
 
 export default defineConfig({
   name: "jr2-e2e-kind",
@@ -63,8 +66,17 @@ export default defineConfig({
   // it, so its Agents' confined programs hold its Stand-in in env, and the Custodian puts the value
   // in `x-probe-key` toward the scripted model's host alone. Its own header, because two secrets
   // bound to one host share no header.
+  //
+  // `GH_HOOK` and `CHAT_SIGNING` are the two Hooks' secrets (ADR-0068, ADR-0078): each Hook has a
+  // `mac` verifier, so `jr2 up` places its secret in the Instance Effector alone, which checks each
+  // signature. Per scenario, from env; a step signs each delivery with the same value. `GL_HOOK` is
+  // the `lab` Hook's, whose verifier is `token`: `jr2 up` gives the Orchestrator only its sha-256,
+  // in `jr2-hook-digests`, and a step sends the value in the header.
   secrets: [
     { name: "echo-token", value: process.env.JR2_ECHO_TOKEN },
+    { name: "GH_HOOK", value: process.env.JR2_GH_HOOK },
+    { name: "CHAT_SIGNING", value: process.env.JR2_CHAT_SIGNING },
+    { name: "GL_HOOK", value: process.env.JR2_GL_HOOK },
     { name: "self-token", value: process.env.JR2_SELF_TOKEN },
     {
       name: "PROBE_KEY",
@@ -79,6 +91,18 @@ export default defineConfig({
   // Sandboxes Pending. The Harness still gets 960Mi and 450m after the Custodian's share. The Size
   // alone is not enough there: the control pods ask 900m a scenario before any Sandbox, so the
   // runner also runs fewer workers (`just e2e-kind 2`; the recipe has the arithmetic).
+  // One named Caller token (ADR-0078): `jr2 up` makes its value in a Secret of its own and gives the
+  // Orchestrator only the digest. The Callers Rule reads it, sends it and rotates it.
+  callers: { tokens: { ci: { may: { read: "all" } } } },
+  // Three Hooks (ADR-0078). Two have a `mac` verifier, which the Instance Effector checks
+  // (ADR-0068): `forge` (GitHub) and `chat`, Slack's protocol with a follow-up host the tier can
+  // serve (`workflows/_chat.ts`). `jr2 up` writes `chat`'s `posts` host into the Effector's fence.
+  // `lab` (GitLab) has a `token` verifier, which the Orchestrator checks against the digest.
+  hooks: {
+    forge: github({ secret: secret("GH_HOOK") }),
+    chat: chat({ secret: secret("CHAT_SIGNING") }),
+    lab: gitlab({ secret: secret("GL_HOOK") }),
+  },
   sandbox: { resources: { limits: { memory: "1Gi", cpu: "500m" } } },
   harness: {
     provider: {

@@ -52,6 +52,13 @@ ADR-0018 and GLOSSARY.md said `cwd` is identity, never per Turn. The decided thi
   - **Fan-out is safe by construction.** A Pool spawns each worker with the item id as its actor id (pool.ts), so three
     `task` children each mint their own `…/backlog.worker.<item>/coder`. The packaged Machine never learns it is under a
     Pool.
+  - **Each segment of the actor path is encoded, then the segments are joined with `.`.** An actor id can be any text
+    (an item id is the source's), and with plain `.` joints the paths `a.b`, `c` and `a`, `b.c` were one conversation. A
+    letter, a digit, `-` and `_` stay as they are; each other character becomes `~` and two upper-case hex digits for
+    each of its UTF-8 bytes (`F.12` is `F~2E12`). So a segment has no `.` and no `/`, the iid's two joints, and nothing
+    that a URL path or a header must escape. The root Machine's path is `root`. Two segments are escaped although each
+    of their characters may stay: `root` is `~72oot`, and the empty id is `~`. So no other path is `root` or empty, and
+    two paths never have one spelling.
   - **States of one Machine share by saying `continue`.** States differ by Menu — a coder in `implement` offers
     `finish`, the same coder in `fix` offers `finish` and `dispute` — and the same conversation is wanted across them. A
     state that wants a clean context leaves `continue` off. A Turn joins only a conversation that an earlier Turn

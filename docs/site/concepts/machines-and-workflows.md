@@ -103,7 +103,8 @@ jr2 makes three things from the Vocabulary:
 
 - **The Menu of each Agent.** Each event that an Agent can send is a tool for its model. The description of the event is
   the description of the tool. [The Menu](the-menu.md) tells how.
-- **The events that a Gate accepts.** `jr2 send`, the Console and a webhook can send only those events.
+- **The events that a Gate accepts.** `jr2 send`, the Console and a [Hook](../reference/glossary.md#hook) can send only
+  those events.
 - **The check of each delivery.** jr2 parses the payload of each event with its schema before the Machine gets the
   event.
 
@@ -181,7 +182,7 @@ You see an Emit in these places:
 - The [Harness](../reference/glossary.md#harness) of each [Workspace](../reference/glossary.md#workspace) writes the
   Emits of its run in its log, beside the conversation of its Agents.
 - The feed of a run, [`GET /runs/:runId/events`](../reference/http-api.md#get-runs-runid-events), carries each Emit with
-  its payload. This feed needs the Instance token.
+  its payload. This feed needs the `read` scope for the Workflow of the run.
 
 The feeds that need no token carry the type of an Emit, but not its payload. The payload is your data, as the context of
 a run is.

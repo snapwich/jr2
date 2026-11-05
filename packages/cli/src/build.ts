@@ -375,13 +375,13 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     dockerfile: "deploy/orchestrator/Dockerfile",
     context: ".",
     // `@jr2/orchestrator` and every kit package it depends on, which the Dockerfile packs into the
-    // image (ADR-0069). `packages/agent-protocol` is a runtime dependency, so an edit there changes
-    // the image and must move its tag. The third-party closure (xstate, zod, hono, …) comes from
-    // the registry, each package forced to the version `deploy/orchestrator/closure.json` pins, so
-    // the tag addresses it through that file. closure.json equals pnpm-lock.yaml's closure, and
+    // image (ADR-0069). `packages/agent-protocol` and `packages/hooks` are runtime dependencies, so
+    // an edit there changes the image and must move its tag. The third-party closure (xstate, zod,
+    // hono, …) comes from the registry, each package forced to the version
+    // `deploy/orchestrator/closure.json` pins, so the tag addresses it through that file. closure.json equals pnpm-lock.yaml's closure, and
     // this list equals the Orchestrator's `workspace:` dependencies, both asserted in
     // test/orchestrator-image.test.ts.
-    sources: ["packages/orchestrator", "packages/agent-protocol", "deploy/orchestrator"],
+    sources: ["packages/orchestrator", "packages/agent-protocol", "packages/hooks", "deploy/orchestrator"],
     exclude: KIT_ORCHESTRATOR_EXCLUDE,
   },
 };

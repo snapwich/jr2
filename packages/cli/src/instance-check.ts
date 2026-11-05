@@ -18,6 +18,9 @@ import {
   CUSTOM_PROVIDER_APIS,
   dispatchRefusals,
   doorRefusals,
+  gateLookWarnings,
+  standingPoolLines,
+  standingPoolRefusals,
   loadCharts,
   loadWorkflows,
   machineBodies,
@@ -106,7 +109,8 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
   // and the door's walk cannot drift.
   // A zod `input` that no door reads (ADR-0033) is in the same listing, first: the door refuses it
   // with the same line.
-  const open = [...doorRefusals(workflows), ...openPartRefusals(workflows)];
+  // A standing Pool that is not the top Machine of its Workflow (ADR-0017) is in the listing too.
+  const open = [...doorRefusals(workflows), ...standingPoolRefusals(workflows), ...openPartRefusals(workflows)];
   if (open.length) {
     for (const line of open) activity(io, `refusing: ${line}`);
     return undefined;
@@ -130,6 +134,15 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
     for (const line of dispatched.errors) activity(io, `refusing: ${line}`);
     return undefined;
   }
+  // A hooked Gate that a lost delivery can stop (ADR-0011, ADR-0054): no look and no `after` on its
+  // state, or a look that a package left Open and nobody bound. A warning, never a refusal: a person
+  // can still answer the Gate with `jr2 send`.
+  for (const line of gateLookWarnings(workflows)) activity(io, `warning: ${line}`);
+  // Each standing Pool (ADR-0017): the chain from each Hook that reaches it to its callee, and a
+  // warning when two of them dispatch to one Workflow, whose caps then add.
+  const standing = standingPoolLines(workflows, config.hooks);
+  for (const chain of standing.chains) activity(io, `standing: ${chain}`);
+  for (const line of standing.warnings) activity(io, `warning: ${line}`);
   // What each registered Machine runs outside itself (ADR-0067, ADR-0068): every Effect slot, with
   // the plain data it carries — a command's argv and its timeout; an http
   // Effect's method, its fixed target and the secrets it names — read, never run.

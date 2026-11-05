@@ -30,6 +30,10 @@ function fakeKube(asked: Array<Record<string, unknown>>): KubePort {
       asked.push({ portForward: opts });
       return { url: "http://127.0.0.1:55555", close: () => asked.push({ closed: true }) };
     },
+    selfSubject: async (opts) => {
+      asked.push({ selfSubject: opts });
+      return "kubernetes-admin";
+    },
   };
 }
 
@@ -38,6 +42,7 @@ const untouchableKube: KubePort = {
   currentContext: async () => assert.fail("kube consulted despite --url"),
   readSecret: async () => assert.fail("kube consulted despite --url"),
   portForward: async () => assert.fail("kube consulted despite --url"),
+  selfSubject: async () => assert.fail("kube consulted despite --url"),
 };
 
 async function mkInstance(config = "export default {};\n"): Promise<string> {
@@ -138,6 +143,7 @@ test("a cluster that cannot answer is named as unreachable, not as 'not deployed
           throw new Error("no answer after 10s");
         },
         portForward: async () => assert.fail("no forward without a Secret"),
+        selfSubject: async () => assert.fail("no review without a Secret"),
       },
     });
     await assert.rejects(
@@ -163,6 +169,7 @@ test("a cluster with no instance errors with 'not deployed here'", async () => {
         currentContext: async () => "kind-test",
         readSecret: async () => undefined,
         portForward: async () => assert.fail("no forward without a Secret"),
+        selfSubject: async () => assert.fail("no review without a Secret"),
       },
     });
     await assert.rejects(() => resolveTarget(io, {}), /not deployed here — right context\?/);

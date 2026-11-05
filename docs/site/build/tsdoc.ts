@@ -10,10 +10,18 @@ import { code, type BuildError } from "./markdown.ts";
 
 export type Program = { program: ts.Program; checker: ts.TypeChecker; repo: string };
 
+/** The entry points of `@jr2/hooks` that its Reference page shows, in its order. `door` is not one:
+ * the door of the Orchestrator reads it, and a kind does not (ADR-0078). */
+export const HOOKS_MODULES = ["index", "github", "gitlab", "slack", "discord", "webhook"] as const;
+
 /** The program every Reference generator reads: the kit's `internal` root (which holds the
- * Authoring surface and the rest) and `@jr2/machines`. */
+ * Authoring surface and the rest), `@jr2/machines`, and the entry points of `@jr2/hooks`. */
 export function createProgram(repo: string): Program {
-  const roots = ["packages/orchestrator/src/internal.ts", "packages/machines/src/index.ts"].map((p) => join(repo, p));
+  const roots = [
+    "packages/orchestrator/src/internal.ts",
+    "packages/machines/src/index.ts",
+    ...HOOKS_MODULES.map((m) => `packages/hooks/src/${m}.ts`),
+  ].map((p) => join(repo, p));
   const program = ts.createProgram(roots, {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.NodeNext,
@@ -221,5 +229,13 @@ export function variableSignature(p: Program, d: ts.VariableDeclaration, sym: ts
   const full = p.checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation);
   if (full.length <= 200) return `const ${name}: ${full}`;
   const named = (type.aliasSymbol ?? type.getSymbol())?.name;
-  return `const ${name}: ${named && !named.startsWith("__") ? `${named}<…>` : p.checker.typeToString(type)}`;
+  if (named && !named.startsWith("__")) return `const ${name}: ${named}<…>`;
+  // An object literal with no name, such as a kind's map of event keys to schemas: its keys, which
+  // a reader looks for, and not the types of its values, which are too long to print.
+  const props = type.flags & ts.TypeFlags.Object ? type.getProperties() : [];
+  if (props.length && !type.getCallSignatures().length) {
+    const key = (k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k));
+    return `const ${name}: { ${props.map((s) => `${key(s.name)}: …`).join("; ")} }`;
+  }
+  return `const ${name}: ${p.checker.typeToString(type)}`;
 }

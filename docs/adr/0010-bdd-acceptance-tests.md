@@ -87,8 +87,10 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   the `@playwright/test` runner): the browser is a second driver of the same black box, reusing the per-scenario
   orchestrator fixture unchanged, and a scenario may drive both (the CLI starts a run; the browser sees it park). Tagged
   `@console` and **excluded from the default profile** exactly as `@kind` is — the everyday suite must not require a
-  Chromium install — but they need no docker: a host-booted orchestrator serves the Console fine. Scope discipline: they
-  assert what a user does and sees, never pixels or layout; what the page _believes_ stays in `console-store.test.ts`.
+  Chromium install — but they need no docker: a host-booted orchestrator serves the Console fine. The one exception is
+  the login, which needs an identity provider: its scenario runs Dex in a container and is also tagged `@dex`. The
+  `console` profile runs it; a host with no docker runs `--tags "@console and not @dex"`. Scope discipline: they assert
+  what a user does and sees, never pixels or layout; what the page _believes_ stays in `console-store.test.ts`.
 - **Harness conformance, in `@jr2/harness`, in the default gate**
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)). The three tiers above all reach the
   Harness through the **stub Harness**, which is a hand-written model of the _wire_ — it holds no conversation, so it

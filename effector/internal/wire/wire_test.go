@@ -146,6 +146,8 @@ func TestADispatchRefusedIsToldFromAnHTTPRefused(t *testing.T) {
 		`{"outcome":"settled","run":"r"}`,
 		`{"outcome":"settled","status":"done"}`,
 		`{"outcome":"refused","report":["a"]}`,
+		// `absent` (a key-only ask found no run) carries nothing more.
+		`{"outcome":"absent","run":"r"}`,
 	} {
 		var o Output
 		if err := o.UnmarshalJSON([]byte(bad)); err == nil {
@@ -199,6 +201,8 @@ func TestADispatchStartIsValidatedAsTheTSShapeIs(t *testing.T) {
 		"a method":            func(r *StartRequest) { r.Method = "POST" },
 		"a maxBody":           func(r *StartRequest) { r.MaxBody = 1 },
 		"no timeout":          func(r *StartRequest) { r.TimeoutMs = 0 },
+		"a non-ASCII claim":   func(r *StartRequest) { r.OnBehalfOf = "zoë" },
+		"a long claim":        func(r *StartRequest) { r.OnBehalfOf = strings.Repeat("a", 257) },
 	}
 	for why, mutate := range cases {
 		req := dispatchFixture(t)
@@ -216,5 +220,48 @@ func TestADispatchStartIsValidatedAsTheTSShapeIs(t *testing.T) {
 	http.Workflow = "review"
 	if err := http.Validate(); err == nil {
 		t.Fatal("an http start with a workflow is accepted")
+	}
+}
+
+// The `mac` check's fixtures (ADR-0068): `mac.request` decodes, validates and encodes back as it
+// is; each `mac.answer-*` is what Go encodes; each `mac.reject-*` is refused — a request by its
+// decode or Validate, an answer (`mac.reject-answer-*`) by its decode.
+func TestTheMacFixturesAreWhatGoDecodesAndEncodes(t *testing.T) {
+	raw, _ := os.ReadFile(filepath.Join(fixtures, "mac.request.json"))
+	var req MacRequest
+	if err := Decode(bytes.NewReader(raw), &req); err != nil {
+		t.Fatal(err)
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := Encode(req)
+	sameJSON(t, "mac.request.json", again, raw)
+	for _, path := range fixtureNames(t, "mac.answer-") {
+		raw, _ := os.ReadFile(path)
+		var a MacAnswer
+		if err := Decode(bytes.NewReader(raw), &a); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		again, _ := Encode(a)
+		sameJSON(t, path, again, raw)
+	}
+	for _, path := range fixtureNames(t, "mac.reject-") {
+		raw, _ := os.ReadFile(path)
+		if strings.Contains(path, "mac.reject-answer-") {
+			var a MacAnswer
+			if Decode(bytes.NewReader(raw), &a) == nil {
+				t.Fatalf("%s is accepted", path)
+			}
+			continue
+		}
+		var r MacRequest
+		err := Decode(bytes.NewReader(raw), &r)
+		if err == nil {
+			err = r.Validate()
+		}
+		if err == nil {
+			t.Fatalf("%s is accepted", path)
+		}
 	}
 }

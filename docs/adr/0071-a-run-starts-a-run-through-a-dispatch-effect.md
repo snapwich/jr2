@@ -51,8 +51,10 @@ composition and does not replace it. The two uses stay two mechanisms.
   is the only contract there. The token is any Caller's credential of the other Instance with `start` for the callee
   Workflow ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)): a named Caller
   token made for this, or that Instance's Instance token. A `wait` also polls `GET /runs/<id>`, so its token needs
-  `read` for that Workflow too. The start may carry the Caller that started the calling run as `onBehalfOf`, which the
-  other Instance records and does not check.
+  `read` for that Workflow too. The start carries the first Caller of the calling run's `startedBy` chain as
+  `onBehalfOf`, in the header `jr2-on-behalf-of`, which the other Instance records and does not check: that Caller's own
+  `onBehalfOf`, else the name that jr2 shows, else `<via>/<name>`. A chain that jr2 started, or a text that is not
+  printable ASCII of at most 256 characters, sends no claim.
 - **Two settlements, `started` by default, and every outcome is output.** `{ outcome: "started", run }` settles when the
   Orchestrator accepts the run; the watcher goes round again. `wait: true` settles
   `{ outcome: "settled", run, status, output }` when that run ends, `status` in the store's own words (`done`, `failed`,
@@ -76,7 +78,7 @@ composition and does not replace it. The two uses stay two mechanisms.
   ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)): the body may have come from a model, and the report must
   be able to reach it through the Chain. A target no replica could reach is `{ outcome: "unreachable" }`, output, as an
   `http` Effect's is (ADR-0067): nothing was started. The invoke's error is kept for defects: no run host or Effector,
-  input that fails the slot's schema, a refused or malformed wire.
+  input that fails the slot's schema (when no run has the key, below), a refused or malformed wire.
 - **The two runs are independent.** Cancelling the caller never cancels the callee; the caller's end never ends it;
   leaving the state stops a wait and never the run; the callee's Workspaces are its own. Temporal's parent-close policy
   (`TERMINATE` by default, `REQUEST_CANCEL`, `ABANDON`) exists because a child there is both a run and a child, and its
@@ -103,31 +105,44 @@ composition and does not replace it. The two uses stay two mechanisms.
   key, out of band — the `jr2-dispatched-by` header, the `dispatchedBy` record as JSON, never a body field the callee's
   door would have to reserve — and `POST /workflows/<name>/runs` asks the key before anything else, so a re-sent start
   answers its run even when the name would be refused now: 201 with the run for a new one, 200 with
-  `{ runId, instanceId, existing: true }` for a repeat, 400 when the header does not parse, and 500, never 404, for any
-  other throw, since a foreign caller reads a 404 as "nothing was started" (ADR-0033 as amended). **The key is scoped to
-  the callee Workflow**: the store finds a key with the Workflow's name, so the same key in two Workflows is two runs,
-  and a key never answers with a run of another Workflow. A key answers `existing` while its run's row lives, in any
-  status: live, and a week after it ends. A retry after a failure is then a person's act, not a re-sent start's. The
-  Effect checks the key before it checks its input against the slot's schema, in-process and on the foreign path, as the
-  door does: a start sent again across a change of the callee's door answers `existing`, not an error. A `wait` sent
-  again under a key that answers `existing` follows that run, and settles when it ends. **A Pool's worker sends its
-  `itemId` as the key** ([ADR-0017](0017-pool-over-a-source-port.md)), so a Pool's hand-over re-attaches to each live
-  run. An author's own key (`dispatch({ key })`) is not offered now; to add it later breaks nothing. The key lives in
-  the callee's blob, and the store copies it into a `dispatch_effect` column of its own at every save and indexes that,
-  not an expression index over `json_extract`: SQLite's JSON parser refuses a blob nested about a thousand deep, and
-  such an index would fail that row's save and every later open of the volume. A run restore marks `lost` keeps its row
-  and its blob, so its key keeps answering; the weekly sweep
-  ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)) removes the key with the row, and a re-send
-  after it starts a new run: known, and not guarded. In-process the ledger is consulted directly, through the same start
-  under the same key, with the starts in flight held so two arrivals of one key before the first save are one run. So a
-  dispatch is idempotent whatever its author writes: its intent row says `idempotent: true`, a restore that cannot tell
-  whether its start arrived sends it again under its key with what is left of the bound, the Instance Effector sends a
-  start whose answer was lost again under its key with backoff until the bound, and the Effector's rollout grace is
-  never stretched by a dispatch's wait. Once the answer names the run, the intent row carries it, the Effector's
-  `running` state carries it on the wire, and a restore with it starts nothing: it settles `started` at once, or resumes
-  the wait. Without it a watcher double-starts a run after a restart, which a human notices as two pull requests. What
-  it does not guard: a door at a Kit version before this decision ignores the header, so a re-send to it starts a second
-  run, and neither the Effector nor the preflight can tell. A capability check is named and deferred.
+  `{ runId, instanceId, existing: true }` for a repeat, 200 with `{ existing: false }` for a key-only ask (below) with
+  no run under the key, 400 when a header does not parse, and 500, never 404, for any other throw, since a foreign
+  caller reads a 404 as "nothing was started" (ADR-0033 as amended). **The key is scoped to the callee Workflow**: the
+  store finds a key with the Workflow's name, so the same key in two Workflows is two runs, and a key never answers with
+  a run of another Workflow. A key answers `existing` while its run's row lives, in any status: live, and a week after
+  it ends. A retry after a failure is then a person's act, not a re-sent start's. The Effect checks the key before it
+  checks its input against the slot's schema, in-process and on the foreign path, as the door does: a start sent again
+  across a change of the callee's door answers `existing`, not an error. In-process it asks the run host for the key
+  before it reads the input, within the slot's bound. On the foreign path, a body that the slot's schema refuses is
+  never sent: the start is a **key-only ask**, the header `jr2-key-only: true` beside `jr2-dispatched-by` and no body,
+  out of band as the key is. The door keeps its order: the scope check (ADR-0078), then the key. With a run under the
+  key it answers `existing`, as for any start; with none it starts nothing and answers 200 with `{ existing: false }`,
+  which a foreign caller cannot read as a refused name (404) or a defect (5xx). The Instance Effector settles that
+  answer as `absent`, an outcome of the wire alone, and the Effect makes it the slot's schema refusal, the invoke's
+  error. So input that fails the slot's schema starts nothing on either path, and a run that its key already started is
+  answered on both. A body that the slot's schema takes goes as before, in one request. This is the same for a first
+  send and for a send again (a restore, a retry): a Pool's hand-over is a first send of a new run's Effect under a key
+  that may already name a run of a callee whose door changed. A `wait` sent again under a key that answers `existing`
+  follows that run, and settles when it ends. **A Pool's worker sends its `itemId` as the key**
+  ([ADR-0017](0017-pool-over-a-source-port.md)), so a Pool's hand-over re-attaches to each live run. An author's own key
+  (`dispatch({ key })`) is not offered now; to add it later breaks nothing. The key lives in the callee's blob (a Pool's
+  `dispatchedBy.key`, else `dispatchedBy.effect`), and the store copies it and the Workflow into columns of their own
+  (`dispatch_effect`, `dispatch_workflow`) at every save and indexes the pair, not an expression index over
+  `json_extract`: SQLite's JSON parser refuses a blob nested about a thousand deep, and such an index would fail that
+  row's save and every later open of the volume. A run restore marks `lost` keeps its row and its blob, so its key keeps
+  answering; the weekly sweep ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)) removes the key
+  with the row, and a re-send after it starts a new run: known, and not guarded. In-process the ledger is consulted
+  directly, through the same start under the same key, with the starts in flight held so two arrivals of one key before
+  the first save are one run. So a dispatch is idempotent whatever its author writes: its intent row says
+  `idempotent: true`, a restore that cannot tell whether its start arrived sends it again under its key with what is
+  left of the bound, the Instance Effector sends a start whose answer was lost again under its key with backoff until
+  the bound, and the Effector's rollout grace is never stretched by a dispatch's wait. Once the answer names the run,
+  the intent row carries it, the Effector's `running` state carries it on the wire, and a restore with it starts
+  nothing: it settles `started` at once, or resumes the wait. Without it a watcher double-starts a run after a restart,
+  which a human notices as two pull requests. What it does not guard: a door at a Kit version before this decision
+  ignores the header, so a re-send to it starts a second run, and a door that knows the key but not the key-only ask
+  reads one as a start with no body; neither the Effector nor the preflight can tell. A capability check is named and
+  deferred.
 - **`jr2 up` checks what it can see, and the severity follows who owns both sides.** For a same-Instance name the walk
   resolves it in the Assembly and REFUSES a miss, naming the fix: on the host, among the Machines and the Chart files,
   and a slashed name whose wrapper exists but whose Chart the host cannot see is a warning there, since a runtime Chart
@@ -182,7 +197,7 @@ composition and does not replace it. The two uses stay two mechanisms.
 - ADR-0049's "no sub-run" is restated, not reversed: a nested Machine is reached by `import`, never by name; a run that
   starts a run is a `dispatch`, by name, and the two are different uses. ADR-0067 gains the kind and a fourth Placement,
   `orchestrator`. ADR-0068's Instance Effector gains the `dispatch` kind, its stop route stops a dispatch's wait too,
-  and its `running` state carries the run. ADR-0033's door gains an idempotency key.
+  and its `running` state carries the run. ADR-0033's door gains an idempotency key and the key-only ask.
 - The GLOSSARY's **Effect** gains "or starts a run", and `_Avoid_: sub-run, child run, nested run, spawned run` for the
   relation, which is **dispatched by**; its **Effector** and **Instance Effector** entries name the in-process exception
   and the new kind.

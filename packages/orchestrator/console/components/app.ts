@@ -7,8 +7,10 @@
 import { Fragment, h, type JSX } from "preact";
 import { useState } from "preact/hooks";
 import {
+  may,
   selectedRun,
   selectedRunFailure,
+  selectedRunStarter,
   selectedRunGates,
   selectedRunHeld,
   selectedRunWaiting,
@@ -16,6 +18,7 @@ import {
   type Store,
 } from "../store.ts";
 import type { MachineDoc } from "../canvas.ts";
+import type { LoginIssuer } from "../login.ts";
 import { Nav } from "./nav.ts";
 import { Fleet } from "./fleet.ts";
 import { Drawer, type DrawerTab } from "./drawer.ts";
@@ -36,7 +39,16 @@ export type AppApi = {
   startRun(name: string, body: Record<string, unknown>): Promise<string | null>;
   /** POST one gate event; same contract as {@link AppApi.startRun}. */
   deliverGate(runId: string, gate: string, event: string, body: Record<string, unknown>): Promise<string | null>;
+  /** POST CANCEL to a run (ADR-0002); same contract as {@link AppApi.startRun}. */
+  cancelRun(runId: string): Promise<string | null>;
+  /** The run's conversation list (`GET /runs/:id/agents`), or the refusal's text. */
+  steerTargets(runId: string): Promise<AgentLine[] | string>;
+  /** POST one Steering message to an Agent slot of a run; same contract as {@link AppApi.startRun}. */
+  steer(runId: string, agent: string, text: string): Promise<string | null>;
+  /** Keep a typed credential (empty clears it) and ask `GET /whoami` what it may do. */
   setToken(value: string): void;
+  /** Go to an issuer to log in (OIDC code + PKCE, ADR-0032). */
+  login(issuer: LoginIssuer): void;
   /** The canvas reports its zoom readout through here (nav renders it). */
   onScale(pct: number): void;
   zoomIn(): void;
@@ -44,6 +56,10 @@ export type AppApi = {
   zoomReset(): void;
   zoomFit(): void;
 };
+
+/** One Agent slot of a run, as `GET /runs/:id/agents` lists it (ADR-0002): whether it has an open
+ *  Turn, and whether a Caller may steer it. */
+export type AgentLine = { agent: string; open: boolean; steerable: boolean };
 
 /** The center pane's working state — the machine doc in hand (or why there is none). Fetch
  *  bookkeeping like main.ts's doc cache, deliberately NOT store belief: the doc is structure the
@@ -61,27 +77,44 @@ export function App(props: {
   view: MachineView;
   zoomPct: number;
   initialToken: string;
+  logins: readonly LoginIssuer[];
+  loginNote: string | null;
   schemas: ReadonlyMap<string, unknown>;
   api: AppApi;
 }): JSX.Element {
-  const { store, view, zoomPct, initialToken, schemas, api } = props;
+  const { store, view, zoomPct, initialToken, logins, loginNote, schemas, api } = props;
+  const run = selectedRun(store);
+  // A settled run takes no cancel and no Steering message; a live one, as its Caller's scopes allow.
+  const live = run !== null && store.runs.has(run.runId);
   const [chosenTab, setChosenTab] = useState<DrawerTab>("attention");
   return h(
     Fragment,
     null,
-    h(Nav, { store, machineId: view.doc?.id ?? null, zoomPct, initialToken, onChooseTab: setChosenTab, api }),
+    h(Nav, {
+      store,
+      machineId: view.doc?.id ?? null,
+      zoomPct,
+      initialToken,
+      logins,
+      loginNote,
+      onChooseTab: setChosenTab,
+      api,
+    }),
     h(
       "main",
       null,
       h(Fleet, { store, schemas, api }),
       h(MachinePane, {
         view,
-        run: selectedRun(store),
+        run,
         selectedNodeId: store.selectedNodeId,
         gates: selectedRunGates(store),
         waiting: selectedRunWaiting(store),
         held: selectedRunHeld(store),
         failure: selectedRunFailure(store),
+        starter: selectedRunStarter(store),
+        canCancel: live && may(store, "cancel", run.workflow),
+        canSteer: live && may(store, "steer", run.workflow),
         api,
       }),
       h(Drawer, { store, chosenTab, onChooseTab: setChosenTab, api }),

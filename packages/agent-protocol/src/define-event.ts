@@ -103,8 +103,30 @@ const NAME_RE = /^[a-zA-Z0-9_-]+$/;
  */
 export const SENDER_KEY = "sender";
 
-/** Who delivered an event: an Agent by its slot, or a Gate by its invoke id (ADR-0015). */
-export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
+/**
+ * Who delivered an event: an Agent by its slot, or a Gate by its invoke id (ADR-0015).
+ *
+ * A Gate's event also carries the Caller that answered it (ADR-0011, ADR-0078): `via` and `name`
+ * name it, `onBehalfOf` is the party that it says it acts for, and `checked` names the fields that
+ * jr2 verified. `via` and `name` are always checked, because an authenticator made them;
+ * `onBehalfOf` is checked only for a Hook, whose signature covers the payload that it comes from.
+ * An event that a Gate gives with no Caller (its `look`) has none of these fields.
+ */
+export type Sender = {
+  readonly party: "agent" | "gate";
+  readonly id: string;
+  /** The authenticator that made the Caller: `token`, `jwt` or `hook`. A Gate's event only. */
+  readonly via?: "token" | "jwt" | "hook";
+  /** The Caller's name for that authenticator. A Gate's event only. */
+  readonly name?: string;
+  /** The party that the Caller says it acts for. A claim, unless `checked` names it. */
+  readonly onBehalfOf?: string;
+  /** The fields of the Caller that jr2 verified. */
+  readonly checked?: readonly SenderCallerField[];
+};
+
+/** A field of a {@link Sender}'s Caller that jr2 can verify. */
+export type SenderCallerField = "via" | "name" | "onBehalfOf";
 
 /**
  * Define one workflow event: an event that an Agent or the caller of a Gate may send into your

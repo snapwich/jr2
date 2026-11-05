@@ -14,5 +14,6 @@ tmp
 # context, so a local docs:build changes neither the image nor its tag (build.ts KIT_ORCHESTRATOR_EXCLUDE).
 packages/orchestrator/**/docs
 packages/agent-protocol/**/docs
+packages/hooks/**/docs
 deploy/orchestrator/**/docs
 **/.env

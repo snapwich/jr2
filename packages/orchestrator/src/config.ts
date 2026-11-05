@@ -20,6 +20,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
+import type { Hook } from "@jr2/hooks";
+import { hookParts, isHook, kindsById } from "@jr2/hooks/door";
 import { repoIdentity } from "./repo-identity.ts";
 import { assertSize, type Size } from "./size.ts";
 
@@ -490,6 +492,116 @@ export type PriorityClasses = {
 };
 
 /**
+ * The Workflows that one scope of a Caller opens (ADR-0078): `"all"` for every Workflow, or a list
+ * of Workflow names. A Chart wrapper's name in the list also opens each named Chart of that wrapper
+ * (`plan` opens `plan/weekly`), because a named Chart runs its wrapper's Machine. A named Chart's
+ * own name (`plan/weekly`) opens that Chart alone.
+ */
+export type ScopeGrant = "all" | readonly string[];
+
+/**
+ * What a Caller may do: five scopes, each one for the Workflows that it names (ADR-0078). A scope
+ * that is absent opens nothing. Which scope opens which route is in the HTTP API Reference.
+ *
+ * A Caller's scope does not limit what its run dispatches: a Caller with `start` on `triage` starts
+ * a run whose Machine can dispatch `deploy`. The Machine is the author's, and it is the boundary of
+ * what its run does.
+ */
+export type Scopes = {
+  /** Start a run. */
+  start?: ScopeGrant;
+  /** Answer a Gate, and read a run's open Gates without its context. */
+  answer?: ScopeGrant;
+  /** Cancel a run. */
+  cancel?: ScopeGrant;
+  /** Read a run's state: its status, its context and its feed. */
+  read?: ScopeGrant;
+  /** Send a Steering message to an Agent of a run. */
+  steer?: ScopeGrant;
+};
+
+/** The name of one scope of a Caller (ADR-0078). */
+export type Scope = keyof Scopes;
+
+/** Every scope, in the order a reader meets them. */
+export const SCOPES: readonly Scope[] = ["start", "answer", "cancel", "read", "steer"];
+
+/**
+ * One named Caller token (ADR-0078). `jr2 up` makes its value once, in a Secret of its own, and
+ * gives the Orchestrator only the sha-256 of the value. `jr2 caller token <name>` prints the value,
+ * and `jr2 caller rotate <name>` makes a new one.
+ */
+export type CallerToken = {
+  /** What the token may do. See {@link Scopes}. */
+  may: Scopes;
+};
+
+/**
+ * The Callers of an Instance that do not hold the Instance token (ADR-0078). The CLI on a kube
+ * context is the Caller `token/instance`, which needs no entry. When the config loads, a bad entry
+ * is refused: `<file> at callers<path>: <problem>`, followed by the shape of the block.
+ */
+export type CallersConfig = {
+  // The name is part of a Secret's name (`jr2 up`), so it is a DNS label. `instance` is the
+  // Instance token's Caller name, so no named token takes it.
+  /** The named Caller tokens, by name. A name is lowercase letters, digits and `-`, at most 40
+   * characters. It starts with a letter and ends with a letter or digit. The name `instance` is
+   * the Instance token's, and the config load refuses it. A name that the config no longer
+   * declares stops working at the next `jr2 up`. */
+  tokens?: Readonly<Record<string, CallerToken>>;
+  /** The identity providers whose JWTs are Callers. See {@link JwtIssuer}. Two entries with one
+   * `issuer` are refused. */
+  issuers?: readonly JwtIssuer[];
+};
+
+/**
+ * One identity provider whose JWTs are Callers (ADR-0078). For each bearer that is a JWT with this
+ * `issuer` in its `iss` claim, jr2 checks the signature against the issuer's published keys, and the
+ * issuer, the audience and the expiry. A JWT that fails a check is 401.
+ *
+ * The Caller's name is the `sub` claim, and the name that jr2 shows is the `email` claim; `claims`
+ * names other claims. Its scopes come from the values of one claim, a list of groups or roles,
+ * through `groups`: each value that `groups` names adds its scopes. A JWT that gets no scope is 403
+ * on every route that needs a scope. jr2 never treats it as read-only.
+ *
+ * The Orchestrator fetches the keys from the issuer: this is its one call out of the Instance, and
+ * it spends no secret (ADR-0068). It keeps the keys for 10 minutes, and fetches them again at once
+ * for a JWT whose key it does not know, at most once each 30 seconds, so a key that the issuer
+ * rotated works with no restart.
+ */
+export type JwtIssuer = {
+  /** The issuer's URL, exactly as the `iss` claim gives it, such as `https://dex.example.com`. */
+  issuer: string;
+  /** The audience that a JWT must name in its `aud` claim: for a login, the client id. */
+  audience: string;
+  /** The URL of the issuer's public keys (a JWKS). Default: the `jwks_uri` of the issuer's
+   * `/.well-known/openid-configuration`. */
+  jwks?: string;
+  /** The claims to read. Default: `{ name: "sub", shown: "email", groups: "groups" }`. */
+  claims?: {
+    /** The claim that is the Caller's name. Use a claim that the provider never reassigns. */
+    name?: string;
+    /** The claim that is the name that jr2 shows. */
+    shown?: string;
+    /** The claim that holds the list of groups or roles that `groups` maps to scopes. */
+    groups?: string;
+  };
+  /** The scopes that each value of the groups claim gives, such as
+   * `{ "jr2-ops": { start: "all", answer: "all" } }`. A JWT with more than one value gets the scopes
+   * of each, joined. A value that is not here gives nothing. */
+  groups: Readonly<Record<string, Scopes>>;
+  /** The Console offers a login against this issuer (ADR-0032): OIDC, the authorization code flow
+   * with PKCE, as a public client, with `audience` as the client id. Register the client as public
+   * (no secret), with the Console's root (`https://<console>/`) as its redirect URI. The Console
+   * reads the issuer and the client id before the login, from the open route
+   * `GET /console/config`: both are public values. A login needs the Console on https or on
+   * localhost, and the issuer must let the Console's origin call its discovery document and its
+   * token endpoint (CORS). Default: `false`, because an issuer for machines (a CI provider's
+   * tokens) has no login page. */
+  login?: boolean;
+};
+
+/**
  * The shape of `jr2.config.ts`: the deployment facts of an Instance, which a Machine cannot carry.
  * It holds the Instance's name, its secrets, how the cluster authenticates to Repos, what the
  * Harness can reach, where Sandboxes run, and where images go. It names no Repo, no model and no
@@ -554,6 +666,26 @@ export type JR2Config = {
   /** Existing PriorityClasses to use in place of the two that `jr2 up` creates. See
    * {@link PriorityClasses}. */
   priorityClasses?: PriorityClasses;
+  // See `CallersConfig` (ADR-0078).
+  /** The Callers that act on the Instance with a credential of their own, and what each may do.
+   * Default: none; only the Instance token acts. See {@link CallersConfig}. */
+  callers?: CallersConfig;
+  // An allowlist, never a pattern (ADR-0078): the Console needs no entry.
+  /** The origins from which a browser app may call the Instance's HTTP API, such as
+   * `https://ops.example.com`. Each entry is an origin alone: a scheme, a host and an optional port,
+   * with no path. Default: none. The Console is served from the Orchestrator's own origin, so it
+   * needs no entry. The config load refuses an entry that is not an origin:
+   * `<file> at cors[<i>]: <entry> is not an origin — scheme://host[:port], with no path`. */
+  cors?: readonly string[];
+  // A Hook is a Caller with `answer` alone (ADR-0078); its door is `POST /hooks/:name` (ADR-0011).
+  /** The Hooks of the Instance, by name: each one is a door, `POST /hooks/<name>`, for one outside
+   * service. A Hook's value comes from its kind's constructor, which the config imports:
+   * `github({ secret: secret("GH_HOOK") })`, `gitlab({ secret: secret("GL_HOOK"), may })`,
+   * `discord({ publicKey: "…" })`. `may.answer` names the Workflows whose Gates the Hook may answer,
+   * every Workflow by default. A Hook never starts a run. A name is lowercase letters, digits and
+   * `-`, at most 40 characters, starts with a letter and ends with a letter or digit. When the config
+   * loads, a bad entry is refused: `<file> at hooks.<name>: <problem>`. Default: none. */
+  hooks?: Readonly<Record<string, Hook>>;
   // Deployment-varying — resolve from env (ADR-0019).
   /** The image registry prefix to which `jr2 up` pushes the images that it builds, such as
    * `registry.example.com/team`. It changes between deployments, so read it from `process.env`
@@ -650,7 +782,142 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   if (mod.default.harness !== undefined) checkHarness(mod.default.harness, file);
   if (mod.default.sandbox !== undefined) checkSandbox(mod.default.sandbox, file);
   if (mod.default.priorityClasses !== undefined) checkPriorityClasses(mod.default.priorityClasses, file);
+  if (mod.default.callers !== undefined) checkCallers(mod.default.callers, file);
+  if (mod.default.cors !== undefined) checkCors(mod.default.cors, file);
+  if (mod.default.hooks !== undefined) checkHooks(mod.default.hooks, file);
   return mod.default;
+}
+
+const ScopeGrantShape = z.union([z.literal("all"), z.array(z.string().min(1)).min(1)]);
+const ScopesShape = z
+  .object({
+    start: ScopeGrantShape.optional(),
+    answer: ScopeGrantShape.optional(),
+    cancel: ScopeGrantShape.optional(),
+    read: ScopeGrantShape.optional(),
+    steer: ScopeGrantShape.optional(),
+  })
+  .strict();
+const CallersShape = z
+  .object({
+    tokens: z
+      .record(
+        z
+          .string()
+          .regex(
+            /^[a-z]([a-z0-9-]{0,38}[a-z0-9])?$/,
+            "a token name is lowercase letters, digits and -, at most 40, starts with a letter and ends with a letter or digit",
+          )
+          .refine((name) => name !== "instance", "the name instance is the Instance token's"),
+        z.object({ may: ScopesShape }).strict(),
+      )
+      .optional(),
+    issuers: z
+      .array(
+        z
+          .object({
+            issuer: z.string().refine(isHttpUrl, "the issuer is an http or https URL"),
+            audience: z.string().min(1),
+            jwks: z.string().refine(isHttpUrl, "jwks is an http or https URL").optional(),
+            claims: z
+              .object({
+                name: z.string().min(1).optional(),
+                shown: z.string().min(1).optional(),
+                groups: z.string().min(1).optional(),
+              })
+              .strict()
+              .optional(),
+            groups: z.record(z.string().min(1), ScopesShape),
+            login: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .refine(
+        (list) => new Set(list.map((i) => i.issuer)).size === list.length,
+        "two issuers have one issuer URL; each issuer is one entry",
+      )
+      .optional(),
+  })
+  .strict();
+
+/** Whether `text` is an http or https URL. */
+function isHttpUrl(text: string): boolean {
+  try {
+    const url = new URL(text);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** `callers`' SHAPE (ADR-0078), the `checkGit` style: a bad entry names its path. */
+function checkCallers(callers: unknown, where: string): void {
+  const parsed = CallersShape.safeParse(callers);
+  if (parsed.success) return;
+  const issue = parsed.error.issues[0];
+  const at = ["", ...(issue?.path ?? [])].map(String).join(".");
+  // A bad token NAME is an issue about the key, whose own issues say why.
+  const inner = issue?.code === "invalid_key" ? issue.issues[0]?.message : undefined;
+  throw new Error(`${where} at callers${at}: ${inner ?? issue?.message ?? "invalid"} — ${CALLERS_HINT}`);
+}
+
+const CALLERS_HINT =
+  "callers is { tokens?: { <name>: { may: <scopes> } }, issuers?: [{ issuer, audience, jwks?, " +
+  "claims?: { name?, shown?, groups? }, groups: { <value>: <scopes> }, login? }] }, where <scopes> is " +
+  '{ start?, answer?, cancel?, read?, steer? }, each scope "all" or a list of Workflow names (ADR-0078)';
+
+/** The name of a Hook (ADR-0078): the last segment of `POST /hooks/:name`, the rule of a Caller
+ * token's name. */
+export const HOOK_NAME = /^[a-z]([a-z0-9-]{0,38}[a-z0-9])?$/;
+
+/** `hooks`' SHAPE (ADR-0078): each entry is a Hook that a kind's constructor made, under a name of
+ * the Caller name's form, and one kind id is one kind (`kindsById`). */
+function checkHooks(hooks: unknown, where: string): void {
+  if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) {
+    throw new Error(`${where} at hooks: expected { <name>: <Hook> }, such as { forge: github({ secret }) } (ADR-0078)`);
+  }
+  const kinds = [];
+  for (const [name, hook] of Object.entries(hooks)) {
+    if (!HOOK_NAME.test(name)) {
+      throw new Error(
+        `${where} at hooks.${name}: a Hook's name is lowercase letters, digits and -, at most 40, starts with a ` +
+          "letter and ends with a letter or digit (ADR-0078)",
+      );
+    }
+    if (!isHook(hook)) {
+      throw new Error(
+        `${where} at hooks.${name}: not a Hook — make it with its kind, such as github({ secret: secret("GH_HOOK") }) (ADR-0078)`,
+      );
+    }
+    kinds.push(hookParts(hook).kind);
+  }
+  try {
+    kindsById(kinds);
+  } catch (err) {
+    throw new Error(`${where} at hooks: ${err instanceof Error ? err.message : String(err)} (ADR-0078)`);
+  }
+}
+
+/** `cors`' SHAPE (ADR-0078): a list of origins, each one exactly what a browser sends as `Origin`. */
+function checkCors(cors: unknown, where: string): void {
+  if (!Array.isArray(cors)) throw new Error(`${where} at cors: expected an array of origins (ADR-0078)`);
+  for (const [i, entry] of cors.entries()) {
+    if (typeof entry !== "string" || !isOrigin(entry)) {
+      throw new Error(
+        `${where} at cors[${i}]: ${JSON.stringify(entry)} is not an origin — scheme://host[:port], with no path (ADR-0078)`,
+      );
+    }
+  }
+}
+
+/** Whether `text` is an origin as a browser sends it: `URL` gives back the same text as its origin. */
+function isOrigin(text: string): boolean {
+  try {
+    const url = new URL(text);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.origin === text;
+  } catch {
+    return false;
+  }
 }
 
 const NonEmpty = z.string().min(1);

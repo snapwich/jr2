@@ -223,3 +223,116 @@ test("loadConfig refuses sandbox.resources beyond the two limits, and a mis-shap
   await assert.rejects(load(`{ priorityClasses: { sandbox: "" } }`), /at priorityClasses\.sandbox/);
   await assert.rejects(load(`{ priorityClasses: { batch: "x" } }`), /at priorityClasses/);
 });
+
+// `callers` and `cors` (ADR-0078): checked at load, as `git.credentials` is, so a bad entry names
+// its path rather than surfacing as a token that never works or an origin no browser sends.
+
+test("loadConfig takes callers.tokens with scopes, and cors origins", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-config-"));
+  const config = {
+    callers: { tokens: { ci: { may: { start: ["triage"], read: "all" } } } },
+    cors: ["https://ops.example.com", "http://localhost:5173"],
+  };
+  await writeFile(join(dir, "jr2.config.ts"), `export default ${JSON.stringify(config)};\n`);
+  assert.deepEqual(await loadConfig(dir), config);
+});
+
+test("loadConfig takes callers.issuers, each with its claims and its groups map", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-config-"));
+  const config = {
+    callers: {
+      issuers: [
+        {
+          issuer: "https://dex.example.com",
+          audience: "jr2",
+          jwks: "https://dex.example.com/keys",
+          claims: { name: "sub", shown: "email", groups: "roles" },
+          groups: { "jr2-ops": { start: "all", answer: "all" }, "jr2-viewers": { read: ["triage"] } },
+          login: true,
+        },
+      ],
+    },
+  };
+  await writeFile(join(dir, "jr2.config.ts"), `export default ${JSON.stringify(config)};\n`);
+  assert.deepEqual(await loadConfig(dir), config);
+});
+
+test("loadConfig refuses a bad callers entry, naming its path", async () => {
+  const cases: Array<[unknown, RegExp]> = [
+    [{ tokens: { instance: { may: {} } } }, /at callers\.tokens\.instance: the name instance is the Instance token's/],
+    [{ tokens: { CI: { may: {} } } }, /at callers\.tokens\.CI: a token name is lowercase/],
+    [{ tokens: { "ci-": { may: { read: "all" } } } }, /at callers\.tokens\.ci-: .*ends with a letter or digit/],
+    [{ tokens: { ci: { may: { write: "all" } } } }, /at callers\.tokens\.ci\.may/],
+    [{ tokens: { ci: { may: { start: [] } } } }, /at callers\.tokens\.ci\.may\.start/],
+    [{ tokens: { ci: {} } }, /at callers\.tokens\.ci\.may/],
+    [{ hooks: [] }, /at callers/],
+    [
+      { issuers: [{ issuer: "dex", audience: "jr2", groups: {} }] },
+      /at callers\.issuers\.0\.issuer: the issuer is an http/,
+    ],
+    [{ issuers: [{ issuer: "https://dex.example.com", groups: {} }] }, /at callers\.issuers\.0\.audience/],
+    [{ issuers: [{ issuer: "https://dex.example.com", audience: "jr2" }] }, /at callers\.issuers\.0\.groups/],
+    [
+      { issuers: [{ issuer: "https://dex.example.com", audience: "jr2", groups: {}, login: "yes" }] },
+      /at callers\.issuers\.0\.login/,
+    ],
+    [
+      { issuers: [{ issuer: "https://dex.example.com", audience: "jr2", groups: { ops: { write: "all" } } }] },
+      /at callers\.issuers\.0\.groups\.ops/,
+    ],
+    [
+      {
+        issuers: [
+          { issuer: "https://dex.example.com", audience: "a", groups: {} },
+          { issuer: "https://dex.example.com", audience: "b", groups: {} },
+        ],
+      },
+      /at callers\.issuers: two issuers have one issuer URL/,
+    ],
+  ];
+  for (const [callers, expected] of cases) {
+    const dir = await mkdtemp(join(tmpdir(), "jr2-config-"));
+    await writeFile(join(dir, "jr2.config.ts"), `export default ${JSON.stringify({ callers })};\n`);
+    await assert.rejects(loadConfig(dir), expected, JSON.stringify(callers));
+  }
+});
+
+test("loadConfig refuses a cors entry that is not an origin", async () => {
+  for (const entry of ["https://ops.example.com/", "https://ops.example.com/app", "ops.example.com", "*"]) {
+    const dir = await mkdtemp(join(tmpdir(), "jr2-config-"));
+    await writeFile(join(dir, "jr2.config.ts"), `export default ${JSON.stringify({ cors: [entry] })};\n`);
+    await assert.rejects(loadConfig(dir), /at cors\[0\]: .* is not an origin/, entry);
+  }
+});
+
+// `hooks` (ADR-0078): each entry is a Hook that a kind's constructor made, under a name of the Caller
+// name's form, and one kind id is one kind. The config imports the kind by its file here, because a
+// temp folder resolves no package.
+const KIND = (name: string): string => new URL(`../../hooks/src/${name}.ts`, import.meta.url).href;
+
+test("loadConfig takes hooks that a kind made, and refuses a bad name, a value no kind made, and two kinds of one id", async () => {
+  const write = async (body: string): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), "jr2-config-"));
+    await writeFile(
+      join(dir, "jr2.config.ts"),
+      `import { gitlab } from ${JSON.stringify(KIND("gitlab"))};\n` +
+        `import { defineHookKind } from ${JSON.stringify(KIND("index"))};\n` +
+        `const other = defineHookKind({ api: 1, id: "gitlab", events: {}, verify: { token: { header: "x-t" } }, read: () => ({ key: "k", id: "i", payload: {} }) });\n` +
+        `export default { hooks: ${body} };\n`,
+    );
+    return dir;
+  };
+  const ok = await loadConfig(
+    await write(`{ lab: gitlab({ secret: { secret: "GL" }, may: { answer: ["review"] } }) }`),
+  );
+  assert.deepEqual(Object.keys(ok?.hooks ?? {}), ["lab"]);
+  await assert.rejects(
+    loadConfig(await write(`{ Lab: gitlab({ secret: { secret: "GL" } }) }`)),
+    /at hooks\.Lab: a Hook's name is lowercase/,
+  );
+  await assert.rejects(loadConfig(await write(`{ lab: { secret: "GL" } }`)), /at hooks\.lab: not a Hook/);
+  await assert.rejects(
+    loadConfig(await write(`{ a: gitlab({ secret: { secret: "GL" } }), b: other({ secret: { secret: "X" } }) }`)),
+    /at hooks: two different Hook kinds have the id gitlab/,
+  );
+});

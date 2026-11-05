@@ -182,33 +182,51 @@ export const DispatchedByShape = z.strictObject({
  * A `dispatch` start (ADR-0071), which only the Instance Effector serves: a run of `workflow` on the
  * Orchestrator at `url` (its origin, one text part), the body `input` whole, the Instance token as a
  * bearer by name, `dispatchedBy` as the `jr2-dispatched-by` header — `instance` set, since the
- * caller is foreign by construction — and, with `wait`, a poll of `GET /runs/<id>` until the run
+ * caller is foreign by construction — `onBehalfOf` as the `jr2-on-behalf-of` header, and, with
+ * `wait`, a poll of `GET /runs/<id>` until the run
  * ends or `timeoutMs` passes.
+ *
+ * `keyOnly` in place of `input`: a key-only ask, sent when the slot's schema refuses the body. The
+ * Effector sends the `jr2-key-only` header and no body; the door answers the run under the key, or
+ * `{ existing: false }`, which the Effector settles as `absent`. One of the two is set, never both.
  */
-export const DispatchStartShape = z.strictObject({
-  kind: z.literal("dispatch"),
-  url: TextShape.refine(
-    (parts) => parts.length === 1 && "text" in parts[0]! && ORIGIN.test(parts[0].text),
-    "a dispatch url is one text part, an origin: http(s)://host[:port]",
-  ),
-  workflow: z.string().regex(WORKFLOW_NAME),
-  input: z.record(z.string(), z.unknown()),
-  auth: z.strictObject({ bearer: SecretRefShape }),
-  // Every id non-empty, as the door's header shape requires (http.ts): an empty one would be the
-  // door's 400, which reads as a defect of the input. The effect is a ledger row id, the key. The Go
-  // side's `validateDispatch` holds the same rule.
-  dispatchedBy: DispatchedByShape.extend({
-    run: z.string().min(1),
-    slot: z.string().min(1),
-    effect: z
+export const DispatchStartShape = z
+  .strictObject({
+    kind: z.literal("dispatch"),
+    url: TextShape.refine(
+      (parts) => parts.length === 1 && "text" in parts[0]! && ORIGIN.test(parts[0].text),
+      "a dispatch url is one text part, an origin: http(s)://host[:port]",
+    ),
+    workflow: z.string().regex(WORKFLOW_NAME),
+    input: z.record(z.string(), z.unknown()).optional(),
+    keyOnly: z.literal(true).optional(),
+    auth: z.strictObject({ bearer: SecretRefShape }),
+    // Every id non-empty, as the door's header shape requires (http.ts): an empty one would be the
+    // door's 400, which reads as a defect of the input. The effect is a ledger row id, the key. The Go
+    // side's `validateDispatch` holds the same rule.
+    dispatchedBy: DispatchedByShape.extend({
+      run: z.string().min(1),
+      slot: z.string().min(1),
+      effect: z
+        .string()
+        .regex(/^[A-Za-z0-9._-]{1,128}$/)
+        .refine((id) => id !== "." && id !== ".."),
+      instance: z.string().min(1),
+    }),
+    wait: z.boolean(),
+    timeoutMs: z.number().int().positive(),
+    // The first Caller of the calling run's chain (ADR-0071, ADR-0078), sent as the
+    // `jr2-on-behalf-of` header: printable ASCII, as a header value is, and at most what the door
+    // takes. The other Instance records it and does not check it.
+    onBehalfOf: z
       .string()
-      .regex(/^[A-Za-z0-9._-]{1,128}$/)
-      .refine((id) => id !== "." && id !== ".."),
-    instance: z.string().min(1),
-  }),
-  wait: z.boolean(),
-  timeoutMs: z.number().int().positive(),
-});
+      .regex(/^[\x20-\x7e]{1,256}$/)
+      .optional(),
+  })
+  .refine(
+    (req) => (req.input === undefined) !== (req.keyOnly === undefined),
+    "a dispatch start carries its input, or keyOnly and no input",
+  );
 export type DispatchStartRequest = z.infer<typeof DispatchStartShape>;
 
 /** Every start: the http kinds, a push, a credentialed command, a dispatch. */
@@ -379,6 +397,10 @@ export const DispatchOutputShape = z.discriminatedUnion("outcome", [
   z.strictObject({ outcome: z.literal("refused"), status: z.number().int(), report: z.array(z.string()) }),
   z.strictObject({ outcome: z.literal("unreachable"), reason: z.string() }),
   z.strictObject({ outcome: z.literal("unknown"), reason: z.string() }),
+  // The answer to a key-only ask when no run has the key (ADR-0071): nothing was started. Wire
+  // only: the driver makes it the invoke's error, the slot's schema refusal, and the Machine never
+  // reads it.
+  z.strictObject({ outcome: z.literal("absent") }),
 ]);
 export type DispatchWireOutput = z.infer<typeof DispatchOutputShape>;
 
@@ -403,6 +425,113 @@ export type EffectState = z.infer<typeof EffectStateShape>;
 
 /** A refusal's body: the reason, and the replica when it names one. */
 export const RefusalShape = z.strictObject({ error: z.string(), replica: ReplicaShape.optional() });
+
+// --- The `mac` check (POST /mac, ADR-0068, ADR-0078) ---------------------------------------------
+//
+// A Hook's `mac` verifier: the Orchestrator builds the bytes that the service signed, and the
+// Instance Effector, which holds the secret, computes the HMAC over them and compares it with the
+// signature in constant time. The answer is "match" or "no match", and nothing more: no HMAC and no
+// secret ever comes back. The Orchestrator makes every check that needs no secret (the window)
+// before it asks.
+
+/** The HMAC algorithms of a `mac` check. */
+export const MAC_ALGS = ["sha256", "sha1", "sha512"] as const;
+
+/** A `mac` check: the NAME of the secret, the algorithm, the signed bytes and the signature, each
+ * in base64. */
+export const MacRequestShape = z.strictObject({
+  // A secret's name, as the Effector reads it: a file under its secrets mount.
+  secret: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]{1,253}$/)
+    .refine((name) => !name.startsWith("."), "a secret's name does not start with ."),
+  alg: z.enum(MAC_ALGS),
+  bytes: z.base64(),
+  signature: z.base64(),
+});
+export type MacRequest = z.infer<typeof MacRequestShape>;
+
+/** The answer to a `mac` check: whether the HMAC of the bytes with the secret is the signature. */
+export const MacAnswerShape = z.strictObject({ match: z.boolean() });
+export type MacAnswer = z.infer<typeof MacAnswerShape>;
+
+/** The path of a `mac` check on the Instance Effector. */
+export const MAC_PATH = "/mac";
+
+/** The `mac` check, as the Hook's door asks it: `true` for a match. It rejects when no Effector can
+ * answer, and the door then answers 503. */
+export type HookMac = (req: {
+  secret: string;
+  alg: (typeof MAC_ALGS)[number];
+  bytes: Uint8Array;
+  signature: Uint8Array;
+}) => Promise<boolean>;
+
+/**
+ * The `mac` check over the Instance Effector's signed wire (ADR-0068): one replica, any one, since
+ * each holds the same secrets. A replica that was never reached is passed over for the next. An
+ * answer is trusted only with the Effector's signature, as an Effect's is.
+ */
+export function createMacClient(opts: {
+  key: Buffer | string;
+  transport: EffectorTransport;
+  now?: () => number;
+}): HookMac {
+  const now = opts.now ?? Date.now;
+  return async ({ secret, alg, bytes, signature }) => {
+    const body = JSON.stringify({
+      secret,
+      alg,
+      bytes: Buffer.from(bytes).toString("base64"),
+      signature: Buffer.from(signature).toString("base64"),
+    } satisfies MacRequest);
+    const addresses = shuffle(await opts.transport.replicas().catch(notSent));
+    if (addresses.length === 0) throw new EffectorNotSent("no Effector replica is serving");
+    let last: unknown;
+    for (const address of addresses) {
+      const time = String(now());
+      const nonce = randomBytes(16).toString("hex");
+      const headers = {
+        "content-type": "application/json",
+        [HEADER_TIME]: time,
+        [HEADER_NONCE]: nonce,
+        [HEADER_SIGNATURE]: requestMac(opts.key, "POST", address, MAC_PATH, time, nonce, body),
+      };
+      let answer: RawAnswer;
+      try {
+        answer = await opts.transport.send(address, "POST", MAC_PATH, headers, body);
+      } catch (err) {
+        if (neverReached(err)) {
+          last = err;
+          continue;
+        }
+        throw err;
+      }
+      const want = responseMac(opts.key, answer.status, "POST", MAC_PATH, nonce, answer.body);
+      if (!sameString(answer.headers[HEADER_SIGNATURE] ?? "", want)) {
+        throw new EffectorForged(
+          `the answer to POST ${MAC_PATH} from ${address} does not carry the Effector's signature`,
+        );
+      }
+      if (answer.status === 503) {
+        last = new EffectorNotSent(`the Effector replica at ${address} is stopping`);
+        continue;
+      }
+      if (answer.status !== 200) {
+        const refusal = RefusalShape.safeParse(parseJson(answer.body));
+        throw new Error(
+          `the Effector answered a mac check with ${answer.status}: ${refusal.success ? refusal.data.error : "no reason"}`,
+        );
+      }
+      const parsed = MacAnswerShape.safeParse(parseJson(answer.body));
+      if (!parsed.success) throw new EffectorMalformed("the Effector's answer to a mac check is not the wire's shape");
+      return parsed.data.match;
+    }
+    throw last instanceof EffectorNotSent
+      ? last
+      : new EffectorNotSent(`no Effector replica answered: ${(last as Error | undefined)?.message ?? "none"}`);
+  };
+}
 
 // --- Signatures ----------------------------------------------------------------------------------
 

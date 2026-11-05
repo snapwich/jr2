@@ -124,7 +124,7 @@ export type WorktreeInput =
       expect?: never;
     };
 
-/** What a cut found: `held`, a cut made this Worktree earlier, so what is in it is earlier work;
+/** What a cut found. `held`: a cut made this Worktree earlier, so what is in it is earlier work;
  * `local`, a local branch; `remote`, `origin/<branch>`, now tracked; `none`, a new branch with no
  * upstream; `commit`, a detached cut. Open: a later value does not break an author's code. */
 export type WorktreeFound = "held" | "local" | "remote" | "none" | "commit" | (string & {});
@@ -143,8 +143,8 @@ export type WorktreeReady<S extends string = string> = {
   stale?: string;
 };
 
-/** No Worktree, and nothing changed: a bad path, a name git or the push refuses, a re-cut that does
- * not agree with the first, a branch that another Worktree holds, an `expect` that does not hold, or a
+/** No Worktree, and nothing changed. The cause is a bad path, a name git or the push refuses, a
+ * re-cut that does not agree with the first, a branch that another Worktree holds, an `expect` that does not hold, or a
  * name that the remote cannot confirm. */
 export type WorktreeRefused = { outcome: "refused"; reason: string };
 

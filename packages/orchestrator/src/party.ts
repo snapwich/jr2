@@ -19,6 +19,7 @@
 import type { AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyStateMachine } from "xstate";
 import { SENDER_KEY, type Sender } from "@jr2/agent-protocol";
 import { isAgent } from "./agent.ts";
+import { isGateInvoke } from "./gate-brand.ts";
 import { vocabularyOf } from "./vocabulary.ts";
 
 /** The guard type `sentBy` names: dotted, so no author guard can take the name. */
@@ -138,7 +139,7 @@ export function partiesAt(node: Node, machine: AnyStateMachine): Sender[] {
   const out: Sender[] = [];
   for (const inv of node.invoke) {
     if (typeof inv.src !== "string") continue;
-    if (inv.src === "gate") out.push({ party: "gate", id: inv.id });
+    if (isGateInvoke(inv, actors)) out.push({ party: "gate", id: inv.id });
     else if (isAgent(actors[inv.src])) out.push({ party: "agent", id: inv.src });
   }
   return out;

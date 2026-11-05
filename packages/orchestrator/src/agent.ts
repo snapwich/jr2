@@ -130,6 +130,11 @@ export type AgentDefinition = {
    * - `"none"`: no Working tools. The Agent only reads its prompt and picks from its Menu. Its Turn
    *   runs on the Instance Harness, not in a Sandbox, so it needs no `workspace()` around it. */
   workspace?: WorkspaceAccess;
+  // Read by the Orchestrator alone (ADR-0002): the admission strips it, and the model never reads it.
+  /** May a Caller send this Agent a Steering message? Default: `true`. With `false`,
+   * `POST /runs/:runId/steering` and `jr2 steer` refuse it, and `GET /runs/:runId/agents` says
+   * `steerable: false`. The Machine can still steer the Agent with the `steer` action. */
+  steerable?: boolean;
 };
 
 // The Agent as an author DECLARES it (ADR-0054): the definition, except that `model` may be Open —

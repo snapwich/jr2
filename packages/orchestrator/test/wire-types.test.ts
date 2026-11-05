@@ -40,6 +40,8 @@ const stream: Reads<harness.StreamEvent, client.StreamEvent> = true;
 const memoryLimit: Reads<harness.MemoryLimitEvent, client.MemoryLimitEvent> = true;
 const memoryLimitTail: Mutual<Omit<client.MemoryLimitEvent, "id">, Omit<harness.MemoryLimitEvent, "id">> = agree;
 const notice: Mutual<client.Notice, harness.Notice> = agree;
+const steering: Mutual<client.SteeringMessage, harness.SteeringMessage> = agree;
+const steeringAuthor: Mutual<client.SteeringAuthor, harness.SteeringAuthor> = agree;
 const notKept: Mutual<client.NotKeptResponse, harness.NotKeptResponse> = agree;
 const memoryLimitNotice: Mutual<client.MemoryLimitNotice, harness.MemoryLimitNotice> = agree;
 const conversationNew: Mutual<client.ConversationNewNotice, harness.ConversationNewNotice> = agree;
@@ -86,6 +88,8 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     settled,
     memoryLimitTail,
     notice,
+    steering,
+    steeringAuthor,
     memoryLimitNotice,
     conversationNew,
     pickAnswerNotice,

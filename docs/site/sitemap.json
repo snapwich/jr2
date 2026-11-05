@@ -122,6 +122,11 @@
               "source": "page"
             },
             {
+              "slug": "concepts/callers-and-hooks",
+              "title": "Callers and Hooks",
+              "source": "page"
+            },
+            {
               "slug": "concepts/converge",
               "title": "Converge",
               "source": "page"
@@ -149,6 +154,16 @@
             {
               "slug": "guides/answer-a-gate",
               "title": "Answer a Gate",
+              "source": "page"
+            },
+            {
+              "slug": "guides/answer-a-gate-from-a-forge",
+              "title": "Answer a Gate from a forge",
+              "source": "page"
+            },
+            {
+              "slug": "guides/steer-an-agent",
+              "title": "Steer an Agent",
               "source": "page"
             },
             {
@@ -189,6 +204,11 @@
             {
               "slug": "guides/give-the-cluster-git-credentials",
               "title": "Give the cluster git credentials",
+              "source": "page"
+            },
+            {
+              "slug": "guides/give-a-caller-a-scope",
+              "title": "Give a Caller a scope",
               "source": "page"
             },
             {
@@ -277,6 +297,16 @@
               "source": "page"
             },
             {
+              "slug": "guides/start-a-run-for-each-alert",
+              "title": "Start a run for each alert",
+              "source": "page"
+            },
+            {
+              "slug": "guides/write-a-hook-kind",
+              "title": "Write a Hook kind",
+              "source": "page"
+            },
+            {
               "slug": "guides/publish-a-machine-as-an-npm-package",
               "title": "Publish a Machine as an npm package",
               "source": "page"
@@ -306,6 +336,11 @@
         {
           "slug": "reference/machines",
           "title": "@jr2/machines",
+          "source": "generated"
+        },
+        {
+          "slug": "reference/hooks",
+          "title": "@jr2/hooks",
           "source": "generated"
         },
         {

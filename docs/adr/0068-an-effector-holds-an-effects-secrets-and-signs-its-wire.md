@@ -12,7 +12,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 - **What an Effector is for.** It holds the secrets that the Orchestrator must not hold, and it makes every call that
   jr2 makes to the outside for a Machine or a Hook: every `http` Effect runs in an Effector
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), and the
-  Orchestrator's one call out of the Instance is the fetch of a JWT issuer's public keys, which spends no secret
+  Orchestrator's one call out of the Instance is the fetch of a JWT issuer's public keys (and of its discovery document,
+  which names where the keys are), which spends no secret
   ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). It serves two clients: a
   Machine's Effects, in both placements, and the Orchestrator's Hook door, in the Instance Effector only, which uses two
   operations: the `mac` check and one `http` call (below). It knows no Hook kind and no service. The reason above holds
@@ -89,9 +90,11 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
     no secret, to a host that the Hook's kind declares, which `jr2 up` writes into `effector.json` for each Hook of that
     kind, and it is sent once. It has no slot, no ledger row and no run.
 
-  `jr2 up` converges the Instance Effector when a Hook has a `mac` verifier, as it does when an Effect is placed there.
-  The `token` and `ed25519` verifiers run in the Orchestrator: a digest and a public key cannot sign anything, so they
-  need no Effector.
+  `jr2 up` converges the Instance Effector when a Hook has a `mac` verifier or its kind declares a follow-up host, as it
+  does when an Effect is placed there. The `token` and `ed25519` verifiers run in the Orchestrator: a digest and a
+  public key cannot sign anything, so they need no Effector, but a follow-up of their kind goes through it. The check is
+  `POST /mac`, beside the Effects' routes and never an Effect: it has no id, starts nothing and is answered at once, and
+  a secret the Effector does not hold is a defect (400), as an Effect's is. A Sandbox Effector does not serve the route.
 
 - **A credentialed `command`'s child is confined with Landlock.** The child runs as the Effector's own uid in the
   Effector's container, where the placement key, every placed secret and the push and signing keys are files that uid
@@ -230,8 +233,9 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   `effector/internal/wire` and zod schemas in `@jr2/orchestrator`, the one definition each TypeScript type is inferred
   from. Go decodes with unknown fields disallowed. The golden fixtures in `effector/testdata/wire/` keep the two equal:
   one JSON file per request shape (`request.*`), per answer and outcome (`response.*`), per shape its decoder must
-  refuse (`reject.*`), and the two signatures (`signature.*`). Go decodes each request and encodes each response; the
-  TypeScript tests read the same files by a relative path, encode the requests and decode the responses.
+  refuse (`reject.*`), the two signatures (`signature.*`), and the `mac` check's request, answers and refusals
+  (`mac.*`). Go decodes each request and encodes each response; the TypeScript tests read the same files by a relative
+  path, encode the requests and decode the responses.
 - **Signed requests and signed answers, and no bearer.** The key is the placement's,
   `HMAC(signing key, "effector:" + placement)`, as ADR-0058 derives the Harness bearer: the Orchestrator stores nothing.
   The Effector reads it from a file in its own mount. A request carries `X-Jr2-Time` (Unix milliseconds), `X-Jr2-Nonce`,
@@ -358,7 +362,7 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   literal is written into the placement's own Secret, and a `valueFrom` is projected from the user's Secret by
   reference, never copied. `git.credentials` stays its own list: a fence keyed by url prefix, not a named value.
 - **The Instance Effector's objects.** `jr2 up` converges them when a registered Machine places an Effect there or a
-  Hook has a `mac` verifier, and deletes them otherwise; it reports either
+  Hook has a `mac` verifier or a kind that declares a follow-up host, and deletes them otherwise; it reports either
   (`instance effector: converging (<workflow>/<slot> or hook <name>; secrets …; grace …)` or `instance effector: none`).
   All four are named `jr2-instance-effector`:
   - A **Deployment**, one replica, rolling with surge and no gap, so a rollout runs the old pod beside the new one: the

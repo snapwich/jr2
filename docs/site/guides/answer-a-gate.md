@@ -52,9 +52,12 @@ Run [`jr2 status`](../reference/cli.md#status) with the run id:
 jr2 status 2319
 ```
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
-{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","instanceId":"c898d8c7-e48b-4a56-8101-7148905b6aed","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"83858e28b054","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
+{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","instanceId":"c898d8c7-e48b-4a56-8101-7148905b6aed","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"83858e28b054","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
+started by: token/instance on behalf of kubernetes-admin
 ```
 
 `gates` holds each open Gate of the run, as a [`GateView`](../reference/http-api.md#type-gateview):
@@ -85,11 +88,13 @@ delivered reject to gate "review" on 2319932e-02c1-4f9d-98db-3c5a410395da
 release, so the `rejected` state invokes [`fail`](../reference/authoring-surface/fail.md) with the reason, and the run
 ends `failed`. Its output is the [Failure](../reference/glossary.md#failure), and `jr2 run` exits with `1`:
 
+<!-- output: not run -->
+
 ```text
   → active "rejected"
   → failed "rejected"
 failed: The changelog is not ready.
-{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","instanceId":"c898d8c7-e48b-4a56-8101-7148905b6aed","status":"failed","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"assembly":"83858e28b054","output":{"reason":"The changelog is not ready."}}
+{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","instanceId":"c898d8c7-e48b-4a56-8101-7148905b6aed","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"failed","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"answers":[{"gate":"review","type":"reject","at":"2026-11-03T10:32:51.906Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"83858e28b054","output":{"reason":"The changelog is not ready."}}
 ```
 
 The run ended, so its Gate closed. Each example below answers a run that waits. Before each example, start a new run in
@@ -114,11 +119,11 @@ delivered approve to gate "review" on c099e2dc-6dd2-45da-9358-0723c8b83c68
 
 ## Answer from the Console
 
-You need the Instance token to answer a Gate from the Console. [Open the Console](open-the-console.md) tells how to open
-it and how to get the token.
+You need a credential with the `answer` scope for the Workflow, such as the Instance token, to answer a Gate from the
+Console. [Open the Console](open-the-console.md) tells how to open it, how to get the token and how to log in.
 
 1. Open the Console.
-2. Type the Instance token in the `instance token` box in the nav.
+2. Type the token in the `Caller token` box in the nav, or click `log in`.
 3. Push Enter. The badge beside the box shows `…`, then `live`.
 4. Click the `Attention` tab in the drawer on the right. It shows a card for each open Gate of the Workflow that you
    selected. To see the Gates of all the Workflows, select `all workflows`. When you select no Workflow, it shows them
@@ -137,9 +142,13 @@ The `⚑` badge in the nav gives the number of open Gates in all the Workflows. 
 ## Answer from a webhook or CI
 
 A webhook handler or a CI job answers a Gate with
-[`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#post-runs-runid-gates-gate-events) and the Instance
-token. jr2 has no webhook receiver of its own. Your handler or job reads its own event, finds the run and the Gate, and
-sends the call. The body is the event: `type` is the name of the event, and the other properties are its input.
+[`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#post-runs-runid-gates-gate-events) and the token of a
+named [Caller](../reference/glossary.md#caller) with the `answer` scope for the Workflow. A CI job has no access to the
+cluster, so it cannot read the Instance token, and it must not have it: the Instance token can do everything.
+[Give a Caller a scope](give-a-caller-a-scope.md) makes the Caller token. A service that a Hook kind covers, such as a
+forge, sends its webhook to a Hook: see [Answer a Gate from a forge](./answer-a-gate-from-a-forge.md). Any other handler
+or CI job uses the Gate route. It reads its own event, finds the run and the Gate, and sends the call. The body is the
+event: `type` is the name of the event, and the other properties are its input.
 
 `jr2 up` makes the Service `jr2-orchestrator` on port 4000, with no address outside the cluster. Thus a caller outside
 the cluster uses a port forward, or an address that you make for the Service.
@@ -150,7 +159,8 @@ In a new terminal, forward a port to the Orchestrator. Keep this command open:
 kubectl -n <namespace> port-forward svc/jr2-orchestrator 4000:4000
 ```
 
-In a different terminal, get the Instance token into a variable:
+In a different terminal, put a token into a variable. A CI job uses its Caller token. To try the route from your own
+terminal, you can use the Instance token:
 
 ```sh
 TOKEN=$(kubectl -n <namespace> get secret jr2-instance -o jsonpath='{.data.JR2_INSTANCE_TOKEN}' | base64 -d)
@@ -213,10 +223,18 @@ delivered approve to gate "review" on c44c6e49-452d-4150-8ce4-4d036363d2a0
   `event body must carry a string "type" (one of the gate's accepted names)`
 - The Orchestrator refuses a body that holds `sender`, with the status code `400`:
   `` `sender` is written by the Orchestrator on every delivered event; a caller cannot send it ``
-- The Orchestrator refuses an event without the Instance token, with the status code `401`: `unauthorized`.
+- The Orchestrator refuses an event with no valid credential, with the status code `401`: `unauthorized`. A credential
+  is the Instance token, or that of a [Caller](../reference/glossary.md#caller) with the `answer` scope.
+  [Give a Caller a scope](give-a-caller-a-scope.md) makes one.
 - The Orchestrator refuses an event with the token of a [Sandbox](../reference/glossary.md#sandbox), with the status
-  code `403`: `a Sandbox token cannot deliver to a gate — gates are not on the Agent's surface`. Thus an Agent cannot
-  answer a Gate.
+  code `403`:
+  `this route needs a Caller, and a Sandbox token is not one: no Agent reaches run state, run control or a Gate`. Thus
+  an Agent cannot answer a Gate.
+- The Orchestrator refuses an event from a Caller that has the `answer` scope for no Workflow, with the status code
+  `403`, before it reads the run: `the Caller <via>/<name> has no "answer" scope for any Workflow (ADR-0078)`. The body
+  also holds `scope`.
+- The Orchestrator refuses an event from a Caller that does not have the `answer` scope for the Workflow of the run,
+  with the status code `403`: `the Caller <via>/<name> needs the "answer" scope for Workflow "<workflow>" (ADR-0078)`
 - `jr2 send` prints each refusal of the Orchestrator as `error: <refusal>`, and exits with `1`. After a `404` refusal,
   it also prints the version of the Instance in one more line:
   ``instance: <version> (<hash>) — if it predates this CLI, `jr2 up` converges the cluster to this kit``. `<hash>` is
@@ -233,7 +251,7 @@ delivered approve to gate "review" on c44c6e49-452d-4150-8ce4-4d036363d2a0
 - [ADR-0011](../reference/decisions/0011-workflow-defined-events.md): a Gate, its events, and its `meta`.
 - [ADR-0013](../reference/decisions/0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md): why an
   Agent cannot answer a Gate, and why a refused event is not delivered.
-- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md): the Instance token in the
+- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md): a Caller's credential in the
   Console.
 - [Start a run](start-a-run.md)
 - [Watch a run](watch-a-run.md)

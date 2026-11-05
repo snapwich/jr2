@@ -39,6 +39,7 @@
 import type { AnyStateMachine, UnknownActorLogic } from "xstate";
 import type { EventDef } from "@jr2/agent-protocol";
 import { isAgent } from "./agent.ts";
+import { isGateInvoke } from "./gate-brand.ts";
 import { inputKeysOf, inputShapeOf, isEffect } from "./effect.ts";
 import { mayTake, partiesAt } from "./party.ts";
 import { isAnswer, isPickMapper } from "./pick.ts";
@@ -389,7 +390,7 @@ export function effectChecks(
     const below: Node[] = [];
     const descend = (p: Node): void => {
       for (const child of Object.values(p.states)) {
-        if (invokesAgent(child) !== undefined || child.invoke.some((inv) => inv.src === "gate")) continue;
+        if (invokesAgent(child) !== undefined || child.invoke.some((inv) => isGateInvoke(inv, actors))) continue;
         below.push(child);
         descend(child);
       }

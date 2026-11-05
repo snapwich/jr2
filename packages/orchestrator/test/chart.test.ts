@@ -26,6 +26,8 @@ import {
   type ChartText,
 } from "../src/chart.ts";
 import { createMachine } from "xstate";
+import { defineEvent } from "@jr2/agent-protocol";
+import { gate } from "../src/gate.ts";
 import { arg, commandWith, type ExecPortFactory } from "../src/effect.ts";
 import { agent } from "../src/harness-client.ts";
 import { dispatch } from "../src/dispatch-effect.ts";
@@ -1467,4 +1469,31 @@ test("7. dataflow: a path the door cannot prove is refused — no `properties`, 
     },
   };
   refusedOnce(done, /event\.output\.deep\.er: an `onDone` transition supplies event\.output, whole/);
+});
+
+test("3. a lent Gate slot (ADR-0011): admitted when the Chart's events hold its delivers, refused when not", () => {
+  const approve = defineEvent({ name: "approve", input: z.object({ by: z.string() }) });
+  const review = gate({ delivers: [approve], look: "none" }) as unknown as UnknownActorLogic;
+  const d: OpenBodyDeclaration = { ...decl, lends: { ...decl.lends, gates: ["review"] } };
+  const l: LentParts = { ...lent, actors: { ...lent.actors, review } };
+  const chart = (events: Record<string, unknown>) => ({
+    events,
+    initial: "wait",
+    states: { wait: { invoke: { src: "review" }, on: { approve: "done" } }, done: { type: "final" } },
+  });
+  const approveInput = { input: { type: "object", properties: { by: { type: "string" } }, required: ["by"] } };
+  assert.deepEqual(report(chart({ approve: approveInput }), undefined, d, l), []);
+  refusedOnce(
+    {
+      events: { other: approveInput },
+      initial: "wait",
+      states: { wait: { invoke: { src: "review" }, on: { other: "done" } }, done: { type: "final" } },
+    },
+    /the Gate slot "review" delivers "approve", which is not in the Chart's `events` \(events: other\)/,
+    undefined,
+    d,
+    l,
+  );
+  assert.ok(narrowedChartSchema(d) !== undefined);
+  assert.match(JSON.stringify(narrowedChartSchema(d)), /"review"/, "the lent Gate slot is a src the grammar names");
 });

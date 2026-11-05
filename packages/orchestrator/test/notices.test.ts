@@ -4,8 +4,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { NoticeLedger } from "../src/notices.ts";
-import type { Notice } from "../src/wire.ts";
+import { NoticeLedger, STEERING_RECORD_MAX } from "../src/notices.ts";
+import type { Notice, SteeringMessage } from "../src/wire.ts";
 
 const kill: Notice = { kind: "memory-limit", scope: "workspace", agent: "coder", limit: "1920Mi" };
 const fresh: Notice = { kind: "conversation-new", scope: "conversation", reason: "the last Turn faulted" };
@@ -494,4 +494,107 @@ test("`restore` of a retired Workspace notice makes it pending again for the one
   assert.equal(book.restore(kill, "ws-1", "ws-1@guard:k-1", "a"), true);
   assert.deepEqual(book.take({ workspace: "ws-1", taker: "a" }).notices, [kill]);
   assert.deepEqual(book.take({ workspace: "ws-1", taker: "b" }).notices, [], "for A alone");
+});
+
+// ---- Steering messages (ADR-0002): the same ledger, addressed to an Agent slot -----------------
+
+const message = (text: string, at = "2026-11-03T10:00:00.000Z"): SteeringMessage => ({
+  kind: "steering",
+  scope: "slot",
+  text,
+  author: { kind: "caller", via: "token", name: "alice" },
+  at,
+});
+
+test("a Steering message goes to its slot's next take, in any conversation of the slot, and to no other slot", () => {
+  const book = mkBook();
+  const id = book.steer(message("Use the v2 API."), "pool.item-1/coder");
+  assert.deepEqual(book.take({ slot: "pool.item-2/coder", taker: "run/x" }).notices, [], "another Machine instance");
+  assert.deepEqual(book.take({ slot: "root/coder", taker: "run/root/coder" }).notices, [], "another slot");
+  const taken = book.take({ slot: "pool.item-1/coder", taker: "run/pool.item-1/coder-x1", turn: true });
+  assert.deepEqual(taken.ids, [id]);
+  assert.deepEqual(taken.notices, [message("Use the v2 API.")]);
+  assert.deepEqual(book.take({ slot: "pool.item-1/coder", taker: "run/other" }).notices, [], "reserved: one taker");
+});
+
+test("a Steering message is heard once: delivered, it leaves the ledger and its record says heard", () => {
+  const book = mkBook();
+  const id = book.steer(message("Stop after the tests pass."), "root/coder");
+  const taken = book.take({ slot: "root/coder", taker: "c-1" });
+  book.delivered(taken.ids, "c-1");
+  assert.deepEqual(book.take({ slot: "root/coder", taker: "c-2" }).notices, []);
+  assert.deepEqual(
+    book.steeringRecord().map((r) => [r.id, r.outcome]),
+    [[id, "heard"]],
+  );
+});
+
+test("a step boundary's message that the Harness did not acknowledge is pending again; an unheard admission's is restored", () => {
+  const book = mkBook();
+  book.steer(message("Look at the flaky test first."), "root/coder");
+  const read = book.take({ slot: "root/coder", taker: "c-1" });
+  book.release(read.ids, "c-1");
+  const again = book.take({ slot: "root/coder", taker: "c-1" });
+  assert.equal(again.notices.length, 1, "released: the next take carries it");
+
+  // The admission that carried it was ledgered (delivered), and no model read it: restored.
+  book.delivered(again.ids, "c-1");
+  assert.equal(book.steeringRecord()[0]!.outcome, "heard");
+  assert.equal(book.restore(again.notices[0]!, "root/coder", undefined, "c-1"), true);
+  assert.equal(book.steeringRecord()[0]!.outcome, "held");
+  assert.equal(book.restore(again.notices[0]!, "root/coder", undefined, "c-1"), false, "pending once");
+  assert.equal(book.take({ slot: "root/coder", taker: "c-2" }).notices.length, 1);
+});
+
+test("a held message retires, recorded not delivered, when its Machine instance or one above it ends", () => {
+  const book = mkBook();
+  book.steer(message("one"), "pool.item-1/coder");
+  book.steer(message("two"), "pool.item-1.review/reviewer");
+  book.steer(message("three"), "pool.item-10/coder");
+  book.steer(message("four"), "root/planner");
+
+  assert.equal(book.retire("pool.item-1"), true);
+  assert.deepEqual(
+    book.steeringRecord().map((r) => [r.text, r.outcome]),
+    [
+      ["one", "not-delivered"],
+      ["two", "not-delivered"],
+      ["three", "held"],
+      ["four", "held"],
+    ],
+    "a Machine below it too, and not a sibling whose path only starts the same",
+  );
+  assert.deepEqual(book.take({ slot: "pool.item-1/coder", taker: "c-1" }).notices, []);
+
+  // Put back after its Machine ended (an unheard admission at the Turn's end): it stays retired.
+  assert.equal(book.restore(message("one"), "pool.item-1/coder", undefined, "c-1"), false);
+  assert.equal(book.retire(), true, "the run ended: every held message retires");
+  assert.ok(book.steeringRecord().every((r) => r.outcome === "not-delivered"));
+  assert.equal(book.retire(), false, "nothing left to retire");
+});
+
+test("the record survives the persisted state, and keeps the newest messages and every held one", () => {
+  const book = new NoticeLedger(undefined, ids());
+  book.steer(message("held, the oldest", "2026-11-03T09:00:00.000Z"), "root/coder");
+  for (let i = 0; i < STEERING_RECORD_MAX + 5; i++) {
+    const at = new Date(Date.parse("2026-11-03T10:00:00.000Z") + i).toISOString();
+    book.steer(message(`m${i}`, at), "root/reviewer");
+    const taken = book.take({ slot: "root/reviewer", taker: "r" });
+    book.delivered(taken.ids, "r");
+  }
+  const restored = new NoticeLedger(book.state(), ids());
+  const record = restored.steeringRecord();
+  assert.equal(record.length, STEERING_RECORD_MAX);
+  assert.equal(record[0]!.text, "held, the oldest");
+  assert.equal(record.at(-1)!.text, `m${STEERING_RECORD_MAX + 4}`);
+  assert.deepEqual(restored.take({ slot: "root/coder", taker: "c" }).notices, [
+    message("held, the oldest", "2026-11-03T09:00:00.000Z"),
+  ]);
+});
+
+test("a nudge's take by source carries no Steering message: the surface read at its Submission does", () => {
+  const book = mkBook();
+  book.steer(message("hi"), "root/coder");
+  assert.deepEqual(book.take({ slot: "root/coder", taker: "c-1", only: ["guard:ws-1:k1"] }).notices, []);
+  assert.equal(book.take({ slot: "root/coder", taker: "c-1" }).notices.length, 1);
 });

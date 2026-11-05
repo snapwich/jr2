@@ -27,6 +27,7 @@ import {
   controlToken,
   createAuthenticator,
   harnessToken,
+  instanceCaller,
   mayAskForSandbox,
   mayDeliverToAgent,
   mintInstanceToken,
@@ -139,21 +140,21 @@ test("a stated slot that is not the registration's is refused on every agent rou
   assert.equal(host.status(run.runId)?.status, "active", "nothing moved");
 });
 
-test("each verifier accepts its own domain alone: a key's other signed names are no token (ADR-0076)", () => {
+test("each verifier accepts its own domain alone: a key's other signed names are no token (ADR-0076)", async () => {
   const auth = createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY });
-  assert.deepEqual(auth(controlToken(KEY, "ws-1"), "root/coder"), {
+  assert.deepEqual(await auth(controlToken(KEY, "ws-1"), "root/coder"), {
     kind: "agent",
     sandbox: "ws-1",
     slot: "root/coder",
   });
-  assert.deepEqual(auth(sandboxToken(KEY, "ws-1")), { kind: "sandbox", sandbox: "ws-1" });
+  assert.deepEqual(await auth(sandboxToken(KEY, "ws-1")), { kind: "sandbox", sandbox: "ws-1" });
   // A control token never reads as a fetch token, with or without a slot.
-  assert.equal(auth(controlToken(KEY, "ws-1")), undefined);
+  assert.equal(await auth(controlToken(KEY, "ws-1")), undefined);
   // The bare form signed over another domain's name: the HMACs exist, and still open nothing.
-  assert.equal(auth(`harness:ws-1.${harnessToken(KEY, "ws-1")}`), undefined);
-  assert.equal(auth(`control-standin:ws-1.${controlStandIn(KEY, "ws-1")}`), undefined);
+  assert.equal(await auth(`harness:ws-1.${harnessToken(KEY, "ws-1")}`), undefined);
+  assert.equal(await auth(`control-standin:ws-1.${controlStandIn(KEY, "ws-1")}`), undefined);
   // The secret control Stand-in, sent straight here, is no token either.
-  assert.equal(auth(controlStandIn(KEY, "ws-1"), "root/coder"), undefined);
+  assert.equal(await auth(controlStandIn(KEY, "ws-1"), "root/coder"), undefined);
 });
 
 test("a Sandbox token cannot read run state, or cancel a run", async () => {
@@ -230,7 +231,10 @@ test("no Agent token delivers to a gate — an Agent does not approve its own re
   ] as const) {
     const attack = await app.request(`/runs/${runId}/gates/F-1/events`, post({ type: "approve" }, token, slot));
     assert.equal(attack.status, 403, "THE claim of ADR-0013: gates are not on the Agent's surface");
-    assert.match(((await attack.json()) as { error: string }).error, /cannot deliver to a gate/);
+    assert.match(
+      ((await attack.json()) as { error: string }).error,
+      /no Agent reaches run state, run control or a Gate/,
+    );
   }
   assert.equal(host.status(runId)?.value, "review", "and the gate did not move");
 
@@ -359,10 +363,10 @@ test("the Stand-in the Harness holds opens nothing: every route refuses it, and 
 test("the publish token resolves to the publisher, which delivers to nothing (ADR-0069)", async () => {
   const publishToken = mintInstanceToken();
   const auth = createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY, publishToken });
-  assert.deepEqual(auth(publishToken), { kind: "publisher" });
-  assert.deepEqual(auth(INSTANCE_TOKEN), { kind: "instance" });
+  assert.deepEqual(await auth(publishToken), { kind: "publisher" });
+  assert.deepEqual(await auth(INSTANCE_TOKEN), { kind: "caller", caller: instanceCaller() });
   // Without one configured, no bearer is the publisher.
-  assert.equal(createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY })(publishToken), undefined);
+  assert.equal(await createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY })(publishToken), undefined);
   assert.equal(mayDeliverToAgent({ kind: "publisher" }, { sandbox: "ws-1", slot: "root/coder" }), false);
   assert.equal(mayAskForSandbox({ kind: "publisher" }, "ws-1"), false);
 
@@ -379,7 +383,7 @@ test("the publish token resolves to the publisher, which delivers to nothing (AD
   assert.equal((await app.request("/workflows/coding/runs", post({}, publishToken))).status, 403);
 });
 
-test("a start with jr2-dispatched-by is Instance-band like any start: the key opens nothing (ADR-0071)", async () => {
+test("a start with jr2-dispatched-by is guarded like any start: the key opens nothing (ADR-0071)", async () => {
   const { host, app } = await mkApp();
   const header = JSON.stringify({ run: "c", slot: "s", effect: "k-auth", depth: 1, instance: "ops" });
   const start = (token?: string): RequestInit => {

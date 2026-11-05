@@ -61,6 +61,8 @@ back to `listening`.
 jr2 runs
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 → context kind-jr2 / namespace my-instance
@@ -68,7 +70,7 @@ workflows:
   intake (machine)
   ping (machine)
   triage (machine)
-[{"runId":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","workflow":"intake","instanceId":"e51d124b-88e5-461c-b464-6a3660ee13dc","status":"active","value":"listening","context":{"started":["45b52048-0848-4015-ad56-6ff8ae33d817"],"request":"The greeting looks wrong sometimes.","last":{"outcome":"started","run":"45b52048-0848-4015-ad56-6ff8ae33d817"}},"children":[],"waiting":[],"held":[],"assembly":"3229103a2952","dispatched":[{"slot":"triage","run":"45b52048-0848-4015-ad56-6ff8ae33d817","at":"2026-10-24T06:20:43.465Z"}]},{"runId":"45b52048-0848-4015-ad56-6ff8ae33d817","dispatchedBy":{"run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage","effect":"08423831-751f-41e5-9d93-1fa063faaf61","depth":1},"workflow":"triage","instanceId":"a2ad6e54-6a52-45c2-81f4-89f408a27d1f","status":"active","value":"triaging","context":{"request":"The greeting looks wrong sometimes.","exchange":[]},"children":[],"waiting":[],"held":[],"assembly":"3229103a2952"}]
+[{"runId":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","workflow":"intake","instanceId":"e51d124b-88e5-461c-b464-6a3660ee13dc","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"listening","context":{"started":["45b52048-0848-4015-ad56-6ff8ae33d817"],"request":"The greeting looks wrong sometimes.","last":{"outcome":"started","run":"45b52048-0848-4015-ad56-6ff8ae33d817"}},"children":[],"waiting":[],"held":[],"assembly":"3229103a2952","dispatched":[{"slot":"triage","run":"45b52048-0848-4015-ad56-6ff8ae33d817","at":"2026-10-24T06:20:43.465Z"}]},{"runId":"45b52048-0848-4015-ad56-6ff8ae33d817","dispatchedBy":{"run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage","effect":"08423831-751f-41e5-9d93-1fa063faaf61","depth":1},"workflow":"triage","instanceId":"a2ad6e54-6a52-45c2-81f4-89f408a27d1f","startedBy":{"kind":"run","run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage"},"status":"active","value":"triaging","context":{"request":"The greeting looks wrong sometimes.","exchange":[]},"children":[],"waiting":[],"held":[],"assembly":"3229103a2952"}]
 ```
 
 The first line, `…`, is the line `→ .env:`, with the keys that the CLI took from `.env`. The lines on stderr list the
@@ -112,7 +114,9 @@ To start a run on the Orchestrator of a different [Instance](../reference/glossa
 definition: `target: { url: "https://ops.example.com", token: secret("ops-instance") }`.
 
 - `url` is the origin of the other Orchestrator: the scheme, the host and the port. It has no path.
-- `token` names a secret that holds the Instance token of the other Instance. Put the secret in the
+- `token` names a secret that holds the token of a [Caller](../reference/glossary.md#caller) of the other Instance, with
+  the `start` scope for the Workflow, and also `read` when `wait` is `true`. A named Caller token of the other Instance
+  that has only these scopes is the safest ([Give a Caller a scope](give-a-caller-a-scope.md)). Put the secret in the
   [`secrets`](../reference/config.md#secrets) list of `jr2.config.ts`, as for an `http` Effect. See
   [Run a command or call a URL with an Effect](run-a-command-or-call-a-url.md).
 - The Effect runs in the [Instance Effector](../reference/glossary.md#instance-effector), which holds the token.
@@ -139,7 +143,7 @@ the token together:
 - The `url` of a target is an origin. The refusal starts with
   `dispatch("<name>", { target }): "<url>" is not an origin — write the scheme and the host, with a port if it is not the scheme's, and no path, query or userinfo`.
 - The `token` of a target is a secret:
-  `dispatch("<name>", { target }): the token is a secret("<name>") holding the target's Instance token (ADR-0071)`
+  `dispatch("<name>", { target }): the token is a secret("<name>") holding a Caller token of the target with start for the Workflow (ADR-0071)`
 - An Open target is the whole target, not its secret:
   ``dispatch("<name>", { target }): secret(open) in a target — the target is the Open part, not its secret: leave the whole target Open (`target: open`) and let the composer bind its url and token together (ADR-0071)``
 - With no target, the Assembly must have the Workflow. `jr2 up` stops:
@@ -152,11 +156,15 @@ the token together:
   `warning: workflow "<workflow>" dispatches "<wrapper>/<name>": the Assembly has no Chart file workflows/<wrapper>/<name>.chart.json`.
 - For a target, each problem that `jr2 up` finds is a warning. For example, when the other Orchestrator does not answer:
   `warning: dispatch "<name>" at <url>: no answer from this host (<error>) — the other Instance may be down, or reached only from inside its cluster; while no door answers, the dispatch settles "unreachable" (ADR-0071)`
+- When the input does not agree with the `input` schema of the slot, the invoke ends with an error, and no run starts.
+  The error starts with `dispatch "<slot>": its input does not match the slot's input schema —`. Before that, jr2 asks
+  for a run under the key of the start, with no target and with one. When a run has the key, the Effect gives that run,
+  and does not read the input. With a target, jr2 sends the key and no input, so the other Orchestrator starts nothing.
 - When the Orchestrator starts no run, the Effect ends with `refused`, not with an error. `report` holds the lines of
   the refusal, and `status` is its status code:
   - `400`: the Workflow does not take the input.
   - `404`: the current Assembly has no Workflow of that name.
-  - `409`: the named Chart cannot run now, or a run of a different Workflow has the key of this start.
+  - `409`: the named Chart cannot run now.
   - `413`: the start is larger than the Effector reads.
   - `422`: the door refuses the Chart in the input.
   - `0`: the Effector refused the start before it sent it.

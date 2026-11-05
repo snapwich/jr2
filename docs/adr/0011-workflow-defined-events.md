@@ -144,25 +144,35 @@ an event for a run.
   Hooks of one kind (two organizations, two secrets) reach the same handlers. The table is typed at compile time: each
   kind module that the program imports adds its id and its payload types to `interface HookKinds` by declaration
   merging, and a key that no kind in scope gives does not compile. There is no registry at run time: the door matches a
-  delivery by the kind's id and the event key. No handler hears a handshake. A handler reads
-  `{ payload, meta, caller }`, where `payload` is the decoded body after the kind's schema parsed it (below). Its type
-  is the schema's output, so a handler reads only the fields that the schema names. It is pure and synchronous, as a
-  guard is: no I/O, no Promise, no clock. It matches the payload against the Gate's `meta` (for a review, the PR's url
-  and the pushed commit) and gives one plain event of `delivers`, such as `{ type: "approve", by }`, typed by that list,
-  or `undefined` to ignore the delivery. The Orchestrator parses the event with its def's schema and asks the run
-  whether it takes it from this Gate now, as it does for `jr2 send` (ADR-0013). There are no correlation keys: each
-  delivery calls every open handler of its kind and event key.
+  delivery by the kind's id and the event key, exactly. A kind's schema key can end in `.*` (`"block_actions.*"`) to
+  type each key with that prefix, but a handler names the full key (`"block_actions.approve"`): a handler key that holds
+  `*` does not compile, and `gate()` and `source()` refuse it, so the load walk refuses its Workflow. No handler hears a
+  handshake. A handler reads `{ payload, meta, caller }`, where `payload` is the decoded body after the kind's schema
+  parsed it (below). Its type is the schema's output, so a handler reads only the fields that the schema names. It is
+  pure and synchronous, as a guard is: no I/O, no Promise, no clock. It matches the payload against the Gate's `meta`
+  (for a review, the PR's url and the pushed commit) and gives one plain event of `delivers`, such as
+  `{ type: "approve", by }`, typed by that list, or `undefined` to ignore the delivery. The Orchestrator parses the
+  event with its def's schema and asks the run whether it takes it from this Gate now, as it does for `jr2 send`
+  (ADR-0013). There are no correlation keys: each delivery calls every open handler of its kind and event key.
 - **A look reads the fact that the Gate waits for.** `look: { read, input, every?, until }`. `read` is an `http` Effect
-  marked `idempotent: true`, and the walk refuses another
-  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)). The look runs once
-  after the Gate registers: a change before the read is in its answer, and a change after the Gate registered reaches
-  the Gate as a delivery. It runs again after each restore, and every `every` (10 minutes by default) while the Gate is
-  open. `until` gives an event of `delivers`, or `undefined` for "not yet". So a delivery that came before the Gate
-  opened, a delivery lost while the Orchestrator was down, and a restart all come to the same read, and the author
-  writes no idiom for them. A looked event has the Gate as its Sender and no `answeredBy`: the look is the Machine's own
-  read, not a Caller. The feed marks it `looked`. The look stops after the run takes its event, until the Gate opens
-  again, because a look reads a level: a Gate that stays open after its event would get the same event every `every`. So
-  a state that goes back to its own Gate must change the `meta` (a new `sha`), or it loops.
+  marked `idempotent: true`, or a promise actor, which a Machine can invoke anyway; `gate()` refuses another Effect
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)). The promise is for
+  the default test tier, which has no Instance Effector, and for a fact inside the Instance. A read of a service outside
+  the Instance is an `http` read, because the Orchestrator makes no call out of the Instance for a run. The read is a
+  child of the Gate in the run's actor system, so an `http` read goes through the run's Instance Effector and its
+  ledger, and `jr2 up` places it as it places an Effect slot. The look runs once after the Gate registers: a change
+  before the read is in its answer, and a change after the Gate registered reaches the Gate as a delivery. It runs again
+  after each restore, and every `every` (10 minutes by default) while the Gate is open. `until` gives an event of
+  `delivers`, or `undefined` for "not yet". So a delivery that came before the Gate opened, a delivery lost while the
+  Orchestrator was down, and a restart all come to the same read, and the author writes no idiom for them. The run takes
+  a looked event only when it takes it from this Gate now, as for `jr2 send`. A read that fails, an `until` that throws,
+  and an event that the run does not take now are each a line in the Orchestrator's log, and the look reads again at the
+  next `every`: a look never faults the run. A looked event has the Gate as its Sender and no `answeredBy`: the look is
+  the Machine's own read, not a Caller. The per-run feed marks it `looked`, behind the token as a Turn marker is, before
+  the delivery, because a delivery can end the run in its own send. The look stops after the run takes its event, until
+  the Gate opens again, because a look reads a level: a Gate that stays open after its event would get the same event
+  every `every`. So a state that goes back to its own Gate must change the `meta` (a new `sha`), or it loops. A restore
+  opens the Gate again, so a Gate that stayed open after its event looks one more time after a restore.
 - **`look: "none"` for a Gate that hears a command.** A `/retry` comment is an edge, not a level, so there is no fact to
   read. A lost delivery of a command stays lost.
 - **`jr2 up` warns about a hooked Gate with no look and no `after` on its state**, and does not refuse: a delivery lost
@@ -200,44 +210,65 @@ an event for a run.
 - **`POST /hooks/:name`.** Each Hook that `jr2.config.ts` declares has one stable address, which a service is set up
   with once. The Hook's verifier authenticates the route, outside the bands of ADR-0014 (ADR-0078). A delivery that
   fails it, or whose signed timestamp is more than 300 seconds from the door's clock, gets 401, and nothing else
-  happens. The window is jr2's, the same for every kind.
+  happens. The window is jr2's, the same for every kind. A name that the current config does not declare gets 404. With
+  no current Assembly the door answers 503 before the verifier, because no config says which Hooks exist. A body above 2
+  MiB gets 413, after the name and before the verifier. The door reads no more of the body than the limit, because this
+  is the one route with no bearer token that takes a body, and a `mac` check sends the body to the Instance Effector as
+  base64, which its wire limits to 4 MiB. Without the limit, a large delivery that is correctly signed would get a
+  false 503. The hook log keeps a `too-large` line, which claims no delivery id. A `mac` check that the Instance
+  Effector cannot answer (none is deployed, or no replica answers) is 503 too, so the service can send again: the
+  Orchestrator holds no secret to check with
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
 - **The kind's handshake comes after the verifier.** A Slack `url_verification` gets `{ "challenge": … }`, and a Discord
-  `PING` gets `{ "type": 1 }`. A handshake reaches no handler, and the hook log keeps it as `handshake`.
+  `PING` gets `{ "type": 1 }`. A handshake reaches no handler, and the hook log keeps it as `handshake`. A request that
+  the kind cannot read (its `read` throws, or gives no id or no event key) gets 400, and the hook log keeps the error as
+  `unreadable`.
 - **The door parses the payload before the fan-out.** A Hook kind gives a zod schema for each event key, and the door
   parses the decoded body with the schema of the delivery's key. Each object in a schema is a loose object, and a schema
   names only the fields that handlers need. So a field that the service adds breaks nothing, and a named field that is
   missing or of the wrong type fails the parse. A failed parse reaches no handler. The hook log keeps a
-  `payload-refused` line with zod's issues, and the answer names the kind and the event key. The status is 200, because
-  a second try fails the same way. A key that the kind gives no schema for is not parsed, and it reaches nothing,
-  because no handler can hear it.
+  `payload-refused` line with zod's issues, and the answer names the kind and the event key in
+  `payloadRefused: { kind, key, issues }`. The status is 200, because a second try fails the same way. A key that the
+  kind gives no schema for is not parsed, and it reaches nothing, because no handler can hear it.
 - **A repeat is found by the delivery id AND the body's digest.** A delivery whose id or digest the hook log holds gets
-  200 with `seen: true`, and nothing is delivered. A service may or may not send a delivery again; the design depends on
-  neither, because the look finds what a lost delivery said.
+  200 with `seen: true`, and nothing is delivered. The check is for each Hook, because two Hooks can get one body (an
+  organization's webhook and a repository's). Only a delivery that the door claimed counts: a handshake, a
+  `payload-refused` line, an `unreadable` line, a `hold-full` line (a 429, below) and a `no-live-run` line (a 503,
+  below) never make a repeat, so a refused payload that comes again is parsed again, and a delivery that every Source
+  was too full to hold is heard again. The check and the claim are one synchronous step, so of two copies that come at
+  once, one is delivered. A service may or may not send a delivery again; the design depends on neither, because the
+  look finds what a lost delivery said.
 - **The fan-in reaches open Gates only.** A delivery goes to every open Gate, in every live run of a Workflow that the
   Hook may answer, whose handlers hear its kind and event key, and to nothing else. A Pool's `source` Gate is one of
   them ([ADR-0017](0017-pool-over-a-source-port.md)). So a Hook answers a Gate of a run, or brings items to a Source. It
   never starts a run, and it never names one.
 - **The answer is the outcome.** 200 with
-  `{ delivery, seen, delivered: [{ run, workflow, gate, event }], refused: [{ run, gate, event?, reason }], ignored, sources }`:
+  `{ delivery, seen, delivered: [{ run, workflow, gate, event }], refused: [{ run, gate, event?, reason }], ignored, sources, payloadRefused? }`:
   `ignored` counts the open Gates whose handler gave nothing, and `sources` holds each Source's verdict (ADR-0017). A
-  delivery that reached nothing gets 200 with `delivered: []`. The fan-out always runs first. Then the answer is 429
-  when every Source's verdict is `hold-full`, and 503 only when the Orchestrator has no current Assembly, or when a
-  standing Pool that hears this kind and event key has no live run and is not paused (ADR-0017). So a Pool in back-off
-  does not stop the review Gates of other runs. This is the answer of a kind whose answer no person reads: a forge, or a
-  Slack event, which keeps its 429 and 503 so that Slack sends it again.
+  delivery that reached nothing gets 200 with `delivered: []`. After the verifier, the fan-out always runs first. Then
+  the answer is 429 when every Source's verdict is `hold-full`, and 503 only in two cases: a standing Pool that hears
+  this kind and event key has no live run and is not paused, or the delivery followed a standing Pool's hand-overs to
+  the new run's Source 3 times and the Pool handed its run over again (ADR-0017). In the second case the Pool can have a
+  live run: the delivery stops following it, so that it cannot follow without end. Neither 503 claims the delivery's id,
+  so the service's send again is heard. The 503s that come before the verifier are in the door's rule above. So a Pool
+  in back-off does not stop the review Gates of other runs. This is the answer of a kind whose answer no person reads: a
+  forge, or a Slack event, which keeps its 429 and 503 so that Slack sends it again.
 - **A person reads the answer to a chat command or click.** For a Slack command or click and a Discord interaction, the
   kind's envelope takes the place of the outcome, and the hook log keeps the outcome. The text joins the `reply` of
   every target: Sources first (what the act brought), then Gates (what the act answered), and in each by Workflow name,
   then by run id. Empty texts and exact repeats are dropped. A text from a `skipped` verdict shows only when no other
   target gave a text, because a skip says "not for me". Every target speaks, and not one winner, because the outcome is
   already a list and the load walk cannot see which Gates will be open. When no target gives a text, the door writes one
-  from the outcome: a repeat, a delivery that reached nothing, a payload that the parse refused, or the cause of a 429
-  or a 503 (with no current Assembly, no `reply` exists to run). This text is the same for every service, so the kind
-  never sees the outcome. The door cuts the text to the limit that the kind gives (Discord: 2000 characters), and the
-  kind puts it in its envelope. The envelope shows the text to the person who acted, and to nobody else: Slack
-  `{ "response_type": "ephemeral", "text": … }`, Discord `{ "type": 4, "data": { "content": …, "flags": 64 } }`. The
-  text is plain: no Block Kit blocks, no Discord embeds and no `in_channel` in v1. A rich reply adds later without a
-  break.
+  from the outcome: a repeat, a delivery that reached nothing, a payload that the parse refused, or what the fan-in did
+  (a Gate that took an event, a Pool that is paused). For a 429 or a 503 of the fan-in, the door adds a line with the
+  cause after the targets' texts, so the text always says why. This text is the same for every service, so the kind
+  never sees the outcome. A paused Pool has no run, so no `reply` of it runs: the door's text says that it is paused.
+  The 503s and the 404 that come before the verifier stay as they are, because the door cannot know who reads the answer
+  before the kind reads a verified request. The door cuts the text to the limit that the kind gives (Discord: 2000
+  characters), and the kind puts it in its envelope. The envelope shows the text to the person who acted, and to nobody
+  else: Slack `{ "response_type": "ephemeral", "text": … }`, Discord
+  `{ "type": 4, "data": { "content": …, "flags": 64 } }`. The text is plain: no Block Kit blocks, no Discord embeds and
+  no `in_channel` in v1. A rich reply adds later without a break.
 - **Such an answer is 200.** Where the rules above give 429 or 503, a delivery whose answer a person reads gets 200, and
   its text says why. A non-200 shows the person the service's own error, which says nothing about what jr2 did. The hook
   log keeps the status that the rules give. A failed verifier stays 401.
@@ -246,17 +277,21 @@ an event for a run.
   data: a post of the text to the click's `response_url`. The door answers the empty 200, and then makes the post
   through the Instance Effector's `http` call
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): to a host that the kind declares
-  (`hooks.slack.com`), with no secret (the url is in the verified payload), one try. A failed post is a line in the hook
-  log. It is the answer by another road, with no slot, no ledger row and no run. No Machine can post it, because a click
-  that reaches nothing has no run.
+  (`hooks.slack.com`), with no secret (the url is in the verified payload), one try. The door refuses a url that does
+  not start with one of the kind's `posts`, and posts nothing. A failed or refused post is a `follow-up` line in the
+  hook log. A `reply` that threw is in its delivery's line, as `replyErrors`. It is the answer by another road, with no
+  slot, no ledger row and no run. No Machine can post it, because a click that reaches nothing has no run.
 - **No deferred answer.** The text is a verdict or an outcome, which is ready when the answer leaves. The work never is.
   Discord's deferred answer (type 5) would make the run's result the answer, but its token lives 15 minutes, a run is
   often longer, and a deferred answer that nobody edits stays "thinking". When the door misses the service's 3 seconds,
   the person sees the service's error, the hook log keeps what jr2 did, and a held item still runs.
 - **The hook log keeps each delivery a week** ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)):
   its Hook, id, digest, outcome and the status that the rules give, a `payload-refused` delivery with zod's issues, a
-  Source's skip with its reason, a `reply` that threw, and a failed follow-up post. `jr2 hooks <name>` prints it. A
-  run's blob keeps its `(delivery, gate)` pairs, so a restore never gives one delivery twice to one Gate.
+  Source's skip with its reason, a `reply` that threw, and a failed follow-up post. `jr2 hooks <name>` prints it, newest
+  first, from `GET /hooks/:name`, which takes the Instance token alone
+  ([ADR-0014](0014-observation-is-open-run-state-is-not.md)): a line can hold a payload's fields and a handler's words.
+  A run's blob keeps its `(delivery, gate)` pairs as the `delivery` of each answer that a Hook gave (the run's last 100
+  answers, ADR-0078), so a restore never gives one delivery twice to one Gate.
 - **Tests.** The default tier drives `POST /hooks/:name` with a `token` and an `ed25519` verifier against hooked Gates
   and a Pool's Source, with the handshakes, the parse, the join of the replies and the envelopes. It has no Instance
   Effector, so the `@kind` tier drives a `mac` verifier through the Instance Effector, and a look whose `http` read runs
@@ -328,5 +363,5 @@ Tests mock by `machine.provide()` at the layer under test.
   never faked — ADR-0009); their e2e tier requires kind.
 - A Caller's free text to an Agent is a Steering message ([ADR-0002](0002-duplex-streaming-actor.md)), never a workflow
   event: it is in no Vocabulary, and no Gate takes it.
-- Not set yet: a cap on a delivery's body, and a time budget for the handlers, which run in the Orchestrator's event
-  loop for each open Gate of their kind and event key.
+- Not set yet: a time budget for the handlers, which run in the Orchestrator's event loop for each open Gate of their
+  kind and event key.

@@ -18,7 +18,8 @@ export const INSTANCE_HARNESS_SERVICE = "jr2-instance-harness";
 export const INSTANCE_HARNESS_PORT = 8080;
 
 /** The Instance Effector (ADR-0068): its Deployment, headless Service, NetworkPolicy and Secret all
- * carry this name. `jr2 up` converges them when a registered Machine places an Effect there. The
+ * carry this name. `jr2 up` converges them when a registered Machine places an Effect there, or a
+ * Hook needs it (a `mac` verifier, or a kind that declares `posts`). The
  * port is the Effector's own (`JR2_EFFECTOR_PORT` default) — none of the Harness pod's ports. */
 export const INSTANCE_EFFECTOR = "jr2-instance-effector";
 export const EFFECTOR_PORT = 8082;
@@ -52,6 +53,32 @@ export const IMAGES_CONFIGMAP = "jr2-images";
 export const IMAGES_MOUNT = "/etc/jr2/images";
 /** The ConfigMap key, hence the filename under the mount — the two-sided contract's other half. */
 export const IMAGES_KEY = "images.json";
+
+/** The digests of the named Caller tokens (ADR-0078): one key, `CALLER_DIGESTS_KEY`, a JSON object
+ * `{ "<name>": "<sha-256 hex of the value>" }`. `jr2 up` writes it, and the Orchestrator reads it
+ * through a MOUNT and reads it again when it changes, so a rotation rolls no pod. Until the kubelet
+ * updates the mount, about a minute, the old value still works. No value is here: each value is in
+ * its own Secret (`callerTokenSecret`), which no pod mounts. */
+export const CALLER_DIGESTS_SECRET = "jr2-caller-digests";
+/** Where the Orchestrator reads the digests. */
+export const CALLER_DIGESTS_MOUNT = "/etc/jr2/callers";
+/** The Secret's key, hence the filename under the mount. */
+export const CALLER_DIGESTS_KEY = "digests.json";
+/** The digests of the `token` Hooks' secrets (ADR-0078): one key, `HOOK_DIGESTS_KEY`, a JSON object
+ * `{ "<secret name>": "<sha-256 hex of the value>" }`. The door compares the sha-256 of a delivery's
+ * token with it, so the Orchestrator holds no Hook secret. Its own Secret, not the Caller digests':
+ * `jr2 caller rotate` writes that one whole. The Orchestrator reads it through a mount, again when
+ * it changes. */
+export const HOOK_DIGESTS_SECRET = "jr2-hook-digests";
+/** Where the Orchestrator reads the Hook digests. */
+export const HOOK_DIGESTS_MOUNT = "/etc/jr2/hooks";
+/** The Secret's key, hence the filename under the mount. */
+export const HOOK_DIGESTS_KEY = "digests.json";
+/** The Secret that holds one named Caller token's value (ADR-0078), which `jr2 caller token <name>`
+ * reads over the kube API. */
+export function callerTokenSecret(name: string): string {
+  return `jr2-caller-${name}`;
+}
 
 /** The HARNESS containers' env Secret — the literal `harness.env` values, never the Instance token
  * (ADR-0013) and never a model key (ADR-0059: those are held). */

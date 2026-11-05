@@ -22,71 +22,107 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
 - **The Instance token is one authenticator.** It gives the Caller `{ via: "token", name: "instance" }`, with every
   scope for every Workflow. Its meaning does not change: it is the operator's credential.
 - **Named Caller tokens.** The Instance declares them in the `callers` block of `jr2.config.ts`, each with a name and
-  its scopes. `jr2 up` makes the value of each one, once, in a Secret of its own, and gives the Orchestrator only the
-  sha-256 of each value. A value is `jr2c_` and 32 random bytes in base64url. The prefix lets the seam say "not mine"
-  with no lookup, and lets a secret scanner find a value that leaked. `jr2 caller token <name>` prints the value, which
-  it reads from the Secret over the kube API (RBAC is the gate, as for the Instance token). `jr2 caller rotate <name>`
-  makes a new value, and the old value stops working. A name that the config no longer declares stops working at the
-  next `jr2 up`, which deletes its Secret.
-- **JWTs from an identity provider.** The `callers` block also declares issuers. For each issuer, jr2 checks a JWT's
-  signature against the issuer's published keys, and its issuer, audience and expiry. The Caller's `name` is the `sub`
-  claim and the name that jr2 shows is the `email` claim; the config can name other claims for each. The scopes come
-  from the values of one claim (a list of groups or roles), through a map in the config from a value to scopes. A JWT
-  that gets no scope from the map is 403. jr2 never treats it as read-only.
-- **Login in the Console's browser.** The Console logs a person in against a JWT issuer with OIDC (the authorization
-  code flow with PKCE, as a public client), and sends the JWT that it gets as the bearer. So login adds no
-  authenticator: it is a way to get a JWT credential. The Console keeps the JWT as it keeps a typed token
-  ([ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)). A login that jr2 hosts on the server side, with a
-  session, comes later through the seam.
+  its scopes (`callers.tokens.<name>.may`). A name is a DNS label of at most 40 characters, because it is part of the
+  name of its Secret, and `instance` is the Instance token's name, so the config load refuses it. `jr2 up` makes the
+  value of each one, once, in a Secret of its own, and gives the Orchestrator only the sha-256 of each value, in hex. A
+  value is `jr2c_` and 32 random bytes in base64url. The prefix lets the seam say "not mine" with no lookup, and lets a
+  secret scanner find a value that leaked. The digests go in one Secret, `jr2-caller-digests`, as one JSON object from
+  name to digest, and the Orchestrator reads it through a mount. It reads the file again when it changes, so a new token
+  or a rotation needs no restart. The kubelet updates a mounted Secret on its own period, about a minute, so the old
+  value works until then. The scopes come from the config of the current Assembly: a name that has a digest and no entry
+  in the config opens nothing, and a file that does not parse keeps the digests that the Orchestrator read last.
+  `jr2 caller token <name>` prints the value, which it reads from the Secret over the kube API (RBAC is the gate, as for
+  the Instance token), so it takes `-n` and `--context` and never `--url`. `jr2 caller rotate <name>` makes a new value,
+  and the old value stops working. It writes the value's Secret first and the digests after, from every token Secret of
+  the namespace, so a rotate that fails between the two runs again and loses no value. A name that the config no longer
+  declares stops working at the next `jr2 up`, which deletes its Secret. Each token Secret carries its name in the label
+  `jr2.dev/caller-token`, which is how `jr2 up` finds the undeclared ones.
+- **JWTs from an identity provider.** The `callers` block also declares issuers
+  (`callers.issuers: [{ issuer, audience, jwks?, claims?, groups, login? }]`). The JWT authenticator claims a bearer
+  that is a JWT whose `iss` is the `issuer` of an entry; a JWT of another issuer is not its. For each issuer, jr2 checks
+  a JWT's signature against the issuer's published keys, and its issuer, audience and expiry, with 30 seconds for the
+  clocks to differ. It takes only asymmetric signatures, because a published key must not be able to sign. The keys come
+  from `jwks`, or else from the `jwks_uri` of the issuer's `/.well-known/openid-configuration`. The Orchestrator keeps
+  them for 10 minutes, and for a JWT with a key that it does not know it fetches them again at once, at most once in 30
+  seconds, so a key that the issuer rotated works with no restart. When the fetch of the discovery document fails, the
+  Orchestrator keeps the failure for 30 seconds, so many JWTs of that issuer cause at most one fetch in 30 seconds. It
+  keeps keys only for the issuers that the current config names. The Caller's `name` is the `sub` claim and the name
+  that jr2 shows is the `email` claim; `claims` names other claims for each. The scopes come from the values of one
+  claim (a list of groups or roles, `groups` by default), through the map `groups` from a value to scopes; a JWT with
+  more than one value gets the scopes of each, joined. A JWT that gets no scope from the map is 403 on every route that
+  needs a scope. jr2 never treats it as read-only. `GET /whoami` answers it, with no scope, so that a person can see why
+  the other routes refuse it.
+- **Login in the Console's browser.** The Console logs a person in against a JWT issuer with `login: true`, with OIDC
+  (the authorization code flow with PKCE, as a public client whose client id is the issuer's `audience`), and sends the
+  ID token that it gets as the bearer. So login adds no authenticator: it is a way to get a JWT credential. The Console
+  keeps the JWT as it keeps a typed token ([ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)). A login
+  that jr2 hosts on the server side, with a session, comes later through the seam.
 - **Five scopes, each one for every Workflow or for named Workflows.** `start` starts a run, `answer` answers a Gate,
   `cancel` cancels a run, `read` reads a run's state, and `steer` sends a Steering message
-  ([ADR-0002](0002-duplex-streaming-actor.md)). A scope's value is `"all"` or a list of Workflow names. For a route that
-  addresses a run, jr2 checks the scope against that run's Workflow. Which scope opens which route is
-  [ADR-0014](0014-observation-is-open-run-state-is-not.md)'s table. A 403 names the scope and the Workflow that the
-  request needed.
+  ([ADR-0002](0002-duplex-streaming-actor.md)). A scope's value is `"all"` or a list of Workflow names. A Chart
+  wrapper's name in the list also opens each named Chart of that wrapper (`plan` opens `plan/weekly`), because a named
+  Chart runs its wrapper's Machine ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)); the name `plan/weekly`
+  opens that Chart alone. For a route that addresses a run, jr2 checks the scope against that run's Workflow. Which
+  scope opens which route is [ADR-0014](0014-observation-is-open-run-state-is-not.md)'s table. A 403 names the scope and
+  the Workflow that the request needed. A Caller with the scope for no Workflow at all is refused before the Workflow is
+  read, and the 403 names the scope.
 - **The CLI is the Caller `token/instance`.** It reads the Instance token as before, and it sends `onBehalfOf`: the user
-  name that a kube `SelfSubjectReview` gives for the current context. With `--url` and `JR2_TOKEN`, the CLI sends any
-  Caller's credential, and it is that Caller.
+  name that a kube `SelfSubjectReview` gives for the current context. It asks for the name beside the port-forward, and
+  a server that does not answer gives no claim and no failure. A name that is not printable ASCII is not sent, because a
+  header cannot carry it, and a longer name is cut to the bound. A Caller sends `onBehalfOf` in the header
+  `jr2-on-behalf-of`, at most 256 characters. A Hook's `onBehalfOf` comes from its signed payload, and the door ignores
+  the header for a Hook. With `--url` and `JR2_TOKEN`, the CLI sends any Caller's credential, and it is that Caller.
 - **`GET /whoami` and `jr2 whoami` give the request's Caller record**: `via`, `name`, the name that jr2 shows, `may` and
   `onBehalfOf`. A person uses it to see what a credential may do before it fails.
 - **`cors` is an allowlist of origins in `jr2.config.ts`, empty by default.** The Console is served from the
-  Orchestrator's own origin and needs no entry. A browser app on another origin needs its origin in the list.
-- **The run records the Caller of each act on a guarded route.** The run's record holds `startedBy`, which is
-  `{ kind: "caller", via, name, shown?, onBehalfOf? }` or `{ kind: "run", run, slot }` for a run that a `dispatch`
-  started (ADR-0071), `cancelledBy`, and the `answeredBy` of each Gate answer. A gate event's Sender carries the Caller
-  too, and marks which of its fields jr2 checked ([ADR-0011](0011-workflow-defined-events.md)). `jr2 status` walks the
-  `startedBy` chain to the first Caller and prints it, and the Console shows it. The record is on the guarded routes
-  only, never on the open observation projection (ADR-0014). A standing run has no Caller: jr2 starts it
-  ([ADR-0017](0017-pool-over-a-source-port.md)).
+  Orchestrator's own origin and needs no entry. A browser app on another origin needs its origin in the list. Each entry
+  is an origin alone (`https://ops.example.com`, no path, no pattern), and the config load refuses any other text. The
+  Orchestrator reads the list of the current Assembly on each request.
+- **The run records the Caller of each act on a guarded route.** A Caller in a record is
+  `{ via, name, shown?, onBehalfOf? }`: never its scopes. The run's record holds `startedBy`, which is
+  `{ kind: "caller", via, name, shown?, onBehalfOf? }`; `{ kind: "run", run, slot }` for a run that a local `dispatch`
+  started (ADR-0071); or `{ kind: "jr2", why }` for a standing run, which has no Caller because jr2 starts it, at
+  `boot`, at a `publish`, at a `hand-over` or at a `resume` ([ADR-0017](0017-pool-over-a-source-port.md)). A resume also
+  records the Caller of the `jr2 run` that resumed the run, as `resumedBy`. A run that a foreign `dispatch` started
+  records the Caller whose credential the other Instance sent. The record also holds `cancelledBy`, and `answers`: the
+  last 100 answers to the run's Gates, each `{ gate, type, at, answeredBy }`. It keeps the last 100 because a standing
+  run's Gate can take an answer for each delivery, and the record is saved on each transition. A gate event's Sender
+  carries the Caller too (`via`, `name`, `onBehalfOf`), and `checked` names which of its fields jr2 checked
+  ([ADR-0011](0011-workflow-defined-events.md)). `jr2 status` walks the `startedBy` chain to the first Caller and prints
+  it, and the Console shows it. The walk reads one run at a time, as the Caller that asks, and names the runs between; a
+  run it may not read, or that is no longer known, ends the walk, and the line says so. It reads at most 16 runs. The
+  record is on the guarded routes only, never on the open observation projection (ADR-0014).
 - **`onBehalfOf` is a claim.** jr2 records it and shows it, and it never checks it. The one exception is a Hook (below):
   there the signature covers the payload that `onBehalfOf` comes from.
 - **A Caller's scope does not limit what its run dispatches.** A Caller with `start` on `triage` starts a run whose
   Machine can dispatch `deploy`. The Machine is the author's, and it is the boundary of what its run does, as it is for
   every Effect. The docs say this where they describe scopes.
 - **A Hook is a Caller with `via: "hook"`.** The `hooks` block of `jr2.config.ts` declares each Hook by its name (the
-  last segment of its address) and its Hook kind, which the config imports. The kind's constructor takes only the
-  credential and the Workflows whose Gates the Hook may answer (`may.answer`, every Workflow by default):
-  `github({ secret: secret("GH_HOOK"), may })`, `slack({ secret: secret("SLACK_SIGNING"), may })`,
-  `discord({ publicKey: "…", may })`. A Hook has the `answer` scope only. A Hook never starts a run. To bring items to a
-  Pool, it needs `answer` on the Pool's Workflow, because it reaches the Pool's `source` Gate
-  ([ADR-0017](0017-pool-over-a-source-port.md)). The Hook's route has its own authenticator, its verifier, which gives
-  `{ via: "hook", name, may: { answer }, onBehalfOf }`.
+  last segment of its address) and its Hook kind, which the config imports. A Hook's name has the form of a Caller
+  token's name. The config load refuses another name, a value that no kind's constructor made, and two kinds with one
+  id. The kind's constructor takes only the credential and the Workflows whose Gates the Hook may answer (`may.answer`,
+  every Workflow by default): `github({ secret: secret("GH_HOOK"), may })`,
+  `slack({ secret: secret("SLACK_SIGNING"), may })`, `discord({ publicKey: "…", may })`. A Hook has the `answer` scope
+  only. A Hook never starts a run. To bring items to a Pool, it needs `answer` on the Pool's Workflow, because it
+  reaches the Pool's `source` Gate ([ADR-0017](0017-pool-over-a-source-port.md)). The Hook's route has its own
+  authenticator, its verifier, which gives `{ via: "hook", name, may: { answer }, onBehalfOf }`.
 - **A Hook kind owns the service's protocol.** The kind gives what the service signed, the handshake, the decoding of
   the body (Slack sends a form), a zod schema for each event key, the event key, the delivery id, `onBehalfOf` and the
   envelope of a text that a person reads. The author writes none of them. Each is a fact of the service, the same for
   every Instance. jr2 ships a kind for each service that has a handshake, an envelope or a scheme of its own:
   - `github`: the event key is the event name and its action (`pull_request_review.submitted`), the id is
     `X-GitHub-Delivery`, and `onBehalfOf` is `sender.login`.
-  - `gitlab`: the `token` verifier on `X-Gitlab-Token`. The event key is `object_kind` and the action, status or
-    noteable type (`merge_request.approved`, `note.MergeRequest`), the id is `Idempotency-Key` (else
-    `X-Gitlab-Event-UUID`), and `onBehalfOf` is `user.username`.
+  - `gitlab`: the `token` verifier on `X-Gitlab-Token`. The event key is `object_kind` and the noteable type for a
+    `note`, else the action or the status (`merge_request.approved`, `note.MergeRequest`, `pipeline.success`), the id is
+    `Idempotency-Key` (else `X-Gitlab-Event-UUID`), and `onBehalfOf` is `user.username`.
   - `slack`: the event keys are `slash_command./jr2` (the command is in the key, so a Source for `/jr2` never hears
     `/deploy`), `block_actions.<action_id>` and `event_callback.<event type>`. The id is `event_id` for an event and
     `trigger_id` for a command or a click. `onBehalfOf` is the Slack user id, never a display name. The handshake
     answers `url_verification` with its `challenge`.
   - `discord`: the event keys are `application_command.<name>` and `message_component`, the id is the interaction's
     `id`, and `onBehalfOf` is `member.user.id`, or `user.id` in a direct message. The handshake answers `PING` with
-    `PONG`.
+    `PONG`. Another type of interaction (an autocomplete, a modal) gets the key `interaction.<type>`, which has no
+    schema, so it reaches nothing.
 
   `onBehalfOf` comes from the verified body, so the signature covers it. The handshake, the parse and the envelope are
   [ADR-0011](0011-workflow-defined-events.md)'s door.
@@ -104,7 +140,9 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
   it by `import`, and `jr2 up` bundles it into the Assembly
   ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). jr2 loads no kind at run
   time and discovers none from a folder. jr2's own kinds (`@jr2/hooks/github` and the others) use the same interface,
-  and nothing more.
+  and nothing more. `@jr2/hooks` is a dependency of `@jr2/orchestrator`, so the Orchestrator Kit image holds its one
+  copy, and each kind in an Assembly uses that copy. The door reads a Hook and a kind through `@jr2/hooks/door`, which
+  is not part of a kind's interface, because the module that makes a Hook decides its shape.
   - **A kind never gets the credential.** jr2 makes the kind's constructor, so the credential goes from the config to
     the door and never through code that the kind wrote. For `token`, the door removes the header before any code of the
     kind runs.
@@ -112,8 +150,11 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
     every package that a Workflow imports. Its types refuse a Promise, but they cannot stop I/O. The firm guarantee is
     that no kind holds a `mac` secret, because the Orchestrator holds none
     ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
-  - **A kind's id is short** (`sentry`), and one id is one kind in an Assembly. Two kinds with one id fail the typecheck
-    and `jr2 up`.
+  - **A kind's id is short** (`sentry`): lowercase letters, digits and `-`, and it starts with a letter. One id is one
+    kind in an Assembly. Two kinds with one id fail the typecheck and `jr2 up`. `defineHookKind` refuses an id of
+    another form, an `api` that it does not know, and a `posts` entry that is not an `https://` url that ends in `/`. A
+    kind's constructor refuses a credential of the wrong form: a `publicKey` that is not 64 hex characters, or a
+    `secret` that is not a named secret.
   - **A follow-up is data.** A kind's answer to a person can give one POST for the door to make after the answer, with
     its url and its JSON (the reply to a Slack click). The kind declares the hosts of its posts, and `jr2 up` adds them
     to the Instance Effector's fence (ADR-0068).
@@ -129,7 +170,12 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
     "no match" ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A secret that verifies a
     delivery can also forge one, so the Orchestrator never holds it.
   - `token`: the service sends a shared token in a header (GitLab). The door, in the Orchestrator, compares its sha-256
-    with the digest that `jr2 up` gave it, and then removes the header.
+    with the digest that `jr2 up` gave it, and then removes the header. The digests go in one Secret,
+    `jr2-hook-digests`, as one JSON object from the secret's name to its digest. It is not `jr2-caller-digests`, because
+    `jr2 caller rotate` writes that Secret whole. The Orchestrator reads it through a mount, and again when it changes,
+    as it reads the Caller digests. `jr2 up` applies it at each converge, empty when no Hook is `token`. It computes
+    each digest on the host, from the entry of the `secrets` list: a literal, or the key of the user's Secret with one
+    trailing newline removed, as the Effector reads a value. The value goes into no object that `jr2 up` writes.
   - `ed25519`: the door, in the Orchestrator, checks the signature over the timestamp and the body (Discord) against the
     application's public key. A public key can verify a signature and cannot make one, so it is not a secret, and the
     config holds it as a literal.
@@ -153,7 +199,10 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
   Effector ([ADR-0011](0011-workflow-defined-events.md)). The build must check what the services' docs do not settle:
   whether Slack signs `url_verification` (the design verifies it first), whether `trigger_id` is unique for each request
   (the body's digest catches a repeat anyway), whether Discord sends an interaction again, whether a Discord follow-up
-  needs a bot token (the design does not use one), and Slack's limit on the length of a text.
+  needs a bot token (the design does not use one), and Slack's limit on the length of a text. The `slack` kind gives the
+  door a limit of 4000 characters, the length that Slack's docs advise for a message's `text`; no one checked the limit
+  of the answer to a command or of a post to a `response_url`. GitLab's `Idempotency-Key` is from GitLab's docs, and no
+  one checked it against a real delivery.
 
 ## Considered options
 
@@ -197,7 +246,10 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
 - [ADR-0014](0014-observation-is-open-run-state-is-not.md)'s guarded band becomes a scope check for each route.
   [ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)'s Console takes any Caller's credential, and shows
   only what its scopes allow. ADR-0071's foreign dispatch takes any token with `start` for that Workflow.
-- The Kit gains the package `@jr2/hooks`: the interface of a Hook kind, `webhook()`, and jr2's kinds.
+- The Kit gains the package `@jr2/hooks`: the interface of a Hook kind, `webhook()`, and jr2's kinds. It is a new public
+  package, so a maintainer publishes its first version by hand before the first tag that holds it
+  ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)'s bootstrap). Until then the
+  release job cannot stage it, and the staged `@jr2/orchestrator`, which depends on it, cannot install.
 - `jr2.config.ts` gains `callers`, `hooks` and `cors`. The CLI gains `jr2 caller token|rotate <name>` and `jr2 whoami`
   ([ADR-0009](0009-cli-and-instance-interface.md)).
 - GLOSSARY.md: **Caller** names the Steering message and the Hook. **Hook** and **Hook kind** are new terms.

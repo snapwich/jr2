@@ -18,7 +18,7 @@
 //   GET    /workflows/:wrapper/chart-schema           the grammar, narrowed to the Open body    [open]
 //   PUT    /workflows/:wrapper/charts/:name           admit + keep a runtime Chart              [Instance token]
 //   DELETE /workflows/:wrapper/charts/:name           remove a runtime Chart                    [Instance token]
-//   POST   /workflows/:wrapper/charts/:name/runs      start the named Chart                     [Instance token]
+//   POST   /workflows/:wrapper/charts/:name/runs      start the named Chart                     [start]
 //   GET    /workflows/:name/runs/:runId/machine       the run's bound Machine, Charts compiled  [open]
 //
 //   # `jr2 up`, and nothing else (ADR-0069)
@@ -30,17 +30,21 @@
 // agent surface recorded against its own Sandbox — never to a Gate. That is what stops an Agent
 // from approving its own review.
 //
-// THREE bands of access, not two (ADR-0014) — the middleware is what says which:
+// The bands of access (ADR-0014, ADR-0078) — the middleware is what says which:
 //
 //   open          structure + observation. `/workflows`, a template's Machine, the Console shell,
 //                 and the run PROJECTIONS below (`GET /workflows/:name/runs*`). No context, no
 //                 control.
 //   authenticated any principal we minted a token for. The Agent's surface lives here, scoped
 //                 further per-registration by `mayDeliverToAgent`.
-//   instanceOnly  the Instance token ALONE. Run control — starting a run included (ADR-0058) — and
-//                 full run state (`/runs*`): a Sandbox token authenticates but is refused, because
+//   guarded       a CALLER (ADR-0078) with the route's one scope, for the Workflow of the run or
+//                 the door it addresses: run state, run control, starting a run and Gates. A
+//                 Sandbox token authenticates but is refused, because it is never a Caller:
 //                 starting work, reading another feature's context, or cancelling a run is not on
 //                 the Agent's surface any more than a Gate is.
+//   instanceOnly  the Instance token's Caller ALONE: the routes no scope names (the runtime Chart
+//                 routes, `GET /repos`, a Hook's log).
+//   hook          `POST /hooks/:name` (ADR-0011): no bearer token, and the Hook's own verifier.
 
 import { readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -49,10 +53,13 @@ import tsBlankSpace from "ts-blank-space";
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { accepts } from "hono/accepts";
+import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import {
   DISPATCHED_BY_HEADER,
+  dispatchKeyOf,
+  KEY_ONLY_HEADER,
   EventValidationError,
   NotTakenError,
   OutstandingError,
@@ -62,18 +69,27 @@ import {
 import type { RepoStatus } from "./repos.ts";
 import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
 import {
-  isAgentPrincipal,
+  callerHasScope,
+  callerMay,
+  callerMayAny,
+  instanceCaller,
+  isInstancePrincipal,
   mayAskForSandbox,
   mayDeliverToAgent,
+  ON_BEHALF_OF_HEADER,
+  ON_BEHALF_OF_MAX,
   SLOT_HEADER,
   type Authenticator,
+  type Caller,
   type Principal,
 } from "./tokens.ts";
+import type { Scope } from "./config.ts";
+import { callerRecord } from "./callers.ts";
+import { STEERING_TEXT_MAX } from "./steer.ts";
 import {
-  DispatchKeyConflictError,
-  keyAnswer,
-  keyConflict,
   observe,
+  StandingRefused,
+  SteeringRefused,
   UnknownWorkflowError,
   type RunFeedEvent,
   type RunHost,
@@ -83,6 +99,7 @@ import {
 import { KIT_VERSION } from "./config.ts";
 import type { AssemblyDoor } from "./assembly.ts";
 import { ChartRefusal } from "./chart.ts";
+import { HOOK_LOG_DEFAULT, HOOK_LOG_MAX, type HookDoor } from "./hooks.ts";
 import { chartName, NamedChartError, splitChartName, type NamedCharts } from "./charts.ts";
 
 // ---- The route table (ADR-0072) -------------------------------------------------------------
@@ -92,9 +109,12 @@ import { chartName, NamedChartError, splitChartName, type NamedCharts } from "./
 // the app's own registrations both ways and checks each row's band on the wire, so the table
 // cannot drift from the code by forgetting.
 
-/** The access bands of ADR-0014, named for the credential each requires, and the publish door's
- * band (ADR-0069): the publish token alone. */
-export type HttpBand = "open" | "authenticated" | "instanceOnly" | "publishOnly";
+/** The access bands of ADR-0014, named for what each checks, the publish door's band (ADR-0069):
+ * the publish token alone, and the Hook's band (ADR-0011, ADR-0078): the Hook's own verifier, and
+ * no bearer token. `guarded` takes a Caller with the route's {@link HttpRoute.scope}
+ * (ADR-0078); `instanceOnly` takes the Instance token's Caller alone, for a route that no scope
+ * names. */
+export type HttpBand = "open" | "authenticated" | "guarded" | "instanceOnly" | "publishOnly" | "hook";
 
 /** One route of the Orchestrator's HTTP API (ADR-0072). */
 export type HttpRoute = {
@@ -102,6 +122,10 @@ export type HttpRoute = {
   /** In Hono syntax, exactly as registered: `:param`, and `:param{regex}` for a constrained one. */
   path: string;
   band: HttpBand;
+  /** A `guarded` route's scope (ADR-0078): the one a Caller needs, for the Workflow of the run or
+   * the door that the route addresses; a list when any one of them opens the route (each opens its
+   * own part of the answer); `any` for a route that takes any Caller. */
+  scope?: Scope | readonly Scope[] | "any";
   /** One line: what the route does. */
   summary: string;
   /** The request body, as a type name or in short; absent when the route reads none. */
@@ -136,6 +160,38 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
   },
   {
     method: "GET",
+    path: "/whoami",
+    band: "guarded",
+    scope: "any",
+    summary: "The request's Caller: how jr2 knows it, its name, what it may do, and the party it says it acts for.",
+    response: "Caller",
+    stream: false,
+    adrs: ["0078"],
+  },
+  {
+    method: "POST",
+    path: "/hooks/:name",
+    band: "hook",
+    summary:
+      "A delivery of an outside service to the Hook that the current Assembly's config names. The Hook's verifier authenticates it, and it goes to the open Gates whose handlers hear its kind and event key. 413 for a body above 2 MiB, before the verifier and with no more of the body read than that; 401 for a delivery that fails the verifier, 404 for a name that no Hook has, 503 with no current Assembly, and 503 when a standing Pool that hears it has no live run and is not paused, or when the delivery followed the Pool's hand-overs 3 times and the Pool handed its run over again. A 503 claims no delivery id.",
+    body: "the service's own request",
+    response:
+      "the kind's answer to a handshake, or HookOutcome: { delivery, seen, delivered, refused, ignored, sources, payloadRefused? }",
+    stream: false,
+    adrs: ["0011", "0078"],
+  },
+  {
+    method: "GET",
+    path: "/hooks/:name",
+    band: "instanceOnly",
+    summary:
+      "A Hook's log, newest first: each delivery of the last week, with what the door did with it. `?limit=` (default 50, at most 1000).",
+    response: "{ hook, declared, lines: HookLogLine[] }",
+    stream: false,
+    adrs: ["0011", "0065"],
+  },
+  {
+    method: "GET",
     path: "/workflows",
     band: "open",
     summary:
@@ -148,10 +204,11 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     method: "GET",
     path: "/assembly",
     band: "open",
-    summary: "The current Assembly and the Assemblies that live runs hold.",
-    response: "AssemblyView",
+    summary:
+      "The current Assembly, the Assemblies that live runs hold, and each standing Workflow: live, paused or waiting, its run, and how many items it holds.",
+    response: "AssemblyView & { standing?: StandingView[] }",
     stream: false,
-    adrs: ["0069"],
+    adrs: ["0017", "0069"],
   },
   {
     method: "PUT",
@@ -161,7 +218,7 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
       "Publish the next Assembly. `jr2 up` calls it, and nothing else. A refused Assembly leaves the current one current.",
     body: "the Assembly as a tar stream, with the headers `jr2-kit-version` and `jr2-assembly-hash`",
     response:
-      "200 with the Assembly, its Workflows, the held Assemblies and the ones collected; 400, 409 or 422 with the reason",
+      "200 with the Assembly, its Workflows, the held Assemblies, the ones collected and each standing Workflow's state; 400, 409 or 422 with the reason",
     stream: false,
     adrs: ["0069"],
   },
@@ -196,12 +253,13 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
   {
     method: "POST",
     path: "/workflows/:wrapper/charts/:name/runs",
-    band: "instanceOnly",
+    band: "guarded",
+    scope: "start",
     summary: "Start a run of a named Chart, as `POST /workflows/<wrapper>%2F<name>/runs` does.",
     body: "the Chart wrapper's input, without the Chart",
     response: "201 { runId, instanceId }; 409 when the named Chart cannot run now",
     stream: false,
-    adrs: ["0070"],
+    adrs: ["0070", "0078"],
   },
   {
     method: "GET",
@@ -223,6 +281,16 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
   },
   {
     method: "GET",
+    path: "/console/config",
+    band: "open",
+    summary:
+      "What the Console needs before a login: each JWT issuer that offers a login, and its client id. Both are public values.",
+    response: "{ login: Array<{ issuer, clientId }> }",
+    stream: false,
+    adrs: ["0032", "0078"],
+  },
+  {
+    method: "GET",
     path: "/workflows/:name",
     band: "open",
     summary: "The Console page to a browser; to a JSON caller, the workflow and its declared input schema.",
@@ -233,14 +301,15 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
   {
     method: "POST",
     path: "/workflows/:name/runs",
-    band: "instanceOnly",
+    band: "guarded",
+    scope: "start",
     summary:
-      "Start a run of a registered workflow. A `dispatch` from another Orchestrator sends the header `jr2-dispatched-by`, and a repeated start with its key answers the run that it started.",
+      "Start a run of a registered workflow. A `dispatch` from another Orchestrator sends the header `jr2-dispatched-by`, and a repeated start with its key answers the run that it started. With the header `jr2-key-only: true` too, the start is a key-only ask: it answers the run under the key, and starts nothing. For a standing Workflow, jr2 starts the run: the start only resumes a paused one, and `?drop-held=true` resumes it with no held item.",
     body: "the workflow's input, checked against its declared input schema",
     response:
-      "201 { runId, instanceId }; 200 { runId, instanceId, existing: true } for a repeated dispatch; 422 { error, report } when the door refuses a Chart in the input",
+      "201 { runId, instanceId }; 201 { runId, instanceId, resumed: true } for a resumed standing Workflow; 200 { runId, instanceId, existing: true } for a repeated dispatch; 200 { existing: false } for a key-only ask with no run under the key; 409 for a standing Workflow that is not paused, or a dispatch to one; 422 { error, report } when the door refuses a Chart in the input",
     stream: false,
-    adrs: ["0033", "0058", "0070", "0071"],
+    adrs: ["0017", "0033", "0058", "0070", "0071", "0078"],
   },
   {
     method: "GET",
@@ -326,11 +395,12 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
   {
     method: "GET",
     path: "/runs",
-    band: "instanceOnly",
-    summary: "The live runs, with their full status.",
+    band: "guarded",
+    scope: "read",
+    summary: "The live runs of the Workflows that the Caller may read, with their full status.",
     response: "RunStatus[]",
     stream: false,
-    adrs: ["0009", "0014"],
+    adrs: ["0009", "0014", "0078"],
   },
   {
     method: "GET",
@@ -344,59 +414,90 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
   {
     method: "GET",
     path: "/runs/resolve",
-    band: "instanceOnly",
-    summary: "The run ids that start with a prefix (`?prefix=`, at least 4 characters).",
+    band: "guarded",
+    scope: "any",
+    summary:
+      "The run ids that start with a prefix (`?prefix=`, at least 4 characters), of the Workflows in any scope of the Caller.",
     response: "{ prefix, runIds: string[], truncated }",
     stream: false,
-    adrs: ["0009"],
+    adrs: ["0009", "0078"],
   },
   {
     method: "GET",
     path: "/runs/:runId",
-    band: "instanceOnly",
-    summary: "One run's status, live or settled, with its open Gates.",
-    response: "RunStatus & { gates: GateView[] }",
+    band: "guarded",
+    scope: ["read", "answer"],
+    summary:
+      "One run's status, live or settled, with its open Gates. `read` opens the status, and `answer` opens the Gates: with `answer` alone the answer is the run's observation and its Gates, and never its context.",
+    response:
+      "RunStatus & { gates: GateView[] }; RunStatus with `read` alone; RunObservation & { gates: GateView[] } with `answer` alone",
     stream: false,
-    adrs: ["0009", "0011"],
+    adrs: ["0009", "0011", "0078"],
   },
   {
-    // `authenticated` in the code, and the handler refuses a Sandbox token itself (ADR-0013): the
-    // credential the route requires is the Instance token's, so this is its band.
     method: "POST",
     path: "/runs/:runId/gates/:gate/events",
-    band: "instanceOnly",
+    band: "guarded",
+    scope: "answer",
     summary: "Deliver an event to an open Gate of a run.",
     body: "{ type, ...payload }, checked against the Gate's schema for that event",
     response: "{ ok: true }; 409 { error, acceptsNow } when the run does not take it now",
     stream: false,
-    adrs: ["0011", "0013"],
+    adrs: ["0011", "0013", "0078"],
   },
   {
     method: "GET",
     path: "/runs/:runId/events",
-    band: "instanceOnly",
+    band: "guarded",
+    scope: "read",
     summary: "One run's full activity until it settles; a settled run's final status, once.",
-    response: "SSE: status, emit, retry, admission, pick, placing, placed, child-error, effect, gone",
+    response:
+      "SSE: status, emit, retry, admission, pick, placing, placed, child-error, looked, hook-refused, pool, effect, gone",
     stream: true,
-    adrs: ["0022", "0023", "0064", "0067"],
+    adrs: ["0011", "0022", "0023", "0064", "0067", "0078"],
   },
   {
     method: "POST",
     path: "/runs/:runId/events",
-    band: "instanceOnly",
+    band: "guarded",
+    scope: "cancel",
     summary: "Cancel a run: it ends, and its Workspaces go unless `keep` is true.",
     body: '{ type: "CANCEL", keep?: boolean }',
     response: "{ ok: true }",
     stream: false,
-    adrs: ["0002", "0025"],
+    adrs: ["0002", "0025", "0078"],
+  },
+  {
+    method: "GET",
+    path: "/runs/:runId/agents",
+    band: "guarded",
+    scope: "steer",
+    summary:
+      "The Agent slots of a run that a Steering message can go to: one row for each Agent of each live Machine instance.",
+    response: "Array<{ agent, open, steerable }>; [] for a run that is not live",
+    stream: false,
+    adrs: ["0002", "0078"],
+  },
+  {
+    method: "POST",
+    path: "/runs/:runId/steering",
+    band: "guarded",
+    scope: "steer",
+    summary:
+      "Send a Steering message to one Agent slot of a live run: its open Turn hears it at a step boundary, or else its next Turn.",
+    body: "{ agent, text }, `text` at most 16 KiB",
+    response:
+      "202 { id, agent, open }; 413 for a longer text; 409 { error, agents? } when no live Machine instance holds the slot; 403 when the Agent is not steerable",
+    stream: false,
+    adrs: ["0002", "0062", "0078"],
   },
   {
     method: "GET",
     path: "/agents/:instanceId/surface",
     band: "authenticated",
     summary:
-      "An Agent's Menu, this Turn's Allowed picks and the conversation's pending notices. A control token reads only its own pod's, for the slot it states.",
-    response: "AgentSurfaceView & { notices: Array<{ id, notice }> }",
+      "An Agent's Menu, this Turn's Allowed picks, the conversation's pending notices and its slot's Steering messages. A control token reads only its own pod's, for the slot it states.",
+    response: "AgentSurfaceView & { notices: Array<{ id, notice }>, steering?: Array<{ id, message }> }",
     stream: false,
     adrs: ["0013", "0029"],
   },
@@ -423,7 +524,8 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     method: "POST",
     path: "/agents/:instanceId/notices",
     band: "authenticated",
-    summary: "Acknowledge the notices a step boundary appended to the Turn: they are heard in its conversation.",
+    summary:
+      "Acknowledge the notices and Steering messages a step boundary appended to the Turn: they are heard in its conversation.",
     body: "{ heard: string[] }",
     response: "{ heard: number }",
     stream: false,
@@ -450,6 +552,17 @@ type RunEventBody = { type?: string; keep?: unknown };
 /** `GET /runs/resolve` floor — a 1-char prefix is a table scan, not a question. The CLI enforces
  * the same floor on the argument; this one guards the scan regardless of who is calling. */
 const MIN_RUN_ID_PREFIX = 4;
+
+/** How many candidates `GET /runs/resolve` reads for a Caller whose scopes name Workflows: the ids
+ * of other Workflows must not fill its answer. */
+const RESOLVE_SCAN = 200;
+
+/** The items of `items` for which `keep` answers true, in order. */
+async function filterAsync<T>(items: readonly T[], keep: (item: T) => Promise<boolean>): Promise<T[]> {
+  const out: T[] = [];
+  for (const item of items) if (await keep(item)) out.push(item);
+  return out;
+}
 
 /** How many ambiguous candidates are worth showing. Proving ambiguity takes 2; letting the caller
  * PICK is the point, so the listing goes deeper before it truncates. */
@@ -514,6 +627,15 @@ function restorePendingMessage(what: string): string {
 /** Why the publish token is refused everywhere but `PUT /assembly` (ADR-0069): it is not an
  * Instance principal, so it reads no run, starts none, and speaks for no Agent. */
 const PUBLISHER_ONLY = "the publish token publishes an Assembly (PUT /assembly) and does nothing else";
+
+/** Why a principal that is not a Caller is refused on a Caller's route (ADR-0014, ADR-0078). */
+const NOT_A_CALLER =
+  "this route needs a Caller, and a Sandbox token is not one: no Agent reaches run state, run control or a Gate";
+
+/** A Caller as a 403 names it: `token/ci`. */
+function callerLabel(caller: Caller): string {
+  return `the Caller ${caller.via}/${caller.name}`;
+}
 
 /** The app's context: `authenticated` resolves the bearer to a `principal` the routes read back. */
 type JR2Env = { Variables: { principal: Principal } };
@@ -829,6 +951,16 @@ export type CreateAppOptions = {
    * that build an app straight over a host: those routes then answer 404.
    */
   charts?: NamedCharts;
+  /** The origins a browser app may call from (ADR-0078), read per request: the current Assembly's
+   * `cors`. Absent: none. */
+  cors?: () => readonly string[];
+  /** The JWT issuers the Console offers a login against (ADR-0032), read per request: the current
+   * Assembly's issuers with `login: true`, each with its `audience` as the client id. Absent: none. */
+  consoleLogin?: () => ReadonlyArray<{ issuer: string; clientId: string }>;
+  /** The Hook's door (ADR-0011, ADR-0078): `POST /hooks/:name` and `GET /hooks/:name`. Absent for
+   * the in-process tests that build an app straight over a host: `POST` then answers 503, as with
+   * no current Assembly, and `GET` answers no line. */
+  hooks?: HookDoor;
 };
 
 /**
@@ -847,34 +979,117 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   const authenticated: MiddlewareHandler<JR2Env> = async (c, next) => {
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
     // The slot a control request states (ADR-0076): a control token without one resolves to nothing.
-    const principal = auth(bearerOf(c), c.req.header(SLOT_HEADER));
+    const principal = await auth(bearerOf(c), c.req.header(SLOT_HEADER));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
     if (principal.kind === "publisher") return c.json({ error: PUBLISHER_ONLY }, 403);
     c.set("principal", principal);
     return next();
   };
   /** The principal `authenticated` resolved. An unconfigured `auth` means full trust. */
-  const principalOf = (c: Context<JR2Env>): Principal => c.get("principal") ?? { kind: "instance" };
+  const principalOf = (c: Context<JR2Env>): Principal =>
+    c.get("principal") ?? { kind: "caller", caller: instanceCaller() };
+  /** The Caller a `guarded` middleware resolved. */
+  const callerOf = (c: Context<JR2Env>): Caller => {
+    const principal = principalOf(c);
+    if (principal.kind !== "caller") throw new Error("callerOf: the route is not in the guarded band");
+    return principal.caller;
+  };
 
   /**
-   * Authenticate, AND require the INSTANCE token (ADR-0014). A Sandbox token is a token we minted,
-   * so `authenticated` alone lets it through — which on the run surface is too much: it would let a
-   * Custodian's credential read every run's context (other features' branches, tickets, verdicts) and
-   * CANCEL any run. Neither is on the Agent's surface. Its scope is delivering to agent
-   * registrations recorded against its OWN Sandbox (ADR-0013), and the gate route already says so in
-   * the other direction.
+   * Authenticate a CALLER, and require one of `scopes` for at least one Workflow (ADR-0014,
+   * ADR-0078). A Sandbox token is a token we minted, but it is never a Caller: on the run surface it
+   * would let a Custodian's credential read every run's context (other features' branches, tickets,
+   * verdicts) and CANCEL any run, and neither is on the Agent's surface (ADR-0013). The Workflow of
+   * the run or the door is the handler's to check, with `mayFor`, because only the handler knows it.
+   * `any` takes every Caller. The Caller's `jr2-on-behalf-of` claim is read here, once.
+   */
+  const guarded =
+    (scopes: Scope | readonly Scope[] | "any"): MiddlewareHandler<JR2Env> =>
+    async (c, next) => {
+      const onBehalfOf = c.req.header(ON_BEHALF_OF_HEADER)?.trim();
+      if (onBehalfOf !== undefined && onBehalfOf.length > ON_BEHALF_OF_MAX) {
+        return c.json(
+          { error: `the ${ON_BEHALF_OF_HEADER} header is longer than ${ON_BEHALF_OF_MAX} characters` },
+          400,
+        );
+      }
+      let caller: Caller;
+      if (!auth) {
+        caller = instanceCaller(); // no authenticator configured: tests only (see the doc comment)
+      } else {
+        const principal = await auth(bearerOf(c), c.req.header(SLOT_HEADER));
+        if (!principal) return c.json({ error: "unauthorized" }, 401);
+        if (principal.kind === "publisher") return c.json({ error: PUBLISHER_ONLY }, 403);
+        if (principal.kind !== "caller") return c.json({ error: NOT_A_CALLER }, 403);
+        caller = principal.caller;
+      }
+      // A Hook's `onBehalfOf` comes from its signed payload, never from a header (ADR-0078).
+      if (onBehalfOf && caller.via !== "hook") caller = { ...caller, onBehalfOf };
+      if (scopes !== "any") {
+        const list: readonly Scope[] = typeof scopes === "string" ? [scopes] : scopes;
+        if (!list.some((s) => callerHasScope(caller, s))) {
+          return c.json(
+            {
+              error: `${callerLabel(caller)} has no ${list.map((s) => `"${s}"`).join(" or ")} scope for any Workflow (ADR-0078)`,
+              scope: list.length === 1 ? list[0] : list,
+            },
+            403,
+          );
+        }
+      }
+      c.set("principal", { kind: "caller", caller });
+      return next();
+    };
+
+  /** The 403 for a Caller without `scope` on `workflow`, or undefined when it has it. It names the
+   * scope and the Workflow that the request needed (ADR-0078). */
+  const mayFor = (c: Context<JR2Env>, scope: Scope, workflow: string): Response | undefined => {
+    const caller = callerOf(c);
+    if (callerMay(caller, scope, workflow)) return undefined;
+    return c.json(
+      {
+        error: `${callerLabel(caller)} needs the "${scope}" scope for Workflow "${workflow}" (ADR-0078)`,
+        scope,
+        workflow,
+      },
+      403,
+    );
+  };
+
+  /**
+   * Authenticate, AND require the Instance token's Caller (ADR-0014): the routes that no scope
+   * names — the runtime Chart routes and `GET /repos`. A named token is refused here, whatever its
+   * scopes, and so is every principal that is not a Caller.
    */
   const instanceOnly: MiddlewareHandler<JR2Env> = async (c, next) => {
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
-    const principal = auth(bearerOf(c), c.req.header(SLOT_HEADER));
+    const principal = await auth(bearerOf(c), c.req.header(SLOT_HEADER));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
     if (principal.kind === "publisher") return c.json({ error: PUBLISHER_ONLY }, 403);
-    if (principal.kind !== "instance") {
-      return c.json({ error: "run state and control need the Instance token — a Sandbox token has neither" }, 403);
+    if (principal.kind !== "caller") return c.json({ error: NOT_A_CALLER }, 403);
+    if (!isInstancePrincipal(principal)) {
+      return c.json(
+        { error: `this route needs the Instance token: no scope opens it, so ${callerLabel(principal.caller)} cannot` },
+        403,
+      );
     }
     c.set("principal", principal);
     return next();
   };
+
+  // The origins a browser app may call from (ADR-0078): an allowlist, empty by default, read per
+  // request so a publish changes it. The Console is served from this origin and needs no entry. A
+  // preflight from an origin that is not listed gets no CORS header, so the browser refuses it.
+  const allowedOrigins = opts.cors ?? (() => []);
+  app.use(
+    "*",
+    cors({
+      origin: (origin) => (origin !== "" && allowedOrigins().includes(origin) ? origin : null),
+      allowMethods: ["GET", "POST", "PUT", "DELETE"],
+      allowHeaders: ["authorization", "content-type", ON_BEHALF_OF_HEADER, DISPATCHED_BY_HEADER, KEY_ONLY_HEADER],
+      maxAge: 600,
+    }),
+  );
 
   // Liveness, and the one place an instance says WHAT IT IS. Unauthenticated because it is the
   // readiness probe's target and because identity is not run state — it is the same class of thing
@@ -883,6 +1098,42 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // `hash` is the current Assembly's (ADR-0069), absent while the process holds none.
   app.get("/healthz", (c) => c.json({ ok: true, version: KIT_VERSION, hash: opts.assembly?.current()?.hash }));
   app.get("/readyz", (c) => c.json({ ready: true }));
+
+  // The request's Caller record (ADR-0078): what a credential may do, asked before it fails. Any
+  // Caller: it says nothing that the credential's holder does not already hold.
+  app.get("/whoami", guarded("any"), (c) => c.json(callerOf(c)));
+
+  // The Hook's door (ADR-0011, ADR-0078). Outside the bands: no bearer token opens it, and the
+  // Hook's own verifier authenticates each delivery, in hooks.ts. The raw bytes, never a parsed
+  // body, because a signature covers the bytes. The door reads the body only after it knows the
+  // Hook, and no more of it than its limit (`limitedBody`).
+  app.post("/hooks/:name", async (c) => {
+    if (!opts.hooks) {
+      return c.json({ error: "the Orchestrator has no current Assembly, so no Hook is declared now — ask again" }, 503);
+    }
+    const answer = await opts.hooks.deliver(c.req.param("name"), c.req.raw.headers, limitedBody(c.req.raw));
+    // The follow-up (the reply to a Slack click) goes after the answer: the service waits for the
+    // answer, not for the post (ADR-0011). It never rejects.
+    const after = answer.after;
+    if (after) setImmediate(() => void after());
+    const status = answer.status as 200 | 400 | 401 | 404 | 413 | 429 | 503;
+    if (answer.body === null) return c.body(null, status);
+    if (typeof answer.body === "string") return c.text(answer.body, status);
+    // As text, not `c.json`: hono's JSON type of a recursive `Json` does not end.
+    return c.body(JSON.stringify(answer.body), status, { "content-type": "application/json" });
+  });
+
+  // A Hook's log (ADR-0011): the Instance token alone. A line can carry a payload's issues and a
+  // handler's words, and no scope names the act of reading what an outside service sent.
+  app.get("/hooks/:name", instanceOnly, (c) => {
+    const raw = c.req.query("limit");
+    const limit = raw === undefined ? HOOK_LOG_DEFAULT : Number(raw);
+    if (!Number.isInteger(limit) || limit < 1 || limit > HOOK_LOG_MAX) {
+      return c.json({ error: `limit is a whole number from 1 to ${HOOK_LOG_MAX}` }, 400);
+    }
+    const name = c.req.param("name");
+    return c.json(opts.hooks ? opts.hooks.log(name, limit) : { hook: name, declared: false, lines: [] });
+  });
 
   // Structure, not state: the workflow listing, a template's Machine, and the Console shell are
   // unauthenticated. They expose no run, drive nothing, and the Console is a BROWSER page — it
@@ -900,7 +1151,11 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // `mounts` is what this process reads from its mounted ConfigMaps, so a publish can wait until
   // the kubelet has delivered the data the converge wrote.
   app.get("/assembly", async (c) => {
-    const view = opts.assembly ? await opts.assembly.view() : { kitVersion: KIT_VERSION, current: null, held: [] };
+    const base = opts.assembly ? await opts.assembly.view() : { kitVersion: KIT_VERSION, current: null, held: [] };
+    // The standing Workflows (ADR-0017): each one's state and how many items it holds, which
+    // `jr2 up` and `jr2 status` print. Counts and run ids, as `held` has: no key and no item.
+    const standing = await host.standingView();
+    const view = standing.length ? { ...base, standing } : base;
     return c.json(opts.mounts ? { ...view, mounts: await opts.mounts() } : view);
   });
 
@@ -910,7 +1165,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // its own status, and the old Assembly stays current through every refusal.
   app.put("/assembly", async (c) => {
     if (auth) {
-      const principal = auth(bearerOf(c));
+      const principal = await auth(bearerOf(c));
       if (!principal) return c.json({ error: "unauthorized" }, 401);
       if (principal.kind !== "publisher") {
         return c.json(
@@ -929,6 +1184,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       hash: c.req.header("jr2-assembly-hash"),
       body: c.req.raw.body,
     });
+    // A publish that landed names each standing Workflow's state after it (ADR-0017): `jr2 up` prints
+    // it, the paused ones with how many items they hold.
+    if (answer.status === 200) {
+      const standing = await host.standingView();
+      if (standing.length) return c.json({ ...(answer.body as object), standing }, 200);
+    }
     return c.json(answer.body, answer.status);
   });
 
@@ -997,37 +1258,81 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
    *
    * A foreign `dispatch` sends `jr2-dispatched-by` (ADR-0071): its key makes a repeated start one
    * run, answered `200 { runId, instanceId, existing: true }` where a new one is `201`. The key is
-   * asked first, so a re-send answers its run even when the name would be refused now; a key a
-   * run of another Workflow carries is 409. A header that does not parse is 400. `jr2 run` and the
+   * asked first, so a re-send answers its run even when the name would be refused now. The key is
+   * scoped to the Workflow named: the same key in another Workflow is another run. A header that
+   * does not parse is 400. `jr2 run` and the
    * Console send none. Any throw that is not a refusal is a defect, 500: a foreign caller reads a
    * 404 as "nothing was started", and a defect may come after a start.
+   *
+   * With `jr2-key-only: true` as well, the start is a key-only ask (ADR-0071): the Instance
+   * Effector sends it, with no body, when the calling slot's schema refuses the body. The door
+   * asks the key as above, and with no run under it answers `200 { existing: false }` and starts
+   * nothing: not a 404, which reads as a refused name, and not a 5xx, which reads as a defect.
+   * The header without `jr2-dispatched-by`, or with another value, is 400.
    */
   const startRun = async (c: Context<JR2Env>, name: string): Promise<Response> => {
+    // The scope first (ADR-0078): a Caller without `start` on this Workflow learns no key's run.
+    const refused = mayFor(c, "start", name);
+    if (refused) return refused;
     const header = dispatchedByOf(c.req.header(DISPATCHED_BY_HEADER));
     if ("error" in header) return c.json({ error: header.error }, 400);
     const { by } = header;
+    const keyOnly = c.req.header(KEY_ONLY_HEADER);
+    if (keyOnly !== undefined && (keyOnly !== "true" || !by)) {
+      return c.json(
+        {
+          error: `the ${KEY_ONLY_HEADER} header is "true", with a ${DISPATCHED_BY_HEADER} header that carries the key (ADR-0071)`,
+        },
+        400,
+      );
+    }
     if (by) {
-      const found = await host.dispatched(by.effect);
-      if (found && found.workflow !== name) return c.json({ error: keyConflict(found, name, by.effect) }, 409);
-      if (found) return c.json({ ...keyAnswer(found, name, by.effect), existing: true }, 200);
+      const found = await host.dispatched(name, dispatchKeyOf(by));
+      if (found) return c.json({ runId: found.runId, instanceId: found.instanceId, existing: true }, 200);
+      // A key-only ask, and no run has the key: nothing is read, nothing is started.
+      if (keyOnly !== undefined) return c.json({ existing: false }, 200);
     }
     const unrunnable = opts.charts?.get(name)?.unrunnable;
     if (unrunnable !== undefined) return c.json({ error: `named Chart "${name}" cannot run: ${unrunnable}` }, 409);
+    // jr2 starts a standing Workflow's run (ADR-0017): a Caller's start only resumes a paused one,
+    // and a dispatch never starts one. `?drop-held=true` resumes with no held item.
+    if (host.isStanding(name)) {
+      if (by) {
+        return c.json(
+          { error: `"${name}" is a standing Workflow: jr2 starts its run, and a dispatch cannot (ADR-0017)` },
+          409,
+        );
+      }
+      try {
+        const resumed = await host.resumeStanding(name, callerRecord(callerOf(c)), {
+          dropHeld: c.req.query("drop-held") === "true",
+        });
+        return c.json({ ...resumed, resumed: true }, 201);
+      } catch (err) {
+        if (err instanceof StandingRefused) return c.json({ error: errMessage(err) }, 409);
+        return c.json({ error: errMessage(err) }, 500);
+      }
+    }
     const input = await readJson(c.req.text());
     try {
-      const { runId, instanceId, existing } = await host.start(name, input, by ? { dispatchedBy: by } : {});
+      // The run records its Caller (ADR-0078). A foreign dispatch's too: the Caller is the one whose
+      // credential the other Instance sent, with the party it says the start acts for.
+      const startedBy = { kind: "caller" as const, ...callerRecord(callerOf(c)) };
+      const { runId, instanceId, existing } = await host.start(name, input, {
+        ...(by ? { dispatchedBy: by } : {}),
+        startedBy,
+      });
       return existing ? c.json({ runId, instanceId, existing }, 200) : c.json({ runId, instanceId }, 201);
     } catch (err) {
       if (err instanceof ChartRefusal) return c.json({ error: "refused", report: err.report }, 422);
       if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
-      if (err instanceof DispatchKeyConflictError) return c.json({ error: errMessage(err) }, 409);
       if (err instanceof UnknownWorkflowError) return c.json({ error: errMessage(err) }, 404);
       return c.json({ error: errMessage(err) }, 500);
     }
   };
 
   // The documented start of a named Chart; `POST /workflows/<wrapper>%2F<name>/runs` is the same.
-  app.post("/workflows/:wrapper/charts/:name/runs", instanceOnly, (c) =>
+  app.post("/workflows/:wrapper/charts/:name/runs", guarded("start"), (c) =>
     startRun(c, chartName(c.req.param("wrapper"), c.req.param("name"))),
   );
 
@@ -1070,6 +1375,11 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     if (prefersHtml(c)) return consoleAsset("page.html", "text/html; charset=utf-8");
     return c.json({ error: "no JSON resource at / — the Console is the HTML dialect" }, 404);
   });
+  // What the Console needs before a login (ADR-0032): the issuers the current config offers a login
+  // against, each with its client id (the issuer's `audience`). Open, because the page reads it
+  // before it holds a credential, and because both values are public: a public client has no
+  // secret, and an issuer's URL is in every JWT it signs. Read per request, so a publish changes it.
+  app.get("/console/config", (c) => c.json({ login: opts.consoleLogin?.() ?? [] }));
   app.get("/workflows/:name", (c) => {
     // The shell for ANY name — an unknown workflow surfaces in-page via its 404'd /machine fetch.
     if (prefersHtml(c)) return consoleAsset("page.html", "text/html; charset=utf-8");
@@ -1098,7 +1408,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // allowlist not forwarding this route is a second layer, not the control (ADR-0059).
   // A Chart wrapper's one-shot door (ADR-0070): a Chart field in the body is admitted before the
   // run starts, and a refusal is 422 with the report. A named Chart rides the path encoded.
-  app.post("/workflows/:name/runs", instanceOnly, (c) => startRun(c, c.req.param("name")));
+  app.post("/workflows/:name/runs", guarded("start"), (c) => startRun(c, c.req.param("name")));
 
   // The registered template Machine's structure — what the Console's diagram renders (structure
   // is provider-independent, so the un-`provide()`d template is exactly right).
@@ -1190,6 +1500,13 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     // A child's error below an Agent's state (ADR-0024) is mechanism text, like `fault`: behind the
     // token.
     if (ev.kind === "child-error") return undefined;
+    // A look's mark (ADR-0011) names a Gate id, which a workflow may compute from its data: behind
+    // the token.
+    if (ev.kind === "looked") return undefined;
+    // A Hook's refusal (ADR-0011) carries a handler's own words: behind the token.
+    if (ev.kind === "hook-refused") return undefined;
+    // A Pool's marks (ADR-0017) name its items' keys, which are the workflow's data: behind the token.
+    if (ev.kind === "pool") return undefined;
     // An Effect's lines (ADR-0067) carry argv and output — working data: behind the token.
     if (ev.kind === "effect") return undefined;
     return sseFrame("status", observe(ev.status));
@@ -1257,7 +1574,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     });
   });
 
-  app.get("/runs", instanceOnly, (c) => c.json(host.list()));
+  // The live runs of the Workflows that the Caller may read (ADR-0078): a run of another Workflow is
+  // left out, not refused, so one Caller's list says nothing of another's runs.
+  app.get("/runs", guarded("read"), (c) => {
+    const caller = callerOf(c);
+    return c.json(host.list().filter((s) => callerMay(caller, "read", s.workflow)));
+  });
 
   // The Repos as the cluster currently reports them (ADR-0048/0051) — what `jr2 status` renders,
   // and the place ADR-0047's "register the key, the cache agent retries" points at. Instance band,
@@ -1279,13 +1601,24 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // ambiguous hash, and it holds down what this newly reveals — settled run ids are now visible to
   // an Instance-token holder, which `GET /runs`'s deferred `?all` had withheld. Deliberately not on
   // the open observation routes: prefix probing there would be a run-id enumeration oracle.
-  app.get("/runs/resolve", instanceOnly, async (c) => {
+  //
+  // Any Caller, for the Workflows in any of its scopes (ADR-0014): a Caller resolves only the ids it
+  // could address. A Caller with a scope for every Workflow needs no filter; any other reads each
+  // candidate's Workflow, over a wider scan, so the ids of other Workflows do not fill its answer.
+  app.get("/runs/resolve", guarded("any"), async (c) => {
     const prefix = c.req.query("prefix") ?? "";
     if (prefix.length < MIN_RUN_ID_PREFIX) {
       return c.json({ error: `prefix must be at least ${MIN_RUN_ID_PREFIX} characters` }, 400);
     }
+    const caller = callerOf(c);
+    const everyWorkflow = Object.values(caller.may).some((grant) => grant === "all");
     // Scan one past the cap so `truncated` is knowable without a second COUNT.
-    const found = await host.candidates(prefix, RESOLVE_LIMIT + 1);
+    const found = everyWorkflow
+      ? await host.candidates(prefix, RESOLVE_LIMIT + 1)
+      : await filterAsync(await host.candidates(prefix, RESOLVE_SCAN), async (id) => {
+          const workflow = (await host.read(id))?.workflow;
+          return workflow !== undefined && callerMayAny(caller, workflow);
+        });
     return c.json({
       prefix,
       runIds: found.slice(0, RESOLVE_LIMIT),
@@ -1297,26 +1630,41 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404. The status
   // carries the run's OPEN GATES (ADR-0011) — the discovery listing external callers act on
   // (`jr2 send` menus, UI inbox cards, webhook translators matching on meta). Settled run → [].
-  app.get("/runs/:runId", instanceOnly, async (c) => {
+  //
+  // `read` opens the status, `answer` opens the Gates (ADR-0014): a Caller with `answer` alone gets
+  // the run's observation and its Gates, and never its context — a person who answers a Gate reads
+  // the Gate's `meta`, which the author wrote for that person.
+  app.get("/runs/:runId", guarded(["read", "answer"]), async (c) => {
     const runId = c.req.param("runId");
     const status = await host.read(runId);
-    return status ? c.json({ ...status, gates: host.gates(runId) }) : c.json({ error: `no run "${runId}"` }, 404);
+    if (!status) return c.json({ error: `no run "${runId}"` }, 404);
+    const caller = callerOf(c);
+    const read = callerMay(caller, "read", status.workflow);
+    const answer = callerMay(caller, "answer", status.workflow);
+    if (!read && !answer) return mayFor(c, "read", status.workflow)!;
+    if (!answer) return c.json(status);
+    if (!read) return c.json({ ...observe(status), gates: host.gates(runId) });
+    return c.json({ ...status, gates: host.gates(runId) });
   });
 
   // Gates delivery (ADR-0011): validate the body against the gate's named schema and deliver into
   // the gated state. Unknown gate (never opened, state exited, run settled) → 404; a name the gate
   // doesn't accept, or a payload failing its schema → 400 naming what IS accepted.
   //
-  // A Gate is a HUMAN's decision (or a webhook's, or CI's). Every Agent principal — a control
-  // token or a fetch token — is refused here unconditionally: this is the exact line between "the
-  // Agent reports an outcome" and "the Agent approves its own PR" (ADR-0013, ADR-0076).
-  app.post("/runs/:runId/gates/:gate/events", authenticated, async (c) => {
-    if (isAgentPrincipal(principalOf(c))) {
-      return c.json({ error: "a Sandbox token cannot deliver to a gate — gates are not on the Agent's surface" }, 403);
+  // A Gate is a HUMAN's decision (or a Hook's, or CI's): a Caller with `answer` on the run's
+  // Workflow. Every Agent principal — a control token or a fetch token — is refused by the band,
+  // because it is never a Caller: this is the exact line between "the Agent reports an outcome" and
+  // "the Agent approves its own PR" (ADR-0013, ADR-0076). A run that is not live has no open Gate,
+  // and the delivery below answers it 404.
+  app.post("/runs/:runId/gates/:gate/events", guarded("answer"), async (c) => {
+    const live = host.status(c.req.param("runId"));
+    if (live) {
+      const refused = mayFor(c, "answer", live.workflow);
+      if (refused) return refused;
     }
     const body = await readJson(c.req.text());
     try {
-      host.sendToGate(c.req.param("runId"), c.req.param("gate"), body);
+      host.sendToGate(c.req.param("runId"), c.req.param("gate"), body, callerRecord(callerOf(c)));
       return c.json({ ok: true });
     } catch (err) {
       if (err instanceof UnknownAddressError) return c.json({ error: errMessage(err) }, 404);
@@ -1348,6 +1696,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     // A child's error below an Agent's state, which the Agent's answer does not carry (ADR-0024):
     // the operator reads it here, with its message.
     if (ev.kind === "child-error") return sseFrame(ev.kind, ev);
+    // A Gate's look gave its event and the run took it (ADR-0011).
+    if (ev.kind === "looked") return sseFrame(ev.kind, ev);
+    // A Hook's delivery reached an open Gate, and the Gate did not take it (ADR-0011).
+    if (ev.kind === "hook-refused") return sseFrame(ev.kind, ev);
+    // What a Pool of runs did with an item (ADR-0017): started, settled, or a held item refused.
+    if (ev.kind === "pool") return sseFrame(ev.kind, ev);
     // An Effect's lines (ADR-0067): its start, its stream, its output, an abort — Instance-token band.
     if (ev.kind === "effect") return sseFrame("effect", ev);
     return sseFrame("status", ev.status);
@@ -1356,11 +1710,18 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // SSE: a live run streams its status deltas + author `emit`s (current status replayed on attach,
   // then live until the terminal transition or client abort). A run that has already settled streams
   // its final status once and closes (so `jr2 logs -f` works on a finished run). Unknown run → 404.
-  app.get("/runs/:runId/events", instanceOnly, async (c) => {
+  app.get("/runs/:runId/events", guarded("read"), async (c) => {
     const runId = c.req.param("runId");
-    if (host.status(runId) === undefined) {
+    const live = host.status(runId);
+    if (live) {
+      const refused = mayFor(c, "read", live.workflow);
+      if (refused) return refused;
+    }
+    if (live === undefined) {
       const finalStatus = await host.read(runId);
       if (!finalStatus) return c.json({ error: `no run "${runId}"` }, 404);
+      const refused = mayFor(c, "read", finalStatus.workflow);
+      if (refused) return refused;
       return streamSSE(c, async (stream) => {
         await stream.writeSSE({ event: "status", data: JSON.stringify(finalStatus) });
         await sayGoneIfParked(stream, finalStatus);
@@ -1408,8 +1769,13 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // It ENDS the run (ADR-0025): the Agents' turns end with it, the run does not come back on the
   // next restore, and its Workspaces are destroyed unless the body says `keep: true`. `RunHost.stop()` — park it, keep it restorable — is a different verb, and
   // deliberately not on the wire.
-  app.post("/runs/:runId/events", instanceOnly, async (c) => {
+  app.post("/runs/:runId/events", guarded("cancel"), async (c) => {
     const runId = c.req.param("runId");
+    const known = await host.read(runId);
+    if (known) {
+      const refused = mayFor(c, "cancel", known.workflow);
+      if (refused) return refused;
+    }
     const body = (await readJson(c.req.text())) as RunEventBody;
     if (body.type !== "CANCEL") {
       return c.json({ error: `unknown event type "${body.type ?? ""}" (accepts: CANCEL)` }, 400);
@@ -1419,10 +1785,51 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       return c.json({ error: `"keep" must be a boolean` }, 400);
     }
     try {
-      await host.cancel(runId, { keep: body.keep === true });
+      await host.cancel(runId, { keep: body.keep === true, by: callerRecord(callerOf(c)) });
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: errMessage(err) }, 404);
+    }
+  });
+
+  // Steering messages (ADR-0002): free text from a Caller to one Agent slot of a run, which the
+  // Agent hears once, at a step boundary of its open Turn or at its next Turn's admission. The list
+  // says where a message can go, so a Caller never guesses an Instance ID; the same scope opens both.
+  app.get("/runs/:runId/agents", guarded("steer"), async (c) => {
+    const runId = c.req.param("runId");
+    const known = await host.read(runId);
+    if (!known) return c.json({ error: `no run "${runId}"` }, 404);
+    const refused = mayFor(c, "steer", known.workflow);
+    if (refused) return refused;
+    return c.json(host.agents(runId) ?? []);
+  });
+
+  app.post("/runs/:runId/steering", guarded("steer"), async (c) => {
+    const runId = c.req.param("runId");
+    const known = await host.read(runId);
+    if (!known) return c.json({ error: `no run "${runId}"` }, 404);
+    const refused = mayFor(c, "steer", known.workflow);
+    if (refused) return refused;
+    const body = (await readJson(c.req.text())) as { agent?: unknown; text?: unknown };
+    if (typeof body.agent !== "string" || body.agent === "") {
+      return c.json(
+        { error: `a Steering message names an Agent slot: { agent, text } (see GET /runs/${runId}/agents)` },
+        400,
+      );
+    }
+    if (typeof body.text !== "string" || body.text.trim() === "") {
+      return c.json({ error: "a Steering message has a text: { agent, text }" }, 400);
+    }
+    if (new TextEncoder().encode(body.text).length > STEERING_TEXT_MAX) {
+      return c.json({ error: `the text is longer than ${STEERING_TEXT_MAX} bytes (16 KiB)` }, 413);
+    }
+    try {
+      return c.json(host.steer(runId, body.agent, body.text, callerRecord(callerOf(c))), 202);
+    } catch (err) {
+      if (err instanceof SteeringRefused) {
+        return c.json({ error: err.message, ...(err.agents !== undefined ? { agents: err.agents } : {}) }, err.status);
+      }
+      throw err;
     }
   });
 
@@ -1482,8 +1889,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     const { surface, error } = agentRegistration(c);
     if (error) return error;
     host.agentSurfaceServed(c.req.param("instanceId"));
-    const notices = await host.boundaryNotices(c.req.param("instanceId"));
-    return c.json({ ...surface, notices });
+    // A notice and a Steering message ride the read apart (ADR-0062): the Harness frames a message
+    // by its author. One acknowledgment hears both, by the ids the read named.
+    const held = await host.boundaryNotices(c.req.param("instanceId"));
+    const notices = held.filter((h) => h.notice.kind !== "steering");
+    const steering = held.flatMap((h) => (h.notice.kind === "steering" ? [{ id: h.id, message: h.notice }] : []));
+    return c.json({ ...surface, notices, ...(steering.length > 0 ? { steering } : {}) });
   });
 
   // The Harness appended a step boundary's notices to the Turn (ADR-0062, ADR-0076): they are heard
@@ -1598,4 +2009,38 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   });
 
   return app;
+}
+
+/**
+ * The body of a request as the Hook's door reads it (ADR-0011): at most `max` bytes, and
+ * `undefined` when the body is longer. A `content-length` above `max` reads nothing; else the
+ * stream is read until it ends or passes `max`, and then it is cancelled. So an unbounded body is
+ * never kept in memory.
+ */
+export function limitedBody(req: Request): (max: number) => Promise<Uint8Array | undefined> {
+  return async (max) => {
+    const declared = Number(req.headers.get("content-length") ?? "");
+    if (Number.isFinite(declared) && declared > max) return undefined;
+    if (req.body === null) return new Uint8Array();
+    const reader = req.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > max) {
+        await reader.cancel().catch(() => {});
+        return undefined;
+      }
+      chunks.push(value);
+    }
+    const out = new Uint8Array(size);
+    let at = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return out;
+  };
 }

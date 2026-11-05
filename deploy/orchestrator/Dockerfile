@@ -27,7 +27,7 @@
 # the build command line, so this file stays plain (ADR-0039).
 
 # ---------------------------------------------------------------------------------------------
-# Pack stage — discarded. It turns the two kit packages into the tarballs a registry would serve.
+# Pack stage — discarded. It turns the kit packages into the tarballs a registry would serve.
 # It runs on the BUILD platform: a tarball is the same bytes on every architecture, so a
 # multi-arch build packs once and never runs this stage under qemu.
 # ---------------------------------------------------------------------------------------------
@@ -35,6 +35,7 @@ FROM --platform=$BUILDPLATFORM node:24-slim AS pack
 
 WORKDIR /kit
 COPY packages/agent-protocol ./agent-protocol
+COPY packages/hooks ./hooks
 COPY packages/orchestrator ./orchestrator
 
 # A `workspace:` range is pnpm's spelling, and npm cannot read it. pnpm rewrites it to the exact
@@ -48,7 +49,7 @@ COPY packages/orchestrator ./orchestrator
 # package an Instance installs from npm; the Orchestrator's process never reads it.
 RUN node -e ' \
   const fs = require("fs"); \
-  const dirs = ["agent-protocol", "orchestrator"]; \
+  const dirs = ["agent-protocol", "hooks", "orchestrator"]; \
   const read = (d) => JSON.parse(fs.readFileSync(`${d}/package.json`, "utf8")); \
   const versions = Object.fromEntries(dirs.map((d) => [read(d).name, read(d).version])); \
   for (const d of dirs) { \
@@ -63,6 +64,7 @@ RUN node -e ' \
   }' \
  && mkdir /tgz \
  && (cd agent-protocol && npm pack --ignore-scripts --pack-destination /tgz) \
+ && (cd hooks && npm pack --ignore-scripts --pack-destination /tgz) \
  && (cd orchestrator && npm pack --ignore-scripts --pack-destination /tgz)
 
 # ---------------------------------------------------------------------------------------------
@@ -76,7 +78,7 @@ RUN npm install -g --no-audit --no-fund tsx@4
 WORKDIR /instance
 ENV NODE_ENV=production
 
-# Install the two tarballs, hoisted. The `@jr2` scope points at an address that answers nothing,
+# Install the tarballs, hoisted. The `@jr2` scope points at an address that answers nothing,
 # so every `@jr2/*` package MUST come from the tarballs: the orchestrator's `@jr2/agent-protocol`
 # edge is satisfied by the sibling tarball at the same version, or the install fails. Without
 # this, a version also on npmjs would install silently from there, and the image would hold
@@ -116,7 +118,8 @@ RUN node -e ' \
   if (bad.length) { for (const b of bad) console.error(`jr2: ${b}`); process.exit(1); }' \
  && rm -rf /tmp/tgz /tmp/closure.json package.json package-lock.json \
  && test -f node_modules/@jr2/orchestrator/bin/server.ts \
- && test -f node_modules/@jr2/agent-protocol/package.json
+ && test -f node_modules/@jr2/agent-protocol/package.json \
+ && test -f node_modules/@jr2/hooks/package.json
 
 EXPOSE 4000
 CMD ["tsx", "node_modules/@jr2/orchestrator/bin/server.ts"]

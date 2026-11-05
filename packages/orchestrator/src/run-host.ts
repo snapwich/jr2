@@ -30,8 +30,15 @@ import {
   type AnyMachineSnapshot,
   type AnyStateMachine,
 } from "xstate";
-import { SENDER_KEY, type EventDef, type EventSemantics, type Sender } from "@jr2/agent-protocol";
+import {
+  SENDER_KEY,
+  type EventDef,
+  type EventSemantics,
+  type Sender,
+  type SenderCallerField,
+} from "@jr2/agent-protocol";
 import { partiesAt, seatOf, senderText } from "./party.ts";
+import { GATE_ANSWERS_KEPT, type CallerRecord, type GateAnswer, type RunStarter } from "./callers.ts";
 import { placeAnswers, type AnswerSeat } from "./pick.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, Notice, PickAnswer } from "./wire.ts";
@@ -41,14 +48,18 @@ import { restOf, runningBelow } from "./rest.ts";
 import {
   acceptsNow,
   agentAddress,
+  agentSlot,
   allowedPicks,
   bindRun,
+  dispatchKeyOf,
   EventValidationError,
   gateAddress,
   NotTakenError,
   OutstandingError,
   RegistrationTable,
   refuseSenderField,
+  slotPath,
+  type SenderCaller,
   UnknownAddressError,
   wouldMove,
   targetsOf,
@@ -59,8 +70,10 @@ import {
   type RetryTelemetry,
   type RunBinding,
   type RunMarker,
+  type SourceVerdictLine,
 } from "./registration.ts";
-import { NoticeLedger, type NoticeLedgerState } from "./notices.ts";
+import { NoticeLedger, type LedgerBody, type NoticeLedgerState, type SteeringRecord } from "./notices.ts";
+import { isAgent } from "./agent.ts";
 import { pendingTimers, startAndRearm, watchTimers, type PendingTimer } from "./timers.ts";
 import {
   DEFAULT_LEASE_INTERVAL_MS,
@@ -82,8 +95,10 @@ import {
   type MachineDoc,
   type MachineStateDoc,
 } from "./machine-doc.ts";
-import type { SnapshotStore } from "./snapshot-store.ts";
+import type { SnapshotStore, StandingHead } from "./snapshot-store.ts";
+import { HAND_OVER, standingCarryOf, standingPoolOf, standingTaken, standingTook } from "./pool.ts";
 import type { AgentAdmission } from "./actor.ts";
+import type { AnyHandler } from "./gate.ts";
 import { dropSavedTails, type EffectRow } from "./effect.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
@@ -221,8 +236,19 @@ function chartDrift(machine: AnyStateMachine, routes: readonly BoundChartRoute[]
 
 /** The serializable identity of a run — what reconcile sees and what restore rebuilds from.
  * `dispatchedBy` is the run that started it through a `dispatch` Effect, and this run's depth in
- * that chain, as the caller sent it (ADR-0071); absent for a run a human or a client started. */
-export type RunRecord = { runId: string; workflow: string; instanceId: string; dispatchedBy?: DispatchedBy };
+ * that chain, as the caller sent it (ADR-0071); absent for a run a human or a client started.
+ * `startedBy` is who started it (ADR-0078): a Caller, a run, or jr2. Behind the token, like
+ * `context`: {@link observe} never carries it. Absent for a run that a host started with no
+ * starter, as a test does. */
+export type RunRecord = {
+  runId: string;
+  workflow: string;
+  instanceId: string;
+  dispatchedBy?: DispatchedBy;
+  startedBy?: RunStarter;
+  /** The Caller whose `jr2 run` resumed this standing run (ADR-0017, ADR-0078). */
+  resumedBy?: CallerRecord;
+};
 
 /** A start of a name no Workflow is registered under: the door answers 404 (ADR-0009), and an
  * in-process `dispatch` settles `refused` with status 404 (ADR-0071). */
@@ -230,33 +256,9 @@ export class UnknownWorkflowError extends Error {
   override name = "UnknownWorkflowError";
 }
 
-/** A start whose idempotency key a run of ANOTHER Workflow already carries (ADR-0071): the door
- * answers 409, and an in-process `dispatch` settles `refused` with status 409. Never answered as
- * the existing run: the caller asked for a run of one Workflow and would wait on a run of another. */
-export class DispatchKeyConflictError extends Error {
-  override name = "DispatchKeyConflictError";
-}
-
-/** The run a key names (ADR-0071), with its Workflow so a start of another can be refused. */
-export type DispatchedRun = { runId: string; instanceId: string; workflow: string };
-
-/** The run `found` as the answer to a start of `workflow` under its key, or the 409 (ADR-0071). */
-export function keyAnswer(
-  found: DispatchedRun,
-  workflow: string,
-  effect: string,
-): { runId: string; instanceId: string } {
-  if (found.workflow !== workflow) throw new DispatchKeyConflictError(keyConflict(found, workflow, effect));
-  return { runId: found.runId, instanceId: found.instanceId };
-}
-
-/** Why a start of `workflow` under `effect` is refused, when the key's run is of another. */
-export function keyConflict(found: DispatchedRun, workflow: string, effect: string): string {
-  return (
-    `the key "${effect}" already started run ${found.runId} of "${found.workflow}", not of "${workflow}" — ` +
-    "one key is one start of one Workflow (ADR-0071)"
-  );
-}
+/** The run a key names (ADR-0071). The key is scoped to the callee Workflow, so the run is always
+ * of the Workflow that was asked. */
+export type DispatchedRun = { runId: string; instanceId: string };
 
 /**
  * One live child MACHINE of a run, and its own children below it. A workflow's root machine is
@@ -375,6 +377,59 @@ function runSandboxes(actor: AnyActorRef, runId: string, opts: { placing?: boole
   return out;
 }
 
+/** One Agent slot of a live run (ADR-0002), as `GET /runs/:runId/agents` lists it: `agent` is the
+ * slot (`<machine path>/<agent name>`), `open` says that a Turn of it is open now, and `steerable`
+ * that a Caller may send it a Steering message. */
+export type RunAgent = { agent: string; open: boolean; steerable: boolean };
+
+/** The `steering` field of a status: the record, when the run got a message. */
+function steeringOf(record: readonly SteeringRecord[]): { steering?: SteeringRecord[] } {
+  return record.length > 0 ? { steering: record.map((r) => ({ ...r })) } : {};
+}
+
+/** Is this actor a Machine (not a promise, a callback, or an Agent)? */
+function isMachineActor(ref: AnyActorRef): boolean {
+  const logic = (ref as { logic?: unknown }).logic;
+  return typeof logic === "object" && logic !== null && "root" in logic;
+}
+
+/**
+ * Every Agent slot of every live Machine instance under `actor`, at any depth (ADR-0002): the
+ * Agents that each Machine carries in its `actors`, by the slot their Turns are registered with
+ * (`agentSlot`). A Machine that is not active holds none: it can take no Turn.
+ */
+function liveSlots(actor: AnyActorRef): Array<{ agent: string; steerable: boolean }> {
+  const out: Array<{ agent: string; steerable: boolean }> = [];
+  const walk = (ref: AnyActorRef): void => {
+    const snap = ref.getSnapshot() as { status?: string; children?: Record<string, AnyActorRef> } | undefined;
+    if (snap?.status !== "active") return;
+    if (isMachineActor(ref)) {
+      const actors = ((ref as { logic?: AnyStateMachine }).logic?.implementations.actors ?? {}) as Record<
+        string,
+        unknown
+      >;
+      for (const [name, logic] of Object.entries(actors)) {
+        if (isAgent(logic)) out.push({ agent: agentSlot(ref, name), steerable: logic.definition.steerable !== false });
+      }
+    }
+    for (const child of Object.values(snap.children ?? {})) if (child) walk(child);
+  };
+  walk(actor);
+  return out;
+}
+
+/** Why `POST /runs/:runId/steering` refuses a message (ADR-0002): `status` is the HTTP status, and
+ * `agents` the run's slots when the slot named none of them. */
+export class SteeringRefused extends Error {
+  readonly status: 403 | 409;
+  readonly agents?: RunAgent[];
+  constructor(message: string, status: 403 | 409, agents?: RunAgent[]) {
+    super(message);
+    this.status = status;
+    if (agents !== undefined) this.agents = agents;
+  }
+}
+
 /**
  * Stop every actor under `actor`, at any depth, deepest first. A machine that ended in `error` has
  * stopped processing — its own stop is a no-op — so its children are reached through its snapshot
@@ -407,11 +462,11 @@ type Sending = {
  * pick was made at, which tells apart two states that invoke one slot, one after the other. `invoke` is absent when the event that
  * started the child named the Agent and not where (a pick taken outside its own send).
  */
-type StartedBy = { agent: string; invoke?: string };
+type ChildAgent = { agent: string; invoke?: string };
 
 /**
  * The key of the child `childId` of `parent` in the run's record of which Agent started each child
- * (`startedBy`, ADR-0067): the invoke ids from below the root down to `parent`, then `childId`, each
+ * (`childAgents`, ADR-0067): the invoke ids from below the root down to `parent`, then `childId`, each
  * encoded and joined by `/`. An invoke id is local to its Machine — two Machines of one tree, and
  * every worker of a pool, may each have a child `job` — and the chain is not. A child of the root
  * keeps its bare id. The ids are the snapshot's, so a restore gives the same key.
@@ -424,16 +479,16 @@ function childKey(parent: AnyActorRef, childId: string): string {
 
 /**
  * The Agent whose event `event` is, as `taker` takes it (ADR-0024, ADR-0067): a pick's sender, or
- * the Agent whose pick started the child of `taker` whose done or error event it is (`startedBy`).
+ * the Agent whose pick started the child of `taker` whose done or error event it is (`childAgents`).
  * Undefined when the event names no Agent: a timer, a Gate's answer, an outside send, a child no
  * Agent's pick started. `sending`'s invoke is where a pick in its own send was made.
  */
 function agentOfEvent(
   event: AnyEventObject,
-  startedBy: Record<string, StartedBy>,
+  childAgents: Record<string, ChildAgent>,
   taker: AnyActorRef,
   sending?: Sending,
-): StartedBy | undefined {
+): ChildAgent | undefined {
   const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
   if (sender?.party === "agent") {
     const invoke = sending?.reg.sender?.id === sender.id ? sending.reg.invokeId : undefined;
@@ -442,7 +497,7 @@ function agentOfEvent(
   const child = /^xstate\.(?:done|error)\.actor\.(.+)$/.exec(event.type)?.[1];
   if (child === undefined) return undefined;
   const key = childKey(taker, child);
-  return Object.hasOwn(startedBy, key) ? startedBy[key] : undefined;
+  return Object.hasOwn(childAgents, key) ? childAgents[key] : undefined;
 }
 
 /** How many of `snapshot`'s active states invoke an Agent. With two or more, an event that names no
@@ -464,12 +519,12 @@ function liveChildKeys(actor: AnyActorRef, into = new Set<string>()): Set<string
   return into;
 }
 
-/** `startedBy` as the save keeps it: only children still in the run's tree (ADR-0067). Read at the
+/** `childAgents` as the save keeps it: only children still in the run's tree (ADR-0067). Read at the
  * save, a microtask after the snapshot, so a done event the Machine took has run its route. */
-function liveStartedBy(startedBy: Record<string, StartedBy>, actor: AnyActorRef): Record<string, StartedBy> {
+function liveChildAgents(childAgents: Record<string, ChildAgent>, actor: AnyActorRef): Record<string, ChildAgent> {
   const live = liveChildKeys(actor);
-  for (const id of Object.keys(startedBy)) if (!live.has(id)) delete startedBy[id];
-  return startedBy;
+  for (const id of Object.keys(childAgents)) if (!live.has(id)) delete childAgents[id];
+  return childAgents;
 }
 
 /** An `answer` action's value as the hold keeps it: JSON, because it rides the run blob and the
@@ -489,6 +544,69 @@ function heldOf(holds: Iterable<Hold>): RunHeld[] {
     .filter((hold) => hold.answer === undefined)
     .map((hold) => ({ agent: hold.agent, pick: hold.pick, since: hold.since }));
 }
+
+/** The Caller of a Gate's event as its Sender carries it (ADR-0011): `via` and `name` are always
+ * checked, because an authenticator made them; `onBehalfOf` only for a Hook, whose signature covers
+ * the payload that it comes from. */
+function senderCallerOf(by: CallerRecord): SenderCaller {
+  const checked: SenderCallerField[] = ["via", "name"];
+  if (by.via === "hook" && by.onBehalfOf !== undefined) checked.push("onBehalfOf");
+  return {
+    via: by.via,
+    name: by.name,
+    ...(by.onBehalfOf !== undefined ? { onBehalfOf: by.onBehalfOf } : {}),
+    checked,
+  };
+}
+
+/** What a Hook's fan-in did (ADR-0011): the Gates that took the delivery, the ones that did not and
+ * why, and how many open Gates of its kind and key gave nothing. */
+export type HookFanIn = {
+  delivered: Array<{ run: string; workflow: string; gate: string; event: string }>;
+  refused: Array<{ run: string; gate: string; event?: string; reason: string }>;
+  ignored: number;
+  /** Each Source's verdict (ADR-0017), one line for each Pool whose Source hears the kind and key. */
+  sources: SourceLine[];
+  /** The standing Workflows whose Source hears the kind and key, and that have no live run and are
+   * not paused (ADR-0017): a hand-over waits out its back-off. The door answers 503. */
+  waiting?: string[];
+  /** For a delivery whose answer a person reads: the `reply` of each target that has one, in the
+   * order of the fan-out (ADR-0011). The door joins them; it never puts them in the outcome. */
+  replies?: HookReply[];
+};
+
+/**
+ * What one target's `reply` gave (ADR-0011): its place in the join (a Source or a Gate, its
+ * Workflow and its run), and its text, or the error of a `reply` that threw or gave no text. A
+ * `skipped` Source's text shows only when no other target gave one.
+ */
+export type HookReply = {
+  target: "source" | "gate";
+  workflow: string;
+  run: string;
+  /** The Gate's id, or the Pool's `source` Gate's id. */
+  gate: string;
+  text?: string;
+  skipped?: true;
+  error?: string;
+};
+
+/** Run one `reply`: plain text, or nothing, or the error that the hook log keeps. */
+function runReply(place: Omit<HookReply, "text" | "error">, run: () => unknown): HookReply {
+  let given: unknown;
+  try {
+    given = run();
+  } catch (err) {
+    return { ...place, error: `its reply threw: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (given === undefined || given === "") return place;
+  if (typeof given !== "string") return { ...place, error: `its reply gave ${typeof given}, not text` };
+  return { ...place, text: given };
+}
+
+/** One Source's verdict on one delivery (ADR-0017): the Pool's run, its Workflow, the `source`
+ * Gate's id, and the verdict. */
+export type SourceLine = { pool: string; workflow: string; source: string } & SourceVerdictLine;
 
 /** A run's current observable state. `fault` carries the error message when status is "error"
  * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). A run that ends
@@ -536,6 +654,19 @@ export type RunStatus = RunRecord & {
    * direction, read off the caller's own ledger rows. A foreign dispatch's run is a run of the
    * Orchestrator its target names. Absent when it started none. */
   dispatched?: Dispatched[];
+  /** The Caller that cancelled the run (ADR-0078). Behind the token: {@link observe} never
+   * carries it. */
+  cancelledBy?: CallerRecord;
+  /** The run that took over from this standing run (ADR-0017): a hand-over ends the run `done`. */
+  handedOverTo?: string;
+  /** The answers to the run's Gates, oldest first, each with the Caller that gave it (ADR-0011,
+   * ADR-0078): the last {@link GATE_ANSWERS_KEPT}. An event that a Gate's `look` gives is not an
+   * answer, and is not here. Behind the token. Absent when no Gate was answered. */
+  answers?: GateAnswer[];
+  /** The run's Steering messages, oldest first (ADR-0002): each one's Agent slot, author, text,
+   * time and outcome — the newest 100, and each one still held. Behind the token, like `context`.
+   * Absent when the run got none. */
+  steering?: SteeringRecord[];
   /** The Worktrees this run's cuts made, oldest first (ADR-0075), read off its ledger's settled
    * `ready` rows, so an Agent's `git switch` does not change them. A re-cut of one path and branch
    * is one entry. Behind the token, like `context`: a branch name is the workflow's data. Absent
@@ -583,7 +714,7 @@ export type RunObservation = {
   /** The run that dispatched this one, its slot, and the chain's depth (ADR-0071). Routing — two
    * ids, a slot name and a number — the class of thing `runId` and `value` are, so ADR-0014's line
    * is unmoved. The idempotency key is not: it names the caller's ledger, which is the caller's. */
-  dispatchedBy?: Omit<DispatchedBy, "effect">;
+  dispatchedBy?: Omit<DispatchedBy, "effect" | "key" | "hook">;
   /** The runs it dispatched, by slot (ADR-0071): the same routing as `dispatchedBy`, the other
    * direction. */
   dispatched?: Array<{ slot: string; run: string }>;
@@ -605,8 +736,10 @@ export function observe(status: RunStatus): RunObservation {
 }
 
 /** A {@link DispatchedBy} without its idempotency key (ADR-0071): what the open band carries. */
-function routingOf(by: DispatchedBy): Omit<DispatchedBy, "effect"> {
-  const { effect: _key, ...routing } = by;
+function routingOf(by: DispatchedBy): Omit<DispatchedBy, "effect" | "key" | "hook"> {
+  // The key names the caller's ledger, or a Pool's item, and the Hook delivery is the workflow's
+  // data: neither is routing (ADR-0014, ADR-0017).
+  const { effect: _effect, key: _key, hook: _hook, ...routing } = by;
   return routing;
 }
 
@@ -934,7 +1067,60 @@ export type RunHostOptions = {
   /** The wall clock a run's timer table is written and read on (ADR-0007, timers.ts): each pending
    * timer's deadline is a time on it. Default: `Date.now`. Tests pass a clock that does not step. */
   now?: () => number;
+  /** The bound of a standing run and the back-off after its `error` (ADR-0017). Tests shrink them. */
+  standing?: StandingOptions;
 };
+
+/** The bound of a standing run, and the wait before a hand-over from a run in which no item that
+ * it took started a run (ADR-0017). */
+export type StandingOptions = {
+  /** Hand the run over once it has taken this many items, each one a dispatch. When no item that it
+   * took itself started a run (a carried key does not count), the hand-over waits out the
+   * back-off, as after `error`. Default: 500. */
+  dispatches?: number;
+  /** Hand the run over once it is this old, in milliseconds. Default: one day. */
+  ageMs?: number;
+  /** The wait before the hand-over after the `n`-th run in a row that ended `error`, ended
+   * `failed` (ADR-0073, as `error`) or took its bound, and in which no item that it took itself
+   * started a run (a carried key does not count). n is from 1; a run in which such an item started
+   * a run waits as n = 1. Default: 1 s, 4 s, then 16 s. */
+  backoffMs?: (n: number) => number;
+};
+
+/** The bound of a standing run (ADR-0017): 500 dispatches or one day. Not measured past the size
+ * of a save: each dispatch keeps a ledger row of about 217 bytes, so 500 is about 110 KB. */
+export const STANDING_BOUND = { dispatches: 500, ageMs: 24 * 60 * 60 * 1000 } as const;
+/** How many hand-overs jr2 makes from runs in a row that end `error`, end `failed` or take their
+ * bound, in which no item that the run took itself started a run (ADR-0017). When the next such
+ * run ends, jr2 pauses the standing Pool. Not measured. */
+export const STANDING_ERRORS_PAUSE = 3;
+/** How many times one delivery follows a standing Pool's hand-overs to the new run's Source. After
+ * more hand-overs in one delivery's fan-in, the door answers 503, as for a Pool with no live run. */
+const STANDING_HOPS = 3;
+const standingBackoff = (n: number): number => Math.min(60_000, 1000 * 4 ** (n - 1));
+
+/** A standing Workflow as `jr2 up` and `jr2 status` print it (ADR-0017): its Pool, its callee, its
+ * state, its run, and how many items it holds. `live`: a run is live. `paused`: a cancel (`why`:
+ * `cancel`), or a fourth run in a row in which no item that the run took started a run, after 3
+ * hand-overs: the last one ended `error` or `failed` (`errors`), or took its bound (`bound`). The
+ * held items are in the blob of `run`.
+ * `waiting`: no run is live, and jr2 starts one after the back-off. Structure and counts only: no
+ * key and no item, so it is on the open band with the Assembly. */
+export type StandingView = {
+  workflow: string;
+  pool: string;
+  callee: string;
+  state: "live" | "paused" | "waiting";
+  run?: string;
+  held: number;
+  why?: "cancel" | "errors" | "bound";
+};
+
+/** jr2 starts a standing Workflow's run, and a Caller's start only resumes a paused one (ADR-0017):
+ * the door answers 409 with the message. */
+export class StandingRefused extends Error {
+  override name = "StandingRefused";
+}
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs.
  * `agents` is the admission LEDGER (ADR-0016) — iid → durable admission, reported by the Agent's Actor
@@ -945,6 +1131,16 @@ type RunBlob = {
   /** The run that dispatched this one (ADR-0071), its key included: the store finds a run by its
    * key here (`findByDispatch`), so a re-sent start answers the run it already made. */
   dispatchedBy?: DispatchedBy;
+  /** Who started the run (ADR-0078). */
+  startedBy?: RunStarter;
+  /** The Caller that cancelled the run (ADR-0078). */
+  cancelledBy?: CallerRecord;
+  /** The Caller whose `jr2 run` resumed this standing run (ADR-0017). */
+  resumedBy?: CallerRecord;
+  /** The run that took over from this standing run at a hand-over (ADR-0017). */
+  handedOverTo?: string;
+  /** The last answers to the run's Gates, with their Callers (ADR-0078). */
+  answers?: GateAnswer[];
   /** The shape of the Machine that WROTE this snapshot (ADR-0030). `workflow` says which def to
    * look up; this says whether the def found there is still the one this snapshot can be read by.
    * Absent means written before the stamp existed, which restore treats as drift — the point is to
@@ -1011,7 +1207,7 @@ type RunBlob = {
    * outstanding or not. Same blob, so a restore names the same Agent. A child no longer in the tree
    * is dropped at the save.
    */
-  startedBy?: Record<string, StartedBy>;
+  childAgents?: Record<string, ChildAgent>;
   fault?: string;
   /** The Failure that ended the run `failed` (ADR-0073), as plain data: the run's output. xstate
    * keeps the error of an errored snapshot, and serializes it to `{}`, so it is kept here. */
@@ -1035,13 +1231,23 @@ type LiveRun = {
   holds: Map<string, Hold>;
   /** The Effect ledger (ADR-0067): persisted as `RunBlob.effects`, seeded on restore. */
   effects: Record<string, EffectRow>;
-  /** Which Agent started each live child (ADR-0067): persisted as `RunBlob.startedBy`, seeded on restore. */
-  startedBy: Record<string, StartedBy>;
+  /** Which Agent started each live child (ADR-0067): persisted as `RunBlob.childAgents`, seeded on restore. */
+  childAgents: Record<string, ChildAgent>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
   /** The Failure that ended the run, if it failed (ADR-0073): persisted as `RunBlob.failure`. */
   failure?: FailureInput;
+  /** The Caller that cancelled the run (ADR-0078): persisted as `RunBlob.cancelledBy`. */
+  cancelledBy?: CallerRecord;
+  /** The run that took over from this standing run (ADR-0017): persisted as `RunBlob.handedOverTo`. */
+  handedOverTo?: string;
+  /** This standing run took its bound of items and none of them started a run (ADR-0017): jr2 ended
+   * it `done`, and its hand-over waits out the back-off. Not persisted: the head's streak keeps it. */
+  boundWithNoRun?: boolean;
+  /** The last answers to the run's Gates (ADR-0078): persisted as `RunBlob.answers`, seeded on
+   * restore. */
+  answers: GateAnswer[];
   /** Per-run observers fed by `persist()` (status) and the actor's `emit` (emit) — SSE/CLI watch. */
   listeners: Set<(e: RunFeedEvent) => void>;
   /** The run's feed-so-far (ADR-0023): what a Workspace attaching mid-run gets replayed as its
@@ -1076,8 +1282,9 @@ export class RunHost {
    * hosted again (`store.live()` row order) or while the callee is not hosted at all.
    */
   private readonly settleListeners = new Map<string, Set<(status: RunStatus) => void>>();
-  /** Idempotency key → the start in flight under it (ADR-0071): a second start with the same key
-   * before the first has spawned its run answers the first's run, never a second. */
+  /** (Workflow, idempotency key) → the start in flight under it (ADR-0071): a second start of the
+   * same Workflow with the same key before the first has spawned its run answers the first's run,
+   * never a second. */
   private readonly dispatching = new Map<string, Promise<DispatchedRun>>();
   private readonly echoFactory?: (
     endpoint: string,
@@ -1139,6 +1346,14 @@ export class RunHost {
   private readonly parked = new Set<string>();
   #stopping = false;
   #restorePending = false;
+  /** The bound and the back-off of standing runs (ADR-0017). */
+  private readonly standingOpts: Required<StandingOptions>;
+  /** The head of each standing Workflow (ADR-0017), read from the store at first use and written
+   * through to it. */
+  #heads: Map<string, StandingHead> | undefined;
+  /** Each standing Workflow's timer: the back-off before a hand-over after `error`, or the age
+   * bound of its live run. One a Workflow. */
+  private readonly standingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(opts: RunHostOptions) {
     this.store = opts.store;
@@ -1159,6 +1374,11 @@ export class RunHost {
         : undefined;
     this.liveSetIntervalMs = opts.liveSetIntervalMs ?? DEFAULT_LEASE_INTERVAL_MS;
     this.now = opts.now ?? Date.now;
+    this.standingOpts = {
+      dispatches: opts.standing?.dispatches ?? STANDING_BOUND.dispatches,
+      ageMs: opts.standing?.ageMs ?? STANDING_BOUND.ageMs,
+      backoffMs: opts.standing?.backoffMs ?? standingBackoff,
+    };
   }
 
   /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
@@ -1329,53 +1549,65 @@ export class RunHost {
    * Start a fresh run of a registered workflow; returns its durable ids.
    *
    * With `dispatchedBy` (ADR-0071), the start is a `dispatch` Effect's, and its `effect` is the
-   * idempotency key: a run that already carries the key is answered, `existing`, and none is
-   * started. That is what lets a caller re-send a start whose answer it lost. The key is looked for
+   * idempotency key, scoped to `workflow`: a run of `workflow` that already carries the key is
+   * answered, `existing`, and none is started. The same key in another Workflow is another run. That is what lets a caller re-send a start whose answer it lost. The key is looked for
    * among the runs this process hosts first — a run's first save is a microtask after its spawn —
    * then in the store. A key on a row the weekly sweep removed (ADR-0065) starts a new run: known,
    * and not guarded. The depth is recorded as sent: the caller states the callee's.
+   *
+   * `startedBy` is who starts it (ADR-0078), which the run records. Absent with `dispatchedBy`, the
+   * start is a local dispatch's, and the run records the caller's run and slot.
    */
   async start(
     workflow: string,
     input: Record<string, unknown> = {},
-    opts: { dispatchedBy?: DispatchedBy } = {},
+    opts: { dispatchedBy?: DispatchedBy; startedBy?: RunStarter } = {},
   ): Promise<{ runId: string; instanceId: string; existing?: true }> {
     const by = opts.dispatchedBy;
-    if (!by) return this.startFresh(workflow, input);
-    const inFlight = this.dispatching.get(by.effect);
-    if (inFlight) return { ...keyAnswer(await inFlight, workflow, by.effect), existing: true };
+    const startedBy: RunStarter | undefined =
+      opts.startedBy ?? (by ? { kind: "run", run: by.run, slot: by.slot } : undefined);
+    if (!by) return this.startFresh(workflow, input, undefined, startedBy);
+    // The starts in flight are held by the key in its Workflow's scope.
+    const scoped = JSON.stringify([workflow, dispatchKeyOf(by)]);
+    const inFlight = this.dispatching.get(scoped);
+    if (inFlight) return { ...(await inFlight), existing: true };
     let existing = false;
     const started = (async (): Promise<DispatchedRun> => {
-      const found = await this.dispatched(by.effect);
+      const found = await this.dispatched(workflow, dispatchKeyOf(by));
       if (found) {
         existing = true;
         return found;
       }
-      return { ...(await this.startFresh(workflow, input, by)), workflow };
+      return this.startFresh(workflow, input, by, startedBy);
     })();
-    this.dispatching.set(by.effect, started);
+    this.dispatching.set(scoped, started);
     try {
-      const ids = keyAnswer(await started, workflow, by.effect);
+      const ids = await started;
       return existing ? { ...ids, existing: true } : ids;
     } finally {
-      this.dispatching.delete(by.effect);
+      this.dispatching.delete(scoped);
     }
   }
 
   /**
-   * The run that carries the idempotency key `effect` (ADR-0071), or undefined: a hosted run first,
-   * then a stored one, in any status.
+   * The run of `workflow` that carries the idempotency key `key` (ADR-0071), or undefined: a hosted
+   * run first, then a stored one, in any status, while its row lives. The key is scoped to the
+   * Workflow: a run of another Workflow under the same key is not this one.
    */
-  async dispatched(effect: string): Promise<DispatchedRun | undefined> {
+  async dispatched(workflow: string, key: string): Promise<DispatchedRun | undefined> {
     for (const run of this.runs.values()) {
-      if (run.record.dispatchedBy?.effect === effect) {
-        return { runId: run.record.runId, instanceId: run.record.instanceId, workflow: run.record.workflow };
+      if (
+        run.record.workflow === workflow &&
+        run.record.dispatchedBy !== undefined &&
+        dispatchKeyOf(run.record.dispatchedBy) === key
+      ) {
+        return { runId: run.record.runId, instanceId: run.record.instanceId };
       }
     }
-    const runId = await this.store.findByDispatch(effect);
+    const runId = await this.store.findByDispatch(workflow, key);
     if (runId === undefined) return undefined;
     const blob = (await this.store.load(runId))?.snapshot as RunBlob | null | undefined;
-    return blob ? { runId, instanceId: blob.instanceId, workflow: blob.workflow } : undefined;
+    return blob ? { runId, instanceId: blob.instanceId } : undefined;
   }
 
   /**
@@ -1390,11 +1622,16 @@ export class RunHost {
     by: DispatchedBy,
   ): Promise<DispatchStart> {
     // The key first: a re-sent start answers its run whatever the Assembly holds now.
-    const found = await this.dispatched(by.effect);
-    if (found && found.workflow !== workflow) {
-      return { ok: false, status: 409, report: [keyConflict(found, workflow, by.effect)] };
-    }
+    const found = await this.dispatched(workflow, dispatchKeyOf(by));
     if (found) return { ok: true, runId: found.runId, existing: true };
+    // jr2 starts a standing Workflow's run (ADR-0017): a dispatch never starts one.
+    if (this.isStanding(workflow)) {
+      return {
+        ok: false,
+        status: 409,
+        report: [`"${workflow}" is a standing Workflow: jr2 starts its run, and a dispatch cannot (ADR-0017)`],
+      };
+    }
     const unrunnable = this.unrunnableChart?.(workflow);
     if (unrunnable !== undefined) {
       return { ok: false, status: 409, report: [`named Chart "${workflow}" cannot run: ${unrunnable}`] };
@@ -1412,7 +1649,6 @@ export class RunHost {
         };
       }
       if (err instanceof UnknownWorkflowError) return { ok: false, status: 404, report: [err.message] };
-      if (err instanceof DispatchKeyConflictError) return { ok: false, status: 409, report: [err.message] };
       throw err;
     }
   }
@@ -1423,7 +1659,20 @@ export class RunHost {
     workflow: string,
     input: Record<string, unknown>,
     dispatchedBy?: DispatchedBy,
+    startedBy?: RunStarter,
   ): Promise<{ runId: string; instanceId: string }> {
+    return this.startNow(workflow, input, dispatchedBy, startedBy);
+  }
+
+  /** {@link startFresh}, synchronous: a standing Pool's hand-over starts the new run and ends the old
+   * one in one step (ADR-0017). Throws what the door refuses. */
+  private startNow(
+    workflow: string,
+    input: Record<string, unknown>,
+    dispatchedBy?: DispatchedBy,
+    startedBy?: RunStarter,
+    resumedBy?: CallerRecord,
+  ): { runId: string; instanceId: string } {
     const def = this.workflowDefs.get(workflow);
     if (!def) throw new UnknownWorkflowError(`no workflow registered as "${workflow}"`);
 
@@ -1450,7 +1699,14 @@ export class RunHost {
 
     const runId = this.newId();
     const instanceId = this.newId();
-    const record: RunRecord = { runId, workflow, instanceId, ...(dispatchedBy ? { dispatchedBy } : {}) };
+    const record: RunRecord = {
+      runId,
+      workflow,
+      instanceId,
+      ...(dispatchedBy ? { dispatchedBy } : {}),
+      ...(startedBy ? { startedBy } : {}),
+      ...(resumedBy ? { resumedBy } : {}),
+    };
 
     const machine = this.assemble(def, instanceId);
     // Every Chart field of a Chart wrapper's door is admitted BEFORE the run exists (ADR-0070): a
@@ -1609,6 +1865,8 @@ export class RunHost {
         workflow: blob.workflow,
         instanceId: blob.instanceId,
         ...(blob.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
+        ...(blob.startedBy ? { startedBy: blob.startedBy } : {}),
+        ...(blob.resumedBy ? { resumedBy: blob.resumedBy } : {}),
       };
 
       try {
@@ -1645,8 +1903,11 @@ export class RunHost {
           // …and the Effect ledger (ADR-0067): a restored Effect reads its row and never runs twice.
           blob.effects ?? {},
           // …and which Agent started each child (ADR-0067): its done event names the same Agent.
-          blob.startedBy ?? {},
+          blob.childAgents ?? {},
         );
+        // …and the answers to its Gates, with their Callers (ADR-0078): the record of who acted.
+        const restored = this.runs.get(stored.runId);
+        if (restored) restored.answers = [...(blob.answers ?? [])];
         // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
         // records them again.
         startAndRearm(actor, blob.timers ?? [], this.now());
@@ -1775,7 +2036,7 @@ export class RunHost {
   /** The notices this Turn's conversation hears at a step boundary (ADR-0062): its pending notices
    * in their audience, reserved for this read until the Harness acknowledges them
    * ({@link noticesHeard}) or the Turn ends. Empty for a registration that hears none. */
-  async boundaryNotices(instanceId: string): Promise<Array<{ id: string; notice: Notice }>> {
+  async boundaryNotices(instanceId: string): Promise<Array<{ id: string; notice: LedgerBody }>> {
     return (await this.table.lookup(agentAddress(instanceId))?.boundaryNotices?.()) ?? [];
   }
 
@@ -1783,6 +2044,67 @@ export class RunHost {
    * conversation, ledgered in one save. Answers how many were this conversation's reservations. */
   noticesHeard(instanceId: string, ids: readonly string[]): number {
     return this.table.lookup(agentAddress(instanceId))?.noticesHeard?.(ids) ?? 0;
+  }
+
+  /**
+   * The Agent slots of a live run (ADR-0002): each slot of each live Machine instance, whether a
+   * Turn of it is open, and whether a Caller may steer it. Undefined for a run that is not live.
+   */
+  agents(runId: string): RunAgent[] | undefined {
+    const run = this.runs.get(runId);
+    if (!run) return undefined;
+    const open = new Set(
+      this.table
+        .byRun(runId)
+        .filter((reg) => reg.kind === "agent" && reg.slot !== undefined)
+        .map((reg) => reg.slot!),
+    );
+    return liveSlots(run.actor).map((s) => ({ agent: s.agent, open: open.has(s.agent), steerable: s.steerable }));
+  }
+
+  /**
+   * A Caller's Steering message to one Agent slot of a live run (ADR-0002, ADR-0062). It is held
+   * in the run's notice ledger, saved at once: the slot's open Turn hears it at its next step
+   * boundary, or its next Turn in the same Machine instance at admission. Refused (409) when the
+   * run is not live or no live Machine instance holds the slot, and (403) when the Agent is not
+   * steerable. Answers the message's id, and whether a Turn of the slot is open now.
+   */
+  steer(runId: string, agent: string, text: string, by: CallerRecord): { id: string; agent: string; open: boolean } {
+    const run = this.runs.get(runId);
+    if (!run) throw new SteeringRefused(`run "${runId}" is not live: no Agent of it can hear a message`, 409);
+    const agents = this.agents(runId) ?? [];
+    const slot = agents.find((a) => a.agent === agent);
+    if (!slot) {
+      throw new SteeringRefused(
+        `no live Machine instance of run "${runId}" holds the Agent slot "${agent}"` +
+          (agents.length > 0 ? ` (its slots: ${agents.map((a) => a.agent).join(", ")})` : " (it has none now)"),
+        409,
+        agents,
+      );
+    }
+    if (!slot.steerable) {
+      throw new SteeringRefused(
+        `the Agent slot "${agent}" is not steerable: its definition says steerable: false`,
+        403,
+      );
+    }
+    const id = run.notices.steer(
+      {
+        kind: "steering",
+        scope: "slot",
+        text,
+        author: {
+          kind: "caller",
+          via: by.via,
+          name: by.shown ?? by.name,
+          ...(by.onBehalfOf !== undefined ? { onBehalfOf: by.onBehalfOf } : {}),
+        },
+        at: new Date(this.now()).toISOString(),
+      },
+      agent,
+    );
+    this.persist(run);
+    return { id, agent, open: slot.open };
   }
 
   /**
@@ -2116,7 +2438,7 @@ export class RunHost {
     seat: AnswerSeat,
     runId: string,
     holds: Map<string, Hold>,
-    startedBy: Record<string, StartedBy>,
+    childAgents: Record<string, ChildAgent>,
     event?: AnyEventObject,
   ): Sending | Hold | undefined {
     const seatedFor = (reg: Registration | undefined): boolean => {
@@ -2130,7 +2452,7 @@ export class RunHost {
     const sending = this.sending && this.sending.reg.runId === runId ? this.sending : undefined;
     const open = [...holds.values()].filter((hold) => hold.answer === undefined && seatedFor(regOf(hold)));
     if (seat === null && event !== undefined) {
-      const named = agentOfEvent(event, startedBy, machine, sending);
+      const named = agentOfEvent(event, childAgents, machine, sending);
       if (named !== undefined) {
         const { agent } = named;
         const own = sending && sending.reg.sender?.id === agent ? sending : undefined;
@@ -2165,10 +2487,10 @@ export class RunHost {
     snapshot: AnyMachineSnapshot,
     childId: string,
     holds: Map<string, Hold>,
-  ): StartedBy | undefined {
+  ): ChildAgent | undefined {
     const node = seatOf(snapshot, childId);
     if (node === undefined) return undefined;
-    const byState = new Map<unknown, StartedBy>();
+    const byState = new Map<unknown, ChildAgent>();
     for (const hold of holds.values()) {
       if (hold.answer !== undefined) continue;
       const reg = this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId));
@@ -2293,8 +2615,17 @@ export class RunHost {
    * the run TOOK the event (ADR-0013): one that would run another party's writing, or that no
    * writing would take with this payload, throws {@link NotTakenError} naming what the Gate takes
    * now, and nothing is delivered.
+   *
+   * `by` is the Caller that answers (ADR-0078). The event's Sender carries it, with the fields that
+   * jr2 checked (ADR-0011), and the run records it as the answer's `answeredBy`.
    */
-  sendToGate(runId: string, gate: string, event: { type?: unknown } & Record<string, unknown>): void {
+  sendToGate(
+    runId: string,
+    gate: string,
+    event: { type?: unknown } & Record<string, unknown>,
+    by?: CallerRecord,
+    delivery?: string,
+  ): void {
     const { type, ...payload } = event;
     if (typeof type !== "string" || !type) {
       throw new EventValidationError(`event body must carry a string "type" (one of the gate's accepted names)`);
@@ -2311,10 +2642,24 @@ export class RunHost {
       // which refuses it with its own words.
       const def = reg?.defs.get(type);
       const parsed = def && !(payload && SENDER_KEY in payload) ? def.input.safeParse(payload ?? {}) : undefined;
-      if (reg && parsed?.success && !wouldMove(reg.invoker, { type, ...parsed.data, [SENDER_KEY]: reg.sender })) {
+      const caller = by ? senderCallerOf(by) : undefined;
+      const sender = reg?.sender && caller ? { ...reg.sender, ...caller } : reg?.sender;
+      if (reg && parsed?.success && !wouldMove(reg.invoker, { type, ...parsed.data, [SENDER_KEY]: sender })) {
         throw refused("no writing of it would move the run with this payload");
       }
-      this.table.deliver(gateAddress(runId, gate), type, payload);
+      this.table.deliver(gateAddress(runId, gate), type, payload, caller);
+      // Taken: the run records who answered (ADR-0078), in the save that this transition schedules.
+      const run = this.runs.get(runId);
+      if (run && by) {
+        run.answers.push({
+          gate,
+          type,
+          at: new Date(this.now()).toISOString(),
+          answeredBy: by,
+          ...(delivery !== undefined ? { delivery } : {}),
+        });
+        if (run.answers.length > GATE_ANSWERS_KEPT) run.answers.splice(0, run.answers.length - GATE_ANSWERS_KEPT);
+      }
     } catch (err) {
       if (err instanceof NotTakenError && err.writings.length) {
         throw refused(
@@ -2334,6 +2679,162 @@ export class RunHost {
       }
       throw err;
     }
+  }
+
+  /**
+   * A Hook's fan-in (ADR-0011): give one delivery to every open Gate, in every live run of a Workflow
+   * that `may` names, whose handlers hear `kind` and `key`, and to nothing else. Each handler reads
+   * `{ payload, meta, caller }` and gives one event of its Gate's `delivers`, or `undefined` (not a
+   * target: `ignored`). The event goes in as `jr2 send` sends it, with the Hook as its Caller, and
+   * the run records the answer with the delivery's id. A handler that throws, an event that is not
+   * in `delivers`, and an event that the run does not take now are each a line in `refused` and a
+   * `hook-refused` mark on that run's feed: the run goes on. A Gate that already took this delivery
+   * (a pair in the run's answers) is passed over, so a restore never gives it twice.
+   *
+   * Synchronous, as a handler is: the registrations are read once, and a Gate that a delivery before
+   * it in the same fan-in closed is passed over.
+   */
+  async deliverHook(d: {
+    hook: string;
+    kind: string;
+    key: string;
+    delivery: string;
+    payload: unknown;
+    caller: CallerRecord;
+    may: (workflow: string) => boolean;
+    /** A person reads the answer (ADR-0011): run the `reply` of each target. */
+    person?: boolean;
+  }): Promise<HookFanIn> {
+    const out: HookFanIn = { delivered: [], refused: [], ignored: 0, sources: [] };
+    const replies: HookReply[] = [];
+    const targets: Array<{ run: LiveRun; reg: Registration; handler: AnyHandler }> = [];
+    const sources: Array<{ run: LiveRun; reg: Registration }> = [];
+    for (const run of this.runs.values()) {
+      if (!d.may(run.record.workflow)) continue;
+      for (const reg of this.table.byRun(run.record.runId)) {
+        if (reg.kind !== "gate") continue;
+        const handler = reg.hooked?.hooks[d.kind]?.[d.key];
+        if (handler) targets.push({ run, reg, handler });
+        if (reg.source?.hears(d.kind, d.key)) sources.push({ run, reg });
+      }
+    }
+    for (const { run, reg, handler } of targets) {
+      const runId = run.record.runId;
+      // Closed by an earlier target of this fan-in, or the run ended.
+      if (this.table.lookup(reg.address) !== reg || this.runs.get(runId) !== run) continue;
+      if (run.answers.some((a) => a.delivery === d.delivery && a.gate === reg.id)) continue;
+      // The Gate's `reply` runs after the run answers, from that Gate's own outcome (ADR-0011).
+      const gateReply = d.person ? reg.hooked?.reply : undefined;
+      const place = { target: "gate" as const, workflow: run.record.workflow, run: runId, gate: reg.id };
+      const meta = reg.meta;
+      const refuse = (reason: string, event?: string, given?: unknown): void => {
+        out.refused.push({ run: runId, gate: reg.id, ...(event !== undefined ? { event } : {}), reason });
+        if (gateReply) {
+          const outcome = {
+            state: "refused" as const,
+            ...(given !== undefined ? { event: given } : {}),
+            reason,
+            run: runId,
+          };
+          replies.push(runReply(place, () => gateReply(outcome as never, { meta, caller: d.caller })));
+        }
+        this.feed(run, {
+          kind: "hook-refused",
+          hook: d.hook,
+          delivery: d.delivery,
+          gate: reg.id,
+          ...(event !== undefined ? { event } : {}),
+          reason,
+        });
+      };
+      let event: unknown;
+      try {
+        event = handler({ payload: d.payload, meta: reg.meta, caller: d.caller });
+      } catch (err) {
+        refuse(`its handler threw: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (event === undefined) {
+        out.ignored++;
+        continue;
+      }
+      const type = (event as { type?: unknown } | null)?.type;
+      if (typeof type !== "string" || !reg.hooked?.delivers.includes(type)) {
+        refuse(
+          `its handler gave ${typeof type === "string" ? `"${type}"` : "no event type"}, which is not in the Gate's ` +
+            `delivers (${reg.hooked?.delivers.join(", ")})`,
+          typeof type === "string" ? type : undefined,
+        );
+        continue;
+      }
+      try {
+        this.sendToGate(runId, reg.id, event as { type: string } & Record<string, unknown>, d.caller, d.delivery);
+      } catch (err) {
+        refuse(err instanceof Error ? err.message : String(err), type, event);
+        continue;
+      }
+      out.delivered.push({ run: runId, workflow: run.record.workflow, gate: reg.id, event: type });
+      if (gateReply) {
+        const outcome = { state: "delivered" as const, event, run: runId };
+        replies.push(runReply(place, () => gateReply(outcome as never, { meta, caller: d.caller })));
+      }
+    }
+    // The Sources (ADR-0017), after the Gates: each one's handler, its key check and its hold. A
+    // held item is durable before the answer leaves, so the run is saved before the next line.
+    // A hand-over can end a standing run while a Source awaits (its key lookup, or an earlier
+    // Source's save): the bound, a publish or the age timer. The start and the end of a hand-over are
+    // one synchronous step, so the delivery goes on to the new run's Source; with no live run, the
+    // last step below answers `paused` or `waiting` (503), and the delivery claims nothing.
+    const handedOn: string[] = [];
+    for (const first of sources) {
+      let { run, reg } = first;
+      for (let hops = 0; ; hops++) {
+        const runId = run.record.runId;
+        if (this.table.lookup(reg.address) !== reg || this.runs.get(runId) !== run) {
+          const next = this.standingSourceAfter(run, d.kind, d.key);
+          if (!next) break;
+          if (hops >= STANDING_HOPS) {
+            handedOn.push(run.record.workflow); // the door answers 503, and the delivery claims nothing
+            break;
+          }
+          ({ run, reg } = next);
+          continue;
+        }
+        const seat = reg.source!;
+        const { item, ...line } = await seat.hear({
+          hook: d.hook,
+          kind: d.kind,
+          key: d.key,
+          delivery: d.delivery,
+          payload: d.payload,
+          caller: d.caller,
+        });
+        // A skip from a run that ended while it was heard: ask the new run's Source.
+        if (line.verdict === "skipped" && this.runs.get(runId) !== run && this.isStanding(run.record.workflow)) {
+          continue;
+        }
+        out.sources.push({ pool: runId, workflow: run.record.workflow, source: reg.id, ...line });
+        if (line.verdict === "held" && this.runs.get(runId) === run) await this.persist(run);
+        if (d.person && seat.reply) {
+          const place = { target: "source" as const, workflow: run.record.workflow, run: runId, gate: reg.id };
+          const verdict = { ...line, ...(item !== undefined ? { item } : {}) };
+          const said = runReply(place, () => seat.reply!(verdict, d.caller));
+          replies.push(line.verdict === "skipped" ? { ...said, skipped: true } : said);
+        }
+        break;
+      }
+    }
+    // A standing Pool with no live run (ADR-0017): a paused one says `paused` and holds nothing, so a
+    // read Source finds the item at the resume; one in its back-off makes the door answer 503, so
+    // the service sends the delivery again.
+    const without = this.standingWithoutRun(d.kind, d.key, d.may);
+    for (const p of without.paused) {
+      out.sources.push({ pool: p.run, workflow: p.workflow, source: "source", verdict: "paused" });
+    }
+    const waiting = [...new Set([...without.waiting, ...handedOn])];
+    if (waiting.length) out.waiting = waiting;
+    if (d.person) out.replies = replies;
+    return out;
   }
 
   /**
@@ -2421,6 +2922,7 @@ export class RunHost {
       workflow: blob?.workflow ?? "",
       instanceId: blob?.instanceId ?? "",
       ...(blob?.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
+      ...(blob?.startedBy ? { startedBy: blob.startedBy } : {}),
       status,
       value: undefined,
       context: undefined,
@@ -2535,6 +3037,12 @@ export class RunHost {
       ...(blob.assembly !== undefined ? { assembly: blob.assembly } : {}),
       ...boundFields(snap),
       ...(blob.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
+      ...(blob.startedBy ? { startedBy: blob.startedBy } : {}),
+      ...(blob.resumedBy ? { resumedBy: blob.resumedBy } : {}),
+      ...(blob.cancelledBy ? { cancelledBy: blob.cancelledBy } : {}),
+      ...(blob.handedOverTo ? { handedOverTo: blob.handedOverTo } : {}),
+      ...(blob.answers?.length ? { answers: blob.answers } : {}),
+      ...steeringOf(blob.notices?.steering ?? []),
       // The Machine's output once the row says the run is over (ADR-0071), never while it is live;
       // for a failed run, its Failure (ADR-0073).
       ...(stored.status !== "live" && blob.failure !== undefined ? { output: blob.failure } : {}),
@@ -2544,6 +3052,25 @@ export class RunHost {
       ...dispatchedField(blob.effects ?? {}),
       ...worktreesField(blob.effects ?? {}),
     };
+  }
+
+  /**
+   * The first Caller of a run's chain of starts (ADR-0078): its `startedBy` when that is a Caller,
+   * else the first Caller of the run that dispatched it, and so on, live or stored. Undefined when
+   * jr2 started the chain, or a run of it is no longer known. `jr2 status` walks the same chain.
+   */
+  async firstCaller(runId: string): Promise<CallerRecord | undefined> {
+    const seen = new Set<string>();
+    for (let id: string | undefined = runId; id !== undefined && !seen.has(id); ) {
+      seen.add(id);
+      const by: RunStarter | undefined = (await this.read(id))?.startedBy;
+      if (by?.kind === "caller") {
+        const { kind: _kind, ...caller } = by;
+        return caller;
+      }
+      id = by?.kind === "run" ? by.run : undefined;
+    }
+    return undefined;
   }
 
   list(): RunStatus[] {
@@ -2667,9 +3194,11 @@ export class RunHost {
    * --keep`): kept, they age out at the operator's idle timeout, and `jr2 ssh` reaches them until
    * then. A faulted run never comes through here, and keeps its Workspaces (ADR-0012).
    */
-  async cancel(runId: string, opts: { keep?: boolean } = {}): Promise<void> {
+  async cancel(runId: string, opts: { keep?: boolean; by?: CallerRecord } = {}): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) return;
+    // The Caller that cancelled it (ADR-0078), saved with the terminal snapshot below.
+    if (opts.by) run.cancelledBy = opts.by;
     // Named BEFORE the stop, while the tree still says which Workspaces are live.
     const sandboxes = opts.keep ? [] : runSandboxes(run.actor, runId);
     run.actor.stop();
@@ -2724,6 +3253,348 @@ export class RunHost {
   private announceGone(run: LiveRun, status: RunStatus = this.liveStatus(run)): void {
     this.announce(run.record.workflow, { kind: "status", status });
     this.announce(run.record.workflow, { kind: "gone", runId: run.record.runId });
+  }
+
+  // --- standing Pools (ADR-0017) ---
+
+  /** The heads of the standing Workflows, by Workflow. */
+  private get heads(): Map<string, StandingHead> {
+    if (!this.#heads) this.#heads = new Map(this.store.standingHeads().map((h) => [h.workflow, h]));
+    return this.#heads;
+  }
+
+  private writeHead(head: StandingHead): void {
+    this.heads.set(head.workflow, head);
+    this.store.writeStanding(head);
+  }
+
+  /** Is `workflow` a standing Workflow of the registry: its Machine a standing Pool (ADR-0017)? */
+  isStanding(workflow: string): boolean {
+    return standingPoolOf(this.workflowDefs.get(workflow)?.machine) !== undefined;
+  }
+
+  /** The hosted runs of `workflow`, oldest first. */
+  private hostedOf(workflow: string): LiveRun[] {
+    return [...this.runs.values()].filter((r) => r.record.workflow === workflow);
+  }
+
+  /** The live standing run of `workflow`: the head when this process hosts it, else the newest
+   * hosted run. */
+  private standingRun(workflow: string): LiveRun | undefined {
+    const hosted = this.hostedOf(workflow);
+    const head = this.heads.get(workflow);
+    return hosted.find((r) => r.record.runId === head?.run) ?? hosted.at(-1);
+  }
+
+  private clearStandingTimer(workflow: string): void {
+    const timer = this.standingTimers.get(workflow);
+    if (timer !== undefined) clearTimeout(timer);
+    this.standingTimers.delete(workflow);
+  }
+
+  private setStandingTimer(workflow: string, ms: number, fn: () => void): void {
+    this.clearStandingTimer(workflow);
+    const timer = setTimeout(
+      () => {
+        this.standingTimers.delete(workflow);
+        if (!this.#stopping) fn();
+      },
+      Math.max(0, ms),
+    );
+    // A day's bound never holds the process: the next boot arms it again from the head's `since`.
+    (timer as { unref?: () => void }).unref?.();
+    this.standingTimers.set(workflow, timer);
+  }
+
+  /** Arm the age bound of a standing Workflow's live run: at `since` + the bound, hand it over. */
+  private armAge(workflow: string, run: LiveRun): void {
+    const since = Date.parse(this.heads.get(workflow)?.since ?? "") || this.now();
+    this.setStandingTimer(workflow, since + this.standingOpts.ageMs - this.now(), () => {
+      if (this.runs.get(run.record.runId) === run && this.heads.get(workflow)?.run === run.record.runId) {
+        this.handOverLive(run, "hand-over");
+      }
+    });
+  }
+
+  /**
+   * Keep one live run of each standing Workflow under the current registry (ADR-0017). At boot,
+   * after the restore, and at each publish, after the swap. A live run of an older Assembly (or of
+   * another Machine) is handed over. A run that ended `error`, `drifted` or `lost` is handed over
+   * from its blob. A paused Workflow gets no run, and nor does one in its back-off. A Workflow with
+   * no head gets its first run, which records `why`.
+   */
+  async keepStanding(why: "boot" | "publish"): Promise<void> {
+    for (const [workflow, def] of [...this.workflowDefs]) {
+      if (!standingPoolOf(def.machine)) continue;
+      try {
+        await this.keepOne(workflow, def, why);
+      } catch (err) {
+        // One standing Workflow that cannot start is one Workflow, not the boot (ADR-0030).
+        console.error(
+          `standing workflow "${workflow}": no run was started: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  private async keepOne(workflow: string, def: WorkflowDef, why: "boot" | "publish"): Promise<void> {
+    const head = this.heads.get(workflow);
+    const live = this.standingRun(workflow);
+    if (live) {
+      if (head?.run !== live.record.runId) {
+        this.writeHead({ workflow, run: live.record.runId, since: new Date(this.now()).toISOString(), streak: 0 });
+      }
+      // A hand-over at every publish: the Assembly is one hash, and a handler has no stamp of its own.
+      if (live.def.assembly !== def.assembly || live.def.machine !== def.machine) {
+        this.handOverLive(live, "hand-over");
+      } else {
+        this.armAge(workflow, live);
+      }
+      return;
+    }
+    if (head?.paused) return;
+    if (this.standingTimers.has(workflow)) return; // in its back-off
+    if (head) {
+      if (this.unhosted.has(head.run)) return; // restore left it live to try again
+      const stored = await this.store.load(head.run);
+      const blob = stored?.snapshot as RunBlob | null | undefined;
+      // A live row that this process does not host is not ended: never a second run beside it.
+      if (stored?.status === "live") return;
+      if (stored && blob) {
+        if (stored.status === "cancelled") {
+          this.writeHead({ ...head, paused: "cancel" });
+          return;
+        }
+        this.handOverFrom(workflow, blob.snapshot, "hand-over", { streak: head.streak });
+        return;
+      }
+    }
+    this.startStanding(workflow, why, {});
+  }
+
+  /** Start a standing run with what a hand-over carries, and make it the head. */
+  private startStanding(
+    workflow: string,
+    why: "boot" | "publish" | "hand-over" | "resume",
+    opts: { context?: unknown; dropHeld?: boolean; resumedBy?: CallerRecord; streak?: number },
+  ): { runId: string; instanceId: string } {
+    this.clearStandingTimer(workflow);
+    const carry = standingCarryOf(opts.context, { dropHeld: opts.dropHeld === true });
+    const ids = this.startNow(workflow, { [HAND_OVER]: carry }, undefined, { kind: "jr2", why }, opts.resumedBy);
+    this.writeHead({
+      workflow,
+      run: ids.runId,
+      since: new Date(this.now()).toISOString(),
+      streak: opts.streak ?? 0,
+    });
+    const run = this.runs.get(ids.runId);
+    if (run) this.armAge(workflow, run);
+    return ids;
+  }
+
+  /**
+   * Hand a live standing run over (ADR-0017): start the new run with its held items and active keys,
+   * and end it `done` with `handedOverTo`, in one synchronous step, so no delivery and no settle
+   * falls between the two runs.
+   */
+  private handOverLive(run: LiveRun, why: "hand-over"): void {
+    const workflow = run.record.workflow;
+    const ids = this.startStanding(workflow, why, { context: run.actor.getSnapshot().context });
+    run.handedOverTo = ids.runId;
+    run.actor.stop();
+    this.persist(run, "done");
+  }
+
+  /** Hand over from a run that is no longer live, by its saved context: `error`, `drifted`, `lost`,
+   * or a paused run that a Caller resumes. */
+  private handOverFrom(
+    workflow: string,
+    snapshot: unknown,
+    why: "hand-over" | "resume",
+    opts: { dropHeld?: boolean; resumedBy?: CallerRecord; streak?: number },
+  ): { runId: string; instanceId: string } {
+    const context = (snapshot as { context?: unknown } | null | undefined)?.context;
+    return this.startStanding(workflow, why, { ...opts, context });
+  }
+
+  /**
+   * What the end of a standing run means (ADR-0017), from `persist`: a cancel pauses the Workflow;
+   * an `error` or a `failed` (ADR-0073) hands it over after the back-off, and so does a run that
+   * took its bound with no run started. One rule for each of these ends: a run in which an item that
+   * it took itself (not a carried key) started a run starts the count again, and any other run
+   * counts. After 3 hand-overs from counted runs in a row, the next counted run pauses it. A
+   * hand-over's own end, and a run that is not the head, mean nothing more.
+   */
+  private standingEnded(run: LiveRun, status: string): void {
+    const workflow = run.record.workflow;
+    const head = this.heads.get(workflow);
+    if (head?.run !== run.record.runId || run.handedOverTo !== undefined) return;
+    this.clearStandingTimer(workflow);
+    if (status === "cancelled") {
+      this.writeHead({ ...head, paused: "cancel" });
+      return;
+    }
+    const atBound = run.boundWithNoRun === true;
+    if (!atBound && status !== "error" && status !== "failed") return;
+    // One rule for each end that counts: only a run in which an item that it took itself (not a
+    // carried key) started a run starts the count again. Any other run is part of a poison loop.
+    const streak = atBound || !tookOf(run).started ? head.streak + 1 : 0;
+    if (streak > STANDING_ERRORS_PAUSE) {
+      this.writeHead({ ...head, streak, paused: atBound ? "bound" : "errors" });
+      const last = atBound ? `took its bound of ${this.standingOpts.dispatches} items` : `ended ${status}`;
+      console.error(
+        `standing workflow "${workflow}": paused — in ${streak} runs in a row, no item that the run took started a ` +
+          `run, after ${STANDING_ERRORS_PAUSE} hand-overs; the last one ${last}; \`jr2 run ${workflow}\` resumes it (ADR-0017)`,
+      );
+      return;
+    }
+    this.writeHead({ ...head, streak });
+    const context = run.actor.getSnapshot().context;
+    this.setStandingTimer(workflow, this.standingOpts.backoffMs(Math.max(1, streak)), () => {
+      if (this.heads.get(workflow)?.run !== run.record.runId || this.hostedOf(workflow).length > 0) return;
+      if (!this.isStanding(workflow)) return;
+      try {
+        this.startStanding(workflow, "hand-over", { context, streak });
+      } catch (err) {
+        console.error(
+          `standing workflow "${workflow}": the hand-over after ${atBound ? "the bound with no run started" : status} failed: ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    });
+  }
+
+  /**
+   * A live standing run that took its bound of items, each one a dispatch, is handed over after the
+   * save that counted the last one (ADR-0017). When none of the items it took itself started a run
+   * (a carried key's run does not count: it was started before), the
+   * run ends `done` and the hand-over waits out the back-off, as after `error`: an item that ends
+   * with no run is known only in its run's life, so a backlog of such items fills the bound again
+   * in each new run, and a hand-over at once would loop with no pause and no end. While no item has
+   * an answer yet (each one in flight), jr2 waits: the save of the first answer asks again.
+   */
+  private checkBound(run: LiveRun): void {
+    const workflow = run.record.workflow;
+    if (this.heads.get(workflow)?.run !== run.record.runId) return;
+    // The items it took, not the keys a hand-over carried: each carried key is sent again, so a
+    // count of its ledger's rows would hand a run with `cap` at the bound over again at once.
+    if (standingTaken(run.actor.getSnapshot().context) < this.standingOpts.dispatches) return;
+    const took = tookOf(run);
+    if (!took.started && took.answered === 0) return;
+    queueMicrotask(() => {
+      if (this.runs.get(run.record.runId) !== run || this.heads.get(workflow)?.run !== run.record.runId) return;
+      if (!this.isStanding(workflow)) return;
+      if (tookOf(run).started) {
+        this.handOverLive(run, "hand-over");
+        return;
+      }
+      run.boundWithNoRun = true;
+      run.actor.stop();
+      this.persist(run, "done");
+    });
+  }
+
+  /**
+   * Resume a paused standing Workflow (ADR-0017): a hand-over from the run that the pause ended,
+   * with its held items (none with `dropHeld`) and its active keys. The new run records the Caller
+   * as `resumedBy`. Throws {@link StandingRefused} when the Workflow is live, or not paused.
+   */
+  async resumeStanding(
+    workflow: string,
+    by: CallerRecord,
+    opts: { dropHeld?: boolean } = {},
+  ): Promise<{ runId: string; instanceId: string }> {
+    if (!this.isStanding(workflow)) throw new StandingRefused(`"${workflow}" is not a standing Workflow`);
+    const live = this.standingRun(workflow);
+    if (live) {
+      throw new StandingRefused(
+        `"${workflow}" is a standing Workflow, and its run ${live.record.runId} is live: jr2 keeps its run, and ` +
+          "`jr2 run` only resumes a paused one (ADR-0017)",
+      );
+    }
+    const head = this.heads.get(workflow);
+    if (!head?.paused) {
+      throw new StandingRefused(
+        `"${workflow}" is a standing Workflow, and it is not paused: jr2 starts its next run after the back-off, and ` +
+          "`jr2 run` only resumes a paused one (ADR-0017)",
+      );
+    }
+    const blob = (await this.store.load(head.run))?.snapshot as RunBlob | null | undefined;
+    // Asked again after the read: another resume may have started the run.
+    if (this.standingRun(workflow) || !this.heads.get(workflow)?.paused) {
+      throw new StandingRefused(`"${workflow}" was resumed a moment ago`);
+    }
+    return this.handOverFrom(workflow, blob?.snapshot, "resume", {
+      resumedBy: by,
+      dropHeld: opts.dropHeld === true,
+      streak: 0,
+    });
+  }
+
+  /** Each standing Workflow of the registry, as `jr2 up` and `jr2 status` print it (ADR-0017). */
+  async standingView(): Promise<StandingView[]> {
+    const out: StandingView[] = [];
+    for (const [workflow, def] of this.workflowDefs) {
+      const info = standingPoolOf(def.machine);
+      if (!info) continue;
+      const head = this.heads.get(workflow);
+      const live = this.standingRun(workflow);
+      const base = { workflow, pool: info.id, callee: info.callee };
+      if (live) {
+        const held = standingCarryOf(live.actor.getSnapshot().context).held.length;
+        out.push({ ...base, state: "live", run: live.record.runId, held });
+        continue;
+      }
+      let held = 0;
+      if (head) {
+        const blob = (await this.store.load(head.run).catch(() => null))?.snapshot as RunBlob | null | undefined;
+        held = standingCarryOf((blob?.snapshot as { context?: unknown } | undefined)?.context).held.length;
+      }
+      out.push({
+        ...base,
+        state: head?.paused ? "paused" : "waiting",
+        ...(head ? { run: head.run } : {}),
+        held,
+        ...(head?.paused ? { why: head.paused } : {}),
+      });
+    }
+    return out;
+  }
+
+  /** The live run that took over from a standing run that a hand-over ended (ADR-0017), and its
+   * Source's registration, or undefined when the Workflow does not stand or has no live run. */
+  private standingSourceAfter(
+    ended: LiveRun,
+    kind: string,
+    key: string,
+  ): { run: LiveRun; reg: Registration } | undefined {
+    const workflow = ended.record.workflow;
+    if (!this.isStanding(workflow)) return undefined;
+    const run = this.standingRun(workflow);
+    if (!run || run === ended) return undefined;
+    for (const reg of this.table.byRun(run.record.runId)) {
+      if (reg.kind === "gate" && reg.source?.hears(kind, key)) return { run, reg };
+    }
+    return undefined;
+  }
+
+  /** The standing Workflows that hear a Hook's kind and key and have no live run (ADR-0017): the
+   * paused ones, by their head, and the ones waiting out a back-off. */
+  private standingWithoutRun(
+    kind: string,
+    key: string,
+    may: (workflow: string) => boolean,
+  ): { paused: Array<{ workflow: string; run: string }>; waiting: string[] } {
+    const paused: Array<{ workflow: string; run: string }> = [];
+    const waiting: string[] = [];
+    for (const [workflow, def] of this.workflowDefs) {
+      const info = standingPoolOf(def.machine);
+      if (!info || !info.hears(kind, key) || !may(workflow) || this.standingRun(workflow)) continue;
+      const head = this.heads.get(workflow);
+      if (head?.paused) paused.push({ workflow, run: head.run });
+      else waiting.push(workflow);
+    }
+    return { paused, waiting };
   }
 
   // --- internals ---
@@ -2789,6 +3660,10 @@ export class RunHost {
       waiting: runWaiting(snap, run.actor.logic),
       held: heldOf(run.holds.values()),
       fault: run.fault,
+      ...(run.cancelledBy ? { cancelledBy: run.cancelledBy } : {}),
+      ...(run.handedOverTo ? { handedOverTo: run.handedOverTo } : {}),
+      ...(run.answers.length ? { answers: [...run.answers] } : {}),
+      ...steeringOf(run.notices.steeringRecord()),
       ...(run.def.assembly !== undefined ? { assembly: run.def.assembly } : {}),
       ...boundFields(snap),
       // A Machine that reached its final state has its output (ADR-0071); an active one has none.
@@ -2826,7 +3701,7 @@ export class RunHost {
     noticeState?: NoticeLedgerState,
     holdState: Hold[] = [],
     effects: Record<string, EffectRow> = {},
-    startedBy: Record<string, StartedBy> = {},
+    childAgents: Record<string, ChildAgent> = {},
   ): AnyActor {
     const notices = new NoticeLedger(noticeState, this.newId);
     const holds = new Map(holdState.map((hold) => [hold.instanceId, hold]));
@@ -2848,10 +3723,12 @@ export class RunHost {
       workflow: record.workflow,
       ...(this.orchestratorName !== undefined ? { orchestratorName: this.orchestratorName } : {}),
       depth: record.dispatchedBy?.depth ?? 0,
+      firstCaller: () => this.firstCaller(record.runId),
       // A `dispatch` with no target (ADR-0071): the run host itself, with no wire and no token.
       dispatch: {
         start: (workflow, input, by) => this.dispatchStart(workflow, input, by),
         settled: (runId, signal) => this.settledOf(runId, signal),
+        lookup: (workflow, key) => this.dispatched(workflow, key),
       },
       ...(def.assembly !== undefined ? { assembly: def.assembly } : {}),
       table: this.table,
@@ -2913,6 +3790,30 @@ export class RunHost {
         if (!notices.restore(notice, to, source, taker)) return;
         const run = this.runs.get(record.runId);
         if (run && run.notices === notices) this.persist(run);
+      },
+      // The Machine's `steer` action (ADR-0002): saved with the transition that runs it.
+      steer: (machine, agentName, text, from) => {
+        const actors = ((machine as { logic?: AnyStateMachine }).logic?.implementations.actors ?? {}) as Record<
+          string,
+          unknown
+        >;
+        if (!isAgent(actors[agentName])) {
+          throw new Error(
+            `steer("${agentName}", …): this Machine carries no Agent "${agentName}" — a Steering message goes to ` +
+              "an Agent slot of the Machine whose transition sends it (ADR-0002)",
+          );
+        }
+        notices.steer(
+          {
+            kind: "steering",
+            scope: "slot",
+            text,
+            author: { kind: "machine", ...(from !== undefined ? { from: { party: from.party, id: from.id } } : {}) },
+            at: new Date(this.now()).toISOString(),
+          },
+          agentSlot(machine, agentName),
+        );
+        schedule();
       },
       takeNotices: (scope) => notices.take(scope),
       releaseNotices: (ids, taker) => notices.release(ids, taker),
@@ -2977,12 +3878,12 @@ export class RunHost {
       // Agent whose state the action is written below — the one in its own send first, else the one
       // outstanding — and the value that replaces its default answer.
       chainOf: (machine, seat, event) => {
-        const pick = this.answeringIn(machine, seat, record.runId, holds, startedBy, event);
+        const pick = this.answeringIn(machine, seat, record.runId, holds, childAgents, event);
         if (pick === undefined) return undefined;
         return "reg" in pick ? [...pick.chain] : [...(pick.chain ?? [])];
       },
       setAnswer: (machine, seat, value, event) => {
-        const pick = this.answeringIn(machine, seat, record.runId, holds, startedBy, event);
+        const pick = this.answeringIn(machine, seat, record.runId, holds, childAgents, event);
         if (pick === undefined) return;
         // Not saved here: the action runs inside a transition, and the persist that follows it carries
         // the value — a save now would read the Machine before its route, and answer too early.
@@ -3071,8 +3972,8 @@ export class RunHost {
             const agent = sending.reg.sender?.id;
             const invoke = sending.reg.invokeId;
             const key = childKey(child._parent, child.id);
-            if (agent !== undefined) startedBy[key] = invoke !== undefined ? { agent, invoke } : { agent };
-            else delete startedBy[key];
+            if (agent !== undefined) childAgents[key] = invoke !== undefined ? { agent, invoke } : { agent };
+            else delete childAgents[key];
           }
         }
         // …and so are the children its later work starts: a child started while the Machine takes an
@@ -3088,12 +3989,17 @@ export class RunHost {
           const after = childRefsOf(snapshot);
           childrenAfter.set(taker, after);
           const started = [...after].filter((c) => !before.has(c)).map((c) => c.id);
+          // A Machine instance that left the tree ended (ADR-0002): the Steering messages held for
+          // its slots, and for the slots of the Machines below it, retire "not delivered".
+          for (const gone of before) {
+            if (!after.has(gone) && isMachineActor(gone) && notices.retire(slotPath(gone))) schedule();
+          }
           if (started.length > 0 && !this.sending) {
-            const agent = agentOfEvent(ev.event as AnyEventObject, startedBy, taker);
+            const agent = agentOfEvent(ev.event as AnyEventObject, childAgents, taker);
             for (const id of started) {
               const owner = agent ?? this.outstandingAbove(taker, snapshot as AnyMachineSnapshot, id, holds);
-              if (owner !== undefined) startedBy[childKey(taker, id)] = owner;
-              else delete startedBy[childKey(taker, id)];
+              if (owner !== undefined) childAgents[childKey(taker, id)] = owner;
+              else delete childAgents[childKey(taker, id)];
             }
           }
         }
@@ -3212,11 +4118,19 @@ export class RunHost {
         }
         if (ev.type === "@xstate.snapshot") {
           causes.taken(ev.actorRef as AnyActorRef, ev.event as AnyEventObject);
+          // A Machine instance that reached its end — `done`, or `error` — takes no Turn again, even
+          // while its parent still holds it (ADR-0002). A stop is not an end here: a host that stops
+          // parks the run, and its restore goes on.
+          const ended = (ev as { snapshot?: { status?: string } }).snapshot?.status;
+          const ref = ev.actorRef as AnyActorRef;
+          if ((ended === "done" || ended === "error") && isMachineActor(ref)) {
+            notices.retire(ref._parent === undefined ? undefined : slotPath(ref));
+          }
           schedule();
         }
       },
     });
-    live = this.track(record, actor, def, agents, epochs, notices, binding, holds, effects, startedBy);
+    live = this.track(record, actor, def, agents, epochs, notices, binding, holds, effects, childAgents);
     return actor;
   }
 
@@ -3230,7 +4144,7 @@ export class RunHost {
     binding: RunBinding,
     holds: Map<string, Hold>,
     effects: Record<string, EffectRow>,
-    startedBy: Record<string, StartedBy>,
+    childAgents: Record<string, ChildAgent>,
   ): LiveRun {
     const run: LiveRun = {
       record,
@@ -3241,8 +4155,9 @@ export class RunHost {
       notices,
       holds,
       effects,
-      startedBy,
+      childAgents,
       binding,
+      answers: [],
       listeners: new Set(),
       feedSoFar: [],
     };
@@ -3303,11 +4218,15 @@ export class RunHost {
    * for a mechanism event that no transition took, because the host stops the actor and xstate
    * then knows only that it was stopped (ADR-0074). It is the stored status and the one the feeds report.
    */
-  private persist(run: LiveRun, terminal?: string): void {
+  private persist(run: LiveRun, terminal?: string): Promise<void> {
     // The holds first: an answer read at Rest, and a notice a route out raised, ride this same save.
     this.settleHolds(run);
     const snapshot = run.actor.getPersistedSnapshot();
     const machineStatus = (snapshot as { status?: string }).status ?? "active";
+    const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
+    // A run that ended holds no Steering message: each one still held retires, "not delivered"
+    // (ADR-0002). Before the blob is built, so this save records it.
+    if (status !== "live") run.notices.retire();
     const serialized = serializeSnapshot(snapshot, {
       stripContext: (ctx) => ctx, // see ADR-0007: live infra lives in `.provide` closures, not context
       stripChildInput: (input) => input,
@@ -3316,6 +4235,11 @@ export class RunHost {
       workflow: run.record.workflow,
       instanceId: run.record.instanceId,
       ...(run.record.dispatchedBy ? { dispatchedBy: run.record.dispatchedBy } : {}),
+      ...(run.record.startedBy ? { startedBy: run.record.startedBy } : {}),
+      ...(run.record.resumedBy ? { resumedBy: run.record.resumedBy } : {}),
+      ...(run.cancelledBy ? { cancelledBy: run.cancelledBy } : {}),
+      ...(run.handedOverTo ? { handedOverTo: run.handedOverTo } : {}),
+      ...(run.answers.length ? { answers: run.answers } : {}),
       // Stamped on every save, off the registered TEMPLATE (never the per-run `.provide()` result —
       // providers do not change shape, and `fingerprintOf` memoizes per machine object). ADR-0030.
       machine: fingerprintOf(run.def.machine),
@@ -3330,14 +4254,13 @@ export class RunHost {
       timers: pendingTimers(run.actor, this.now()),
       holds: [...run.holds.values()],
       effects: run.effects,
-      startedBy: liveStartedBy(run.startedBy, run.actor),
+      childAgents: liveChildAgents(run.childAgents, run.actor),
       fault: run.fault,
       ...(run.failure !== undefined ? { failure: run.failure } : {}),
     };
-    const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
     // A save that fails is this run's fault, never the process's: an unhandled rejection would end
     // the Orchestrator and every run on it. The run keeps its last saved snapshot.
-    this.store.save(run.record.runId, blob, status).catch((err: unknown) => {
+    const saved = this.store.save(run.record.runId, blob, status).catch((err: unknown) => {
       console.error(
         `run ${run.record.runId}: its snapshot was not saved: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -3363,9 +4286,13 @@ export class RunHost {
       run.listeners.clear();
       // After the save and the untrack: a listener that reads the run back reads it settled.
       this.fireSettled(run.record.runId, runStatus);
+      // A standing run's end (ADR-0017): a pause, or a hand-over after the back-off.
+      this.standingEnded(run, status);
     } else {
       this.announce(run.record.workflow, { kind: "status", status: runStatus });
+      this.checkBound(run);
     }
+    return saved;
   }
 }
 
@@ -3397,6 +4324,20 @@ function stillRunning(reg: Registration): boolean {
 function atOrBelow(actor: AnyActorRef, ref: AnyActorRef): boolean {
   for (let at: AnyActorRef | undefined = actor; at !== undefined; at = at._parent) if (at === ref) return true;
   return false;
+}
+
+/** What the items that a standing run took itself did (ADR-0017): whether one started a run, and
+ * how many ended. A live worker's run is on its ledger row (ADR-0071). */
+function tookOf(run: LiveRun): { started: boolean; answered: number } {
+  return standingTook(run.actor.getSnapshot(), (effectId) => {
+    const row = run.effects[effectId];
+    if (row?.kind !== "dispatch") return undefined;
+    const r =
+      row.state === "settled"
+        ? (row.output as { run?: unknown } | null | undefined)?.run
+        : (row as { run?: unknown }).run;
+    return typeof r === "string" && r !== "" ? r : undefined;
+  });
 }
 
 /** The runs a run's `dispatch` Effects started (ADR-0071), from its ledger: an intent row the

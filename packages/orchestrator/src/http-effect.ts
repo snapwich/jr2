@@ -106,9 +106,9 @@ declare const openSecretMark: unique symbol;
  */
 export type OpenSecretMark = { readonly [openSecretMark]: true };
 
-/** A named secret, never `secret(open)`: where a definition's Open part is a whole that holds a
- * secret — a dispatch's target (ADR-0071) — the secret is bound with it, to a name, so the mark
- * `secret(open)` carries may not be present. One type for the definition and the binding. */
+/** A secret bound to a name, never `secret(open)`. Where a definition's Open part is a whole that
+ * holds a secret — a dispatch's target (ADR-0071) — the secret is bound with it, to a name, so the
+ * mark `secret(open)` carries may not be present. One type for the definition and the binding. */
 export type NamedSecret = Secret & { readonly [K in keyof OpenSecretMark]?: never };
 
 /** `secret(open)`: a secret a packaged Machine names in its auth, a header or a command's env, and

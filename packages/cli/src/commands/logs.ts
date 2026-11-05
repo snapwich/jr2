@@ -7,7 +7,7 @@ import { JR2Client } from "../client.ts";
 import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
-import { childErrorActivity, placingActivity } from "./run.ts";
+import { childErrorActivity, hookRefusedActivity, lookedActivity, placingActivity, poolActivity } from "./run.ts";
 import { parseCommand, usageLine } from "../command-table.ts";
 
 export async function logs(args: string[], io: Io): Promise<number> {
@@ -19,7 +19,7 @@ export async function logs(args: string[], io: Io): Promise<number> {
   }
   const target = await resolveTarget(io, targetOptions(values));
   try {
-    const client = new JR2Client(target.url, io.fetch, target.token);
+    const client = new JR2Client(target.url, io.fetch, target.token, target.onBehalfOf);
     const ref = await resolveRunId(client, given);
     if (!ref.ok) {
       activity(io, ref.message);
@@ -41,6 +41,18 @@ export async function logs(args: string[], io: Io): Promise<number> {
       }
       if (ev.kind === "child-error") {
         activity(io, childErrorActivity(ev));
+        continue;
+      }
+      if (ev.kind === "looked") {
+        activity(io, lookedActivity(ev));
+        continue;
+      }
+      if (ev.kind === "hook-refused") {
+        activity(io, hookRefusedActivity(ev));
+        continue;
+      }
+      if (ev.kind === "pool") {
+        activity(io, poolActivity(ev));
         continue;
       }
       result(io, ev.status);

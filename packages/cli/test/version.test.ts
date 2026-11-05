@@ -48,6 +48,7 @@ function fakeCluster(opts: {
       return opts.deployed ? "tok" : undefined;
     },
     portForward: async () => ({ url: "http://fwd", close: () => (closed = true) }),
+    selfSubject: async () => undefined,
   };
   const admin = {
     context: async () => "kind-test",

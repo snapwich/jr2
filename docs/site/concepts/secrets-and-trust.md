@@ -38,6 +38,8 @@ each place that names it, and to no other place:
 - The [Instance Harness](../reference/glossary.md#instance-harness) claims only the model keys of the Menu-only Agents
   that it hosts.
 - An Effect claims an Effect secret when it names it with [`secret()`](../reference/authoring-surface/secret.md).
+- A [Hook](../reference/glossary.md#hook) that checks a signature with a shared secret (`mac`) claims that secret for
+  the [Instance Effector](../reference/glossary.md#instance-effector), as an Effect does.
 - One entry can be a Held secret and an Effect secret at the same time. The placement is a fact of each place that names
   it, not of the entry.
 - An entry that nothing names goes nowhere, and [`jr2 up`](../reference/cli.md#up) warns about it.
@@ -195,39 +197,58 @@ make the Sandbox. [Give the cluster git credentials](../guides/give-the-cluster-
 ## The tokens
 
 jr2 makes its own tokens. `jr2 up` makes the Instance token and the signing key the first time, and keeps them in the
-`jr2-instance` Secret. Each other token comes from the signing key, so the Orchestrator stores no token for each pod.
+`jr2-instance` Secret. Each token of a pod comes from the signing key, so the Orchestrator stores no token for each pod.
 
-| Token          | Who holds it                                                                                         | What it lets the holder do                                                                                  |
-| -------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Instance token | You, the CLI, the [Console](../reference/glossary.md#console) when you type it, and a webhook client | Everything: start a run, read its full state, answer a Gate, cancel a run.                                  |
-| Control token  | The Custodian of one Sandbox, as a file                                                              | Read the Menu and send the picks of the Agents in that Sandbox, for the Agent that the Harness names.       |
-| Fetch token    | The Custodian of one Sandbox, as a file                                                              | Ask for a fetch of a Repo that the Sandbox mounts.                                                          |
-| Harness bearer | The Orchestrator. The Harness holds only its SHA-256 digest.                                         | Call the Harness in one pod: start a Turn, read it, stop it, set up a Worktree, and run a `command` Effect. |
-| Effector key   | The Orchestrator, and the Effector of one placement                                                  | Sign a request to that Effector, and sign its answer.                                                       |
+| Token              | Who holds it                                                                                    | What it lets the holder do                                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Instance token     | You and the CLI, through the Kubernetes API                                                     | Everything: start a run, read its full state, answer a Gate, cancel a run, and the routes that no scope opens. |
+| Named Caller token | A [Caller](../reference/glossary.md#caller) that has no access to the cluster, such as a CI job | The scopes that `callers.tokens` gives its name, for the Workflows that each scope names.                      |
+| Control token      | The Custodian of one Sandbox, as a file                                                         | Read the Menu and send the picks of the Agents in that Sandbox, for the Agent that the Harness names.          |
+| Fetch token        | The Custodian of one Sandbox, as a file                                                         | Ask for a fetch of a Repo that the Sandbox mounts.                                                             |
+| Harness bearer     | The Orchestrator. The Harness holds only its SHA-256 digest.                                    | Call the Harness in one pod: start a Turn, read it, stop it, set up a Worktree, and run a `command` Effect.    |
+| Effector key       | The Orchestrator, and the Effector of one placement                                             | Sign a request to that Effector, and sign its answer.                                                          |
 
 - The Instance token enters no Harness pod. The CLI reads it from the `jr2-instance` Secret over the Kubernetes API.
-  Thus Kubernetes RBAC decides who holds it.
+  Thus Kubernetes RBAC decides who holds it. The CLI is the Caller `token/instance`. It also sends the name of your
+  Kubernetes user, and the run records it as the party that the Caller acts for.
+- [`callers.tokens`](../reference/config.md#callers-tokens) declares each named Caller token. `jr2 up` makes its value
+  one time, in a Secret of its own, `jr2-caller-<name>`. The Orchestrator holds only the SHA-256 digest of each value,
+  in the `jr2-caller-digests` Secret, which it mounts. `jr2 caller token <name>` prints the value, which it reads over
+  the Kubernetes API.
+- `jr2 caller rotate <name>` makes a new value. The Orchestrator reads the digests again when the mount changes. Thus
+  the old value works until the kubelet updates the mount, about one minute. No pod restarts.
+- When `callers.tokens` no longer declares a name, the next `jr2 up` deletes its Secret, and its value stops working.
 - A control token or a fetch token cannot answer a Gate, and cannot speak for a different pod. The Orchestrator accepts
   each one only on its own routes. Thus an Agent cannot approve its own work, and a Sandbox cannot send a pick for an
-  Agent in a different Sandbox.
+  Agent in a different Sandbox. No token of a pod is a Caller.
 - A Harness can check its bearer, but it cannot make a bearer. Thus an Agent cannot drive a conversation in a different
   pod.
 
+[Callers and Hooks](callers-and-hooks.md) tells how jr2 knows a Caller, and what each scope opens.
+[Give a Caller a scope](../guides/give-a-caller-a-scope.md) declares a named Caller token and uses it.
+
 ## Open observation, guarded control
 
-Each route of the [HTTP API](../reference/http-api.md) is in one of three access bands:
+Each route of the [HTTP API](../reference/http-api.md) is in one of these access bands:
 
 - [**Open**](../reference/http-api.md#band-open), with no token: the [Workflows](../reference/glossary.md#workflow), the
   structure of each Machine, and the live runs of a Workflow with their states. An open route shows no context of a run,
   and an [Emit](../reference/glossary.md#emit) shows only its type.
 - [**Authenticated**](../reference/http-api.md#band-authenticated), with the Instance token or a token of a Sandbox: the
   routes of the Agent's Menu and the fetch. A token of a Sandbox reaches only its own routes, in its own pod.
-- [**Instance token only**](../reference/http-api.md#band-instanceonly): the start of a run, the full state of a run,
-  the Gates, and cancel.
+- [**A Caller with a scope**](../reference/http-api.md#band-guarded): the start of a run, the full state of a run, the
+  Gates, and cancel. Each route needs one scope of a Caller (`start`, `read`, `answer`, `cancel` or `steer`) for the
+  Workflow of the run. The Instance token has each scope for each Workflow. A named Caller token has the scopes that its
+  entry gives it. A token of a Sandbox is not a Caller.
+- [**Instance token only**](../reference/http-api.md#band-instanceonly): the routes that no scope opens, such as a
+  runtime Chart, the report of the Repos and the log of a Hook (`GET /hooks/:name`).
+- [**A Hook's verifier**](../reference/http-api.md#band-hook), with no bearer token: `POST /hooks/:name`. The verifier
+  of the Hook checks each delivery.
 
-Thus the Console shows the Machines and the runs without a token. When you type the Instance token in the Console, it
-can also start runs and answer Gates. The Console keeps the token in the session storage of the browser tab, and forgets
-it when you close the tab.
+Thus the Console shows the Machines and the runs without a token. When you type a Caller's token in the Console, or log
+in at an issuer that the Instance declares, the Console also shows the controls that the Caller's scopes open: start,
+the Gates, cancel and steer. The Console keeps the credential in the session storage of the browser tab, and forgets it
+when you close the tab. [Open the Console](../guides/open-the-console.md) tells how.
 
 "Open" means open to each caller that can reach the Service of the Orchestrator: a port forward, a pod in the cluster,
 or an ingress. The names of the states and the types of the Emits are open.
@@ -268,12 +289,13 @@ who can read the pod logs of the namespace can read these conversations.
 
 ## Read next
 
+- [Give a Caller a scope](../guides/give-a-caller-a-scope.md)
 - [Use a local model](../guides/use-a-local-model.md)
 - [Use a hosted provider or a gateway](../guides/use-a-hosted-provider.md)
 - [Give the cluster git credentials](../guides/give-the-cluster-git-credentials.md)
 - [Run a command or call a URL with an Effect](../guides/run-a-command-or-call-a-url.md)
 - [Open the Console](../guides/open-the-console.md)
-- [Architecture](architecture.md) and [Effects](effects.md)
+- [Callers and Hooks](callers-and-hooks.md), [Architecture](architecture.md) and [Effects](effects.md)
 - The [`secrets`](../reference/config.md#secrets), [`git`](../reference/config.md#git) and
   [`harness`](../reference/config.md#harness) fields of `jr2.config.ts`,
   [`secret()`](../reference/authoring-surface/secret.md), and the [HTTP API](../reference/http-api.md)

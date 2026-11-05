@@ -204,8 +204,22 @@ whose processes are gone, with no way to know why.
     instance, whose conversation does not exist yet at the raise. It retires, recorded "not delivered", when that
     Machine instance ends.
   - **The Harness frames a Steering message by its author.** A Caller's message is an instruction from outside the run,
-    and the frame names the Caller. A message that the Machine relays `from` another Agent is that peer's word, and the
-    frame says that it is not an order. A Machine's message with no `from` is the workflow's own text.
+    and the frame names the Caller. A message that the Machine relays `from` another Agent is information from a peer.
+    The frame says that the workflow passes it on but did not write it, and a closing line after the text says that it
+    is not an instruction and does not change the Agent's task: the Agent does what the workflow asked. The closing line
+    is read last, after the peer's text (ADR-0029). In `peer-not-order`, a frame that said only "not an order" read 5 of
+    10, because a model that obeyed read "the workflow relays" as the workflow's own word. A frame that said, ahead of
+    the text only, that it was "that Agent's word, not the workflow's", read 17 of 20, and the closing line read 20 of
+    20 (ADR-0066). A message that the Machine relays `from` a Gate is what the Gate received, and the frame says that it
+    is not an order either. A Machine's message with no `from` is the workflow's own text. The text is quoted line by
+    line, so the model sees where it starts and ends, and it follows the notices in the Turn part, ahead of the Allowed
+    picks. A name in the frame (a Caller's name, its `onBehalfOf`, a peer's or a Gate's id) is a code span that its own
+    text cannot close, on one line: a name comes from outside jr2 and can hold a backtick or a line break. A message
+    whose author the Harness does not know is dropped, never framed as another author's.
+  - **The two bodies ride the wire apart.** The admit body carries `notices` and `steering`, and the surface read
+    `notices: [{ id, notice }]` and `steering: [{ id, message }]`; one acknowledgment,
+    `POST /agents/:iid/notices { heard }`, hears both by their ledger ids. A nudge and a wake take notices by their
+    sources, so they carry no message: the surface read that starts their Submission does.
 - **The Harness writes every word.** The admit body carries typed notices
   (`notices: [{ kind: "memory-limit", scope, agent?, limit?, peak? } | { kind: "conversation-new", reason } | { kind: "pick-answer", pick, cut, answer?, stopped? } …]`,
   where `peak` comes only with `limit`) and Steering messages with their authors, and the Harness renders both parts and

@@ -9,18 +9,33 @@ presents a credential; the page never ships with one.
 ## Decision
 
 - **The person presents a Caller's credential; the page never ships with one.** The Console's nav carries a password
-  field, and a login button when the Instance declares a JWT issuer
+  field, and a login button for each JWT issuer that the Instance declares with `login: true`
   ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). Empty, the page is
   precisely ADR-0014's observer: open structure and observation, no control rendered. With a credential, the page sends
   `Authorization: Bearer` on the guarded surface. The credential is any Caller's: the Instance token, a named Caller
   token, or a JWT. The login gets a JWT from the issuer with OIDC (the authorization code flow with PKCE, as a public
   client), and the page then uses it as it uses a typed token. The page as _served_ stays open and inert; ADR-0014's
   rejection stands, because what it rejected was baking the credential into the page.
+- **The login's facts come from an open route, and its client id is the issuer's `audience`.** Before a login, the page
+  reads `GET /console/config`: `{ login: [{ issuer, clientId }] }`, from the issuers of the current Assembly that have
+  `login: true`. The route is in the open band (ADR-0014), because the page reads it before it holds a credential, and
+  both values are public: a public client has no secret, and the issuer's URL is in every JWT that it signs. The client
+  id is the issuer entry's `audience`, because the JWT that the login gives names its client as its audience, and that
+  is what the JWT authenticator checks. A login is opt-in for each issuer, because an issuer for machines (a CI
+  provider's tokens) has no login page. The page reads the issuer's discovery document, asks for `openid`, `profile`,
+  `email` and `groups` where the issuer lists each, and sends the ID token as the bearer: an access token's audience and
+  form differ between providers. The return address is always the Console's root (`/`), so the client registers one
+  redirect URI; the page then puts the address back to where the login began. The verifier, the state and that address
+  wait in `sessionStorage` until the return, and a return whose state does not match is refused. PKCE needs
+  `crypto.subtle`, so a login needs the Console on https or on localhost, and the issuer must let the Console's origin
+  call its discovery document and its token endpoint (CORS).
 - **The page shows only what the Caller's scopes allow.** On entry the page asks `GET /whoami` for the Caller record:
   its name, the name that jr2 shows, and its scopes for each Workflow. It renders a control only where a scope opens its
   route: the start form with `start` for that Workflow, Gate cards with `answer`, cancel with `cancel`, a run's full
-  state with `read`, and the Steering box with `steer`. The nav shows who the page acts as. The server still checks each
-  request (ADR-0014); the page hides a control so that a person does not meet a 403, not as a guard.
+  state with `read`, and the Steering box with `steer`. The page re-fetches a run on a frame only for a Caller with
+  `answer` or `read` on its Workflow. The nav shows who the page acts as: the name that jr2 shows, else `<via>/<name>`,
+  with the scopes in its title, and a sign-out button in place of the field. The server still checks each request
+  (ADR-0014); the page hides a control so that a person does not meet a 403, not as a guard.
 - **The credential lives in `sessionStorage`** — survives a reload, dies with the tab, never a cookie (no ambient
   credential, no CSRF surface). A typed token and a login's JWT live there alike. A later 401 (an expired JWT, a rotated
   token) drops the UI back to observer mode rather than failing per widget.
@@ -54,7 +69,8 @@ presents a credential; the page never ships with one.
 ## Consequences
 
 - **No new band.** The server-side diff of the Console itself is: negotiate two addresses, serve the shell, retire
-  `/viz/*`. The scopes, `GET /whoami` and the login's issuers are ADR-0078's.
+  `/viz/*`, and serve `GET /console/config` in the open band. The scopes, `GET /whoami` and the login's issuers are
+  ADR-0078's.
 - **Possession follows the credential.** The Instance token stays one `kubectl get secret` away for whoever holds
   cluster RBAC; a named token is what its holder was given; a login is what the identity provider's groups grant.
 - **The XSS caveat is the real one and is bounded by what the page is:** a credential in `sessionStorage` is readable by
@@ -63,5 +79,6 @@ presents a credential; the page never ships with one.
 - **GLOSSARY.md**: **Console** is a glossary term (visualizer, dashboard, UI, viz on its Avoid list).
 - **The Console's UX gets a browser tier** — `@console`-tagged Cucumber scenarios holding a Playwright page, in
   `@jr2/e2e`, excluded from the default profile ([ADR-0010](0010-bdd-acceptance-tests.md) as amended). What the page
-  _believes_ stays unit-tested in `console-store.test.ts`; the browser tier asserts what a user does and sees, and the
-  login against Dex in a container (ADR-0078).
+  _believes_ stays unit-tested in `console-store.test.ts`, and the login's pure half in `console-login.test.ts`; the
+  browser tier asserts what a user does and sees, and the login against Dex in a container (ADR-0078). The login
+  scenario is also tagged `@dex`, because it needs docker, which the rest of the tier does not.

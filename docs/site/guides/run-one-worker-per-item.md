@@ -186,19 +186,27 @@ jr2 send <run id> --gate source --event issues_changed
 delivered issues_changed to gate "source" on e1effd33-9bf6-4137-ae70-3aa504910784
 ```
 
-Without the event, the Pool calls `next` again when a worker finishes, or after `pollEvery`. A webhook can send the same
+Without the event, the Pool calls `next` again when a worker finishes, or after `pollEvery`. A script can send the same
 event with [`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#post-runs-runid-gates-gate-events).
+
+A [Hook](../reference/glossary.md#hook) can tell the Pool too. Give the Source a `hooks` handler for the forge's event,
+for example `github` and `issues.labeled`, that gives [`reread()`](../reference/authoring-surface/reread.md), or
+[`skip(reason)`](../reference/authoring-surface/skip.md) for a label that is not `jr2`. Then each delivery of the Hook
+makes the Pool call `next` at once. [Pools and Sources](../concepts/pools-and-sources.md#a-hook-reaches-a-source) tells
+how.
 
 ## The end of the run
 
 When the last worker finishes and no issue is ready, the run ends. In the first terminal, `jr2 run` prints the last
 state of the Pool, then the status of the run as JSON:
 
+<!-- output: not run -->
+
 ```text
 …
   → active "discovering"
   → done "drained"
-{"runId":"e1effd33-9bf6-4137-ae70-3aa504910784","workflow":"issues","instanceId":"db9712c8-7c19-4d18-8fb1-8c01d326808f","status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"db9712c8-7c19-4d18-8fb1-8c01d326808f"},"cap":2,"active":[],"items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{},"status":"drained"},"children":[],"waiting":[],"held":[],"assembly":"ca3b0e760c85","output":{"status":"drained","items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{}}}
+{"runId":"e1effd33-9bf6-4137-ae70-3aa504910784","workflow":"issues","instanceId":"db9712c8-7c19-4d18-8fb1-8c01d326808f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"db9712c8-7c19-4d18-8fb1-8c01d326808f"},"cap":2,"active":[],"items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{},"held":[],"ready":[],"claimed":{},"again":[],"latch":false,"status":"drained"},"children":[],"waiting":[],"held":[],"answers":[{"gate":"source","type":"issues_changed","at":"2026-11-03T10:52:36.114Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"ca3b0e760c85","output":{"status":"drained","items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{}}}
 ```
 
 In the JSON, `context.items` holds the output of each worker that finished, by item id. `context.failures` holds the
@@ -234,9 +242,8 @@ In the JSON, `context.items` holds the output of each worker that finished, by i
   starts with ``task: no `branch` on the door and no Instance ID to derive one from``.
 - Without `cap`, one worker runs at a time. Each `task` worker has its own
   [Workspace](../reference/glossary.md#workspace). Thus the run has `cap` Sandboxes or fewer at one time.
-- The Pool takes the `wake` event only while it waits: workers run, and no item is ready. At other times,
-  [`jr2 send`](../reference/cli.md#send) refuses it:
-  `error: gate "source" is open, and the run does not take "<event>" now: no writing of it would move the run with this payload — not delivered (takes now: nothing)`.
+- The Pool takes the `wake` event at any time while the run is open. While it waits, it calls `next` at once. While
+  `next` runs, it calls `next` once more after that call, so that the change is not lost.
 - `onDrained` takes only `"final"`: the run ends.
 
 ## Read next

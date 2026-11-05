@@ -38,6 +38,7 @@ In this repository:
 | `packages/orchestrator/`   | TS   | The Orchestrator: xstate runtime, HTTP API + Console, Actors, and the Authoring surface.                               |
 | `packages/harness/`        | TS   | jr2's own Harness (ADR-0027): hosts the Agents inside a Sandbox and on the Instance Harness.                           |
 | `packages/agent-protocol/` | TS   | The Orchestrator↔Agent wire: `defineEvent` and nothing else — a pure leaf.                                             |
+| `packages/hooks/`          | TS   | The interface of a Hook kind, `webhook()`, and the kinds that jr2 ships (ADR-0078).                                    |
 | `operator/`                | Go   | Kubernetes operator: the `Sandbox` and `Repo` CRDs, the controller, and the per-node cache agent (ADR-0051).           |
 
 `packages/*` are pnpm workspace packages; `operator/` is a standalone Go module. `harness` and `operator` ship as the
@@ -47,7 +48,7 @@ configures and never builds.
 ## Status
 
 Pre-1.0. Design in progress via `/grill-with-docs`; see [GLOSSARY.md](./GLOSSARY.md) and [docs/adr/](./docs/adr/). The
-instance-facing packages publish to npm as `@jr2/{cli,orchestrator,agent-protocol,machines}`; 0.x minors break.
+instance-facing packages publish to npm as `@jr2/{cli,orchestrator,agent-protocol,hooks,machines}`; 0.x minors break.
 
 ## Prerequisites
 
@@ -66,7 +67,7 @@ git push origin main vx.y.0
 ```
 
 The tag runs `.github/workflows/release.yml`: the publish's refusals first, then every tier in parallel jobs (`@kind` as
-four shards, each on its own runner kind cluster), the Kit images to `ghcr.io/snapwich`, then the four packages
+four shards, each on its own runner kind cluster), the Kit images to `ghcr.io/snapwich`, then the public packages
 **staged** on npm by trusted publishing. Approve them with 2FA, dependencies first (`npm stage list`, then
 `npm stage approve <stage-id>`, or the Staged Packages tab on npmjs.com), and the release is live. Or, when a release
 cannot wait on the job, `just publish` from the pushed tag does the same half by hand — images, then `npm publish` with

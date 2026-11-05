@@ -83,6 +83,7 @@ import {
   MAX_KILLS_BODY,
   MAX_TOLD,
   type Notice,
+  type SteeringMessage,
   type Settlement,
   type StreamEvent,
   type SubmissionSettledEvent,
@@ -114,6 +115,8 @@ export type HarnessClient = {
       thinkingLevel?: ThinkingLevel;
       /** The pending notices in this admission's scope (ADR-0062). Omitted when there are none. */
       notices?: Notice[];
+      /** The Steering messages held for this Agent slot (ADR-0002). Omitted when there are none. */
+      steering?: SteeringMessage[];
       /** The admission is for a conversation this process was told the Harness keeps (ADR-0062).
        * The Harness that keeps none answers 404 and seats none: this verb throws
        * {@link ConversationNotKept}. */
@@ -393,6 +396,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             // The Briefing's news (ADR-0062): typed data, the Harness writes the words. Omitted
             // when there is none, so an admission without notices is byte-identical to before.
             ...(sendOptions.notices?.length ? { notices: sendOptions.notices } : {}),
+            ...(sendOptions.steering?.length ? { steering: sendOptions.steering } : {}),
             // Omitted when unset, so an admission that is not for a kept conversation is
             // byte-identical to before.
             ...(sendOptions.kept ? { kept: true } : {}),
@@ -613,10 +617,11 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
 
 /** The definition as the ADMISSION carries it (ADR-0057): identity alone. `description` is
  * Console material the Orchestrator strips before admission — the Harness has no use for it and
- * no longer validates it. Every other field travels, so a field added to the definition reaches
- * the Harness without a change here. */
-function admittedDefinition(definition: AgentDefinition): Omit<AgentDefinition, "description"> {
-  const { description: _description, ...identity } = definition;
+ * no longer validates it. `steerable` is the Orchestrator's own (ADR-0002): it refuses Callers,
+ * and the model never reads it. Every other field travels, so a field added to the definition
+ * reaches the Harness without a change here. */
+function admittedDefinition(definition: AgentDefinition): Omit<AgentDefinition, "description" | "steerable"> {
+  const { description: _description, steerable: _steerable, ...identity } = definition;
   return identity;
 }
 
@@ -638,6 +643,7 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
         model: input.model,
         thinkingLevel: input.thinkingLevel,
         ...(opts.notices?.length ? { notices: opts.notices } : {}),
+        ...(opts.steering?.length ? { steering: opts.steering } : {}),
         ...(opts.kept ? { kept: true } : {}),
         signal: opts.signal,
       });

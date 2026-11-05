@@ -51,6 +51,7 @@ import { fail, FAILURE_GUARD, failureGuard } from "./fail.ts";
 import { agent } from "./harness-client.ts";
 import { SENT_BY } from "./party.ts";
 import { composesSandbox, sandboxPartsOf, wrapperBodyOf } from "./parts.ts";
+import { isGateSlot } from "./gate.ts";
 import { open } from "./open.ts";
 import { actorPath, boundRun } from "./registration.ts";
 import { COMPILED_CHART, jr2Setup } from "./setup.ts";
@@ -115,7 +116,9 @@ export function jsonOver(value: unknown, cap: number): boolean {
 }
 
 /** The parts of the Chart wrapper that a Chart can use, by their keys in `actors`, `guards`,
- * `actions` and `delays`. `gate: true` lends the Gate, so that a Chart can wait for an answer from
+ * `actions` and `delays`. `gates` lends Gate slots (`gate({ … })`) that hear a Hook, by slot name:
+ * the door refuses a Chart that invokes one whose `delivers` names an event that is not in the
+ * Chart's `events`. `gate: true` lends the Gate, so that a Chart can wait for an answer from
  * outside the run. `fail: true` lends the Part that fails the run, so that a Chart can end its run
  * as a Failure (ADR-0073): the Machine decides which ends a Chart can choose. A Chart can use no
  * other part. */
@@ -123,6 +126,7 @@ export type Lends = {
   agents?: string[];
   effects?: string[];
   machines?: string[];
+  gates?: string[];
   guards?: string[];
   actions?: string[];
   delays?: string[];
@@ -161,7 +165,7 @@ export type OpenBodySlot = { readonly openBody: OpenBodyDeclaration };
 /** The logic `openBody()` returns: actor logic that carries the brand. */
 export type OpenBodyLogic = UnknownActorLogic & OpenBodySlot;
 
-const LEND_KINDS = ["agents", "effects", "machines", "guards", "actions", "delays"] as const;
+const LEND_KINDS = ["agents", "effects", "machines", "gates", "guards", "actions", "delays"] as const;
 const WORKSPACE: readonly WorkspaceAccess[] = ["write", "read", "none"];
 const CEILING_KEYS = ["turns", "wallClock", "transitions", "fanOut", "size"] as const;
 const DURATION = /^(\d+(\.\d+)?)(s|m|h)$/;
@@ -170,9 +174,9 @@ const MAX_WALL_CLOCK_MS = 2_147_483_647;
 /** A name a Chart's grammar reads as its own, so a lent part by that name would be shadowed. */
 const reservedName = (kind: (typeof LEND_KINDS)[number], v: string): string | undefined => {
   if (v.includes(".")) return `"${v}" holds a dot; a lent name is a slot key, and dotted names are jr2's and xstate's`;
-  if ((kind === "agents" || kind === "effects" || kind === "machines") && v === "gate")
+  if ((kind === "agents" || kind === "effects" || kind === "machines" || kind === "gates") && v === "gate")
     return `"gate" is the kit's Gate; lend a slot of another name`;
-  if ((kind === "agents" || kind === "effects" || kind === "machines") && v === "fail")
+  if ((kind === "agents" || kind === "effects" || kind === "machines" || kind === "gates") && v === "fail")
     return `"fail" is the kit's Part that fails the run, lent as \`fail: true\`; lend a slot of another name`;
   if (kind === "actions" && (GENERIC_ACTIONS as readonly string[]).includes(v))
     return `"${v}" is a generic action every Chart has; lend an action of another name`;
@@ -520,7 +524,12 @@ const EMPTY_LENT: LentParts = { actors: {}, guards: {}, actions: {}, delays: {} 
 /** The lent names of a declaration, by the implementation map each resolves in. */
 function lentNames(decl: OpenBodyDeclaration) {
   return {
-    actors: [...(decl.lends.agents ?? []), ...(decl.lends.effects ?? []), ...(decl.lends.machines ?? [])],
+    actors: [
+      ...(decl.lends.agents ?? []),
+      ...(decl.lends.effects ?? []),
+      ...(decl.lends.machines ?? []),
+      ...(decl.lends.gates ?? []),
+    ],
     guards: [...(decl.lends.guards ?? [])],
     actions: [...(decl.lends.actions ?? [])],
     delays: [...(decl.lends.delays ?? [])],
@@ -977,7 +986,7 @@ function gateInput(value: unknown, self: AnyActorRef): unknown {
   return { ...(value as Record<string, unknown>), gate: [...actorPath(self), id].join(".") };
 }
 
-function invokeOf(inv: ChartInvoke, agents: ReadonlySet<string>): unknown {
+function invokeOf(inv: ChartInvoke, agents: ReadonlySet<string>, gates: ReadonlySet<string>): unknown {
   const out: Record<string, unknown> = { src: inv.src };
   if (inv.id !== undefined) out.id = inv.id;
   if (inv.input !== undefined) {
@@ -985,7 +994,7 @@ function invokeOf(inv: ChartInvoke, agents: ReadonlySet<string>): unknown {
     // Resolved at invoke time, with `{ context, event, input }` (ADR-0070).
     out.input = agents.has(inv.src)
       ? (args: Args) => turnInput(resolveAt(template, args), placementOf(args.context?.[CHART_INPUT_KEY]))
-      : inv.src === "gate"
+      : inv.src === "gate" || gates.has(inv.src)
         ? (args: Args & { self: AnyActorRef }) => gateInput(resolveAt(template, args), args.self)
         : (args: Args) => resolveAt(template, args);
   }
@@ -994,14 +1003,16 @@ function invokeOf(inv: ChartInvoke, agents: ReadonlySet<string>): unknown {
   return out;
 }
 
-function stateOf(st: ChartState, agents: ReadonlySet<string>): Record<string, unknown> {
+function stateOf(st: ChartState, agents: ReadonlySet<string>, gates: ReadonlySet<string>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (st.type !== undefined) out.type = st.type;
   if (st.initial !== undefined) out.initial = st.initial;
   if (st.history !== undefined) out.history = st.history;
-  if (st.states !== undefined) out.states = mapValues(st.states, (child) => stateOf(child, agents));
+  if (st.states !== undefined) out.states = mapValues(st.states, (child) => stateOf(child, agents, gates));
   if (st.invoke !== undefined)
-    out.invoke = Array.isArray(st.invoke) ? st.invoke.map((inv) => invokeOf(inv, agents)) : invokeOf(st.invoke, agents);
+    out.invoke = Array.isArray(st.invoke)
+      ? st.invoke.map((inv) => invokeOf(inv, agents, gates))
+      : invokeOf(st.invoke, agents, gates);
   if (st.on !== undefined) out.on = mapValues(st.on, transitionsOf);
   if (st.always !== undefined) out.always = transitionsOf(st.always);
   if (st.after !== undefined) out.after = mapValues(st.after, transitionsOf);
@@ -1051,6 +1062,9 @@ export function compileChart(
     ...Object.keys(lent.actors).filter((slot) => isAgent(lent.actors[slot])),
     ...Object.keys(minted),
   ]);
+  // The lent Gate slots (ADR-0011): an authored gate id sits below the body's actor path, as the kit
+  // Gate's does.
+  const gateSlots = new Set(Object.keys(lent.actors).filter((slot) => isGateSlot(lent.actors[slot])));
   const initialContext = text.context ?? {};
   const config = {
     id: text.id ?? options.id ?? "chart",
@@ -1059,7 +1073,7 @@ export function compileChart(
       [CHART_INPUT_KEY]: input ?? {},
     }),
     initial: text.initial,
-    states: mapValues(text.states, (st) => stateOf(st, agentSlots)),
+    states: mapValues(text.states, (st) => stateOf(st, agentSlots, gateSlots)),
     output: ({ context, event }: Args) =>
       ({
         outcome: "done",

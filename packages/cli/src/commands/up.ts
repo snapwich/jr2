@@ -65,6 +65,9 @@ import { homedir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  callerTokenDigest,
+  callerTokenSecret,
+  storedValueSha256,
   custodianBootstrap,
   custodianRef,
   custodianScript,
@@ -110,6 +113,7 @@ import {
   PROVIDER_KEY_NAME,
   type PlacementWalk,
   type SandboxPlacement,
+  type StandingView,
   workspaceHeldPod,
   type JR2Config,
 } from "@jr2/orchestrator/internal";
@@ -174,6 +178,7 @@ import {
   CHECK_CONTAINER,
 } from "../deploy.ts";
 import { syncAgentsMd } from "../agents-md.ts";
+import { planCallerTokens } from "../caller-tokens.ts";
 import { resolveRoot } from "../instance.ts";
 import { resolvePackage } from "../kit-version.ts";
 import { effectorImagePaths, effectorImageRefusal, STOCK_HARNESS_IMAGE, type PushForm } from "../effector-image.ts";
@@ -195,6 +200,7 @@ import { anyNodeHolds, buildNodes, sandboxNodes, type NodeObject } from "../node
 import { activity, chooseOrBail, confirmOrBail, promptLine, readSecretInput, type Io } from "../output.ts";
 import { kindCluster, sweepImages } from "../sweep.ts";
 import { chartFilesIn, checkInstance } from "../instance-check.ts";
+import { standingLine } from "./status.ts";
 import { parseCommand } from "../command-table.ts";
 
 /** How many times one converge rebuilds a host image a sweep took before it uses it (ADR-0039).
@@ -717,6 +723,11 @@ export async function up(args: string[], io: Io): Promise<number> {
     JR2_PUBLISH_TOKEN: publishToken,
     JR2_SIGNING_KEY: signingKey,
   };
+  // The named Caller tokens (ADR-0078): each declared name keeps the value its Secret holds, and a
+  // name with none gets one now. The Orchestrator gets only their digests. Read here and written
+  // with the instance objects below, so a converge that stops before the apply writes no value.
+  const callerTokens = await planCallerTokens(kube, Object.keys(config.callers?.tokens ?? {}), namespace, ctx);
+  for (const n of callerTokens.made) activity(io, `caller token "${n}": made — \`jr2 caller token ${n}\` prints it`);
   // The Instance Harness Custodian's credentials are not here (ADR-0076): its control token and
   // its secret Stand-ins ride its own Secret (`INSTANCE_HARNESS_CREDENTIALS`), whose Stand-ins its
   // Harness container mounts — so it must never be this one.
@@ -770,6 +781,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // Instance Effector — so a value edited in the user's Secret rolls them at the next `jr2 up`.
   const referenced = new Map<string, Map<string, number> | undefined>();
   const valueDigests = new Map<string, string>();
+  // The plain sha-256 of each stored value, for a `token` Hook's secret alone (ADR-0078): the door
+  // compares a delivery's token with it, so it cannot be keyed as `valueDigests` are.
+  const valueShas = new Map<string, string>();
   for (const entry of config.secrets ?? []) {
     const ref = entry.valueFrom?.secretKeyRef.name;
     if (ref === undefined || referenced.has(ref)) continue;
@@ -785,6 +799,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     );
     for (const [k, b64] of Object.entries(found?.data ?? {})) {
       valueDigests.set(`${ref}/${k}`, storedValueDigest(Buffer.from(signingKey, "base64"), ref, k, b64));
+      valueShas.set(`${ref}/${k}`, storedValueSha256(b64));
     }
   }
   const valueDigest = (secret: string, key: string) => valueDigests.get(`${secret}/${key}`);
@@ -800,6 +815,13 @@ export async function up(args: string[], io: Io): Promise<number> {
   const placements = secretPlacementsOf(config, placementWalk, { secretKeys, valueLength });
   for (const line of placements.report) activity(io, line);
   for (const warning of placements.warnings) activity(io, `warning: ${warning}`);
+  // The `token` Hooks' digests (ADR-0078): the sha-256 of each value, which the Orchestrator mounts
+  // in `jr2-hook-digests`. The value itself never leaves this host or the user's Secret.
+  const hookDigests: Record<string, string> = {};
+  for (const t of placements.hookTokens) {
+    const digest = "value" in t ? callerTokenDigest(t.value) : valueShas.get(`${t.secret}/${t.key}`);
+    if (digest !== undefined) hookDigests[t.name] = digest;
+  }
   const held = await resolveHeld(io, kube, {
     pods: placements.held,
     claimed: placements.claimed,
@@ -932,6 +954,8 @@ export async function up(args: string[], io: Io): Promise<number> {
     namespace,
     image: refs.orchestrator,
     secretData,
+    callerTokens: callerTokens.values,
+    hookDigests,
     harnessEnvData,
     harness: config.harness,
     held: held.objects,
@@ -944,6 +968,12 @@ export async function up(args: string[], io: Io): Promise<number> {
   });
   activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
   await kube.apply({ manifest: instanceList, warn: (line) => activity(io, line), ...ctx });
+  // A name that the config no longer declares loses its Secret, so its value stops working
+  // (ADR-0078). Its digest went with the digests Secret above.
+  for (const n of callerTokens.undeclared) {
+    await kube.deleteObject({ kind: "secret", name: callerTokenSecret(n), namespace, ...ctx });
+    activity(io, `caller token "${n}": deleted — callers.tokens no longer declares it`);
+  }
   // An entry whose clone Secret this converge did not write loses it: a dropped entry, a token
   // unset, or nothing left that clones.
   const cloneSecrets = new Set(gitClone.map((s) => s.name));
@@ -1129,17 +1159,19 @@ export async function up(args: string[], io: Io): Promise<number> {
     await kube.deleteObject({ kind: "secret", name: INSTANCE_HARNESS_CREDENTIALS, namespace, ...ctx });
   }
 
-  // --- Instance Effector (ADR-0068): converged when an Effect is placed there, absent otherwise ---
-  // The placement is read off the Machines: an `http` Effect runs there. Its objects carry only the
-  // secrets those Effects name, and the placement's key, derived from the kept signing key — the
-  // key the Orchestrator derives again to sign every call and verify every answer.
+  // --- Instance Effector (ADR-0068): converged when an Effect is placed there or a Hook needs it,
+  // absent otherwise ---
+  // The placement is read off the Machines and the Hooks: an `http` Effect runs there, a `mac`
+  // Hook's check and a Hook kind's follow-up too. Its objects carry only the secrets those name,
+  // and the placement's key, derived from the kept signing key — the key the Orchestrator derives
+  // again to sign every call and verify every answer.
   const effectorPlan = placements.instance;
   if (effectorPlan) {
     const names = effectorPlan.secrets.map((s) => `\`${s.name}\``).join(", ") || "none";
+    const serves = [...effectorPlan.effects, ...effectorPlan.hooks.map((h) => `hook ${h}`)].join(", ");
     activity(
       io,
-      `instance effector: converging (${effectorPlan.effects.join(", ")}; secrets ${names}; grace ` +
-        `${effectorGraceSeconds(effectorPlan)}s)`,
+      `instance effector: converging (${serves}; secrets ${names}; grace ${effectorGraceSeconds(effectorPlan)}s)`,
     );
     const signing = Buffer.from(signingKey, "base64");
     const key = effectorKey(signing, "instance");
@@ -1174,7 +1206,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...ctx,
     });
   } else {
-    activity(io, "instance effector: none (no Effect is placed there)");
+    activity(io, "instance effector: none (no Effect is placed there, and no Hook needs it)");
     for (const kind of ["deployment", "service", "networkpolicy", "secret"]) {
       await kube.deleteObject({ kind, name: INSTANCE_EFFECTOR, namespace, ...ctx });
     }
@@ -1246,7 +1278,11 @@ function mapRefs(map: Partial<ConvergedImages>): string[] {
 
 /** What `GET /assembly` answers (ADR-0069), read loosely: this is the CLI's view of the door.
  * `mounts` is the digest of each ConfigMap the process reads through a mount. */
-type AssemblyView = { current?: { hash?: string; kitVersion?: string } | null; mounts?: Record<string, string> };
+type AssemblyView = {
+  current?: { hash?: string; kitVersion?: string } | null;
+  mounts?: Record<string, string>;
+  standing?: StandingView[];
+};
 
 /** The digest of each mounted ConfigMap's data in the List this converge applied (ADR-0069), by
  * name: what the Orchestrator must read from its mounts before the publish. */
@@ -1293,6 +1329,8 @@ type PublishBody = {
   error?: string;
   report?: string[];
   kitVersion?: unknown;
+  /** Each standing Workflow's state after the publish (ADR-0017). */
+  standing?: StandingView[];
 };
 
 /**
@@ -1347,6 +1385,7 @@ async function publishAssembly(
     const current = seen.current ?? null;
     if (!force && current?.hash === assembly.hash && current.kitVersion === assembly.kitVersion) {
       activity(io, `assembly: ${assembly.hash} (current — publish skipped)`);
+      for (const s of Array.isArray(seen.standing) ? seen.standing : []) activity(io, standingLine(s));
       return true;
     }
     // The mounts first (ADR-0069): the door checks a `file:` digest against `jr2-images`, and a
@@ -1394,6 +1433,8 @@ async function publishAssembly(
         `assembly: ${body.hash ?? assembly.hash} is current${body.unchanged ? " (unchanged)" : ""} — ` +
           `workflows: ${names.join(", ") || "(none)"}`,
       );
+      // Each standing Workflow's state after the publish (ADR-0017), from the publish's answer.
+      for (const st of Array.isArray(body.standing) ? body.standing : []) activity(io, standingLine(st));
       return true;
     }
     const report = body.report ?? [];

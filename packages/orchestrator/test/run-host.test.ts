@@ -1915,7 +1915,7 @@ test("the key answers the run it started from the live set, before the run's fir
   const host = new RunHost({ store: blind });
   host.register(calleeDef());
   const first = await host.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-live") });
-  assert.equal(await store.findByDispatch("k-live"), undefined, "nothing was saved");
+  assert.equal(await store.findByDispatch("callee", "k-live"), undefined, "nothing was saved");
   const again = await host.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-live") });
   assert.deepEqual(again, { runId: first.runId, instanceId: first.instanceId, existing: true });
 
@@ -1929,7 +1929,7 @@ test("the key answers the run it started from the live set, before the run's fir
   assert.equal(host.list().filter((s) => s.dispatchedBy?.effect === "k-race").length, 1);
 });
 
-test("a key a run of another Workflow carries is refused, never answered as that run (ADR-0071)", async () => {
+test("the key is scoped to the callee Workflow: the same key in another Workflow is another run, never a 409 (ADR-0071)", async () => {
   const store = await mkStore();
   let answer: unknown;
   const probe = setup({
@@ -1945,25 +1945,20 @@ test("a key a run of another Workflow carries is refused, never answered as that
   host.register({ name: "other", machine: calleeTemplate, provide: () => ({}) });
   host.register({ name: "probe", machine: probe, provide: () => ({}) });
   const first = await host.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-shared") });
-  await assert.rejects(
-    host.start("other", { ticket: "T-1" }, { dispatchedBy: by("k-shared") }),
-    (err: Error) => err.name === "DispatchKeyConflictError" && /of "callee", not of "other"/.test(err.message),
-  );
-  // From the store too: a host that does not host the run refuses it the same way.
-  await untilStored(store, first.runId, (blob) => blob.dispatchedBy !== undefined);
-  await host.stop(first.runId);
-  await assert.rejects(
-    host.start("other", { ticket: "T-1" }, { dispatchedBy: by("k-shared") }),
-    (err: Error) => err.name === "DispatchKeyConflictError",
-  );
-  // In-process, the refusal is the Effect's output, 409.
+  const other = await host.start("other", { ticket: "T-1" }, { dispatchedBy: by("k-shared") });
+  assert.notEqual(other.runId, first.runId, "a run of another Workflow under the same key is a new run");
+  assert.equal(other.existing, undefined);
+  // Each run answers its key in its own Workflow, from the live set and from the store.
+  assert.deepEqual(await host.dispatched("callee", "k-shared"), { runId: first.runId, instanceId: first.instanceId });
+  assert.deepEqual(await host.dispatched("other", "k-shared"), { runId: other.runId, instanceId: other.instanceId });
+  await untilStored(store, other.runId, (blob) => blob.dispatchedBy !== undefined);
+  await host.stop(other.runId);
+  assert.equal((await host.start("other", { ticket: "T-1" }, { dispatchedBy: by("k-shared") })).runId, other.runId);
+  // In-process too: the probe's start of "other" under the key answers that run, `existing`.
   await host.start("probe");
   await waitFor(() => answer !== undefined);
-  const refused = answer as { ok: false; status: number; report: string[] };
-  assert.equal(refused.ok, false);
-  assert.equal(refused.status, 409);
-  assert.match(refused.report[0]!, new RegExp(`run ${first.runId} of "callee", not of "other"`));
-  assert.equal(host.list().filter((s) => s.workflow === "other").length, 0, "no run of the other Workflow started");
+  assert.deepEqual(answer, { ok: true, runId: other.runId, existing: true });
+  assert.equal(await host.dispatched("third", "k-shared"), undefined);
 });
 
 test("the key answers a run from the store on a host that does not host it, whatever its status (ADR-0071)", async () => {

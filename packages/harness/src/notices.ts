@@ -2,7 +2,7 @@
 // boundary. A kind it does not know is a newer Orchestrator's — skew (ADR-0027) — and a notice
 // missing its facts cannot be said truly; both are dropped rather than rendered as half a sentence.
 
-import type { Notice, PickAnswer } from "./wire.ts";
+import type { Notice, PickAnswer, SteeringMessage } from "./wire.ts";
 
 /** The notices in `value` that this Harness can word. Garbage in the slot is none. */
 export function noticesOf(value: unknown): { notices?: Notice[] } {
@@ -36,6 +36,37 @@ export function isNotice(n: unknown): n is Notice {
     );
   }
   return kind === "conversation-new" && scope === "conversation" && str(reason);
+}
+
+/** The Steering messages in `value` that this Harness can frame (ADR-0002). Garbage is none. */
+export function steeringOf(value: unknown): { steering?: SteeringMessage[] } {
+  if (!Array.isArray(value)) return {};
+  const steering = value.filter(isSteering);
+  return steering.length > 0 ? { steering } : {};
+}
+
+/** True for a Steering message this Harness can frame: a text, and an author it knows. An author
+ * it does not know is a newer Orchestrator's, and a frame that names no author would say less than
+ * the truth, so the message is dropped. */
+export function isSteering(m: unknown): m is SteeringMessage {
+  const str = (v: unknown) => typeof v === "string";
+  if (typeof m !== "object" || m === null) return false;
+  const { kind, scope, text, author, at } = m as Record<string, unknown>;
+  if (kind !== "steering" || scope !== "slot" || !str(text) || !str(at)) return false;
+  if (typeof author !== "object" || author === null) return false;
+  const a = author as Record<string, unknown>;
+  if (a.kind === "caller") {
+    return (
+      (a.via === "token" || a.via === "jwt" || a.via === "hook") &&
+      str(a.name) &&
+      (a.onBehalfOf === undefined || str(a.onBehalfOf))
+    );
+  }
+  if (a.kind !== "machine") return false;
+  if (a.from === undefined) return true;
+  if (typeof a.from !== "object" || a.from === null) return false;
+  const { party, id } = a.from as Record<string, unknown>;
+  return (party === "agent" || party === "gate") && str(id);
 }
 
 /** A pick answer's facts this Harness can word (ADR-0024, ADR-0067): absent (no reply came), a

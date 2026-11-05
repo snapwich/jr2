@@ -66,7 +66,7 @@ import {
   type MemoryKillsResponse,
   type NotKeptResponse,
 } from "./wire.ts";
-import { noticesOf } from "./notices.ts";
+import { noticesOf, steeringOf } from "./notices.ts";
 
 /** One conversation's identity and stream seam, as the app hands it to the turn factory. */
 export type ConversationSeat = {
@@ -619,6 +619,7 @@ function admissionRequest(body: unknown, definition: AgentDefinition): Admission
       ? { thinkingLevel: sent.thinkingLevel as TurnDials["thinkingLevel"] }
       : {}),
     ...noticesOf(sent.notices),
+    ...steeringOf(sent.steering),
   };
 }
 

@@ -95,6 +95,29 @@ export type HeldLine = { agent: string; pick: string; since: string };
 /** The credential's state — never its value, which stays in sessionStorage (ADR-0032). */
 export type TokenState = "none" | "checking" | "live" | "invalid";
 
+/** One scope of a Caller (ADR-0078): the five acts. Mirrors `Scope` in config.ts. */
+export type ScopeName = "start" | "answer" | "cancel" | "read" | "steer";
+
+/** The Workflows a scope opens: every one, or the named ones. Mirrors `ScopeGrant` in config.ts. */
+export type ScopeGrant = "all" | readonly string[];
+
+/** The page's Caller as `GET /whoami` gives it (ADR-0078) — mirrors `Caller` in tokens.ts. What it
+ *  `may` do decides which controls render (ADR-0032); the server still checks each request. */
+export type CallerView = {
+  via: string;
+  name: string;
+  /** The name that jr2 shows, when it is not `name` (a JWT's `email`). */
+  shown?: string;
+  onBehalfOf?: string;
+  may: Partial<Record<ScopeName, ScopeGrant>>;
+};
+
+/** Who started a run, as `GET /runs/:id` gives it (ADR-0078) — mirrors `RunStarter` in callers.ts. */
+export type StarterView =
+  | { kind: "caller"; via: string; name: string; shown?: string; onBehalfOf?: string }
+  | { kind: "run"; run: string; slot: string }
+  | { kind: "jr2"; why: string };
+
 /** One frame folded into the store: the workflow feed's wire frames (ADR-0022), plus the page's
  *  own facts — fleet snapshots, gate re-fetches, token state, the reader's selections (ADR-0032). */
 export type Frame =
@@ -110,9 +133,11 @@ export type Frame =
   | { kind: "fleet"; workflow: string; runs: ObservedRun[] }
   | { kind: "toggleWorkflow"; workflow: string }
   | { kind: "token"; state: TokenState }
+  | { kind: "caller"; caller: CallerView }
   | { kind: "gates"; runId: string; workflow: string; gates: GateCard[] }
   | { kind: "waiting"; runId: string; workflow: string; waiting: WaitingLine[]; held?: HeldLine[] }
   | { kind: "failure"; runId: string; reason: string | null }
+  | { kind: "starter"; runId: string; startedBy: StarterView | null }
   | { kind: "inboxScope"; all: boolean }
   | { kind: "startForm"; workflow: string | null };
 
@@ -147,6 +172,12 @@ export type Frame =
  *            sees the `failed` status and its color, never the output), gone with the credential.
  *            A failed run is a settled run, so `gone` keeps it; it goes with the run when the run
  *            leaves both `runs` and `settled`.
+ * `caller`   the page's Caller as `GET /whoami` answered it (ADR-0078): who the page acts as, and
+ *            what it may do. Null without a live credential; gone with it. The token's VALUE is
+ *            never here — this is what the server said the value is.
+ * `starters` who started each run this page knows (ADR-0078): runId -> starter, off the SAME
+ *            `GET /runs/:id` re-fetch as `failures`, under the same rules — guarded, gone with the
+ *            credential, gone with the run.
  * `inboxAll` the widen control: false = the inbox follows the selection, true = every workflow.
  * `startFormFor` which workflow's start-run form is open, if any.
  * `selectedNodeId` the diagram node the reader clicked — an elk node id (scope + state id), one at
@@ -171,6 +202,8 @@ export type Store = {
   gates: Map<string, { workflow: string; gates: GateCard[] }>;
   waiting: Map<string, { workflow: string; waiting: WaitingLine[]; held: HeldLine[] }>;
   failures: Map<string, string>;
+  caller: CallerView | null;
+  starters: Map<string, StarterView>;
   inboxAll: boolean;
   startFormFor: string | null;
 };
@@ -200,6 +233,8 @@ export function emptyStore(): Store {
     gates: new Map(),
     waiting: new Map(),
     failures: new Map(),
+    caller: null,
+    starters: new Map(),
     inboxAll: false,
     startFormFor: null,
   };
@@ -216,15 +251,18 @@ export function applyFrame(store: Store, frame: Frame): Store {
       // never be re-fetched again, so its card leaves with it. A failure stays while its run is live
       // or settled here.
       const runs = new Map(frame.runs.map((r): [string, ObservedRun] => [r.runId, r]));
-      const orphans = [...store.failures.keys()].filter((id) => !runs.has(id) && !store.settled.has(id));
+      const orphan = (id: string): boolean => !runs.has(id) && !store.settled.has(id);
       let failures = store.failures;
-      for (const id of orphans) failures = mapWithout(failures, id);
+      for (const id of [...failures.keys()].filter(orphan)) failures = mapWithout(failures, id);
+      let starters = store.starters;
+      for (const id of [...starters.keys()].filter(orphan)) starters = mapWithout(starters, id);
       return select({
         ...store,
         runs,
         gates: dropAbsent(store.gates, store.workflow, new Set(frame.runs.map((r) => r.runId))),
         waiting: dropAbsent(store.waiting, store.workflow, new Set(frame.runs.map((r) => r.runId))),
         failures,
+        starters,
       });
     }
 
@@ -244,12 +282,14 @@ export function applyFrame(store: Store, frame: Frame): Store {
       runs.delete(frame.runId);
       const settled = new Map(store.settled).set(frame.runId, departing);
       let failures = store.failures;
+      let starters = store.starters;
       while (settled.size > SETTLED_CAP) {
         const evicted = settled.keys().next().value!;
         settled.delete(evicted);
         failures = mapWithout(failures, evicted);
+        starters = mapWithout(starters, evicted);
       }
-      return select({ ...store, runs, settled, gates, waiting, failures });
+      return select({ ...store, runs, settled, gates, waiting, failures, starters });
     }
 
     case "emit":
@@ -285,8 +325,10 @@ export function applyFrame(store: Store, frame: Frame): Store {
         selectedRunId: null,
         selectedNodeId: null,
         connection: "connecting",
-        // Each failure belongs to a run of the old selection's `runs` or `settled`, which go.
+        // Each failure and starter belongs to a run of the old selection's `runs` or `settled`,
+        // which go.
         failures: new Map(),
+        starters: new Map(),
       };
     }
 
@@ -320,10 +362,29 @@ export function applyFrame(store: Store, frame: Frame): Store {
       // Guarded data cannot outlive the credential that read it: leaving "live" for "none" or
       // "invalid" (the any-later-401 drop of ADR-0032) empties the inbox. "checking" keeps it — a
       // re-validation of a token that turns out fine should not flash the inbox empty.
+      // The Caller goes with it: a page with no credential acts as nobody.
       if (frame.state === "none" || frame.state === "invalid") {
-        return { ...store, token: frame.state, gates: new Map(), waiting: new Map(), failures: new Map() };
+        return {
+          ...store,
+          token: frame.state,
+          gates: new Map(),
+          waiting: new Map(),
+          failures: new Map(),
+          caller: null,
+          starters: new Map(),
+        };
       }
       return { ...store, token: frame.state };
+
+    case "caller":
+      // What `GET /whoami` said the credential is (ADR-0078). It comes before the `token` frame
+      // that makes the page live, so the first live render already knows which controls to show.
+      // A card that the new Caller's `answer` does not open goes, as the `gates` fold would refuse it.
+      return {
+        ...store,
+        caller: frame.caller,
+        gates: keepWhere(store.gates, (entry) => grantOpens(frame.caller?.may.answer, entry.workflow)),
+      };
 
     case "gates": {
       // A whole re-fetch of one run's open gates (`GET /runs/:id` on a frame — ADR-0032). Empty
@@ -332,7 +393,12 @@ export function applyFrame(store: Store, frame: Frame): Store {
       // repopulate the map the `token` frame just emptied (invisible while locked, but it would
       // surface intact on the next unlock — guarded data outliving the credential that read it).
       if (store.token !== "live") return store;
-      if (!frame.gates.length) return { ...store, gates: mapWithout(store.gates, frame.runId) };
+      // A card is a send form, so the inbox holds one only where `answer` opens its Workflow
+      // (ADR-0032). A Caller with `read` alone re-fetches the run too, for its waits and starter,
+      // and its gates must not become a form that meets a 403.
+      if (!frame.gates.length || !may(store, "answer", frame.workflow)) {
+        return { ...store, gates: mapWithout(store.gates, frame.runId) };
+      }
       const gates = new Map(store.gates);
       gates.set(frame.runId, { workflow: frame.workflow, gates: frame.gates });
       return { ...store, gates };
@@ -370,6 +436,18 @@ export function applyFrame(store: Store, frame: Frame): Store {
       return { ...store, failures: new Map(store.failures).set(frame.runId, frame.reason) };
     }
 
+    case "starter": {
+      // Who started the run (ADR-0078), off the same guarded re-fetch as the failure, folded by the
+      // same rules: nothing without the credential, nothing for a run the page does not hold.
+      if (store.token !== "live") return store;
+      if (frame.startedBy === null) {
+        const starters = mapWithout(store.starters, frame.runId);
+        return starters === store.starters ? store : { ...store, starters };
+      }
+      if (!store.runs.has(frame.runId) && !store.settled.has(frame.runId)) return store;
+      return { ...store, starters: new Map(store.starters).set(frame.runId, frame.startedBy) };
+    }
+
     case "inboxScope":
       return { ...store, inboxAll: frame.all };
 
@@ -387,6 +465,17 @@ function mapWithout<K, V>(map: Map<K, V>, key: K): Map<K, V> {
   if (!map.has(key)) return map;
   const next = new Map(map);
   next.delete(key);
+  return next;
+}
+
+/** `map` without the entries `keep` refuses — or `map` itself when it keeps them all. */
+function keepWhere<K, V>(map: Map<K, V>, keep: (entry: V) => boolean): Map<K, V> {
+  let next = map;
+  for (const [key, entry] of map) {
+    if (keep(entry)) continue;
+    if (next === map) next = new Map(map);
+    next.delete(key);
+  }
   return next;
 }
 
@@ -628,9 +717,70 @@ export function docSeats(doc: SeatedBody | null): { seats: Seat[]; warnings: str
 }
 
 /** What the nav badge counts: every open gate everywhere — attention is global even when the
- *  inbox view is filtered. */
+ *  inbox view is filtered. Only gates that the Caller may answer are in the inbox, so the badge
+ *  counts only those. */
 export function gateCount(store: Store): number {
   let n = 0;
   for (const entry of store.gates.values()) n += entry.gates.length;
   return n;
+}
+
+// ---- The Caller (ADR-0032, ADR-0078) ------------------------------------------------------------
+
+/** Whether a grant opens `workflow`. A Chart wrapper's name opens each of its named Charts
+ *  (`plan` opens `plan/weekly`), because a named Chart runs its wrapper's Machine (ADR-0070). The
+ *  same rule as `grantOpens` in tokens.ts, which is what the server checks. */
+function grantOpens(grant: ScopeGrant | undefined, workflow: string): boolean {
+  if (grant === undefined) return false;
+  if (grant === "all") return true;
+  const cut = workflow.indexOf("/");
+  return grant.includes(workflow) || (cut > 0 && grant.includes(workflow.slice(0, cut)));
+}
+
+/**
+ * Whether the page's Caller has `scope` for `workflow` — what decides that a control renders
+ * (ADR-0032): the start button with `start`, the Gate cards with `answer`, cancel with `cancel`, a
+ * run's full state with `read`, the Steering box with `steer`. False with no live credential. With
+ * no `workflow`, whether the scope opens at least one Workflow. A hidden control is so that a
+ * person does not meet a 403, never a guard: the server checks each request.
+ */
+export function may(store: Store, scope: ScopeName, workflow?: string): boolean {
+  if (store.token !== "live" || !store.caller) return false;
+  const grant = store.caller.may[scope];
+  if (workflow === undefined) return grant !== undefined && (grant === "all" || grant.length > 0);
+  return grantOpens(grant, workflow);
+}
+
+/** Who the page acts as, as the nav shows it (ADR-0032): the name that jr2 shows (a JWT's `email`),
+ *  else `<via>/<name>`, and the party it says it acts for. Null with no live credential. */
+export function callerLabel(store: Store): string | null {
+  const caller = store.token === "live" ? store.caller : null;
+  if (!caller) return null;
+  const who = caller.shown ?? `${caller.via}/${caller.name}`;
+  return caller.onBehalfOf !== undefined ? `${who} for ${caller.onBehalfOf}` : who;
+}
+
+/** The scopes of the page's Caller, one line for the nav's title: `start: all · answer: a, b`. */
+export function callerScopes(caller: CallerView | null): string {
+  if (!caller) return "";
+  const lines = (["start", "answer", "cancel", "read", "steer"] as const).flatMap((scope) => {
+    const grant = caller.may[scope];
+    if (grant === undefined || (grant !== "all" && grant.length === 0)) return [];
+    return [`${scope}: ${grant === "all" ? "all" : grant.join(", ")}`];
+  });
+  return lines.length ? lines.join(" · ") : "no scope";
+}
+
+/** The SELECTED run's starter as the Machine pane's strip says it (ADR-0078): `started by
+ *  token/ci`, `started by run <run8> (<slot>)`, `started by jr2 (boot)`. Null when the page does
+ *  not know it: no live credential with `read`, or a run from an older Orchestrator. */
+export function selectedRunStarter(store: Store): string | null {
+  if (store.selectedRunId === null) return null;
+  const by = store.starters.get(store.selectedRunId);
+  if (!by) return null;
+  if (by.kind === "run") return `started by run ${by.run.slice(0, 8)} (${by.slot})`;
+  if (by.kind === "jr2") return `started by jr2 (${by.why})`;
+  const shown = by.shown !== undefined ? ` (${by.shown})` : "";
+  const behalf = by.onBehalfOf !== undefined ? ` on behalf of ${by.onBehalfOf}` : "";
+  return `started by ${by.via}/${by.name}${shown}${behalf}`;
 }

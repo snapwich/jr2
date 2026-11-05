@@ -18,6 +18,7 @@ import {
   dispatch,
   dispatchParts,
   dispatchWith,
+  onBehalfOfFor,
   openDispatchParts,
   DISPATCHED_BY_HEADER,
   type DispatchDefinition,
@@ -189,6 +190,10 @@ test("in-process: the run is started through the run host, its row says who disp
   assert.equal(status?.workflow, "intake");
   assert.deepEqual(status?.dispatchedBy, { run: r.runId, slot: "start", effect, depth: 1 });
   assert.equal((status?.context as { ticket: string }).ticket, "PROJ-7", "the invoke's input is the run's body");
+  // A local dispatch records its caller's run as the callee's starter (ADR-0071, ADR-0078), behind
+  // the token: the open projection carries the routing of `dispatchedBy` alone.
+  assert.deepEqual(status?.startedBy, { kind: "run", run: r.runId, slot: "start" });
+  assert.equal("startedBy" in observe(status!), false);
   assert.equal(r.host.depthOf(callee), 1);
   assert.equal(r.host.depthOf(r.runId), 0);
   // The chain both ways (ADR-0071): the caller's status names the run its slot started, and the
@@ -400,6 +405,45 @@ test("restore after the start returned but before the row named the run: the sta
   }
 });
 
+test("restore across a changed slot schema: the key is asked before the input, so the run it started is answered, never an error (ADR-0071)", async () => {
+  const r = await rig(dispatch("intake", { input: intakeDoor, wait: true }));
+  const callee = await startedRun(r.store, r.runId);
+  await parkAll(r.host);
+  // The row as it was between the start's answer and the re-write that names the run.
+  const stored = (await r.store.load(r.runId))!.snapshot as { effects: Record<string, EffectRow> };
+  for (const row of Object.values(stored.effects)) delete (row as { run?: string }).run;
+  await r.store.save(r.runId, stored);
+  // The slot's schema now refuses the stored input (`ticket` was a string).
+  const host = await restoredHost(r.store, dispatch("intake", { input: z.object({ ticket: z.number() }), wait: true }));
+  assert.equal(await startedRun(r.store, r.runId), callee, "the key found the run it started");
+  assert.notEqual(host.status(r.runId)?.value, "faulted");
+  assert.deepEqual(intakeRuns(host), [callee], "no second run");
+  host.sendToGate(callee, "ctl", { type: "finish" });
+  await waitFor(() => resultOf(host, r.runId) !== undefined);
+  assert.equal((resultOf(host, r.runId) as { run: string }).run, callee);
+});
+
+test("restore across a changed slot schema with no run under the key: the slot's schema refuses the input as the invoke's error (ADR-0071)", async () => {
+  const r = await rig(dispatch("intake", { input: intakeDoor, wait: true }));
+  const callee = await startedRun(r.store, r.runId);
+  await parkAll(r.host);
+  const stored = (await r.store.load(r.runId))!.snapshot as { effects: Record<string, EffectRow> };
+  for (const row of Object.values(stored.effects)) delete (row as { run?: string }).run;
+  await r.store.save(r.runId, stored);
+  // The key answers no run (the sweep took it, say): the key is free, so the body is a first send's.
+  const swept = new Proxy(r.store, {
+    get(target, prop) {
+      if (prop === "findByDispatch") return async () => undefined;
+      const v = (target as unknown as Record<PropertyKey, unknown>)[prop];
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+  const host = await restoredHost(swept, dispatch("intake", { input: z.object({ ticket: z.number() }), wait: true }));
+  await waitFor(() => host.status(r.runId)?.value === "faulted");
+  assert.match(ctx(host, r.runId).fault!, /does not match the slot's input schema/);
+  assert.deepEqual(intakeRuns(host), [callee], "nothing new started");
+});
+
 test("a restore whose row names the run, for a slot with no wait, settles `started` at once and starts nothing", async () => {
   // Parked with the run on its row, and restored under a definition with no wait: the row a
   // restart between the re-write and the settle leaves.
@@ -430,9 +474,9 @@ test("in-process wait: a bound over 24.8 days (one setTimeout's most) still hold
   assert.equal((resultOf(r.host, r.runId) as { status: string }).status, "done");
 });
 
-test("in-process: the slot's bound holds the start — a run host that does not answer in it settles `unknown`", async () => {
+test("in-process: the slot's bound holds the key lookup — a run host whose lookup does not answer in it settles `unknown`", async () => {
   const store = await mkStore();
-  // A key lookup that never answers: the start never comes back.
+  // A key lookup that never answers: the start is never sent.
   const stuck = new Proxy(store, {
     get(target, prop) {
       if (prop === "findByDispatch") return () => new Promise(() => {});
@@ -445,6 +489,30 @@ test("in-process: the slot's bound holds the start — a run host that does not 
   const out = resultOf(r.host, r.runId) as { outcome: string; reason: string };
   assert.equal(out.outcome, "unknown");
   assert.match(out.reason, /did not answer the start of intake within the slot's timeout/);
+});
+
+test("in-process: the slot's bound holds the start itself — the lookup answers no run at once, and a start that does not answer settles `unknown`", async () => {
+  const store = await mkStore();
+  // The first key lookup (the Effect's own) answers at once; every later one — the run host's own
+  // check inside its start — never answers, so `host.start` stalls.
+  let lookups = 0;
+  const stuck = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "findByDispatch")
+        return () => (++lookups === 1 ? Promise.resolve(undefined) : new Promise(() => {}));
+      const v = (target as unknown as Record<PropertyKey, unknown>)[prop];
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+  const r = await rig(dispatch("intake", { input: intakeDoor, timeout: "0.1s" }), { store: stuck });
+  await waitFor(() => resultOf(r.host, r.runId) !== undefined);
+  assert.equal(lookups, 2, "the lookup answered, and the start was sent");
+  const out = resultOf(r.host, r.runId) as { outcome: string; reason: string };
+  assert.equal(out.outcome, "unknown");
+  assert.match(out.reason, /did not answer the start of intake within the slot's timeout/);
+  const [, row] = await rowOf(r.store, r.runId);
+  assert.equal(row.state, "settled", "the intent row was written before the start, and settled after it");
+  assert.deepEqual(intakeRuns(r.host), []);
 });
 
 test("a chain of dispatches: a callee that dispatches is depth 1, and the run it starts depth 2", async () => {
@@ -588,6 +656,38 @@ test("foreign: the start request is the golden fixture's — the origin, the bod
   );
 });
 
+test("the first Caller of a chain: a callee walks to the Caller that started its caller, and a foreign start sends it as onBehalfOf (ADR-0071, ADR-0078)", async () => {
+  const store = await mkStore();
+  const host = new RunHost({ store });
+  hosts.push(host);
+  host.register(def("caller", callerOf(dispatch("intake", { input: intakeDoor }))));
+  host.register(def("intake", intake));
+  const by = { via: "token" as const, name: "ci", onBehalfOf: "alice" };
+  const { runId } = await host.start("caller", {}, { startedBy: { kind: "caller", ...by } });
+  await waitFor(() => resultOf(host, runId) !== undefined);
+  const callee = (resultOf(host, runId) as { run: string }).run;
+  assert.deepEqual(await host.firstCaller(callee), by);
+  assert.deepEqual(await host.firstCaller(runId), by);
+  // A chain that jr2 started has no Caller.
+  const bare = await host.start("intake", { ticket: "PROJ-8" }, { startedBy: { kind: "jr2", why: "boot" } });
+  assert.equal(await host.firstCaller(bare.runId), undefined);
+
+  // Foreign: the claim of the first Caller, else its shown name, else via/name; never a non-ASCII one.
+  assert.equal(onBehalfOfFor(by), "alice");
+  assert.equal(onBehalfOfFor({ via: "jwt", name: "u-1", shown: "bob@example.com" }), "bob@example.com");
+  assert.equal(onBehalfOfFor({ via: "token", name: "ci" }), "token/ci");
+  assert.equal(onBehalfOfFor({ via: "token", name: "ci", onBehalfOf: "zoë" }), undefined);
+  assert.equal(onBehalfOfFor(undefined), undefined);
+
+  const fake = new FakeEffector();
+  const foreignHost = new RunHost({ store: await mkStore(), ...effector });
+  hosts.push(foreignHost);
+  foreignHost.register(def("caller", callerOf(foreign(fake), fixtureBody)));
+  await foreignHost.start("caller", {}, { startedBy: { kind: "caller", ...by } });
+  await waitFor(() => fake.starts.length === 1);
+  assert.equal((fake.starts[0]!.req as { onBehalfOf?: string }).onBehalfOf, "alice");
+});
+
 test("foreign: `started` and `settled` map 1:1, and the row names the run", async () => {
   const fake = new FakeEffector();
   const r = await foreignRig(fake);
@@ -677,6 +777,83 @@ test("foreign restore: the replica that holds it is followed; when none does, it
   forgot.settle({ outcome: "settled", run: "remote-2", status: "error" });
   await waitFor(() => resultOf(host2, r2.runId) !== undefined);
   assert.equal((resultOf(host2, r2.runId) as { status: string }).status, "error");
+});
+
+test("foreign restore across a changed slot schema: the re-send is a key-only ask, and a run under the key is followed (ADR-0071)", async () => {
+  const forgot = new FakeEffector(["a", "b"]);
+  const r = await foreignRig(forgot, { wait: true });
+  await waitFor(() => forgot.starts.length === 1);
+  await r.host.stop(r.runId);
+  forgot.restart(forgot.starts[0]!.replica);
+  await new Promise((res) => setTimeout(res, 20));
+  // The slot's schema now refuses the stored body (`ticket` is a string).
+  const host = await foreignRestored(r, forgot, { wait: true, input: z.object({ ticket: z.number() }) as never });
+  await waitFor(() => forgot.starts.length === 2);
+  assert.equal(forgot.starts[1]!.id, forgot.starts[0]!.id, "the same key");
+  const again = forgot.starts[1]!.req as { input?: unknown; keyOnly?: boolean };
+  assert.equal(again.keyOnly, true, "the key alone is asked");
+  assert.equal(again.input, undefined, "a body the slot's schema refuses is never sent");
+  assert.notEqual(host.status(r.runId)?.value, "faulted");
+  forgot.settle({ outcome: "settled", run: "remote-1", status: "done" });
+  await waitFor(() => resultOf(host, r.runId) !== undefined);
+  assert.equal((resultOf(host, r.runId) as { run: string }).run, "remote-1");
+});
+
+test("foreign restore across a changed slot schema with no run under the key: the slot's schema refuses the input as the invoke's error (ADR-0071)", async () => {
+  const forgot = new FakeEffector(["a", "b"]);
+  const r = await foreignRig(forgot, { wait: true });
+  await waitFor(() => forgot.starts.length === 1);
+  await r.host.stop(r.runId);
+  forgot.restart(forgot.starts[0]!.replica);
+  await new Promise((res) => setTimeout(res, 20));
+  const host = await foreignRestored(r, forgot, { wait: true, input: z.object({ ticket: z.number() }) as never });
+  await waitFor(() => forgot.starts.length === 2);
+  assert.equal((forgot.starts[1]!.req as { keyOnly?: boolean }).keyOnly, true);
+  // The door found no run under the key, and started nothing.
+  forgot.settle({ outcome: "absent" });
+  await waitFor(() => host.status(r.runId)?.value === "faulted");
+  assert.match(ctx(host, r.runId).fault!, /does not match the slot's input schema/);
+  assert.equal(resultOf(host, r.runId), undefined, "no output: nothing was started");
+});
+
+test("foreign fresh send with a body the slot's schema refuses: a key-only ask; a run under the key is answered and its wait followed (ADR-0071)", async () => {
+  const fake = new FakeEffector();
+  const r = await foreignRig(fake, { wait: true, input: z.object({ ticket: z.number() }) as never });
+  await waitFor(() => fake.starts.length === 1);
+  const req = fake.starts[0]!.req as { input?: unknown; keyOnly?: boolean; dispatchedBy: { effect: string } };
+  assert.equal(req.keyOnly, true);
+  assert.equal(req.input, undefined, "no body");
+  assert.equal(req.dispatchedBy.effect, fake.starts[0]!.id, "the key rides as ever");
+  // The door's answer `existing` names the run, and the wait follows it.
+  fake.name("remote-7");
+  assert.equal(await startedRun(r.store, r.runId), "remote-7");
+  assert.equal(resultOf(r.host, r.runId), undefined, "still waiting");
+  fake.settle({ outcome: "settled", run: "remote-7", status: "done", output: { verdict: "ok" } });
+  await waitFor(() => resultOf(r.host, r.runId) !== undefined);
+  assert.deepEqual(resultOf(r.host, r.runId), {
+    outcome: "settled",
+    run: "remote-7",
+    status: "done",
+    output: { verdict: "ok" },
+  });
+});
+
+test("foreign fresh send with a body the slot's schema refuses and no run under the key: the schema's error, nothing started (ADR-0071)", async () => {
+  const fake = new FakeEffector();
+  const r = await foreignRig(fake, { input: z.object({ ticket: z.number() }) as never });
+  await waitFor(() => fake.starts.length === 1);
+  assert.equal((fake.starts[0]!.req as { keyOnly?: boolean }).keyOnly, true);
+  fake.settle({ outcome: "absent" });
+  await waitFor(() => r.host.status(r.runId)?.value === "faulted");
+  assert.match(ctx(r.host, r.runId).fault!, /does not match the slot's input schema — ticket:/);
+  assert.equal(fake.starts.length, 1, "asked once, and no start with a body");
+  // A body the schema takes is one request, as ever: no ask first.
+  const plain = new FakeEffector();
+  await foreignRig(plain, { input: z.object({ ticket: z.string() }) as never });
+  await waitFor(() => plain.starts.length === 1);
+  const sent = plain.starts[0]!.req as { input?: unknown; keyOnly?: boolean };
+  assert.equal(sent.keyOnly, undefined);
+  assert.deepEqual(sent.input, { ticket: "PROJ-7" });
 });
 
 test("foreign: a forged answer settles `unknown`, never sent again; a malformed one is the invoke's error", async () => {

@@ -43,33 +43,48 @@ a step boundary, never an interrupt.
 
 - **Two senders.** A Caller ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md))
   sends one with `POST /runs/:runId/steering { agent, text }` or `jr2 steer <run> <agent> "<text>"`, and needs the
-  `steer` scope for the run's Workflow. A text above 16 KiB is 413. The Machine sends one with the authoring action
-  `steer(<agent>, text)`, which can name the Sender whose words it carries.
+  `steer` scope for the run's Workflow. A text above 16 KiB of UTF-8 is 413, and an empty one 400. The route answers 202
+  `{ id, agent, open }`: `open` says whether a Turn of the slot hears it at a step boundary or the next Turn hears it.
+  The message names the Caller by the name that jr2 shows (a JWT's `email`, else its name), with its `via` and its
+  `onBehalfOf` claim. The Machine sends one with the authoring action `steer(<agent>, text, { from? })` in a transition,
+  to an Agent of the Machine that runs the action; `from` is the Sender whose words it carries. The action cuts a text
+  above 16 KiB and says so in the text, because a relayed payload is not the author's to bound, and a refusal there
+  would fail the transition.
 - **Addressed by Agent slot.** `agent` names an Agent slot of the run, as the run's conversation list names it. The
   list, `{ agent, open, steerable }` for each slot at `GET /runs/:runId/agents`, is open to a Caller with `steer`, so a
-  Caller can see where a message would go. An Instance ID is not the address: jr2 computes it, a Caller cannot know it,
-  and a fresh Turn gets a new one. A slot is the name that the author gave, and the walk lets at most one state of a
-  Machine instance hold it at a time ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)), so it names one
-  conversation at a time.
+  Caller can see where a message would go. It lists each Agent that each live Machine instance carries in its `actors`,
+  with or without an open Turn, and `jr2 steer <run>` prints it. An Instance ID is not the address: jr2 computes it, a
+  Caller cannot know it, and a fresh Turn gets a new one. A slot is the name that the author gave, and the walk lets at
+  most one state of a Machine instance hold it at a time ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)),
+  so it names one conversation at a time.
 - **Delivery.** When the slot has an open Turn, its Harness appends the message at the Turn's next step boundary, on the
   same read as a notice. Otherwise the message is held for the slot's next Turn of the same Machine instance, and that
   Turn's admission carries it. A held message belongs to the Machine instance that was live when it was sent: when that
-  instance ends, the message retires, and the run records it "not delivered". When the slot's Machine has ended, the
-  route answers 409. The Agent hears each message once, by the rules of a notice (ADR-0062), and the run records each
-  message with its author.
+  instance ends, the message retires, and the run records it "not delivered". A Machine instance ends when it leaves its
+  parent's children, when it reaches `done` or `error`, and when the run ends; a host that stops parks the run, and ends
+  nothing. An instance below one that ended ends with it. When no live Machine instance holds the slot — it has ended,
+  or it never was — the route answers 409 with the run's slots, because the Orchestrator cannot tell a slot that ended
+  from one that never was; an unknown run is 404, and a run that is not live is 409. The Agent hears each message once,
+  by the rules of a notice (ADR-0062). The run records each message with its author, its text, when it was sent and its
+  outcome (`held`, `heard`, `not-delivered`), in the run's persisted state; the record keeps the newest 100 and each one
+  still held. The run's status carries it as `steering`, behind `read` like `context` (ADR-0014): a message is a
+  Caller's working text, never the open band's.
 - **Never a Machine event.** A Steering message is in no Vocabulary, no Gate takes it, and no guard reads it. The Agent
   decides what to do with it, and acts on the workflow only by its picks.
 - **Agents message each other only through the Machine.** An Agent's Menu offers a pick that the author declared; the
   Machine's transition relays its payload with `steer(<agent>, …)`. jr2 gives no built-in message tool.
 - **The Harness frames the message by its author** (ADR-0062). A Caller's message is an instruction from outside the
-  run, with the Caller's name. A message that the Machine relays from another Agent is a peer's word, and the frame says
-  that it is not an order. A Machine's message that relays no one is the workflow's own text.
-- **`steerable: false` on an Agent definition refuses Callers only.** The Machine can still steer that Agent: the author
-  wrote both.
+  run, with the Caller's name. A message that the Machine relays from another Agent is information from a peer, and the
+  frame says that it is not an instruction. A Machine's message that relays no one is the workflow's own text.
+- **`steerable: false` on an Agent definition refuses Callers only** (403). The Machine can still steer that Agent: the
+  author wrote both. The admission strips it from the definition, because the model never reads it.
 - **What a model reads changes, so two `@model` claims are owed**
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)): `steer-follow`, an
   Agent follows a Caller's Steering message that comes in its open Turn, and `peer-not-order`, an Agent does not obey a
-  peer's relayed word as an order. Their floors are set before a measured run, as `chart-refusal`'s was.
+  peer's relayed word as an order. Their floors were set before a measured run, as `chart-refusal`'s was: `steer-follow`
+  9 of 10, a list read last's floor, because the message is the newest text that the model read; and `peer-not-order` 7
+  of 10, because there the peer's word comes after the workflow's text, and ADR-0029 measured how much the text read
+  last pulls.
 
 Considered and rejected: address a message by conversation (an Instance ID), which a Caller cannot know and which
 changes at a fresh Turn; a built-in tool with which an Agent messages another Agent, which goes around the Machine that

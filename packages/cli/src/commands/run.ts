@@ -1,4 +1,4 @@
-// `jr2 run <workflow> [--input <json>] [--detach]` (ADR-0009). BLOCKING + attach-by-default, mirroring
+// `jr2 run <workflow> [--input <json>] [--detach] [--drop-held]` (ADR-0009). BLOCKING + attach-by-default, mirroring
 // `flue run`: start the run, then attach to its SSE feed — status deltas + author emits go to stderr
 // as they happen; the terminal RunStatus is printed as JSON on stdout and we exit. So `jr2 run ping`
 // shows progress to a human while `jr2 run ping | jq` yields just the result.
@@ -12,12 +12,22 @@
 // name riding the path as one encoded segment. A Chart the door refuses (one-shot, in `--input`)
 // is a 422 whose report lines this prints, one per rule the Chart fails.
 //
+// A standing Workflow (ADR-0017): jr2 starts its run, so `jr2 run` of it only resumes a paused
+// one, with its held items (none with `--drop-held`). It prints the new run and returns, because a
+// standing run never ends by itself. The door refuses it with 409 while the Workflow is not paused.
+//
 // The exit code (ADR-0073): 0 only for a run that ended `done`. 1 for every other end — `failed`,
 // `error`, `cancelled`, `lost`, `drifted` — and for a run that was parked before it settled. 2 is a
 // usage error, as for every verb. The status line on stderr says which end it was, and a failed
 // run's reason follows it.
 
-import type { ChildErrorMarker, PlacingMarker } from "@jr2/orchestrator/internal";
+import type {
+  ChildErrorMarker,
+  GateMarker,
+  HookRefusedMarker,
+  PlacingMarker,
+  PoolMarker,
+} from "@jr2/orchestrator/internal";
 import { JR2Client, JR2HttpError } from "../client.ts";
 import { failureActivity } from "./status.ts";
 import { resolveTarget, targetOptions } from "../instance.ts";
@@ -35,15 +45,24 @@ export async function run(args: string[], io: Io): Promise<number> {
   const input = values.input ? (JSON.parse(String(values.input)) as Record<string, unknown>) : {};
   const target = await resolveTarget(io, targetOptions(values));
   try {
-    const client = new JR2Client(target.url, io.fetch, target.token);
+    const client = new JR2Client(target.url, io.fetch, target.token, target.onBehalfOf);
 
     let runId: string;
+    let resumed = false;
     try {
-      ({ runId } = await client.start(workflow, input));
+      ({ runId, resumed = false } = (await client.start(workflow, input, {
+        dropHeld: values["drop-held"] === true,
+      })) as { runId: string; resumed?: boolean });
     } catch (err) {
       if (!(err instanceof JR2HttpError) || !err.report) throw err;
       activity(io, refusalActivity(workflow, err.report));
       return 1;
+    }
+    // A standing run never ends by itself (ADR-0017): the resume prints it and returns.
+    if (resumed) {
+      activity(io, `resumed the standing workflow ${workflow}: run ${runId}`);
+      result(io, { runId, resumed: true });
+      return 0;
     }
     if (values.detach) {
       result(io, { runId });
@@ -66,6 +85,18 @@ export async function run(args: string[], io: Io): Promise<number> {
       }
       if (ev.kind === "child-error") {
         activity(io, `  ${childErrorActivity(ev)}`);
+        continue;
+      }
+      if (ev.kind === "looked") {
+        activity(io, `  ${lookedActivity(ev)}`);
+        continue;
+      }
+      if (ev.kind === "hook-refused") {
+        activity(io, `  ${hookRefusedActivity(ev)}`);
+        continue;
+      }
+      if (ev.kind === "pool") {
+        activity(io, `  ${poolActivity(ev)}`);
         continue;
       }
       activity(io, `  → ${ev.status.status} ${JSON.stringify(ev.status.value)}`);
@@ -106,6 +137,29 @@ export function placingActivity(ev: PlacingMarker): string {
   const who = ev.child ? ` ${ev.child}` : "";
   if (ev.kind === "placed") return `placed${who} after ${Math.round(ev.after / 1000)}s`;
   return `placing${who}: waits for ${ev.on === "quota" ? "quota" : "a node"} — ${ev.message}`;
+}
+
+/** A Gate's look as one activity line (ADR-0011): the look read its fact, and the run took its event. */
+export function lookedActivity(ev: GateMarker): string {
+  return `looked: gate ${ev.gate} read its fact, and the run took "${ev.event}"`;
+}
+
+/** A Hook's delivery that a Gate did not take, as one activity line (ADR-0011): the run goes on. */
+export function hookRefusedActivity(ev: HookRefusedMarker): string {
+  return (
+    `hook-refused: hook ${ev.hook} delivery ${ev.delivery} at gate ${ev.gate}` +
+    `${ev.event !== undefined ? ` ("${ev.event}")` : ""} — ${ev.reason}`
+  );
+}
+
+/** What a Pool of runs did with one item, as one activity line (ADR-0017). */
+export function poolActivity(ev: PoolMarker): string {
+  const run = ev.run !== undefined ? ` run ${ev.run}` : "";
+  if (ev.mark === "started")
+    return `pool ${ev.pool}: started ${ev.key}${run}${ev.existing ? " (the key found it)" : ""}`;
+  if (ev.mark === "skipped") return `pool ${ev.pool}: skipped an item — ${ev.reason ?? ""}`;
+  if (ev.mark === "carry-refused") return `pool ${ev.pool}: carry-refused ${ev.key} — ${ev.reason ?? ""}`;
+  return `pool ${ev.pool}: settled ${ev.key}${run} ${ev.status ?? ""}${ev.reason !== undefined ? ` — ${ev.reason}` : ""}`;
 }
 
 /**

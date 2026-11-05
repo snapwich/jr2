@@ -11,6 +11,7 @@
     "images"
   ],
   "dependencies": {
+    "@jr2/hooks": "workspace:*",
     "@jr2/machines": "workspace:*",
     "@jr2/orchestrator": "workspace:*",
     "xstate": "^5.18.0",
