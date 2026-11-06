@@ -17,6 +17,7 @@ import { dispatch } from "../src/dispatch-effect.ts";
 import { workspace } from "../src/workspace.ts";
 import { pool, source } from "../src/pool.ts";
 import { fromPromise } from "xstate";
+import { agent } from "../src/harness-client.ts";
 import {
   refuseEffectSecrets,
   secretPlacementsOf,
@@ -892,4 +893,85 @@ test("a mac Hook that names a secret the list does not hold is refused with the 
 
 test("no Hook and no Effect: no Instance Effector", () => {
   assert.equal(secretPlacementsOf({}, walk({})).instance, undefined);
+});
+
+// An MCP server's secret (ADR-0079): the Agent claims it by naming the server, and it is held in the
+// pod where that Agent's Turns run — a Workspace's, or the Instance Harness for a "none" Agent. "A
+// Custodian holds what its pod's Agents name."
+test("an MCP server's secret is Held in each pod whose Agents name the server, the Instance Harness too (ADR-0079)", () => {
+  const config: JR2Config = {
+    secrets: [
+      { name: "SLACK_ACME", value: VALUE },
+      { name: "SLACK_PARTNER", value: VALUE },
+      { name: "UNNAMED_MCP", value: VALUE },
+    ],
+    mcp: {
+      "slack-acme": { url: "https://slack.example/mcp", secret: "SLACK_ACME" },
+      "slack-partner": { url: "https://slack.example/mcp", secret: "SLACK_PARTNER" },
+      unnamed: { url: "https://other.example/mcp", secret: "UNNAMED_MCP" },
+      notes: { command: "notes-mcp" },
+    },
+  };
+  const entry = (server: string, tools?: string[] | "*") => ({
+    slot: "coder",
+    path: [] as string[],
+    entry: { server, ...(tools ? { tools } : {}) },
+  });
+  const out = secretPlacementsOf(
+    config,
+    walk({
+      workspaces: [ws({ mcp: [entry("slack-acme", "*"), entry("notes")] })],
+      instanceHarness: { models: [], servers: ["slack-acme", "slack-partner"] },
+    }),
+  );
+  assert.deepEqual(heldIn(out, ROOT), ["SLACK_ACME"]);
+  assert.deepEqual(heldIn(out, "instance"), ["SLACK_ACME", "SLACK_PARTNER"]);
+  assert.ok(out.claimed.has("SLACK_PARTNER") && !out.claimed.has("UNNAMED_MCP"));
+  assert.ok(out.report.includes('Workspace of workflow "ticket": Custodian holds SLACK_ACME (mcp slack-acme)'));
+  assert.ok(
+    out.report.includes(
+      "the Instance Harness: Custodian holds SLACK_ACME (mcp slack-acme), SLACK_PARTNER (mcp slack-partner)",
+    ),
+  );
+  assert.match(out.warnings.join("\n"), /secrets\[2\] \(UNNAMED_MCP\) is named by nothing/);
+
+  // Both Slacks in one pod: one host and one header, two Stand-ins, and the Custodian swaps by the
+  // Stand-in (R5's old "one header on one host" is gone). With no `hosts`, each is bound to its
+  // server's url host, in `authorization` alone.
+  const { manifest } = heldSecretsOf(config, out.claimed);
+  assert.deepEqual(
+    manifest.secrets.map((s) => [s.name, s.hosts.map((h) => `${h.host}:${h.port}`), s.headers]),
+    [
+      ["SLACK_ACME", ["slack.example:443"], ["authorization"]],
+      ["SLACK_PARTNER", ["slack.example:443"], ["authorization"]],
+    ],
+  );
+});
+
+test("the walk reads which MCP servers a Workspace's Agents and the 'none' Agents name (ADR-0079)", () => {
+  const coder = agent({
+    model: "anthropic/claude-x",
+    instructions: "code",
+    mcp: [{ server: "slack-acme", tools: ["post_message"] }],
+  });
+  const triage = agent({
+    model: "anthropic/claude-haiku",
+    instructions: "triage",
+    workspace: "none",
+    mcp: [{ server: "slack-partner", tools: "*" }],
+  });
+  const body = jr2Setup({ actors: { coder, triage } }).createMachine({
+    id: "body",
+    initial: "a",
+    on: { "workspace.lost": ".c" },
+    states: {
+      a: { invoke: { src: "coder", input: { prompt: "x", cwd: "/work" } }, on: { "agent.fault": "b" } },
+      b: { invoke: { src: "triage", input: { prompt: "y" } }, on: { "agent.fault": "c" } },
+      c: { type: "final" },
+    },
+  });
+  const machine = workspace(body, { repos: { app: "https://example.test/app.git" } });
+  const [pod] = workspacePodsOf(machine);
+  assert.deepEqual(pod?.mcp, [{ slot: "coder", path: [], entry: { server: "slack-acme", tools: ["post_message"] } }]);
+  assert.deepEqual(partsOf([machine]).instanceHarness?.servers, ["slack-partner"]);
 });

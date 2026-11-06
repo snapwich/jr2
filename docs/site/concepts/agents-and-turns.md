@@ -34,6 +34,7 @@ Agent. A state invokes it with `src: "coder"`. The definition is plain data, and
 | `thinkingLevel` | How hard the model thinks, when the state sets no other level. The default is `"off"`. |
 | `description`   | A short text for the people who read the Machine. The model does not read it.          |
 | `steerable`     | `false` refuses a Steering message from a Caller. The default is `true`.               |
+| `mcp`           | The MCP servers whose tools the Agent can call, each with its allowlist.               |
 
 [`AgentDefinition`](../reference/authoring-surface/type-agentdefinition.md) gives each field.
 
@@ -64,6 +65,30 @@ The field also tells where the Turn runs. An Agent with `"write"` or `"read"` wo
 [`workspace()`](../reference/authoring-surface/workspace.md). A Menu-only Agent has no Sandbox. Its Turn runs on the
 [Instance Harness](../reference/glossary.md#instance-harness), also when a `workspace()` holds it.
 [Architecture](architecture.md) shows where each Harness runs.
+
+## The MCP tools
+
+The [MCP tools](../reference/glossary.md#mcp-tools) of an Agent are the tools of the MCP servers that its definition
+names. They let the Agent act on a service, such as a chat or a ticket tracker, with a credential that it never reads.
+The `mcp` block of `jr2.config.ts` declares each server by a name of yours, and the `mcp` field of the definition names
+the servers and the tools:
+
+- A remote server needs an allowlist: a list of tool names, or `"*"`. The Harness gives the model only those tools. The
+  token of the server is a [Held secret](../reference/glossary.md#held-secret), so the model and the code of the
+  Workspace never read it. Thus the list is a guarantee, except where Workspace code can also spend the token. There,
+  `jr2 up` takes only `"*"`.
+- A stdio server is a program of the [Sandbox Image](../reference/glossary.md#sandbox-image). It runs as Workspace code,
+  inside the confinement of the Sandbox, so it takes no list. A Menu-only Agent cannot name one.
+
+A call of an MCP tool is not a pick. It changes nothing in the Machine, and the Turn goes on after it. The model reads
+the text of the result. The Harness reads the tools of each server at the first Turn of a conversation, and keeps the
+same tools until the conversation ends. The tools block has the Working tools first, then the MCP tools, then the Menu.
+A server that does not answer at the first Turn fails the Turn.
+
+An MCP tool runs when the model calls it, with no approval. A call that needs the approval of a person is the work of
+the Machine: the Agent picks, a [Gate](../reference/glossary.md#gate) waits for the approval, and an `mcp`
+[Effect](../reference/glossary.md#effect) makes the call (see [Effects](effects.md#mcp)).
+[Give an Agent MCP tools](../guides/give-an-agent-mcp-tools.md) gives the fields and the refusals.
 
 ## What a state sets for one Turn
 
@@ -176,7 +201,8 @@ itself. It tells nothing about the task: the prompt tells the task. It has two p
 
 - **The standing part** comes after the instructions, and it is the same on each Turn. It tells how the Agent acts on
   the run: with a pick from its Menu. It also tells the CPUs and the [Size](../reference/glossary.md#size) of the
-  Sandbox, or that a Menu-only Agent has no Working tools.
+  Sandbox, or that a Menu-only Agent has no Working tools. To an Agent with MCP tools, it tells that a call of an MCP
+  tool acts on a service outside the workflow, is not a pick, and does not end the Turn.
 - **The Turn part** comes after the prompt. It tells the directory of the Turn, its
   [Allowed picks](../reference/glossary.md#allowed-picks), the notices, and the [Steering messages](#steering-messages).
   [The Menu](the-menu.md) tells what the Allowed picks are. When they change during the Turn, the Harness tells them to
@@ -280,6 +306,8 @@ the model in `models`. A model with no context window gets no Compaction.
   refuses a model that it cannot find when the Turn starts.
 - A Turn ends when the state that invoked the Agent exits.
 - After `agent.fault` for a conversation, jr2 does not continue it, except after a Harness restart.
+- `jr2 up` refuses an MCP server that the `mcp` block does not declare, a remote server with no allowlist, and a stdio
+  server on a Menu-only Agent.
 - A Steering message is at most 16 KiB. `steerable: false` refuses a Caller's message, and the Machine can still send
   one.
 
@@ -288,6 +316,8 @@ the model in `models`. A model with no context window gets no Compaction.
 ## Read next
 
 - [Set an Agent's access and Dials](../guides/set-an-agents-access-and-dials.md)
+- [Give an Agent MCP tools](../guides/give-an-agent-mcp-tools.md) and
+  [Write a tool as an MCP server](../guides/write-a-tool-as-an-mcp-server.md)
 - [The Menu](the-menu.md), [Workspaces](workspaces.md) and [Architecture](architecture.md)
 - Reference: [`agent`](../reference/authoring-surface/agent.md),
   [`AgentDefinition`](../reference/authoring-surface/type-agentdefinition.md),
@@ -305,5 +335,7 @@ the model in `models`. A model with no context window gets no Compaction.
 - [ADR-0016](../reference/decisions/0016-agent-turn-mechanics-are-internal.md): jr2 owns the mechanics of a Turn
 - [ADR-0062](../reference/decisions/0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md): the Briefing
 - [ADR-0002](../reference/decisions/0002-duplex-streaming-actor.md): Steering messages
+- [ADR-0079](../reference/decisions/0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md):
+  the MCP tools of an Agent
 - [ADR-0035](../reference/decisions/0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md): a Runaway
 - [ADR-0036](../reference/decisions/0036-a-turn-compacts-its-own-context-mid-flight.md): Compaction

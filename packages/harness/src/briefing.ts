@@ -54,29 +54,38 @@ export function seatFacts(env: Record<string, string | undefined>, cgroupRoot = 
   };
 }
 
-/** The standing part for one seat: `(instructions, workspace)` → the system prompt, and `part`,
- * the delimited section alone. Each workspace access's section is composed once and cached, so
- * every Turn of the seat sends the same bytes. */
-export type StandingBriefing = ((instructions: string, workspace: Workspace) => string) & {
-  part: (workspace: Workspace) => string;
+/** The standing part for one seat: `(instructions, workspace, mcp)` → the system prompt, and
+ * `part`, the delimited section alone. `mcp` is true for an Agent whose conversation offers MCP
+ * tools (ADR-0079): it is fixed for the conversation, as the tools are. Each section is composed
+ * once and cached, so every Turn of the seat sends the same bytes. */
+export type StandingBriefing = ((instructions: string, workspace: Workspace, mcp?: boolean) => string) & {
+  part: (workspace: Workspace, mcp?: boolean) => string;
 };
 
 export function standingBriefing(facts: SeatFacts): StandingBriefing {
-  const parts = new Map<Workspace, string>();
-  const part = (workspace: Workspace): string => {
-    let text = parts.get(workspace);
+  const parts = new Map<string, string>();
+  const part = (workspace: Workspace, mcp = false): string => {
+    const key = `${workspace}${mcp ? "+mcp" : ""}`;
+    let text = parts.get(key);
     if (text === undefined) {
-      text = composeStanding(facts, workspace);
-      parts.set(workspace, text);
+      text = composeStanding(facts, workspace, mcp);
+      parts.set(key, text);
     }
     return text;
   };
-  return Object.assign((instructions: string, workspace: Workspace) => `${instructions}\n\n${part(workspace)}`, {
-    part,
-  });
+  return Object.assign(
+    (instructions: string, workspace: Workspace, mcp = false) => `${instructions}\n\n${part(workspace, mcp)}`,
+    { part },
+  );
 }
 
-function composeStanding(facts: SeatFacts, workspace: Workspace): string {
+/** The statement that an Agent with MCP tools reads (ADR-0062): its tools of a server are not picks.
+ * The Menu's own tools are `mcp__jr2__<event>`, so it names `jr2` as the exception. */
+export const MCP_TOOLS_LINE =
+  "- Your tools named `mcp__<server>__<tool>`, where `<server>` is not `jr2`, act on outside services, not on " +
+  "the workflow. A call to one is not a pick, and it does not end your Turn.";
+
+function composeStanding(facts: SeatFacts, workspace: Workspace, mcp: boolean): string {
   const lines = [
     "jr2 runs the workflow you are part of. These are facts about your seat, not your task.",
     // How the Agent acts on the workflow, in one statement that stays true when a pick keeps the
@@ -85,8 +94,16 @@ function composeStanding(facts: SeatFacts, workspace: Workspace): string {
       '"Allowed now" lists. Each pick\'s answer says if your Turn is over. If it is over, stop and call no other ' +
       "tool. If it is not, continue. If nothing is allowed, stop: the workflow prompts you again when something is.",
   ];
+  // Only an Agent with MCP tools reads it, so no other Agent's Briefing changes (ADR-0062).
+  if (mcp) lines.push(MCP_TOOLS_LINE);
   if (workspace === "none") {
-    lines.push("- You have no Working tools: no shell and no files. You act only by picking from your Menu.");
+    // A Menu-only Agent with MCP tools also acts through them, so it is not told that it acts only
+    // by picking (ADR-0062).
+    lines.push(
+      mcp
+        ? "- You have no Working tools: no shell and no files."
+        : "- You have no Working tools: no shell and no files. You act only by picking from your Menu.",
+    );
   } else {
     // The CPUs and the Size are the Sandbox's, and a Menu-only Agent has nothing to spend them on.
     const cpus = facts.cpus === undefined ? undefined : `${facts.cpus} ${facts.cpus === 1 ? "CPU" : "CPUs"}`;

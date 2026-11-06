@@ -19,6 +19,11 @@ and the tools block is first in it. A change to the tools block makes the provid
 Thus jr2 keeps the Menu the same, and tells each [Turn](../reference/glossary.md#turn) which part of it the Turn can
 pick now.
 
+The Menu is the last part of the tools block. The [Working tools](../reference/glossary.md#working-tools) come first,
+then the [MCP tools](../reference/glossary.md#mcp-tools), then the Menu. The model reads a Menu tool as
+`mcp__jr2__<event>`, and an MCP tool as `mcp__<server>__<tool>`, where `<server>` is never `jr2`. Only a call of a Menu
+tool is a pick. A call of an MCP tool acts on a service outside the Machine, and the Turn goes on after it.
+
 ## Where the Menu comes from
 
 You do not write the Menu. `jr2Setup` makes the Menu from the Machine when you call `createMachine`:
@@ -177,6 +182,7 @@ transition refuse other senders. It never gives an event to a party. The positio
 ## Rules
 
 - jr2 refuses a pick that is not on the Menu.
+- A call of an MCP tool is not a pick. It does not move the Machine, and it does not end the Turn.
 - A pick that is on the Menu but not in the Allowed picks moves nothing. Its answer gives the Allowed picks.
 - While a pick is outstanding, or while the Agent's state is not at Rest, jr2 refuses each pick and delivers nothing.
   This includes a pick that would end the Turn.

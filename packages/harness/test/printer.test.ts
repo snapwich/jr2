@@ -89,6 +89,21 @@ test("renderToolInput: the mcp__jr2__ prefix is stripped before the name match",
   assert.equal(renderToolInput("mcp__jr2__bash", { command: "c".repeat(2500) }), `${"c".repeat(2000)}…`);
 });
 
+test("renderMessage: an MCP tool call prints as `[<server>/<tool>]`, a pick by its event's name, and an MCP result never prints (ADR-0079)", () => {
+  const message = assistant([
+    toolCall("mcp__slack-acme__post_message", { channel: "#ci", text: "green" }),
+    toolCall("mcp__jr2__approve", { verdict: "ship" }),
+  ]);
+  assert.deepEqual(renderMessage(message), [
+    '[slack-acme/post_message] {"channel":"#ci","text":"green"}',
+    '[approve] {"verdict":"ship"}',
+  ]);
+  // A server named like a Working tool still prints as the server's tool, never as the Working tool.
+  assert.equal(renderToolInput("mcp__notes__bash", { command: "x" }), '{"command":"x"}');
+  assert.deepEqual(renderMessage(toolResult("mcp__slack-acme__post_message", "SERVER-RESULT")), []);
+  assert.deepEqual(renderMessage(toolResult("mcp__slack-acme__post_message", "SERVER-ERROR", true)), []);
+});
+
 test("renderMessage: a user message is [prompt]; image parts do not print", () => {
   assert.deepEqual(renderMessage(user("do the thing")), ["[prompt] do the thing"]);
   assert.deepEqual(

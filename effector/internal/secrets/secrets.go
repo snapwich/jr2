@@ -7,6 +7,7 @@ package secrets
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,11 +75,22 @@ type Target struct {
 	Secrets []string `json:"secrets"`
 }
 
+// McpServer is one remote MCP server an `mcp` Effect placed here calls (ADR-0079): its url, the name
+// of its secret, and its timeout. The start names the server; the url and the secret are only here.
+type McpServer struct {
+	URL       string `json:"url"`
+	Secret    string `json:"secret,omitempty"`
+	TimeoutMs int64  `json:"timeoutMs"`
+}
+
 // Config is `effector.json`, which `jr2 up` writes from the Effects' plain-data parts.
 type Config struct {
 	Version   int      `json:"version"`
 	Placement string   `json:"placement"`
 	Targets   []Target `json:"targets"`
+	// Mcp is each server the `mcp` Effects placed here name, by its name in the `mcp` block of
+	// jr2.config.ts (ADR-0079). The url's origin is a target too, with the server's secret.
+	Mcp map[string]McpServer `json:"mcp,omitempty"`
 	// Git is the `git.credentials` entries the pushes placed here spend (a Sandbox Effector's):
 	// read off the git mount (ReadGitEntries), never off this file.
 	Git []GitEntry `json:"-"`
@@ -109,6 +121,14 @@ func ReadConfig(path string) (*Config, error) {
 	for i, t := range c.Targets {
 		if (t.Scheme != "https" && t.Scheme != "http") || t.Host == "" || t.Port < 1 || t.Port > 65535 {
 			return nil, fmt.Errorf("%s: targets[%d] is not { scheme: http|https, host, port }", path, i)
+		}
+	}
+	for name, server := range c.Mcp {
+		u, err := url.Parse(server.URL)
+		if !wire.McpServerName.MatchString(name) || err != nil || (u.Scheme != "https" && u.Scheme != "http") ||
+			u.Host == "" || u.User != nil || server.TimeoutMs <= 0 ||
+			(server.Secret != "" && !wire.ValidSecretName(server.Secret)) {
+			return nil, fmt.Errorf("%s: mcp.%s is not { url: http(s)://host/path, secret?, timeoutMs }", path, name)
 		}
 	}
 	return &c, nil

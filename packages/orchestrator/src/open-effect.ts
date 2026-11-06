@@ -28,8 +28,9 @@ import type { Arg, EffectLogic, EffectParts, EffectSnapshot } from "./effect.ts"
 import type { Secret, Text } from "./http-effect.ts";
 
 /** The parts of an Effect a package may leave Open: an http url, a command's argv, a secret's name,
- * a dispatch's target (its url and token together, ADR-0071). */
-export type OpenEffectPart = "url" | "argv" | "secret" | "target";
+ * a dispatch's target (its url and token together, ADR-0071), an `mcp` Effect's server and tool
+ * (ADR-0079). */
+export type OpenEffectPart = "url" | "argv" | "secret" | "target" | "server" | "tool";
 
 // What a composer binds an Effect's Open parts to, each key one part (ADR-0054); a dispatch's
 // target is its url and token, bound as one (ADR-0071). One object for an
@@ -39,7 +40,8 @@ export type OpenEffectPart = "url" | "argv" | "secret" | "target";
  * The values that bind the Open parts of one Effect. A packaged Machine leaves a part of an Effect
  * Open when it cannot know it. That part is the url of an `http` Effect, the argv of a `command`,
  * the name of a secret, written `secret(open)`, or the target of a `dispatch`: the url of another
- * Orchestrator and the secret that holds its Instance token, bound as one. You bind it once, where you register the
+ * Orchestrator and the secret that holds its Instance token, bound as one, or the server or the tool
+ * of an `mcp` Effect. You bind it once, where you register the
  * Machine, with `customize(machine, { effects: { <slot>: binding } })`. Each key binds one Open
  * part. For an Effect with two Open parts, one object holds both keys.
  *
@@ -101,6 +103,11 @@ export type EffectBinding = {
    * `jr2.config.ts`. The Effector reads it from a file of that name. */
   readonly secret?: string;
   readonly target?: { readonly url: string; readonly token: Secret };
+  /** The server of an `mcp` Effect whose server is Open: a name of the `mcp` block of
+   * `jr2.config.ts`. The server's url and its secret are the config's. */
+  readonly server?: string;
+  /** The tool of an `mcp.call` Effect whose tool is Open: a tool name of the server. */
+  readonly tool?: string;
 };
 
 declare const openPart: unique symbol;
@@ -135,7 +142,11 @@ export function openPartsOf(parts: EffectParts): OpenEffectPart[] {
   if (parts.kind === "http" && parts.url === open) out.push("url");
   if (parts.kind === "command" && parts.argv === open) out.push("argv");
   if (parts.kind === "dispatch" && parts.target === open) out.push("target");
-  if (parts.kind !== "push" && parts.openSecret) out.push("secret");
+  if (parts.kind === "mcp") {
+    if (parts.server === open) out.push("server");
+    if (parts.tool === open) out.push("tool");
+  }
+  if (parts.kind !== "push" && parts.kind !== "mcp" && parts.openSecret) out.push("secret");
   return out;
 }
 
@@ -151,6 +162,8 @@ const BINDING_SAMPLE: Record<OpenEffectPart, string> = {
   argv: 'argv: ["<program>", "<arg>"]',
   secret: 'secret: "<name>"',
   target: 'target: { url: "https://<host>", token: secret("<name>") }',
+  server: 'server: "<name>"',
+  tool: 'tool: "<tool>"',
 };
 
 /** One binding object for these Open parts — `{ url: "…", secret: "<name>" }` for two. */

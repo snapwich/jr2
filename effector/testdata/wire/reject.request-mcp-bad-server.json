@@ -1,0 +1,5 @@
+{
+  "kind": "mcp",
+  "mcp": { "server": "Slack_Acme", "read": { "uri": "file:///a.md" } },
+  "maxBody": 65536
+}

@@ -35,6 +35,7 @@ const VALUES = {
   GATEWAY_TOKEN: "gw-value-two",
   LITELLM_KEY: "ll-value-three",
   UNTRUSTED_KEY: "un-value-four",
+  SECOND_GATEWAY_TOKEN: "gw-value-five",
 };
 
 let a: Upstream; // bound: two secrets
@@ -64,6 +65,9 @@ before(async () => {
     secrets: [
       { name: "ANTHROPIC_API_KEY", source: { kind: "literal" }, hosts: [bound(a)], headers: ["x-api-key"] },
       { name: "GATEWAY_TOKEN", source: { kind: "literal" }, hosts: [bound(a)], headers: ["authorization"] },
+      // Case 1b: a second secret on the same host in the same header — two MCP servers of one service
+      // (ADR-0079). The Custodian swaps by the Stand-in that a request carries.
+      { name: "SECOND_GATEWAY_TOKEN", source: { kind: "literal" }, hosts: [bound(a)], headers: ["authorization"] },
       {
         name: "LITELLM_KEY",
         source: { kind: "literal" },
@@ -129,6 +133,14 @@ describe("toward a bound host", () => {
     assert.equal(r.status, 200, r.body);
     assert.equal(a.seen.at(-1)?.headers["x-api-key"], VALUES.ANTHROPIC_API_KEY);
     assert.equal(a.seen.at(-1)?.headers.authorization, `Bearer ${VALUES.GATEWAY_TOKEN}`);
+  });
+
+  test("1b. two secrets on one host in one header: each Stand-in gets its own value (ADR-0079)", async () => {
+    for (const name of ["GATEWAY_TOKEN", "SECOND_GATEWAY_TOKEN"] as const) {
+      const r = await via(a, { headers: { authorization: `Bearer ${heldStandInOf(name)}` } });
+      assert.equal(r.status, 200, r.body);
+      assert.equal(a.seen.at(-1)?.headers.authorization, `Bearer ${VALUES[name]}`, name);
+    }
   });
 
   test("2. no Stand-in → 403, and the upstream receives nothing", async () => {
@@ -765,7 +777,7 @@ describe("start-up and the log", () => {
     const out = custodian.output();
     assert.match(
       out,
-      /jr2\.custodian ready secrets=JR2_CONTROL_TOKEN,JR2_SANDBOX_TOKEN,ANTHROPIC_API_KEY,GATEWAY_TOKEN,LITELLM_KEY,UNTRUSTED_KEY hosts=3/,
+      /jr2\.custodian ready secrets=JR2_CONTROL_TOKEN,JR2_SANDBOX_TOKEN,ANTHROPIC_API_KEY,GATEWAY_TOKEN,SECOND_GATEWAY_TOKEN,LITELLM_KEY,UNTRUSTED_KEY hosts=3/,
     );
     assert.match(out, /action=intercept target=\S+ secret=ANTHROPIC_API_KEY .*method=GET status=200/);
     assert.match(out, /action=tunnel target=\S+/);

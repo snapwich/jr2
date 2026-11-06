@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
   briefedPrompt,
   codeSpan,
+  MCP_TOOLS_LINE,
   restatedTurnPart,
   seatFacts,
   standingBriefing,
@@ -74,6 +75,30 @@ test("a Menu-only Agent's standing part: no Working tools, and no CPUs or Size t
   assert.match(part, /no Working tools/);
   assert.doesNotMatch(part, /CPU|memory/);
   assert.match(part, /says if your Turn is over/);
+});
+
+test("an Agent with MCP tools reads that they are not picks; an Agent with none reads the same bytes as before (ADR-0062, ADR-0079)", () => {
+  const standing = standingBriefing({ cpus: 2, memoryBytes: 4 * GI });
+  // The exact words are ADR-0062's: a change to them is a change to what the model reads.
+  assert.equal(
+    MCP_TOOLS_LINE,
+    "- Your tools named `mcp__<server>__<tool>`, where `<server>` is not `jr2`, act on outside services, not on " +
+      "the workflow. A call to one is not a pick, and it does not end your Turn.",
+  );
+  for (const workspace of ["write", "read", "none"] as const) {
+    assert.ok(standing.part(workspace, true).includes(MCP_TOOLS_LINE), workspace);
+    assert.ok(!standing.part(workspace).includes("mcp__<server>"), workspace);
+    assert.equal(standing.part(workspace, false), standing.part(workspace));
+    // Byte-stable for the seat, as every standing part is.
+    assert.equal(standing(INSTRUCTIONS, workspace, true), standing(INSTRUCTIONS, workspace, true));
+  }
+  // A Menu-only Agent with MCP tools acts through them too: it is not told it acts only by picking.
+  assert.match(standing.part("none"), /You act only by picking from your Menu\./);
+  const none = standing.part("none", true);
+  assert.match(none, /- You have no Working tools: no shell and no files\.\n/);
+  assert.doesNotMatch(none, /act only by picking/);
+  // The line follows the pick line.
+  assert.ok(none.indexOf("says if your Turn is over") < none.indexOf(MCP_TOOLS_LINE));
 });
 
 test("the Turn part follows the prompt, delimited: working directory, Allowed picks, notices", () => {

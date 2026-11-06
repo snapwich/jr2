@@ -273,6 +273,16 @@ test("an Effector's outcome reads as its output, decoded off the wire as the Orc
     "response.settled-dispatch-unreachable.json":
       'Its answer: the output of `comment`: {"outcome":"unreachable","reason":"dial tcp 10.0.0.9:443: connect: ' +
       'connection refused; nothing was started"}.',
+    // An mcp Effect's outcomes (ADR-0079): the tool's text and its structured content, a cut read,
+    // and a request for input that jr2 does not give — each the Effect's output, as an http one is.
+    "response.settled-mcp-returned.json":
+      'Its answer: the output of `comment`: {"outcome":"returned","isError":false,"text":"Posted to #releases.",' +
+      '"structured":{"channel":"#releases","ts":"1730700000.000100"}}.',
+    "response.settled-mcp-read-truncated.json":
+      'Its answer: the output of `comment`: {"outcome":"returned","text":"# Release notes\\n\\n- one","truncated":true}.',
+    "response.settled-mcp-input-required.json":
+      'Its answer: the output of `comment`: {"outcome":"input-required","reason":"the server asked for input ' +
+      '(elicitation/create), which jr2 does not give"}.',
   };
   // A stopped command's outcome (`exited` with the signal) answers the Orchestrator's stop, after the
   // state that asked has exited: no Machine takes it, so no Agent reads it (ADR-0067). A key-only

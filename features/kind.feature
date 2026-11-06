@@ -234,6 +234,56 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the echo received the run's call exactly once
       And the Instance Effector's rollout completes
 
+  Rule: an Agent's MCP tools and an mcp Effect reach the server with the value, and the Harness holds only Stand-ins
+    ADR-0079, ADR-0059. The fake MCP server runs on the host, over HTTPS under the tier's CA, and
+    the kind config declares it two times, as `lookup-a` and `lookup-b`, each with its own key.
+    Both keys are bound to one host in one header, so the Custodian chooses each value by the
+    Stand-in that a request carries. Every converge lists the tools from a check pod, through its
+    Custodian, and holds each Agent's allowlist to the live list (ADR-0019). The `tooled` Agent, in a
+    Sandbox, calls a tool of each server and then picks: an MCP call is not a pick. The
+    `advisedtooled` Agent is Menu-only, and calls `lookup-b` from the Instance Harness, which all
+    Menu-only Agents share (ADR-0031). The `mcpcalled` workflow's `mcp` Effect calls `lookup-a` from
+    the Instance Effector, which holds its key as an Effect secret. The server records the
+    Authorization header of every request, and refuses a request that has no value of a key.
+
+    Scenario: the Agent calls a tool of each of two servers on one host, each with its own key, then picks
+      Given the kind instance is serving
+      Then the converge listed the tools of "lookup-a" and "lookup-b" from a check pod
+      When I start the "tooled" workflow in mode "agent" detached
+      Then the run's Sandbox becomes Ready
+      And the Harness container holds the stand-in for "MCP_A_KEY" as a file, in no env
+      And the Harness container holds the stand-in for "MCP_B_KEY" as a file, in no env
+      When the Agent in the Sandbox calls the MCP tool "lookup" of "lookup-a" with query "alpha"
+      Then the model was shown the tool result "lookup-ok:alpha"
+      When the Agent in the Sandbox calls the MCP tool "lookup" of "lookup-b" with query "beta"
+      Then the model was shown the tool result "lookup-ok:beta"
+      And the model was offered the MCP tools after the Working tools and before the Menu
+      When the Agent in the Sandbox calls "finish" with summary "looked up both"
+      Then the run's body settled as "finished"
+      And the fake MCP server got each call with its own server's key, and no request without a key
+
+    Scenario: a Menu-only Agent on the Instance Harness calls the MCP tool with its server's key, then picks
+      Given the kind instance is serving
+      When I start the "advisedtooled" workflow detached
+      Then the model was offered "advise" from the Menu and no Working tools
+      When the model calls the MCP tool "lookup" of "lookup-b" with query "gamma"
+      Then the model was shown the tool result "lookup-ok:gamma"
+      When the model answers "advise" with summary "looked it up"
+      Then the run's status shows "done"
+      And the fake MCP server got the call of "lookup-b" with query "gamma" with that server's key
+      And no Sandbox was provisioned for the run
+
+    Scenario: an mcp Effect calls the server from the Instance Effector with the key
+      Given the kind instance is serving
+      When I start the "mcpcalled" workflow in mode "call" detached
+      Then the mcp Effect's answer is the tool's result for the run's marker
+      And the fake MCP server got the Effect's call with the key of "lookup-a", and no form of the key reached the run
+
+    Scenario: a converge whose Agent allowlists a tool the server does not list is refused
+      Given the fake MCP server lists no tool "lookup"
+      When I converge the kind instance
+      Then the converge is refused, naming the tool "lookup" that "lookup-a" does not list
+
   Rule: a dispatch to another Orchestrator runs in the Instance Effector, with the key
     ADR-0071. A `dispatch` with a target runs in the Instance Effector, which holds the target's
     token as an Effect secret, sends the start to the target's door with the ledger row's id in the

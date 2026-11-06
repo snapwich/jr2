@@ -36,27 +36,35 @@ import {
   heldDigest,
   MAP_PROPAGATION,
   podFault,
+  CHECK_MCP_SECONDS,
   CHECK_MODEL_SECONDS,
   checkVerdicts,
+  mcpCheckVerdicts,
+  mcpVerdictLines,
   envFromHeldRefusal,
   up,
 } from "../src/commands/up.ts";
 import {
+  ANNOTATION_HARNESS_CONFIG_DIGEST,
   checkPodObjectNames,
   checkPodObjects,
   instanceObjects,
   LABEL_PROVIDER_PREFLIGHT,
+  PREFLIGHT_MCP_ARG,
   type HeldObjects,
 } from "../src/deploy.ts";
 // The Harness's own result-line writer, from beside it, so the CLI's parser is held to its format.
 // Loaded at run time: it is another package's source, outside this one's compiled tree.
 type PreflightVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
-const { preflightLine, PREFLIGHT_MODEL_BUDGET_SECONDS } = (await import(
-  new URL("../../harness/src/preflight-line.ts", import.meta.url).href
-)) as {
+type McpPreflightVerdict = { kind: "listed"; tools: string[] } | { kind: "refused" | "warn" | "fault"; reason: string };
+const harnessLines = (await import(new URL("../../harness/src/preflight-line.ts", import.meta.url).href)) as {
   preflightLine: (specifier: string, verdict: PreflightVerdict) => string;
+  mcpPreflightLine: (server: string, verdict: McpPreflightVerdict) => string;
   PREFLIGHT_MODEL_BUDGET_SECONDS: number;
+  PREFLIGHT_MCP_BUDGET_SECONDS: number;
+  PREFLIGHT_MCP_ARG: string;
 };
+const { preflightLine, PREFLIGHT_MODEL_BUDGET_SECONDS } = harnessLines;
 import type { KubeAdmin, KubeObject, PodEnd } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
 import type { Io } from "../src/output.ts";
@@ -269,9 +277,17 @@ class FakeCluster implements KubeAdmin {
       labeledBefore: [...this.labeled],
     });
     if (this.checkEnd) return this.checkEnd;
-    const models = (pod.spec.containers[0].command as string[]).slice(4);
+    const argv = (pod.spec.containers[0].command as string[]).slice(4);
+    const cut = argv.indexOf("--mcp");
+    const models = cut < 0 ? argv : argv.slice(0, cut);
+    const servers = cut < 0 ? [] : argv.slice(cut + 1);
     const said = (m: string) => this.checkAnswers[m] ?? "ok";
-    const lines = models.flatMap((m) => [`jr2.preflight model=${m} start`, `jr2.preflight model=${m} ${said(m)}`]);
+    // An MCP server's line after its `mcp=<server>` key (`listed=[…]`, `refused=401`, `warn=…`).
+    const listed = (s: string) => this.checkAnswers[`mcp=${s}`] ?? "listed=[]";
+    const lines = [
+      ...models.flatMap((m) => [`jr2.preflight model=${m} start`, `jr2.preflight model=${m} ${said(m)}`]),
+      ...servers.flatMap((s) => [`jr2.preflight mcp=${s} start`, `jr2.preflight mcp=${s} ${listed(s)}`]),
+    ];
     // While the pod runs: the log so far, with the first model's result, as the real wait reads it.
     opts.onLog?.(lines.slice(0, 2).join("\n"));
     const failed = models.some((m) => said(m).startsWith("fault="));
@@ -468,7 +484,11 @@ const KIT_SRC = pathToFileURL(
 ).href;
 
 /** One Agent as a fixture Machine carries it. */
-type FixtureAgent = { model: string; workspace?: "write" | "read" | "none" };
+type FixtureAgent = {
+  model: string;
+  workspace?: "write" | "read" | "none";
+  mcp?: Array<{ server: string; tools?: string[] | "*" }>;
+};
 
 /** `agents` writes ONE workflow whose Machine carries them as actor slots (ADR-0049) — what the
  * converge's walk finds, and therefore what the provider preflight checks (there is no
@@ -2574,6 +2594,235 @@ test("named Caller tokens: a value per name in its own Secret, kept across conve
 
 /** A `"none"` Agent on the custom provider: the Instance Harness's pod claims the provider's key. */
 const VLLM_ADVISOR: Record<string, FixtureAgent> = { advisor: { model: "vllm/qwen-x", workspace: "none" } };
+
+// MCP (ADR-0079): a "none" Agent names a remote server. The Instance Harness's Custodian holds the
+// server's secret, bound to the url's host in `authorization`; the `jr2-harness` ConfigMap carries the
+// server by name, url and secret NAME; and a check pod lists the server's tools first, through its
+// Custodian, with the Stand-in.
+const MCP_CONFIG =
+  `export default { name: "myinst", secrets: [{ name: "SLACK_TOKEN", value: "xoxb-the-real-token" }], ` +
+  `mcp: { slack: { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeout: "90s" } } };\n`;
+const mcpAdvisor = (tools: string[] | "*"): Record<string, FixtureAgent> => ({
+  advisor: { model: "vllm/qwen-x", workspace: "none", mcp: [{ server: "slack", tools }] },
+});
+
+test("an MCP server's secret is held where its Agents run, the ConfigMap names the server, and a check pod lists its tools first (ADR-0079)", async () => {
+  const root = await mkInstance(MCP_CONFIG, "myinst", mcpAdvisor(["post"]));
+  const w = mkWorld(root);
+  w.kube.checkAnswers["mcp=slack"] = 'listed=["post","read"]';
+  let hostFetched = false;
+  const orchestrator = w.io.fetch!;
+  w.io.fetch = (url, init) => {
+    if (url.includes("mcp.slack.example")) hostFetched = true;
+    return orchestrator(url, init);
+  };
+  assert.equal(await up(["--yes"], w.io), 0, w.err.join("\n"));
+  assert.equal(hostFetched, false, "the host never calls the server");
+  assert.match(
+    w.err.join("\n"),
+    /mcp: listing the tools of "slack" at https:\/\/mcp\.slack\.example\/mcp on the Instance Harness, through a Custodian that holds SLACK_TOKEN, with its Stand-in/,
+  );
+  assert.match(w.err.join("\n"), /mcp: "slack" lists 2 tool\(s\); every allowlisted name is there/);
+  assert.match(w.err.join("\n"), /the Instance Harness: Custodian holds SLACK_TOKEN \(mcp slack\)/);
+
+  // The check pod: the server after the models in its argv, its harness config carries `mcp`, and
+  // its Custodian holds the server's secret as the Instance Harness's does.
+  const seen = w.kube.checkPodsSeen.at(-1)!;
+  const command = seen.pod.spec.containers[0].command as string[];
+  assert.deepEqual(command.slice(command.indexOf(PREFLIGHT_MCP_ARG)), ["--mcp", "slack"]);
+  const checkList = (JSON.parse(seen.appliedBefore.at(-1)!) as { items: Array<Record<string, any>> }).items;
+  const checkCm = checkList.find((i) => i.kind === "ConfigMap" && i.data?.["harness.json"] !== undefined)!;
+  assert.deepEqual(JSON.parse(checkCm.data["harness.json"]).mcp, {
+    slack: { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeoutMs: 90_000 },
+  });
+  const env = seen.pod.spec.containers[0].env as Array<{ name: string }>;
+  assert.ok(
+    env.some((e) => e.name === "SLACK_TOKEN"),
+    "the check container holds the Stand-in, in env",
+  );
+
+  const items = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  const heldCm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+  assert.deepEqual((JSON.parse(heldCm.data["held-instance.json"]) as HeldManifest).secrets, [
+    {
+      name: "SLACK_TOKEN",
+      source: { kind: "literal" },
+      hosts: [{ host: "mcp.slack.example", port: 443, leaf: leafStem("mcp.slack.example", 443) }],
+      headers: ["authorization"],
+    },
+  ]);
+  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-harness")!;
+  assert.deepEqual(JSON.parse(cm.data["harness.json"]).mcp, {
+    slack: { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeoutMs: 90_000 },
+  });
+  for (const cmItem of items.filter((i) => i.kind === "ConfigMap")) {
+    assert.ok(!JSON.stringify(cmItem).includes("xoxb-the-real-token"), `no value in ${cmItem.metadata.name}`);
+  }
+  for (const line of w.err) assert.ok(!line.includes("xoxb-the-real-token"), "names, never a value");
+});
+
+test("jr2 up refuses an allowlisted tool the server does not list, fails on a refusal, and warns on no answer (ADR-0079)", async () => {
+  const missing = mkWorld(await mkInstance(MCP_CONFIG, "myinst", mcpAdvisor(["post", "delete"])));
+  missing.kube.checkAnswers["mcp=slack"] = 'listed=["post","read"]';
+  await assert.rejects(
+    up(["--yes"], missing.io),
+    /mcp: workflow "work": Agent "advisor" allowlists the tool "delete", which "slack" does not list — it lists: post, read/,
+  );
+  assert.equal(missing.kube.applied.find(isInstanceList), undefined, "nothing the Instance reads is applied");
+
+  const refused = mkWorld(await mkInstance(MCP_CONFIG, "myinst", mcpAdvisor(["post"])));
+  refused.kube.checkAnswers["mcp=slack"] = "refused=403";
+  await assert.rejects(
+    up(["--yes"], refused.io),
+    /mcp: "slack" at https:\/\/mcp\.slack\.example\/mcp refused the request from a pod on the Instance Harness \(HTTP 403\) — a wrong or expired value of SLACK_TOKEN, or a binding of it/,
+  );
+
+  const down = mkWorld(await mkInstance(MCP_CONFIG, "myinst", mcpAdvisor(["post"])));
+  down.kube.checkAnswers["mcp=slack"] = "warn=connect ECONNREFUSED";
+  assert.equal(await up(["--yes"], down.io), 0, down.err.join("\n"));
+  assert.match(
+    down.err.join("\n"),
+    /warning: mcp: "slack" at https:\/\/mcp\.slack\.example\/mcp did not answer from a pod on the Instance Harness \(connect ECONNREFUSED\)/,
+  );
+
+  // Skipped: one warning line names the models and the servers it did not check.
+  const skipped = mkWorld(await mkInstance(MCP_CONFIG, "myinst", mcpAdvisor(["delete"])));
+  assert.equal(await up(["--yes", "--skip-provider-preflight"], skipped.io), 0, skipped.err.join("\n"));
+  const skipLines = skipped.err.filter((l) => l.includes("--skip-provider-preflight"));
+  assert.equal(skipLines.length, 1, skipLines.join("\n"));
+  assert.match(
+    skipLines[0]!,
+    /warning: provider: preflight skipped \(--skip-provider-preflight\) — these models were not checked: vllm\/qwen-x; these MCP servers' tool lists were not checked: slack/,
+  );
+});
+
+test("a changed mcp block rolls the Instance Harness: its pod template carries the harness config's digest (ADR-0079)", async () => {
+  const templateDigest = async (config: string) => {
+    const w = mkWorld(await mkInstance(config, "myinst", mcpAdvisor("*")));
+    assert.equal(await up(["--yes"], w.io), 0, w.err.join("\n"));
+    const items = (
+      JSON.parse(w.kube.applied.find((m) => m.includes(`"kind":"StatefulSet"`))!) as {
+        items: Array<Record<string, any>>;
+      }
+    ).items;
+    const sts = items.find((i) => i.kind === "StatefulSet")!;
+    return sts.spec.template.metadata.annotations[ANNOTATION_HARNESS_CONFIG_DIGEST] as string;
+  };
+  const before = await templateDigest(MCP_CONFIG);
+  assert.equal(await templateDigest(MCP_CONFIG), before, "the same config, the same digest");
+  const longer = await templateDigest(MCP_CONFIG.replace(`timeout: "90s"`, `timeout: "120s"`));
+  assert.notEqual(longer, before);
+  const added = await templateDigest(MCP_CONFIG.replace(` } } };`, ` }, notes: { command: "notes-mcp" } } };`));
+  assert.notEqual(added, before);
+});
+
+test("the MCP check's lines: the CLI reads what the Harness writes, and holds each list to the allowlists (ADR-0079)", () => {
+  assert.equal(CHECK_MCP_SECONDS, harnessLines.PREFLIGHT_MCP_BUDGET_SECONDS, "one budget for each server");
+  assert.equal(PREFLIGHT_MCP_ARG, harnessLines.PREFLIGHT_MCP_ARG);
+  const output = [
+    "noise",
+    "jr2.preflight mcp=slack start",
+    harnessLines.mcpPreflightLine("slack", { kind: "listed", tools: ["a.b", "post"] }),
+    harnessLines.mcpPreflightLine("down", { kind: "warn", reason: "connect\nECONNREFUSED" }),
+    harnessLines.mcpPreflightLine("gone", { kind: "refused", reason: "401" }),
+    "jr2.preflight mcp=bent listed=not json",
+  ].join("\n");
+  assert.deepEqual(
+    [...mcpCheckVerdicts(output)],
+    [
+      ["slack", { kind: "listed", tools: ["a.b", "post"] }],
+      ["down", { kind: "warn", reason: "connect ECONNREFUSED" }],
+      ["gone", { kind: "refused", reason: "401" }],
+      [
+        "bent",
+        { kind: "fault", reason: "the check wrote a tool list that is not a JSON list of names — a jr2 defect" },
+      ],
+    ],
+  );
+  const slack = { server: "slack", url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN" };
+  const uses = [
+    { workflow: "t", slot: "coder", server: "slack", tools: ["post", "delete"] },
+    { workflow: "t", slot: "triage", server: "slack", tools: ["delete"] },
+    { workflow: "t", slot: "all", server: "slack", tools: "*" as const },
+    { workflow: "t", slot: "other", server: "notes", tools: ["x"] },
+  ];
+  assert.deepEqual(mcpVerdictLines(slack, { kind: "listed", tools: ["post", "read"] }, uses, "the Sandbox nodes"), {
+    said: [],
+    faults: [
+      'mcp: workflow "t": Agent "coder", workflow "t": Agent "triage" allowlists the tool "delete", which "slack" ' +
+        "does not list — it lists: post, read (ADR-0079)",
+    ],
+  });
+  assert.deepEqual(
+    mcpVerdictLines(slack, { kind: "listed", tools: ["delete", "post"] }, uses, "the Sandbox nodes").faults,
+    [],
+  );
+  const open = { server: "open", url: "https://mcp.example/mcp" };
+  assert.match(
+    mcpVerdictLines(open, { kind: "refused", reason: "401" }, uses, "the Sandbox nodes").faults[0]!,
+    /needs a credential: give the server a `secret`/,
+  );
+});
+
+test("checkPodsOf: a remote MCP server is listed by a check pod of the class whose Agents name it, which holds its secret; a stdio server is not (ADR-0079)", () => {
+  const config: JR2Config = {
+    mcp: {
+      slack: { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN" },
+      open: { url: "https://open.example/mcp" },
+      notes: { command: "notes-mcp" },
+    },
+  };
+  const binding = {
+    name: "SLACK_TOKEN",
+    source: { kind: "literal" as const },
+    hosts: [{ host: "mcp.slack.example", port: 443, leaf: "x" }],
+    headers: ["authorization"],
+  };
+  const pod = workspaceHeldPod({ workflow: "work", route: [] });
+  const walk = {
+    effects: [],
+    workspaces: [
+      {
+        workflow: "work",
+        pod: {
+          route: [],
+          models: ["anthropic/claude-haiku-5-5"],
+          secrets: [],
+          mcp: [
+            { slot: "coder", path: [], entry: { server: "slack", tools: ["post"] } },
+            { slot: "coder", path: [], entry: { server: "notes" } },
+            { slot: "coder", path: [], entry: { server: "open", tools: "*" } },
+          ],
+        },
+      },
+    ],
+  } as unknown as PlacementWalk;
+  const [checkPod, ...rest] = checkPodsOf(config, walk, [
+    { pod, manifest: { version: 1, secrets: [binding] }, values: {} } as never,
+  ]);
+  assert.equal(rest.length, 0);
+  assert.deepEqual(checkPod!.mcp, [
+    { server: "open", url: "https://open.example/mcp" },
+    { server: "slack", url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN" },
+  ]);
+  assert.deepEqual(
+    checkPod!.manifest.secrets.map((s) => s.name),
+    ["SLACK_TOKEN"],
+  );
+});
+
+test("jr2 up refuses an Agent's MCP server that the config does not declare, before anything is built (ADR-0079)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", {
+    advisor: { model: "vllm/qwen-x", workspace: "none", mcp: [{ server: "slack", tools: ["post"] }] },
+  });
+  const w = mkWorld(root);
+  assert.notEqual(await up(["--yes"], w.io), 0);
+  assert.match(
+    w.err.join("\n"),
+    /refusing: workflow "work": Agent "advisor" names the MCP server "slack", which the mcp block of jr2\.config\.ts declares no server — bind the Agent to a declared server where the Machine is registered: export const machine = customize\(<import>, \{ agents: \{ advisor: \{ mcp: \[\{ server: "<server>", tools: \["post"\] \}\] \} \} \}\)/,
+  );
+  assert.deepEqual(w.built, [], "nothing was built");
+});
 
 test("provider apiKey is a held secret: the Custodian's Secret holds it, the Harness's never does (ADR-0059)", async () => {
   const root = await mkInstance(
@@ -4979,6 +5228,59 @@ test("no token Hook: jr2-hook-digests is applied empty, so the Orchestrator's mo
   const items = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
   const digests = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-hook-digests")!;
   assert.deepEqual(digests.stringData, { "digests.json": "{}" });
+});
+
+test("an mcp Effect places its server's secret in the Instance Effector, and effector.json names the server (ADR-0079)", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", secrets: [{ name: "SLACK_TOKEN", value: "xoxb-token-value-0123" }], ` +
+      `mcp: { "slack-acme": { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeout: "90s" } } };\n`,
+  );
+  await writeFile(
+    join(root, "workflows", "notify.ts"),
+    `import { jr2Setup, mcp } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const post = mcp.call("slack-acme", "post_message");\n` +
+      `export const machine = jr2Setup({ events: [], actors: { post } })\n` +
+      `  .createMachine({ id: "notify", initial: "idle", states: { idle: {} } });\n`,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const out = w.err.join("\n");
+  assert.match(out, /post: mcp call slack-acme\/post_message — the server's timeout, in the Instance Effector/);
+  assert.match(out, /secret SLACK_TOKEN: an Effect secret in the Instance Effector \(notify\/post\)/);
+  const list = w.kube.applied.find(
+    (m) => m.includes(`"name":"jr2-instance-effector"`) && m.includes(`"kind":"Deployment"`),
+  )!;
+  const [secret, deployment] = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  assert.equal(secret!.stringData["secret.SLACK_TOKEN"], "xoxb-token-value-0123");
+  assert.deepEqual(JSON.parse(secret!.stringData["effector.json"]), {
+    version: 1,
+    placement: "instance",
+    targets: [{ scheme: "https", host: "mcp.slack.example", port: 443, secrets: ["SLACK_TOKEN"] }],
+    mcp: { "slack-acme": { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeoutMs: 90_000 } },
+  });
+  assert.equal(
+    deployment!.spec.template.spec.terminationGracePeriodSeconds,
+    120,
+    "the server's timeout, plus the read margin",
+  );
+});
+
+test("jr2 up refuses an mcp Effect whose server the mcp block does not declare (ADR-0079)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  await writeFile(
+    join(root, "workflows", "notify.ts"),
+    `import { jr2Setup, mcp } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const post = mcp.call("slack-acme", "post_message");\n` +
+      `export const machine = jr2Setup({ events: [], actors: { post } })\n` +
+      `  .createMachine({ id: "notify", initial: "idle", states: { idle: {} } });\n`,
+  );
+  const w = mkWorld(root);
+  assert.notEqual(await up(["--yes"], w.io), 0);
+  assert.match(
+    w.err.join("\n"),
+    /the mcp Effect "post" names the MCP server "slack-acme", which the mcp block of jr2\.config\.ts declares no server/,
+  );
+  assert.equal(w.kube.applied.length, 0, "nothing is applied");
 });
 
 test("an http Effect places its secret in the Instance Effector: the four objects, the key, the report (ADR-0068)", async () => {

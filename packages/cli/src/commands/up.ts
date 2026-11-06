@@ -98,6 +98,7 @@ import {
   type SandboxEffectorPlan,
   secretPlacementsOf,
   storedValueLength,
+  isStdioServer,
   effectorKey,
   targetText,
   harnessTokenDigest,
@@ -850,6 +851,17 @@ export async function up(args: string[], io: Io): Promise<number> {
       `provider: ${custom.baseUrl} configured, but no carried Agent names a "${custom.id}/…" model — skipped`,
     );
   }
+  // Each Agent's allowlist of each remote MCP server it names (ADR-0079): the check pods list the
+  // servers' tools, and each list is held to these.
+  const mcpUses: McpUse[] = workflows.flatMap((w) =>
+    partsOf([w.machine]).mcpAgents.flatMap((a) =>
+      a.mcp.flatMap((e) => {
+        const server = config.mcp?.[e.server];
+        if (server === undefined || isStdioServer(server)) return [];
+        return [{ workflow: w.name, slot: a.slot, server: e.server, tools: e.tools ?? "*" }];
+      }),
+    ),
+  );
   await preflightProviders(io, kube, {
     checkPods,
     skip: values["skip-provider-preflight"] === true,
@@ -866,6 +878,8 @@ export async function up(args: string[], io: Io): Promise<number> {
     harnessEnvData,
     priorityClassName: priorityClassNames(config.priorityClasses).sandbox,
     signingKey: Buffer.from(signingKey, "base64"),
+    ...(config.mcp ? { mcp: config.mcp } : {}),
+    mcpUses,
   });
 
   // --- operator (per-cluster, shared): after the provider preflight ------------------------------
@@ -958,6 +972,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     hookDigests,
     harnessEnvData,
     harness: config.harness,
+    ...(config.mcp ? { mcp: config.mcp } : {}),
     held: held.objects,
     imageRefs: converged,
     repoCache: carried.composesSandbox ? { image: operatorImage!, placement: config.sandbox } : undefined,
@@ -1120,6 +1135,7 @@ export async function up(args: string[], io: Io): Promise<number> {
           manifest: instance.manifest,
         }),
         harness: config.harness,
+        ...(config.mcp ? { mcp: config.mcp } : {}),
         caBundle: caPem !== undefined,
         // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
         // placement from the kept key — the same shape it stamps onto every Sandbox at provision.
@@ -2383,11 +2399,29 @@ export type CheckPod = {
   /** The bindings of the checked keys: each a part of a held pod's manifest. */
   manifest: HeldManifest;
   providers: CheckedProvider[];
+  /** The remote MCP servers that an Agent of this class names, by name, sorted (ADR-0079): the
+   * check lists each one's tools through the Custodian, with the Stand-in of its secret. */
+  mcp: CheckedMcpServer[];
 };
 
-/** One Harness pod as the walk places it: its held pod key, its class, the models it runs, and
- * the bindings it holds (none: its HTTPS goes direct, with no proxy). */
-type Seat = { pod: string; sandbox: boolean; models: readonly string[]; held: HeldManifest["secrets"] };
+/** One remote MCP server a check pod lists (ADR-0079). */
+export type CheckedMcpServer = {
+  server: string;
+  url: string;
+  /** Its secret, which the check pod holds as a pod of the class holds it; absent: no credential. */
+  secret?: string;
+};
+
+/** One Harness pod as the walk places it: its held pod key, its class, the models it runs, the
+ * MCP servers its Agents name, and the bindings it holds (none: its HTTPS goes direct, with no
+ * proxy). */
+type Seat = {
+  pod: string;
+  sandbox: boolean;
+  models: readonly string[];
+  servers: readonly string[];
+  held: HeldManifest["secrets"];
+};
 
 /**
  * Which providers the preflight checks, and in which pod (ADR-0019, ADR-0059). Every carried model
@@ -2409,7 +2443,8 @@ export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readon
   const seats: Seat[] = [
     ...walk.workspaces.map((ws) => {
       const pod = workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route });
-      return { pod, sandbox: true, models: ws.pod.models, held: heldOf(pod) };
+      const servers = (ws.pod.mcp ?? []).map((m) => m.entry.server);
+      return { pod, sandbox: true, models: ws.pod.models, servers, held: heldOf(pod) };
     }),
     ...(walk.instanceHarness
       ? [
@@ -2417,6 +2452,7 @@ export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readon
             pod: INSTANCE_HARNESS_HELD_POD,
             sandbox: false,
             models: walk.instanceHarness.models,
+            servers: walk.instanceHarness.servers ?? [],
             held: heldOf(INSTANCE_HARNESS_HELD_POD),
           },
         ]
@@ -2456,6 +2492,7 @@ export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readon
       // Stand-ins) is that of a pod of the class; the keys the class's other pods hold join it below.
       manifest: { version: 1, secrets: [...group.seats[0]!.held] },
       providers: [],
+      mcp: [],
     };
     for (const model of models) {
       const slash = model.indexOf("/");
@@ -2494,7 +2531,23 @@ export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readon
         ...(gateway ? { gateway } : {}),
       });
     }
-    if (checkPod.providers.length) checkPods.push(checkPod);
+    // Each remote MCP server that an Agent of the class names (ADR-0079), with its secret's binding
+    // from a pod of the class that holds it: the check reads the list as a Turn there reads it. A
+    // stdio server is Workspace code, and the check pod runs none.
+    const servers = [...new Set(group.seats.flatMap((s) => s.servers))].sort();
+    for (const name of servers) {
+      const declared = config.mcp?.[name];
+      if (declared === undefined || isStdioServer(declared)) continue;
+      const secret = declared.secret;
+      if (secret !== undefined) {
+        const binding = group.seats.map((s) => s.held.find((b) => b.name === secret)).find((b) => b !== undefined);
+        if (binding && !checkPod.manifest.secrets.some((h) => h.name === secret)) {
+          checkPod.manifest.secrets.push(binding);
+        }
+      }
+      checkPod.mcp.push({ server: name, url: declared.url, ...(secret !== undefined ? { secret } : {}) });
+    }
+    if (checkPod.providers.length || checkPod.mcp.length) checkPods.push(checkPod);
   }
   return checkPods;
 }
@@ -2508,6 +2561,9 @@ const CHECK_START_SECONDS = 300;
  * `@jr2/harness`'s `preflight-line.ts`, which a test holds this to), so one slow model never uses
  * the time of the others. Exported for that test. */
 export const CHECK_MODEL_SECONDS = 360;
+/** Each MCP server's bound in the pod: its own budget in the check (`PREFLIGHT_MCP_BUDGET_SECONDS`
+ * in `preflight-line.ts`, which a test holds this to). Exported for that test. */
+export const CHECK_MCP_SECONDS = 60;
 const CHECK_RUN_MARGIN_SECONDS = 30;
 /** A leftover a run left with no pod, older than this, is a dead run's, not a live one's. */
 const CHECK_LEFTOVER_SECONDS = 3600;
@@ -2548,6 +2604,10 @@ async function preflightProviders(
     priorityClassName: string;
     /** The signing key, for each check pod's own Stand-ins (ADR-0019, ADR-0059). */
     signingKey: Buffer;
+    /** The config's `mcp` block, for the check pod's harness config (ADR-0079). */
+    mcp?: JR2Config["mcp"];
+    /** Each Agent's allowlist of each remote server it names: what each listing is held to. */
+    mcpUses: readonly McpUse[];
   },
 ): Promise<void> {
   const { namespace, ctx } = opts;
@@ -2557,10 +2617,12 @@ async function preflightProviders(
     // Never silent: a converge that checked nothing must not read as one that checked. A model that
     // two check pods would check is named once.
     const models = [...new Set(opts.checkPods.flatMap((p) => p.providers.flatMap((v) => v.models)))];
+    const servers = [...new Set(opts.checkPods.flatMap((p) => p.mcp.map((m) => m.server)))].sort();
     activity(
       io,
       "warning: provider: preflight skipped (--skip-provider-preflight) — " +
-        (models.length ? `these models were not checked: ${models.join(", ")}` : "no model was checked"),
+        (models.length ? `these models were not checked: ${models.join(", ")}` : "no model was checked") +
+        (servers.length ? `; these MCP servers' tool lists were not checked: ${servers.join(", ")}` : ""),
     );
     return;
   }
@@ -2568,9 +2630,12 @@ async function preflightProviders(
   const run = randomBytes(4).toString("hex");
   const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
   const faults: string[] = [];
+  /** An MCP result already said: two check pods can list one server, and say it once. */
+  const saidMcp = new Set<string>();
   for (const [n, checkPod] of opts.checkPods.entries()) {
     const object = `${PROVIDER_PREFLIGHT}-${run}-${n}`;
     const models = checkPod.providers.flatMap((p) => p.models);
+    const servers = checkPod.mcp.map((m) => m.server);
     /** The models whose result is already said, while the pod ran, and what it was: a final log
      * read that comes back empty must not turn a result already said into "not checked". */
     const said = new Set<string>();
@@ -2589,12 +2654,27 @@ async function preflightProviders(
           : `with no held key (${why}), direct, as a pod that holds no secret calls it`;
       activity(io, `provider: checking ${p.models.join(", ")} on ${checkPod.where}, ${holds}`);
     }
+    for (const m of checkPod.mcp) {
+      const holds = m.secret
+        ? `through a Custodian that holds ${m.secret}, with its Stand-in`
+        : checkPod.manifest.secrets.length && m.url.startsWith("https:")
+          ? "with no credential, through the Custodian's tunnel"
+          : "with no credential, direct";
+      activity(io, `mcp: listing the tools of "${m.server}" at ${m.url} on ${checkPod.where}, ${holds}`);
+    }
     activity(
       io,
       `provider: the check pod has up to ${CHECK_START_SECONDS / 60} min to start, then up to ` +
-        `${CHECK_MODEL_SECONDS / 60} min for ${models.length === 1 ? "its model" : `each of its ${models.length} models`}`,
+        (models.length
+          ? `${CHECK_MODEL_SECONDS / 60} min for ${models.length === 1 ? "its model" : `each of its ${models.length} models`}`
+          : "") +
+        (models.length && servers.length ? " and " : "") +
+        (servers.length
+          ? `${CHECK_MCP_SECONDS / 60} min for ${servers.length === 1 ? "its MCP server" : `each of its ${servers.length} MCP servers`}`
+          : ""),
     );
-    const runSeconds = CHECK_MODEL_SECONDS * models.length + CHECK_RUN_MARGIN_SECONDS;
+    const runSeconds =
+      CHECK_MODEL_SECONDS * models.length + CHECK_MCP_SECONDS * servers.length + CHECK_RUN_MARGIN_SECONDS;
     // Built before the apply: a fault in jr2 here is jr2's, never the cluster's refusal.
     const manifest = checkPodObjects({
       name: opts.name,
@@ -2621,6 +2701,8 @@ async function preflightProviders(
       }),
       harnessEnvData: opts.harnessEnvData,
       models,
+      servers,
+      ...(opts.mcp ? { mcp: opts.mcp } : {}),
       ...(checkPod.placement ? { placement: checkPod.placement } : {}),
       priorityClassName: opts.priorityClassName,
       ...(opts.harness ? { harness: opts.harness } : {}),
@@ -2682,8 +2764,138 @@ async function preflightProviders(
         faults.push(providerFault(p, model, checkPod.where, why, checkPod.manifest.secrets.length > 0));
       }
     }
+    const listings = mcpCheckVerdicts(output);
+    const startedMcp = mcpCheckStarts(output);
+    for (const m of checkPod.mcp) {
+      const verdict = listings.get(m.server);
+      const lines = verdict
+        ? mcpVerdictLines(m, verdict, opts.mcpUses, checkPod.where)
+        : {
+            faults: [
+              `mcp: "${m.server}" at ${m.url} was not checked on ${checkPod.where}: ` +
+                (refused ??
+                  (startedMcp.has(m.server)
+                    ? `the check pod stopped while it listed this server: ${podFault(end!, checkPod, opts)}`
+                    : `the check pod stopped before it reached this server: ${podFault(end!, checkPod, opts)}`)),
+            ],
+            said: [],
+          };
+      for (const line of lines.said) {
+        if (saidMcp.has(line)) continue;
+        saidMcp.add(line);
+        activity(io, line);
+      }
+      for (const fault of lines.faults) if (!faults.includes(fault)) faults.push(fault);
+    }
   }
   if (faults.length) throw new Error(faults.join("\n"));
+}
+
+/** One Agent's use of one remote MCP server, as the walk read it: the allowlist, or `"*"`. */
+export type McpUse = { workflow: string; slot: string; server: string; tools: readonly string[] | "*" };
+
+/** One MCP server's result line (`preflight-line.ts` in `@jr2/harness`). */
+type McpCheckVerdict = { kind: "listed"; tools: string[] } | { kind: "refused" | "warn" | "fault"; reason: string };
+
+/** The servers whose listing began (`start` lines). */
+export function mcpCheckStarts(output: string): Set<string> {
+  const started = new Set<string>();
+  for (const line of output.split("\n")) {
+    const m = /^jr2\.preflight mcp=(\S+) start$/.exec(line.trim());
+    if (m) started.add(m[1]!);
+  }
+  return started;
+}
+
+/** Each MCP server's verdict, off the check container's output lines (`preflight-line.ts` in
+ * `@jr2/harness`, held to this parser by a test). A list that is not JSON is the check's fault. */
+export function mcpCheckVerdicts(output: string): Map<string, McpCheckVerdict> {
+  const verdicts = new Map<string, McpCheckVerdict>();
+  for (const line of output.split("\n")) {
+    const m = /^jr2\.preflight mcp=(\S+) (listed|refused|warn|fault)=(.*)$/.exec(line.trim());
+    if (!m) continue;
+    if (m[2] !== "listed") {
+      verdicts.set(m[1]!, { kind: m[2] as "refused" | "warn" | "fault", reason: m[3]! });
+      continue;
+    }
+    let tools: unknown;
+    try {
+      tools = JSON.parse(m[3]!);
+    } catch {
+      tools = undefined;
+    }
+    verdicts.set(
+      m[1]!,
+      Array.isArray(tools) && tools.every((t) => typeof t === "string")
+        ? { kind: "listed", tools: tools as string[] }
+        : { kind: "fault", reason: `the check wrote a tool list that is not a JSON list of names — a jr2 defect` },
+    );
+  }
+  return verdicts;
+}
+
+/**
+ * What one MCP server's listing comes to (ADR-0079): the lines said, and the faults. An allowlisted
+ * name that the list does not have is refused, with what the server has; a server that refused the
+ * request (401, 403) fails the converge, as a model key that the provider refuses does; a server
+ * that did not answer is a warning. Pure, for its test.
+ */
+export function mcpVerdictLines(
+  m: CheckedMcpServer,
+  verdict: McpCheckVerdict,
+  uses: readonly McpUse[],
+  where: string,
+): { said: string[]; faults: string[] } {
+  if (verdict.kind === "warn") {
+    return {
+      said: [
+        `warning: mcp: "${m.server}" at ${m.url} did not answer from a pod on ${where} (${verdict.reason}) — its ` +
+          "tool names are not checked; a Turn of an Agent that names it fails if it does not answer then (ADR-0079)",
+      ],
+      faults: [],
+    };
+  }
+  if (verdict.kind === "fault") {
+    return { said: [], faults: [`mcp: "${m.server}" was not checked on ${where}: ${verdict.reason}`] };
+  }
+  if (verdict.kind === "refused") {
+    return {
+      said: [],
+      faults: [
+        `mcp: "${m.server}" at ${m.url} refused the request from a pod on ${where} (HTTP ${verdict.reason}) — ` +
+          (m.secret
+            ? `a wrong or expired value of ${m.secret}, or a binding of it (hosts, headers, paths) that does not let ` +
+              "its Stand-in through to the url"
+            : "the server needs a credential: give the server a `secret`") +
+          "; every call of an Agent that names it would fail (ADR-0079)",
+      ],
+    };
+  }
+  if (verdict.kind !== "listed") return { said: [], faults: [] };
+  const listed = verdict.tools;
+  const missing = new Map<string, string[]>();
+  for (const use of uses) {
+    if (use.server !== m.server || use.tools === "*") continue;
+    for (const tool of use.tools) {
+      if (listed.includes(tool)) continue;
+      const by = `workflow "${use.workflow}": Agent "${use.slot}"`;
+      missing.set(tool, [...new Set([...(missing.get(tool) ?? []), by])]);
+    }
+  }
+  if (missing.size === 0) {
+    return {
+      said: [`mcp: "${m.server}" lists ${listed.length} tool(s); every allowlisted name is there`],
+      faults: [],
+    };
+  }
+  const has = listed.length ? listed.join(", ") : "no tool";
+  return {
+    said: [],
+    faults: [...missing].map(
+      ([tool, by]) =>
+        `mcp: ${by.join(", ")} allowlists the tool "${tool}", which "${m.server}" does not list — it lists: ${has} (ADR-0079)`,
+    ),
+  };
 }
 
 /** How long the first apply in a new namespace waits for its `default` ServiceAccount: the
@@ -2894,7 +3106,7 @@ export function podFault(
     return `the check pod ended ${end.phase}${said}, and jr2 up could not read its log — run \`jr2 up\` again`;
   }
   const tail = end.output.trim().split("\n").filter(Boolean).slice(-5).join("; ");
-  return `the check pod ended ${end.phase} before it checked this model${said} — it said: ${tail}`;
+  return `the check pod ended ${end.phase} before it checked this one${said} — it said: ${tail}`;
 }
 
 /** One model's preflight failure: the model, the host, and the likely causes. */

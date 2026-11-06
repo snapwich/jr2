@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"slices"
 	"strings"
@@ -249,6 +250,60 @@ func (s *Scrubber) Folded(in string) string {
 		}
 	}
 	return in
+}
+
+// JSON scrubs every string of a JSON value, each object key included, and writes it again. A
+// match is replaced inside the decoded string, so the replacement can never break the JSON. A
+// value that is not JSON leaves as one scrubbed JSON string.
+func (s *Scrubber) JSON(raw []byte) []byte {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return encode(s.String(string(raw)))
+	}
+	out := encode(s.value(v))
+	if out == nil {
+		return encode(s.String(string(raw)))
+	}
+	return out
+}
+
+func (s *Scrubber) value(v any) any {
+	switch x := v.(type) {
+	case string:
+		return s.String(x)
+	case []any:
+		for i := range x {
+			x[i] = s.value(x[i])
+		}
+		return x
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			key := s.String(k)
+			if prev, ok := out[key]; ok {
+				// Two keys that scrub to one keep both values.
+				out[key] = []any{prev, s.value(val)}
+				continue
+			}
+			out[key] = s.value(val)
+		}
+		return out
+	}
+	return v
+}
+
+// encode writes v as JSON without HTML escaping, so a string is the bytes the scrubber matched; nil
+// when it cannot.
+func encode(v any) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
 // Bytes scrubs one byte slice.

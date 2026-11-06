@@ -1,0 +1,6 @@
+{
+  "kind": "mcp",
+  "url": [{ "text": "https://mcp.example.com/mcp" }],
+  "mcp": { "server": "notes", "read": { "uri": "file:///a.md" } },
+  "maxBody": 65536
+}

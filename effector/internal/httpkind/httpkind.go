@@ -296,13 +296,18 @@ func firstSecret(t wire.Text, fallback string) string {
 	return fallback
 }
 
-func (r *Runner) client() *http.Client {
+func (r *Runner) client() *http.Client { return NewClient(r.Roots) }
+
+// NewClient is the client every Effect that calls a host uses (the http kind, and the mcp kind,
+// ADR-0079): the system roots plus the instance's caBundle, no proxy from the environment, a new
+// connection for each request, and no redirect followed.
+func NewClient(roots *x509.CertPool) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			// No proxy from the environment: the Effector calls the host the definition fixed.
 			Proxy:               nil,
 			DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
-			TLSClientConfig:     &tls.Config{RootCAs: r.Roots, MinVersion: tls.VersionTLS12},
+			TLSClientConfig:     &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 			TLSHandshakeTimeout: 30 * time.Second,
 			DisableKeepAlives:   true,
 		},

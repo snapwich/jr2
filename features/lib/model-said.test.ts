@@ -57,6 +57,27 @@ test("the printed conversation of one trial: its calls and prompts, through its 
   assert.deepEqual(menuCalls(said!, new Set(["revise", "submit"]), 1), [{ at: 3, call: "revise" }]);
 });
 
+test("an MCP tool's call prints as <server>/<tool>, and reads as a call beside the pick (ADR-0079)", () => {
+  const log = [
+    "[clerk] [prompt] [t0-cccccc] A customer asks about order ord-1.",
+    '[clerk] [orders/lookup_order] {"order_id":"ord-1"}',
+    "[clerk] [thinking] [Output Generation] not a call",
+    '[clerk] [ship] {"note":"paid"}',
+  ].join("\n");
+  assert.deepEqual(saidIn(log, "clerk", "t0-cccccc"), [{ call: "orders/lookup_order" }, { call: "ship" }]);
+  // With the Instance ID on each line, as the pod prints it, and with it taken off by `ofRun`.
+  const run = "5f0c1d2e-0000-4000-8000-000000000001";
+  const printed = log
+    .split("\n")
+    .map((l) => l.replace(/^\[clerk\] /, `[clerk] [${run}/root/clerk] `))
+    .join("\n");
+  assert.deepEqual(saidIn(printed, "clerk", "t0-cccccc"), [{ call: "orders/lookup_order" }, { call: "ship" }]);
+  assert.deepEqual(saidIn(ofRun(printed, run), "clerk", "t0-cccccc"), [
+    { call: "orders/lookup_order" },
+    { call: "ship" },
+  ]);
+});
+
 test("a trial whose prompt has not printed reads as undefined", () => {
   assert.equal(saidIn(LOG, "advisor", "t9-zzzzzz"), undefined);
   assert.deepEqual(saidIn(LOG, "advisor", "t1-bbbbbb"), [{ call: "submit" }]);

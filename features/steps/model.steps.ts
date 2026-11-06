@@ -41,6 +41,7 @@ import {
   type StateNodeLike,
 } from "../lib/model-said.ts";
 import { readChartRefusal } from "../lib/model-chart.ts";
+import { readMcpThenPick } from "../lib/model-mcp.ts";
 import { FINISHED } from "../lib/model-finished.ts";
 import { isSettled } from "../lib/run-settled.ts";
 import {
@@ -1297,6 +1298,61 @@ const unknownOutcome: Driver = async (world, input) => {
   }
 };
 
+/** The mcp-then-pick workflow's Menu (`mcp-then-pick.ts`), and its one MCP tool as the log prints it. */
+const ORDER_MENU = new Set(["ship", "hold"]);
+const ORDER_LOOKUP = "orders/lookup_order";
+/** The payment statuses the step gives an order: the first ships, the second holds. */
+const PAID = "paid";
+const DECLINED = "declined: the card was refused";
+
+/**
+ * mcp-then-pick (ADR-0079, ADR-0062): the clerk's one MCP tool reads an order's payment status from
+ * the fake server, and the step sets that status for the trial's own order before the run starts,
+ * paid or declined at random, so the task needs the tool's answer. The measure is the order of the
+ * clerk's calls in the printed conversation: `orders/lookup_order`, then a pick, with no ask
+ * between (`readMcpThenPick`). A trial whose lookup did not reach the server is void: the log does
+ * not print the tool's answer, so only the server shows that the call got one. The note says
+ * whether the pick matched the status; that is not the measure.
+ */
+const mcpThenPick: Driver = async (world, input) => {
+  const order = `ord-${input.marker}`;
+  const paid = randomBytes(1)[0]! % 2 === 0;
+  world.mcpOrders.set(order, paid ? PAID : DECLINED);
+  const runId = await startRun(world, "mcp-then-pick", { ...input, order });
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  const said = await saidAfter("clerk", input.marker, { run: runId });
+  if (said === undefined)
+    return {
+      runId,
+      measured: false,
+      finished: FINISHED["mcp-then-pick"]!(last),
+      void: true,
+      note: `${PROMPT_LOST}; ended ${ended(last)}`,
+    };
+  const reading = readMcpThenPick(said, ORDER_LOOKUP, ORDER_MENU);
+  const seen = (world.mcp?.requests ?? []).filter((r) => r.rpc === "tools/call" && r.args?.order_id === order).length;
+  const followed =
+    reading.pick === undefined
+      ? ""
+      : `, ${reading.pick === (paid ? "ship" : "hold") ? "matched" : "did not match"} ${paid ? PAID : "declined"}`;
+  // The printer does not print an MCP result (ADR-0079), so the order of the calls cannot show a
+  // call that failed. A call that did not reach the server is a setup that did not occur: void.
+  if (reading.measured && seen === 0)
+    return {
+      runId,
+      measured: false,
+      void: true,
+      finished: FINISHED["mcp-then-pick"]!(last),
+      note: `the server got no call for ${order}: the tool's answer did not reach the model; ${reading.why}; ended ${ended(last)}`,
+    };
+  return {
+    runId,
+    measured: reading.measured,
+    finished: FINISHED["mcp-then-pick"]!(last),
+    note: `${reading.why}${followed}; the server saw ${seen} call(s) for ${order}; said ${told(said)}; ended ${ended(last)}`,
+  };
+};
+
 /** A pod as `kubectl get` has it; `{}` once it is gone. */
 async function podJson(world: E2EWorld, pod: string): Promise<PodLike> {
   return JSON.parse(
@@ -1334,6 +1390,7 @@ const DRIVERS: Record<string, Driver> = {
   "chart-refusal": chartRefusal,
   "steer-follow": steerFollow,
   "peer-not-order": peerNotOrder,
+  "mcp-then-pick": mcpThenPick,
 };
 
 /** The Menu-only claims: their Agents run on the Instance Harness (ADR-0031), and the trials in
@@ -1350,6 +1407,7 @@ const MENU_ONLY = new Set([
   "chart-refusal",
   "steer-follow",
   "peer-not-order",
+  "mcp-then-pick",
 ]);
 
 /** The claims that keep fewer trials in flight than the profile's `parallel`, and their bound.
@@ -1695,6 +1753,10 @@ Then(
     atLeast(claimOf(this), floor, "the writer did not take the peer's word as an order", (t) => t.measured);
   },
 );
+
+Then("the MCP call came before the pick in at least {int} trials", function (this: E2EWorld, floor: number): void {
+  atLeast(claimOf(this), floor, "the MCP call came before the pick", (t) => t.measured);
+});
 
 Then("no Sandbox was provisioned in any trial", async function (this: E2EWorld): Promise<void> {
   for (const t of claimOf(this).trials) {

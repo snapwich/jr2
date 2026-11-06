@@ -1,7 +1,8 @@
 // Package kinds routes a start to the kind that runs it (ADR-0067): `http` — a file body (ADR-0067)
 // included — to the http runner, `push` to the push runner, a credentialed `command` to the command
-// runner, a `dispatch` to another Orchestrator (ADR-0071) to the dispatch runner. The Instance
-// Effector holds http and dispatch, and the Hook door's `mac` check (package mackind); a Sandbox
+// runner, a `dispatch` to another Orchestrator (ADR-0071) to the dispatch runner, an `mcp` request
+// to a remote MCP server (ADR-0079) to the mcp runner. The Instance Effector holds http, dispatch and
+// mcp, and the Hook door's `mac` check (package mackind); a Sandbox
 // Effector holds http, push and command, and confines a credentialed command's child with Landlock
 // (ADR-0068).
 //
@@ -20,18 +21,20 @@ import (
 	"github.com/snapwich/jr2/effector/internal/dispatchkind"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/mackind"
+	"github.com/snapwich/jr2/effector/internal/mcpkind"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
 	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
-// Runner is one Effector's kinds. A nil Push, Command or Dispatch is a kind this placement does not
-// run.
+// Runner is one Effector's kinds. A nil Push, Command, Dispatch or Mcp is a kind this placement does
+// not run.
 type Runner struct {
 	HTTP     *httpkind.Runner
 	Push     *pushkind.Runner
 	Command  *commandkind.Runner
 	Dispatch *dispatchkind.Runner
+	Mcp      *mcpkind.Runner
 	// Mac is the Hook door's `mac` check (ADR-0068): the Instance Effector's alone. It is not an
 	// Effect, so it is served beside the Effects (server.Options.Mac), never through Run.
 	Mac *mackind.Checker
@@ -75,6 +78,13 @@ func (r *Runner) Missing(req *wire.StartRequest) string {
 			return "a dispatch to another Orchestrator, which runs in the Instance Effector"
 		}
 		return r.Dispatch.Missing(req)
+	case wire.KindMcp:
+		// A server or a secret that effector.json does not hold is output, `refused` with nothing sent
+		// (ADR-0079): the second fence behind `jr2 up`'s refusal, not a defect of the wire.
+		if r.Mcp == nil {
+			return "an mcp request, which runs in the Instance Effector"
+		}
+		return ""
 	}
 	if req.Body != nil && req.Body.File != nil && r.HTTP.WorkRoot == "" {
 		return "a file body, which runs in a Sandbox Effector"
@@ -151,6 +161,8 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest) wire.Output {
 		return r.Command.Run(ctx, req)
 	case wire.KindDispatch:
 		return r.Dispatch.Run(ctx, req)
+	case wire.KindMcp:
+		return r.Mcp.Run(ctx, req)
 	}
 	return r.HTTP.Run(ctx, req)
 }

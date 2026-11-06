@@ -52,6 +52,8 @@ import {
 } from "./menu.ts";
 import type { ChildPolicy } from "./children.ts";
 import { MENU_TOOL_PREFIX, menuToolName, menuTools } from "./menu-tools.ts";
+import type { McpConversation } from "./mcp.ts";
+import { mcpTools } from "./mcp-tools.ts";
 import {
   attachPrinter,
   printLines,
@@ -71,7 +73,7 @@ import { ENGINE_ADAPTER } from "./engine-choice.ts";
 import type { EnginePart } from "./transcript.ts";
 import { lacksLevel, mapThinkingLevel, PROVIDER_RETRIES, providerLimit, ranAt, resolveModel } from "./provider.ts";
 import type { EngineSeat } from "./record.ts";
-import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
+import { mcpServersFor, resolveDefinition, type HarnessSpec, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage, SubmissionUsage } from "./wire.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
 import { workingToolsFor } from "./working-tools.ts";
@@ -88,6 +90,9 @@ export type TurnDeps = {
   /** The domain: where the Working tools start a process and do their file I/O (ADR-0076).
    * Omitted (the Instance Harness), no Agent gets Working tools. */
   children?: ChildPolicy;
+  /** This conversation's MCP part (`mcp.ts`, ADR-0079), and the Instance's servers that a
+   * definition's `mcp` names. Omitted, no Agent of the conversation gets MCP tools. */
+  mcp?: { conversation: McpConversation; servers: Pick<HarnessSpec, "mcp"> };
   agentName: string;
   instanceId: string;
   appendMessage: (message: HistoryMessage) => void;
@@ -295,6 +300,18 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       );
     }
 
+    // The conversation's MCP tools (ADR-0079): read from the servers at its first Turn, and from its
+    // record at every later one, so the tools block is the same bytes to the conversation's end
+    // (ADR-0029). A server that does not answer at the first Turn fails it here, before the model
+    // reads anything: `<server> did not answer: <reason>`.
+    const mcp = deps.mcp;
+    let mcpList: Awaited<ReturnType<McpConversation["tools"]>> = [];
+    if (mcp) {
+      const servers = mcpServersFor(submission.definition, mcp.servers);
+      if ("fault" in servers) throw new Error(servers.fault);
+      mcpList = await mcp.conversation.tools(servers.servers, definition.cwd, signal);
+    }
+
     if (!assembled) {
       const current: Assembled["current"] = {
         definition,
@@ -352,7 +369,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
           // read the first pick's answer, so it is stale by construction (`stalePickResult`). The
           // first pick is the first that reached THIS hook in the model answer (`turn.answerPick`):
           // the engine asks the hook only about a call of a tool the run has, with valid arguments,
-          // so a call of an unknown tool or with invalid arguments is never the first pick.
+          // so a call of an unknown tool or with invalid arguments is never the first pick. A pick is a
+          // call of a Menu tool, `mcp__jr2__<event>`: a call of an MCP tool, `mcp__<server>__<tool>`
+          // with a server that is not `jr2`, is no pick, and it never ends the Turn (ADR-0079).
           beforeToolCall: ({ name }) => {
             if (turn.over) return { block: turnOverResult() };
             if (watch.tripped) return { block: watch.tripped, abortRun: true };
@@ -491,12 +510,15 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     // are the same bytes on every Turn of the conversation (ADR-0029). What this Turn may pick is
     // said in the Turn part below, and enforced at delivery.
     const menu = seat ? read.menu.map((item) => cutWith(item, seat.cut)) : read.menu;
+    // The tools block's order is fixed (ADR-0029, ADR-0079): the Working tools, then the MCP tools,
+    // then the Menu.
     const tools: EngineTool[] = [
       ...workingToolsFor(definition, definition.cwd, {
         guard: deps.guard,
         owner: { agent: deps.agentName, instanceId: deps.instanceId },
         children: deps.children,
       }),
+      ...(mcp ? mcpTools(mcp.conversation, mcpList) : []),
       ...(menuTools(menu) as EngineTool[]),
     ];
     // The context the model reads after the system prompt: the engine part's context — the
@@ -541,7 +563,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       await engine.run({
         model,
         thinkingLevel,
-        systemPrompt: standing(definition.instructions, definition.workspace),
+        systemPrompt: standing(definition.instructions, definition.workspace, mcpList.length > 0),
         tools,
         context,
         prompt,

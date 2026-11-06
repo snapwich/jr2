@@ -3,8 +3,11 @@
 //
 //   - a Workspace's pod: the Held secrets its `workspace()` lists under `secrets: [...]`, and the
 //     model keys of the Agents whose Turns run there — a model key is claimed by the PROVIDER;
-//   - the Instance Harness: the model keys of the `"none"` Agents it hosts, and nothing else (they
-//     cannot execute code, ADR-0031, so nothing else is theirs to use);
+//   - the Instance Harness: the model keys of the `"none"` Agents it hosts, and the secrets of the
+//     remote MCP servers they name (ADR-0079), and nothing else (they cannot execute code, ADR-0031,
+//     so nothing else is theirs to use);
+//   - a Workspace's pod also holds the secret of each MCP server an Agent there names (ADR-0079):
+//     "a Custodian holds what its pod's Agents name";
 //   - an Effector: what its Effects name with `secret("name")` — the Instance Effector what its
 //     `http` Effects name and the token of each `dispatch` with a target (ADR-0071; a dispatch with
 //     no target runs in the Orchestrator's own process and names nothing); a Workspace's Sandbox Effector what its file-body `http`s and
@@ -32,7 +35,7 @@ import {
   type HeldBinding,
   type HeldLookups,
 } from "./held-secrets.ts";
-import type { JR2Config } from "./config.ts";
+import { isStdioServer, mcpTimeoutMs, type JR2Config, type McpRemoteServer } from "./config.ts";
 import { hookParts } from "@jr2/hooks/door";
 import { needsASlot } from "./effect.ts";
 import { declaredPushKinds, pushRefusal } from "./git-push.ts";
@@ -48,6 +51,10 @@ export type EffectSecret = { name: string; source: HeldBinding["source"] };
 /** One target an Effect placed in an Effector may call, with the secrets it names there. */
 export type EffectorTargetConfig = { scheme: "http" | "https"; host: string; port: number; secrets: string[] };
 
+/** One MCP server an `mcp` Effect placed in the Instance Effector calls (ADR-0079): `effector.json`'s
+ * `mcp` entry — its url, the name of its secret, and its `timeout` in milliseconds. Never a value. */
+export type EffectorMcpServer = { url: string; secret?: string; timeoutMs: number };
+
 /** What one Effector placement holds and allows — what `jr2 up` converges from. */
 export type EffectorPlan = {
   placement: "instance";
@@ -57,6 +64,9 @@ export type EffectorPlan = {
   values: Record<string, string>;
   /** `effector.json`'s targets: one per distinct (target, secrets) an Effect placed there names. */
   targets: EffectorTargetConfig[];
+  /** `effector.json`'s `mcp`: each server an `mcp` Effect placed there names, by its name in the
+   * `mcp` block (ADR-0079). Empty when there is none. */
+  mcp: Record<string, EffectorMcpServer>;
   /** The longest timeout among the Effects placed there, in milliseconds. */
   longestTimeoutMs: number;
   /** The Effects placed there, as `<workflow>/<slot>`. */
@@ -80,8 +90,9 @@ export type PlacedWorkspace = { workflow: string; pod: WorkspacePod };
 export type PlacementWalk = {
   effects: readonly PlacedEffect[];
   workspaces: readonly PlacedWorkspace[];
-  /** The models of the `"none"` Agents — present when the Instance Harness is converged. */
-  instanceHarness?: { models: readonly string[] };
+  /** The models of the `"none"` Agents, and the MCP servers they name (ADR-0079) — present when
+   * the Instance Harness is converged. */
+  instanceHarness?: { models: readonly string[]; servers?: readonly string[] };
 };
 
 /** One Harness pod's Held secrets: what its Custodian holds. */
@@ -92,8 +103,11 @@ export type HeldPodPlan = {
   label: string;
   /** The names it holds, in list order; the custom provider's key last. */
   names: string[];
-  /** Of `names`, those a provider claims (the rest the `workspace()` lists). */
+  /** Of `names`, those a provider claims (the rest the `workspace()` lists, or an MCP server). */
   byProvider: string[];
+  /** Of `names`, the secrets of the MCP servers its Agents name (ADR-0079), each with those
+   * servers. Absent when there is none. */
+  byServer?: Record<string, string[]>;
 };
 
 /** One push of a Workspace (ADR-0067, ADR-0051): its Repo Slot, whether it signs, and — for a slot the
@@ -258,7 +272,13 @@ export function secretPlacementsOf(
     );
   }
   for (const p of pods) {
-    const holds = p.names.map((n) => (p.byProvider.includes(n) ? `${n} (provider)` : n));
+    const holds = p.names.map((n) =>
+      p.byProvider.includes(n)
+        ? `${n} (provider)`
+        : p.byServer?.[n] !== undefined
+          ? `${n} (mcp ${p.byServer[n]!.join(", ")})`
+          : n,
+    );
     report.push(`${p.label}: Custodian holds ${holds.length ? holds.join(", ") : "nothing"}`);
   }
   for (const { label, name } of redundant) {
@@ -266,7 +286,7 @@ export function secretPlacementsOf(
   }
 
   const instanceSecrets = new Set([
-    ...instancePlaced.flatMap((p) => p.effect.secrets),
+    ...instancePlaced.flatMap((p) => effectSecretsOf(config, p.effect)),
     ...hooks.flatMap((h) => (h.secret === undefined ? [] : [h.secret])),
   ]);
   const instance =
@@ -277,6 +297,7 @@ export function secretPlacementsOf(
           hooks,
           secrets.filter((s) => instanceSecrets.has(s.name)),
           values,
+          config,
         );
   if (instance) {
     report.push(
@@ -390,6 +411,7 @@ function effectorPlan(
   hooks: InstanceHook[],
   secrets: EffectSecret[],
   values: Record<string, string>,
+  config: JR2Config,
 ): EffectorPlan {
   const targets: EffectorTargetConfig[] = [];
   const add = (t: EffectorTargetConfig): void => {
@@ -397,7 +419,21 @@ function effectorPlan(
       x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();
     if (!targets.some(same)) targets.push(t);
   };
+  const mcp: Record<string, EffectorMcpServer> = {};
+  const timeouts: number[] = [];
   for (const { effect } of placed) {
+    if (effect.kind === "mcp") {
+      // The server's url and secret are the config's (ADR-0079). An Open server, and one the block
+      // does not declare as a remote server, are refused before this (`mcpRefusals`).
+      const server = remoteServerOf(config, effect.server);
+      if (server === undefined) continue;
+      const timeoutMs = mcpTimeoutMs(server.timeout) ?? 0;
+      mcp[effect.server!] = { url: server.url, ...(server.secret ? { secret: server.secret } : {}), timeoutMs };
+      add({ ...originOf(server.url), secrets: server.secret ? [server.secret] : [] });
+      timeouts.push(effect.timeoutMs > 0 ? effect.timeoutMs : timeoutMs);
+      continue;
+    }
+    if (effect.kind === "http") timeouts.push(effect.timeoutMs);
     // An Open url or an Open dispatch target has no target, so it allows nothing: `jr2 up` refuses
     // it before this (ADR-0054). A dispatch's target is its origin, its one secret the token
     // (ADR-0071).
@@ -411,10 +447,12 @@ function effectorPlan(
     secrets,
     values,
     targets,
-    // The grace a rollout gives a replica covers the http Effects alone (ADR-0071): a dispatch is
-    // idempotent by construction, so a `wait` a rollout cuts is sent again under its key and its
-    // poll resumes, and a wait of hours never stretches the Effector's grace.
-    longestTimeoutMs: Math.max(0, ...placed.flatMap((p) => (p.effect.kind === "http" ? [p.effect.timeoutMs] : []))),
+    mcp,
+    // The grace a rollout gives a replica covers the http and mcp Effects alone (ADR-0071): a
+    // dispatch is idempotent by construction, so a `wait` a rollout cuts is sent again under its
+    // key and its poll resumes, and a wait of hours never stretches the Effector's grace. An mcp
+    // Effect with no timeout of its own waits for its server's (ADR-0079).
+    longestTimeoutMs: Math.max(0, ...timeouts),
     effects: placed.map((p) => `${p.workflow}/${p.effect.name}`),
     hooks: hooks.map((h) => h.name),
   };
@@ -457,9 +495,34 @@ function tokenHooksOf(config: JR2Config): Map<string, string[]> {
   return out;
 }
 
-/** An Effect the Instance Effector runs: an http one with no Worktree file, or a dispatch with a
- * target (ADR-0068, ADR-0071). */
-type InstancePlaced = { workflow: string; effect: Extract<CarriedEffect, { kind: "http" | "dispatch" }> };
+/** An Effect the Instance Effector runs: an http one with no Worktree file, a dispatch with a
+ * target, or an mcp one (ADR-0068, ADR-0071, ADR-0079). */
+type InstancePlaced = { workflow: string; effect: Extract<CarriedEffect, { kind: "http" | "dispatch" | "mcp" }> };
+
+/** The remote server of the `mcp` block that an `mcp` Effect names, or undefined: an Open server,
+ * one the block does not declare, or a stdio one (ADR-0079). */
+function remoteServerOf(config: JR2Config, name: string | undefined): McpRemoteServer | undefined {
+  if (name === undefined || !Object.hasOwn(config.mcp ?? {}, name)) return undefined;
+  const server = config.mcp![name]!;
+  return isStdioServer(server) ? undefined : server;
+}
+
+/** The secrets an Effect names, as the placement reads them: its own, or for an `mcp` Effect its
+ * server's, from the config (ADR-0079). */
+function effectSecretsOf(config: JR2Config, effect: CarriedEffect): string[] {
+  if (effect.kind !== "mcp") return [...(effect.secrets ?? [])];
+  const secret = remoteServerOf(config, effect.server)?.secret;
+  return secret === undefined ? [] : [secret];
+}
+
+/** An MCP server url's origin as the Effector's fence reads it: scheme, host, port. `jr2 up` has
+ * checked the url (`mcpUrlRefusals`), so it parses. */
+function originOf(url: string): { scheme: "http" | "https"; host: string; port: number } {
+  const u = new URL(url);
+  const scheme = u.protocol === "http:" ? "http" : "https";
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return { scheme, host, port: u.port ? Number(u.port) : scheme === "http" ? 80 : 443 };
+}
 
 /** A Workspace as a human reads it: its workflow and the placement route to it, an inline hop as
  * `invoked inline in state <id>`. */
@@ -502,6 +565,19 @@ function heldPodsOf(
   };
   const pods: HeldPodPlan[] = [];
   const redundant: Array<{ label: string; name: string }> = [];
+  // The secret of each remote MCP server that the pod's Agents name (ADR-0079), with the servers:
+  // the Agent claims it by naming the server, as it claims a model key by naming a model. A name
+  // the `mcp` block does not declare is refused by the walk's own check (`mcpRefusals`), not here.
+  const serverClaims = (servers: Iterable<string>): Record<string, string[]> => {
+    const out: Record<string, string[]> = {};
+    for (const server of new Set(servers)) {
+      const declared = config.mcp?.[server];
+      const secret = declared && !isStdioServer(declared) ? declared.secret : undefined;
+      if (secret === undefined) continue;
+      out[secret] = [...(out[secret] ?? []), server].sort();
+    }
+    return out;
+  };
   for (const ws of walk.workspaces) {
     const label = workspaceLabel(ws);
     for (const name of ws.pod.secrets) {
@@ -513,18 +589,27 @@ function heldPodsOf(
     }
     const byProvider = providerClaims(config, ws.pod.models);
     for (const name of ws.pod.secrets) if (byProvider.includes(name)) redundant.push({ label, name });
+    const byServer = serverClaims((ws.pod.mcp ?? []).map((m) => m.entry.server));
     const plan: HeldPodPlan = {
       pod: workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route }),
       label,
-      names: ordered([...ws.pod.secrets, ...byProvider]),
+      names: ordered([...ws.pod.secrets, ...byProvider, ...Object.keys(byServer)]),
       byProvider: ordered(byProvider),
+      ...(Object.keys(byServer).length ? { byServer } : {}),
     };
     if (pods.some((p) => p.pod === plan.pod)) throw sharedPodKey(plan.pod, label);
     pods.push(plan);
   }
   if (walk.instanceHarness) {
     const byProvider = ordered(providerClaims(config, walk.instanceHarness.models));
-    pods.push({ pod: INSTANCE_HARNESS_HELD_POD, label: "the Instance Harness", names: byProvider, byProvider });
+    const byServer = serverClaims(walk.instanceHarness.servers ?? []);
+    pods.push({
+      pod: INSTANCE_HARNESS_HELD_POD,
+      label: "the Instance Harness",
+      names: ordered([...byProvider, ...Object.keys(byServer)]),
+      byProvider,
+      ...(Object.keys(byServer).length ? { byServer } : {}),
+    });
   }
   return { pods, redundant };
 }
@@ -547,7 +632,8 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
   const namedBy = new Map<string, Array<{ label: string; where: string }>>();
   const instancePlaced = walk.effects.filter(
     (p): p is InstancePlaced =>
-      (p.effect.kind === "http" || p.effect.kind === "dispatch") && p.effect.placement === "instance",
+      (p.effect.kind === "http" || p.effect.kind === "dispatch" || p.effect.kind === "mcp") &&
+      p.effect.placement === "instance",
   );
   // Keyed by the Effect's placement route and slot name, as workspacePodsOf keys a pod's Effects:
   // two slots of one name in one workflow — one in a workspace(), one outside it — are two Effects,
@@ -597,10 +683,15 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
       effect.placement === "instance"
         ? "the Instance Effector"
         : (sandboxOf.get(keyOf(workflow, effect)) ?? "the Sandbox Effector of the Workspace that invokes it");
-    for (const name of effect.secrets ?? []) {
+    for (const name of effectSecretsOf(config, effect)) {
       if (!byName.has(name)) {
+        // An mcp Effect never writes secret(): the server it calls, in the `mcp` block, names it.
+        const names =
+          effect.kind === "mcp"
+            ? `calls the MCP server "${effect.server}", whose secret "${name}"`
+            : `names secret("${name}"), which`;
         throw new Error(
-          `workflow "${workflow}": the ${effect.kind} Effect "${effect.name}" names secret("${name}"), which the ` +
+          `workflow "${workflow}": the ${effect.kind} Effect "${effect.name}" ${names} the ` +
             `\`secrets\` list does not hold — add it: secrets: [{ name: "${name}", value: process.env.${envish(name)} }] (ADR-0068)`,
         );
       }

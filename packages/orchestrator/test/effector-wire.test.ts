@@ -37,6 +37,8 @@ import {
 } from "../src/sandbox-effect.ts";
 import { effectorKey } from "../src/tokens.ts";
 import { dispatchParts, dispatchStartOf } from "../src/dispatch-effect.ts";
+import { mcp, mcpStartOf } from "../src/mcp-effect.ts";
+import type { McpParts } from "../src/effect.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
 
 /** The fixtures, by the relative path the ADR names: one directory both languages read. */
@@ -182,12 +184,29 @@ test("every request fixture is what a definition encodes", () => {
         instance: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
       },
     ),
+    // The mcp kind (ADR-0079): the server by its name, one request; the url and the secret are the
+    // Effector's, from effector.json. No timeout: the server's applies.
+    "request.mcp-call.json": mcpStartOf(mcpParts(mcp.call("slack-acme", "post_message")), {
+      channel: "#releases",
+      text: "v1 is out",
+      draft: null,
+    }),
+    "request.mcp-read-timeout.json": mcpStartOf(
+      mcpParts(mcp.read("notes", "file:///release/notes.md", { timeout: "90s", maxBody: 1024 })),
+      {},
+    ),
+    "request.mcp-prompt.json": mcpStartOf(mcpParts(mcp.prompt("notes", "release-note")), { version: "1.2.0" }),
   };
   assert.deepEqual(named("request.").sort(), Object.keys(cases).sort(), "one case per request fixture");
   for (const [name, encoded] of Object.entries(cases)) {
     assert.deepEqual(JSON.parse(JSON.stringify(encoded)), normalize(fixture(name)), name);
   }
 });
+
+/** An mcp Effect's parts, off its slot logic. */
+function mcpParts(logic: unknown): McpParts {
+  return (logic as { effect: McpParts }).effect;
+}
 
 /** A Repo Slot's repositories as the request fixtures name them. */
 function repo(url: string) {

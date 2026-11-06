@@ -262,6 +262,11 @@
               "source": "page"
             },
             {
+              "slug": "guides/give-an-agent-mcp-tools",
+              "title": "Give an Agent MCP tools",
+              "source": "page"
+            },
+            {
               "slug": "guides/cut-a-worktree",
               "title": "Cut a Worktree",
               "source": "page"
@@ -269,6 +274,11 @@
             {
               "slug": "guides/run-a-command-or-call-a-url",
               "title": "Run a command or call a URL with an Effect",
+              "source": "page"
+            },
+            {
+              "slug": "guides/call-an-mcp-tool-from-a-machine",
+              "title": "Call an MCP tool from a Machine",
               "source": "page"
             },
             {
@@ -284,6 +294,11 @@
             {
               "slug": "guides/add-tools-to-the-sandbox",
               "title": "Add tools to the Sandbox",
+              "source": "page"
+            },
+            {
+              "slug": "guides/write-a-tool-as-an-mcp-server",
+              "title": "Write a tool as an MCP server",
               "source": "page"
             },
             {

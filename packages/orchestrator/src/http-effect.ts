@@ -50,6 +50,7 @@ import type {
   EffectLogic,
   EffectMarker,
   EffectRow,
+  EffectParts,
   EffectSnapshot,
   HttpParts,
   OpenHttpParts,
@@ -1067,8 +1068,58 @@ export function httpWith<S extends z.ZodType | undefined = undefined>(
   const unbound = openHttpOf(def, (bound) => httpWith(portFactory, bound));
   if (unbound) return unbound as EffectLogic<HttpInput<S>, HttpOutput>;
   const parts = httpParts(def);
-  type I = HttpInput<S>;
-  type O = HttpOutput;
+  return instanceEffectLogic<HttpInput<S>, HttpOutput>(
+    parts,
+    {
+      kind: "http",
+      idempotent: parts.idempotent,
+      label: `${parts.method} ${hostText(parts)}`,
+      request: (input, slot) => {
+        if (def.input !== undefined) {
+          const parsed = def.input.safeParse(input);
+          if (!parsed.success) {
+            throw new Error(
+              `http "${slot}": its input does not match the definition's input schema — ` +
+                parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; "),
+            );
+          }
+          input = parsed.data;
+        }
+        const runParts = def.request ? (def.request as (i: unknown) => HttpRequestParts)(input) : {};
+        return startRequestOf(parts, runParts ?? {});
+      },
+    },
+    portFactory,
+  );
+}
+
+/**
+ * What the Instance Effector's driver needs of one kind that runs there and has no stop: `http`
+ * and `mcp` (ADR-0068, ADR-0079). The driver is the same for both: the write-ahead intent row, the
+ * restore rule, a forged answer, and D1.
+ */
+export type InstanceKind = {
+  readonly kind: "http" | "mcp";
+  /** The author's mark: a restore that finds no replica that holds it sends it again. */
+  readonly idempotent: boolean;
+  /** What the `started` marker says: `POST https://host`, `mcp slack-acme/post_message`. */
+  readonly label: string;
+  /** The run's start, from the invoke's input. It throws on a defect of the Machine, and then
+   * nothing is sent. */
+  readonly request: (input: unknown, slot: string) => StartRequest;
+};
+
+/**
+ * The slot logic of an Effect that the Instance Effector runs, over an injected port factory: the
+ * seam `httpWith` and `mcpWith` share.
+ *
+ * @internal
+ */
+export function instanceEffectLogic<I, O>(
+  parts: EffectParts,
+  spec: InstanceKind,
+  portFactory: EffectorPortFactory,
+): EffectLogic<I, O> {
   const logic: ActorLogic<EffectSnapshot<O, I>, EventObject, I> = {
     getInitialSnapshot: (_scope, input) => ({
       status: "active",
@@ -1086,7 +1137,7 @@ export function httpWith<S extends z.ZodType | undefined = undefined>(
         return { ...snapshot, status: "error", error: (event as Fault).error, input: undefined };
       }
       if (event.type === "xstate.stop") {
-        stopped(self, system, snapshot.effectId);
+        stopped(self, system, snapshot.effectId, spec.kind);
         return { ...snapshot, status: "stopped", input: undefined };
       }
       return snapshot;
@@ -1095,7 +1146,7 @@ export function httpWith<S extends z.ZodType | undefined = undefined>(
       if (snapshot.status !== "active") return;
       const run: Running = { controller: new AbortController() };
       running.set(self, run);
-      void drive(self, system, snapshot, parts, def, portFactory, run).catch((error: unknown) => {
+      void drive(self, system, snapshot, spec, portFactory, run).catch((error: unknown) => {
         if (run.controller.signal.aborted) return;
         if (self.getSnapshot().status === "active") self.send({ type: "jr2.effect.error", error } as Fault);
       });
@@ -1111,8 +1162,7 @@ async function drive<I, O>(
   self: AnyActorRef,
   system: AnyActorSystem,
   snapshot: EffectSnapshot<O, I>,
-  parts: HttpParts,
-  def: HttpDefinition<z.ZodType | undefined>,
+  spec: InstanceKind,
   portFactory: EffectorPortFactory,
   run: Running,
 ): Promise<void> {
@@ -1123,11 +1173,11 @@ async function drive<I, O>(
   const now = (): string => new Date().toISOString();
   const mark = (marker: Omit<EffectMarker, "kind" | "slot" | "effect">): void =>
     binding?.marker?.({ kind: "effect", slot, effect: id, ...marker });
-  const settle = (output: HttpOutput): void => {
+  const settle = (output: NonNullable<EffectMarker["output"]>): void => {
     if (signal.aborted || self.getSnapshot().status !== "active") return;
     // The settled row first, saved at the write: a restart before the transition is saved delivers
     // this output, and sends nothing.
-    binding?.recordEffect?.(id, { state: "settled", kind: "http", slot, output, at: now() });
+    binding?.recordEffect?.(id, { state: "settled", kind: spec.kind, slot, output, at: now() });
     mark({ stage: "settled", output });
     self.send({ type: "jr2.effect.settle", output } satisfies Settle);
   };
@@ -1149,8 +1199,8 @@ async function drive<I, O>(
   const target = binding?.effector?.("instance");
   if (!target) {
     throw new Error(
-      `http "${slot}" runs in the Instance Effector, and this Orchestrator knows none — \`jr2 up\` converges it ` +
-        "when a registered Machine carries an http Effect (ADR-0068)",
+      `${spec.kind} "${slot}" runs in the Instance Effector, and this Orchestrator knows none — \`jr2 up\` ` +
+        `converges it when a registered Machine carries an ${spec.kind} Effect (ADR-0068)`,
     );
   }
   const port = portFactory(target);
@@ -1180,7 +1230,7 @@ async function drive<I, O>(
       await follow(found);
       return;
     }
-    if (!parts.idempotent) {
+    if (!spec.idempotent) {
       settle(
         unknown(
           "it was in flight when the Orchestrator restarted, and no Effector replica holds it; not sent again " +
@@ -1189,7 +1239,7 @@ async function drive<I, O>(
       );
       return;
     }
-    mark({ stage: "started", text: `${parts.method} ${hostText(parts)} (sent again: it is idempotent)` });
+    mark({ stage: "started", text: `${spec.label} (sent again: it is idempotent)` });
     await send(requestFor());
     return;
   }
@@ -1207,29 +1257,17 @@ async function drive<I, O>(
   // request leaves.
   binding?.recordEffect?.(id, {
     state: "intent",
-    kind: "http",
+    kind: spec.kind,
     slot,
     placement: "instance",
-    idempotent: parts.idempotent,
+    idempotent: spec.idempotent,
     at: now(),
   });
-  mark({ stage: "started", text: `${parts.method} ${hostText(parts)}` });
+  mark({ stage: "started", text: spec.label });
   await send(req);
 
   function requestFor(): StartRequest {
-    let input: unknown = snapshot.input;
-    if (def.input !== undefined) {
-      const parsed = def.input.safeParse(input);
-      if (!parsed.success) {
-        throw new Error(
-          `http "${slot}": its input does not match the definition's input schema — ` +
-            parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; "),
-        );
-      }
-      input = parsed.data;
-    }
-    const runParts = def.request ? (def.request as (i: unknown) => HttpRequestParts)(input) : {};
-    return startRequestOf(parts, runParts ?? {});
+    return spec.request(snapshot.input, slot);
   }
 
   /** Send the start, and follow it. A start that never reached a replica is sent again; one whose
@@ -1256,7 +1294,7 @@ async function drive<I, O>(
             await follow(found);
             return;
           }
-          if (!parts.idempotent) {
+          if (!spec.idempotent) {
             settle(unknown("its start may have reached the Effector, and no replica holds it now; not sent again"));
             return;
           }
@@ -1277,7 +1315,7 @@ async function drive<I, O>(
     let replica: Replica = first.replica;
     for (;;) {
       if (state.state === "settled" && state.output) {
-        settle(state.output as HttpOutput);
+        settle(state.output as NonNullable<EffectMarker["output"]>);
         return;
       }
       if (state.state === "unknown") {
@@ -1285,7 +1323,7 @@ async function drive<I, O>(
         if (!asked || signal.aborted) return;
         const { found } = asked;
         if (!found) {
-          if (parts.idempotent) {
+          if (spec.idempotent) {
             await send(requestFor());
             return;
           }
@@ -1316,15 +1354,15 @@ async function drive<I, O>(
  * unknown": an http Effect has no stop route, so the Effector finishes the call and drops an
  * outcome nobody reads. The Machine never hears it.
  */
-function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): void {
+function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string, kind: "http" | "mcp"): void {
   const run = running.get(self);
   running.delete(self);
   run?.controller.abort();
   const binding = boundRun(system);
   if (binding?.hostStopping) return;
   const row = binding?.effectRow?.(effectId);
-  if (row?.state !== "intent" || row.kind !== "http") return;
-  const aborted: EffectRow = { state: "aborted", kind: "http", slot: row.slot, at: new Date().toISOString() };
+  if (row?.state !== "intent" || row.kind !== kind) return;
+  const aborted: EffectRow = { state: "aborted", kind, slot: row.slot, at: new Date().toISOString() };
   binding?.recordEffect?.(effectId, aborted, "with-transition");
   binding?.marker?.({
     kind: "effect",
@@ -1337,7 +1375,7 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
 
 /** A start over the bytes the Effector reads is output `refused` (ADR-0068): the Effector could not
  * verify it, and a body built from context or a pick's param can reach the bound. */
-function tooLarge(req: StartRequest): HttpOutput | undefined {
+function tooLarge(req: StartRequest): { outcome: "refused"; reason: string } | undefined {
   const bytes = Buffer.byteLength(JSON.stringify(req), "utf8");
   if (bytes <= MAX_START_BYTES) return undefined;
   return {

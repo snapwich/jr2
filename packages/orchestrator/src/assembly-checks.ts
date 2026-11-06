@@ -7,7 +7,8 @@
 import { isAbsolute, relative, sep } from "node:path";
 import type { AnyStateMachine } from "xstate";
 import { z } from "zod";
-import type { JR2Config } from "./config.ts";
+import { isStdioServer, type JR2Config } from "./config.ts";
+import type { AgentMcpServer } from "./agent.ts";
 import { imageContextDigest, type ImageRefs } from "./images.ts";
 import { openPartsText } from "./open-effect.ts";
 import { asMachine, customizeLine, partsOf, placedEffectsOf, workspacePodsOf } from "./parts.ts";
@@ -184,6 +185,246 @@ export function openPartRefusals(workflows: readonly LoadedWorkflow[]): string[]
   return lines;
 }
 
+/** A tool name that a model takes (ADR-0079): Anthropic's bound, which the others' refuse no less. */
+export const MCP_TOOL_NAME = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** The name the model reads for one MCP tool (ADR-0079). */
+export function mcpToolName(server: string, tool: string): string {
+  return `mcp__${server}__${tool}`;
+}
+
+/** One `mcp` entry as an author writes it, for a fix line. */
+function mcpEntryText(entry: AgentMcpServer, server = entry.server): string {
+  const tools =
+    entry.tools === undefined
+      ? ""
+      : entry.tools === "*"
+        ? ', tools: "*"'
+        : `, tools: [${entry.tools.map((t) => JSON.stringify(t)).join(", ")}]`;
+  return `{ server: ${server.startsWith("<") ? `"${server}"` : JSON.stringify(server)}${tools} }`;
+}
+
+/** The `customize()` line that rebinds an Agent's `mcp` list, nested through `actors` as
+ * `customize()` takes it (ADR-0054, ADR-0079). */
+function mcpCustomizeLine(path: readonly string[], slot: string, list: readonly string[]): string {
+  const binds = `{ agents: { ${slot}: { mcp: [${list.join(", ")}] } } }`;
+  return `customize(<import>, ${path.reduceRight((parts, key) => `{ actors: { ${key}: ${parts} } }`, binds)})`;
+}
+
+/**
+ * The refusals of the Agents' `mcp` lists against the config's `mcp` block (ADR-0079), one line per
+ * fault, in walk order: a server name the block does not declare (with the `customize()` line that
+ * binds the slot to a declared one, and the block entry that declares a new one); a remote server
+ * with no `tools`; an empty list; a stdio server with a list; a stdio server on a `"none"` Agent,
+ * whose Turns run on the Instance Harness, where no Workspace code runs; a listed tool whose model
+ * name breaks `[A-Za-z0-9_-]{1,128}`; a tool listed twice; a server named twice; and a list on a remote server whose
+ * secret Workspace code in the Agent's Sandbox can spend, where only `"*"` is honest. Needs no url,
+ * so the door runs it too.
+ *
+ * The line text follows `refusing: ` in `jr2 up`'s output; the prefix is the caller's.
+ */
+export function mcpRefusals(workflows: readonly LoadedWorkflow[], config: JR2Config | undefined): string[] {
+  const lines: string[] = [];
+  const declared = config?.mcp ?? {};
+  const names = Object.keys(declared);
+  const declares = names.length
+    ? `the mcp block declares ${names.map((n) => `"${n}"`).join(", ")}`
+    : "the mcp block of jr2.config.ts declares no server";
+  const seen = new Set<string>();
+  for (const w of workflows) {
+    for (const agent of partsOf([w.machine]).mcpAgents) {
+      const once = JSON.stringify([w.name, agent.path ?? null, agent.slot, agent.mcp]);
+      if (seen.has(once)) continue;
+      seen.add(once);
+      const where = agent.path?.length
+        ? ` (on the Machine composed as ${agent.path.map((k) => `"${k}"`).join(" → ")})`
+        : "";
+      const at = `workflow "${w.name}": Agent "${agent.slot}"${where}`;
+      const servers = new Set<string>();
+      for (const entry of agent.mcp) {
+        if (servers.has(entry.server)) {
+          lines.push(`${at} names the MCP server "${entry.server}" twice — one entry for each server (ADR-0079)`);
+          continue;
+        }
+        servers.add(entry.server);
+        const server = Object.hasOwn(declared, entry.server) ? declared[entry.server] : undefined;
+        if (server === undefined) {
+          const fix =
+            agent.path === undefined
+              ? "declare that Machine under setup({ actors }) and bind it there (ADR-0049)"
+              : `bind the Agent to a declared server where the Machine is registered: export const machine = ${mcpCustomizeLine(
+                  agent.path,
+                  agent.slot,
+                  agent.mcp.map((e) => mcpEntryText(e, e === entry ? "<server>" : e.server)),
+                )}`;
+          lines.push(
+            `${at} names the MCP server "${entry.server}", which ${declares} — ${fix}; or declare it in jr2.config.ts: ` +
+              `mcp: { "${entry.server}": { url: "https://<host>/mcp", secret: "<SECRET>" } } (ADR-0079)`,
+          );
+          continue;
+        }
+        if (isStdioServer(server)) {
+          if (agent.workspace === "none") {
+            lines.push(
+              `${at} has workspace: "none" and names the stdio MCP server "${entry.server}" — a stdio server runs as ` +
+                "Workspace code, inside a Sandbox's confinement, and a \"none\" Agent's Turns run on the Instance " +
+                "Harness, which has none: name a remote server, or give the Agent a Workspace (ADR-0079, ADR-0031)",
+            );
+          }
+          if (entry.tools !== undefined) {
+            lines.push(
+              `${at} gives a tools list for the stdio MCP server "${entry.server}" — a stdio server takes none: the ` +
+                "Agent gets every tool, because the server runs as Workspace code, and a list would guard nothing. " +
+                `Write ${mcpEntryText({ server: entry.server })} (ADR-0079)`,
+            );
+          }
+          continue;
+        }
+        if (entry.tools === undefined) {
+          lines.push(
+            `${at} names the remote MCP server "${entry.server}" with no tools — a remote server needs its allowlist: ` +
+              `${mcpEntryText({ server: entry.server, tools: ["<tool>"] })}, or tools: "*" for every tool (ADR-0079)`,
+          );
+          continue;
+        }
+        if (entry.tools === "*") continue;
+        if (entry.tools.length === 0) {
+          lines.push(
+            `${at} gives MCP server "${entry.server}" an empty tools list, which offers no tool — name the tools, or ` +
+              "drop the entry (ADR-0079)",
+          );
+          continue;
+        }
+        const tools = new Set<string>();
+        const twice = new Set<string>();
+        for (const tool of entry.tools) {
+          if (tools.has(tool)) {
+            if (twice.has(tool)) continue;
+            twice.add(tool);
+            lines.push(
+              `${at} lists the tool ${JSON.stringify(tool)} of MCP server "${entry.server}" twice — a model provider ` +
+                "refuses a tools block that has one name two times: list each tool once (ADR-0079)",
+            );
+            continue;
+          }
+          tools.add(tool);
+          const name = mcpToolName(entry.server, tool);
+          if (MCP_TOOL_NAME.test(name)) continue;
+          lines.push(
+            `${at} lists the tool ${JSON.stringify(tool)} of MCP server "${entry.server}": the model would read it as ` +
+              `${JSON.stringify(name)}, and a tool name is [A-Za-z0-9_-], at most 128 characters — a model provider ` +
+              "refuses any other (ADR-0079)",
+          );
+        }
+      }
+    }
+    // An `mcp` Effect names a server of the block, and a remote one: it runs in the Instance
+    // Effector, which starts no program (ADR-0079). An Open server is the Open-part refusal's.
+    for (const effect of partsOf([w.machine]).effects) {
+      if (effect.kind !== "mcp" || effect.server === undefined) continue;
+      const once = JSON.stringify(["effect", w.name, effect.path ?? null, effect.name]);
+      if (seen.has(once)) continue;
+      seen.add(once);
+      const where = effect.path?.length
+        ? ` (on the Machine composed as ${effect.path.map((k) => `"${k}"`).join(" → ")})`
+        : "";
+      const at = `workflow "${w.name}": the mcp Effect "${effect.name}"${where}`;
+      const entry = `mcp: { "${effect.server}": { url: "https://<host>/mcp", secret: "<SECRET>" } }`;
+      const server = Object.hasOwn(declared, effect.server) ? declared[effect.server] : undefined;
+      if (server === undefined) {
+        lines.push(
+          `${at} names the MCP server "${effect.server}", which ${declares} — declare it in jr2.config.ts: ` +
+            `${entry}, or name a declared remote server (ADR-0079)`,
+        );
+        continue;
+      }
+      if (isStdioServer(server)) {
+        lines.push(
+          `${at} names the stdio MCP server "${effect.server}" — an mcp Effect runs in the Instance Effector, which ` +
+            "starts no program, so it calls a remote server only: declare one for it in jr2.config.ts, " +
+            `${entry} (ADR-0079)`,
+        );
+      }
+    }
+    // The allowlist is a guarantee about the credential (ADR-0028, ADR-0079): where Workspace code in
+    // the Agent's Sandbox can spend the server's secret, a list would be a hint, so only "*".
+    for (const pod of workspacePodsOf(w.machine)) {
+      for (const { slot, path, entry } of pod.mcp ?? []) {
+        const server = Object.hasOwn(declared, entry.server) ? declared[entry.server] : undefined;
+        if (server === undefined || isStdioServer(server) || server.secret === undefined) continue;
+        if (!Array.isArray(entry.tools)) continue;
+        const secret = server.secret;
+        const spends = spendersOf(pod, secret);
+        if (spends === undefined) continue;
+        const where = path?.length ? ` (on the Machine composed as ${path.map((k) => `"${k}"`).join(" → ")})` : "";
+        const once = JSON.stringify(["spend", w.name, path ?? null, slot, entry.server]);
+        if (seen.has(once)) continue;
+        seen.add(once);
+        lines.push(
+          `workflow "${w.name}": Agent "${slot}"${where} gives a tools list for MCP server "${entry.server}", and ` +
+            `Workspace code in its Sandbox can spend that server's secret, ${secret}: ${spends}. A list would be a ` +
+            `hint, not a limit — write ${mcpEntryText({ server: entry.server, tools: "*" })}, or keep ${secret} out ` +
+            "of that Workspace (ADR-0079, ADR-0028)",
+        );
+      }
+    }
+  }
+  return lines;
+}
+
+/**
+ * The refusals of the `mcp` block's urls (ADR-0079): each remote server's `url` is an `http://` or
+ * `https://` URL with no userinfo, and `https://` when the server has a `secret`, because the
+ * Custodian puts a value on TLS only (ADR-0059). Host-side only: in-cluster the config reads no
+ * `.env`, so a url read from it is empty there, and the door does not run this.
+ */
+export function mcpUrlRefusals(config: JR2Config | undefined): string[] {
+  const lines: string[] = [];
+  for (const [name, server] of Object.entries(config?.mcp ?? {})) {
+    if (isStdioServer(server)) continue;
+    const env = `process.env.${name.toUpperCase().replace(/-/g, "_")}_URL`;
+    let url: URL | undefined;
+    try {
+      url = new URL(server.url);
+    } catch {
+      url = undefined;
+    }
+    if (url === undefined || (url.protocol !== "https:" && url.protocol !== "http:")) {
+      lines.push(
+        `mcp.${name}.url ${JSON.stringify(server.url)} is not an http:// or https:// URL — an unset .env variable ` +
+          `reads as empty; set it, such as url: ${env} (ADR-0079)`,
+      );
+      continue;
+    }
+    if (url.username || url.password) {
+      lines.push(`mcp.${name}.url carries userinfo — put the credential in secret, never in the url (ADR-0079)`);
+      continue;
+    }
+    if (server.secret !== undefined && url.protocol !== "https:") {
+      lines.push(
+        `mcp.${name}.url must be an https:// URL — the server has a secret, ${server.secret}, and the Custodian ` +
+          "carries TLS only (ADR-0059, ADR-0079)",
+      );
+    }
+  }
+  return lines;
+}
+
+/** How Workspace code of one pod can spend a secret, or undefined when it cannot (ADR-0079): its
+ * `workspace()` grants it, a credentialed `command` there names it, or an `http` Effect there that
+ * sends a Worktree file names it — a file that the Agent wrote. */
+function spendersOf(pod: ReturnType<typeof workspacePodsOf>[number], secret: string): string | undefined {
+  if (pod.secrets.includes(secret)) return "its workspace() lists it under secrets";
+  for (const effect of pod.effects) {
+    if (!(effect.secrets ?? []).includes(secret)) continue;
+    if (effect.kind === "command") return `the command Effect "${effect.name}" names it`;
+    if (effect.kind === "http" && effect.file) {
+      return `the http Effect "${effect.name}" sends a Worktree file with it`;
+    }
+  }
+  return undefined;
+}
+
 /**
  * What the registered Machines name for secret placement (ADR-0059, ADR-0068): every Effect and
  * every Workspace's pod, per route, and the models the Instance Harness hosts: those of the `"none"`
@@ -198,7 +439,9 @@ export function placementWalkOf(workflows: readonly LoadedWorkflow[]): Placement
     // Per route, not per Machine object: a Machine placed twice is checked where each copy runs.
     effects: workflows.flatMap((w) => placedEffectsOf(w.machine).map((effect) => ({ workflow: w.name, effect }))),
     workspaces: workflows.flatMap((w) => workspacePodsOf(w.machine).map((pod) => ({ workflow: w.name, pod }))),
-    ...(instanceHarness ? { instanceHarness: { models: [...instanceHarness.models] } } : {}),
+    ...(instanceHarness
+      ? { instanceHarness: { models: [...instanceHarness.models], servers: [...instanceHarness.servers] } }
+      : {}),
   };
 }
 
@@ -379,6 +622,7 @@ export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<str
     ...doorRefusals(input.workflows),
     ...standingPoolRefusals(input.workflows),
     ...openPartRefusals(input.workflows),
+    ...mcpRefusals(input.workflows, input.config),
   ];
   // A Chart file is the Instance's own (ADR-0070): one that fails refuses the publish.
   if (input.charts?.length) lines.push(...chartFileRefusals(input.charts, input.workflows));

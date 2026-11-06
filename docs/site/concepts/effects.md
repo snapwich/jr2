@@ -1,12 +1,12 @@
 ---
 title: Effects
-description: How a Machine runs a command, calls a URL, pushes a branch or starts a run, at most once.
+description: How a Machine runs a command, calls a URL or an MCP tool, pushes a branch or starts a run.
 ---
 
 An [Effect](../reference/glossary.md#effect) is work that a [Machine](../reference/glossary.md#machine) does outside
-itself. jr2 has four kinds: `command` runs a program in the [Workspace](../reference/glossary.md#workspace), `http`
-calls a URL, `push` pushes the branch of a [Worktree](../reference/glossary.md#worktree), and `dispatch` starts a run of
-a [Workflow](../reference/glossary.md#workflow). The Kit also gives
+itself. jr2 has five kinds: `command` runs a program in the [Workspace](../reference/glossary.md#workspace), `http`
+calls a URL, `push` pushes the branch of a [Worktree](../reference/glossary.md#worktree), `dispatch` starts a run of a
+[Workflow](../reference/glossary.md#workflow), and `mcp` calls a tool of an MCP server. The Kit also gives
 [`worktree()`](../reference/authoring-surface/worktree.md), an Effect on the `command` machinery that cuts a Worktree.
 You write an Effect as an actor slot, beside the [Agents](../reference/glossary.md#agent) of the Machine.
 
@@ -75,7 +75,7 @@ failures: workflow "test-and-push" — the states that fail the run (ADR-0073)
   test-and-push.lost: invokes fail
 ```
 
-## The four kinds
+## The five kinds
 
 ### `command`
 
@@ -170,6 +170,20 @@ needs a run of a Workflow that you have. To use a Machine as a part of one run, 
 The two runs are independent. A `CANCEL` of one run does not cancel the other. When the run that dispatched ends, the
 new run continues.
 
+### `mcp`
+
+[`mcp`](../reference/authoring-surface/mcp.md) calls an MCP server: `mcp.call(server, tool, { input })` calls a tool,
+`mcp.read(server, uri)` reads a resource, and `mcp.prompt(server, name, { input })` gets a prompt. `server` is a name of
+the [`mcp`](../reference/config.md#mcp) block of `jr2.config.ts`, which holds the URL and the secret of the server. Thus
+the definition holds no URL and no credential, and an Agent's word can reach only the arguments, through the input.
+
+An Agent can also hold the tools of a server as [MCP tools](../reference/glossary.md#mcp-tools), and call them in its
+Turn with no approval (see [Agents and Turns](agents-and-turns.md#the-mcp-tools)). Use an `mcp` Effect when the call
+needs the approval of a person, or when the Machine makes the call with no model. The Agent picks, a Gate waits for the
+approval, and the Effect calls the tool. The output of the Effect is the answer to the pick. Thus the approval is in the
+record of the run, and the Machine routes on it. The default timeout is the `timeout` of the server: 60 seconds when it
+sets none. [Call an MCP tool from a Machine](../guides/call-an-mcp-tool-from-a-machine.md) has an example.
+
 ## Where an Effect runs
 
 You do not choose where an Effect runs. The kind, and what the Effect names, decide it. Each
@@ -186,6 +200,7 @@ commands in it:
 | A `push`                                | The Sandbox Effector                                                                |
 | A `dispatch` with no `target`           | The Orchestrator, in its own process                                                |
 | A `dispatch` with a `target`            | The Instance Effector                                                               |
+| An `mcp` Effect                         | The Instance Effector                                                               |
 
 A `command` that names no Effect secret runs beside the Agent's [Working tools](../reference/glossary.md#working-tools).
 It runs as the Agent's user, with the tools of the [Sandbox Image](../reference/glossary.md#sandbox-image). The Harness
@@ -205,17 +220,19 @@ Effector is, and [Secrets and trust](secrets-and-trust.md) tells how an Effector
 
 An Effect gives each outcome to `onDone`, a failure too. Route on the `outcome` field:
 
-| Kind       | The outcomes                                              | The output type                                                           |
-| ---------- | --------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `worktree` | `ready`, `refused`, `unknown`                             | [`WorktreeOutput`](../reference/authoring-surface/type-worktreeoutput.md) |
-| `command`  | `exited`, `timeout`, `killed`, `unknown`                  | [`CommandOutput`](../reference/authoring-surface/type-commandoutput.md)   |
-| `http`     | `response`, `unreachable`, `refused`, `unknown`           | [`HttpOutput`](../reference/authoring-surface/type-httpoutput.md)         |
-| `push`     | `pushed`, `rejected`, `diverged`, `unknown`               | [`PushOutput`](../reference/authoring-surface/type-pushoutput.md)         |
-| `dispatch` | `started`, `settled`, `refused`, `unreachable`, `unknown` | [`DispatchOutput`](../reference/authoring-surface/type-dispatchoutput.md) |
+| Kind       | The outcomes                                                      | The output type                                                           |
+| ---------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `worktree` | `ready`, `refused`, `unknown`                                     | [`WorktreeOutput`](../reference/authoring-surface/type-worktreeoutput.md) |
+| `command`  | `exited`, `timeout`, `killed`, `unknown`                          | [`CommandOutput`](../reference/authoring-surface/type-commandoutput.md)   |
+| `http`     | `response`, `unreachable`, `refused`, `unknown`                   | [`HttpOutput`](../reference/authoring-surface/type-httpoutput.md)         |
+| `push`     | `pushed`, `rejected`, `diverged`, `unknown`                       | [`PushOutput`](../reference/authoring-surface/type-pushoutput.md)         |
+| `dispatch` | `started`, `settled`, `refused`, `unreachable`, `unknown`         | [`DispatchOutput`](../reference/authoring-surface/type-dispatchoutput.md) |
+| `mcp`      | `returned`, `refused`, `unreachable`, `input-required`, `unknown` | [`McpCallOutput`](../reference/authoring-surface/type-mcpcalloutput.md)   |
 
 A test that fails is `exited` with a code that is not 0. A program that the container does not have is `exited` with
 code 127. An HTTP 4xx or 5xx status is a `response`. A Workflow that refuses the run input of a `dispatch` is `refused`,
-with the status code and the report of the refusal. `unknown` means that jr2 cannot tell what the Effect did.
+with the status code and the report of the refusal. A tool of an `mcp` Effect that ran and failed is `returned` with
+`isError: true`. `unknown` means that jr2 cannot tell what the Effect did.
 
 Each union is open: it holds a stand-in member, `LaterOutcome`, so a later release can add an outcome and your Machine
 still works. Route on what you know, and give the rest a last arm with no guard. With no match, the run stays in that
@@ -244,6 +261,7 @@ jr2 records its output. After an Orchestrator restart, jr2 reads the record:
 | A `worktree()`                          | jr2 attaches to it again. When the Harness does not know it, jr2 sends it again: a cut is idempotent.                                                        |
 | A `push`                                | jr2 follows it. When the Sandbox Effector lost it, jr2 pushes the same commit again, and no other commit. With no commit recorded, the outcome is `unknown`. |
 | An `http` Effect                        | jr2 follows it. When no Effector holds it, jr2 sends it again only if it is `idempotent`. Else the outcome is `unknown`.                                     |
+| An `mcp` Effect                         | As an `http` Effect. jr2 does not read the `idempotentHint` of a tool: only your `idempotent` mark counts.                                                   |
 | A `dispatch`                            | jr2 sends the start again, with the same key. The Orchestrator answers with the run that the key started, and it starts no second run.                       |
 
 A `command` that names no Effect secret runs the code of the Worktree, and that code can spend a Stand-in. Thus jr2 does
@@ -251,7 +269,8 @@ not run it two times. A `push`, and a `command` that names an Effect secret, run
 jr2 can send them again with that commit.
 
 To try again, write it in the Machine: a route from the outcome back into the state. Mark an `http` Effect `idempotent`
-only when a second call is safe: the call has its own idempotency key, or it only reads.
+only when a second call is safe: the call has its own idempotency key, or it only reads. The same rule is true for an
+`mcp` Effect.
 
 ## When the state exits
 
@@ -260,8 +279,8 @@ When the run leaves the state, the Effect stops:
 - jr2 kills the process group of a `command` that names no Effect secret.
 - The Sandbox Effector stops a `command` that names an Effect secret. It sends `SIGTERM`, waits 5 seconds, then sends
   `SIGKILL`.
-- An `http` Effect and a `push` have no stop. jr2 stops waiting for the output, but the Effector can still finish the
-  work.
+- An `http` Effect, an `mcp` Effect and a `push` have no stop. jr2 stops waiting for the output, but the Effector can
+  still finish the work.
 - A `dispatch` with `wait` stops its wait. The run that it started continues.
 
 jr2 records the stop, and the Machine gets no output. There is no "finally" in a Machine: cleanup is a state. Put an
@@ -301,11 +320,14 @@ pick waits for its answer.
   a `committer` field there.
 - Each param of a pick that enters an Effect's state has a reader: the Effect's input, `fill`, a guard or an `assign`.
   `createMachine` refuses a param that nothing reads, and a `fill` key that is also a param.
-- A packaged Machine can leave an `http` URL, a `command` argv, one Effect secret name or the `target` of a `dispatch`
-  Open. The composer binds it one time with `customize()`. `jr2 up` refuses an Open part that nobody bound.
+- A packaged Machine can leave an `http` URL, a `command` argv, one Effect secret name, the `target` of a `dispatch`, or
+  the server and the tool of an `mcp` Effect Open. The composer binds it one time with `customize()`. `jr2 up` refuses
+  an Open part that nobody bound.
 - A `dispatch` with no `target` names a Workflow that the Assembly has. `jr2 up` refuses a name that it does not have,
   and an `input` schema that the input of that Workflow does not take.
 - The `url` of a `dispatch` target is an origin only: a scheme, a host and a port, with no path, no query and no user.
+- An `mcp` Effect names a remote server that the `mcp` block declares. `jr2 up` refuses a server that the block does not
+  declare, and a stdio server.
 
 The guides give the refusal text of each rule.
 
@@ -314,13 +336,17 @@ The guides give the refusal text of each rule.
 - [Run a command or call a URL with an Effect](../guides/run-a-command-or-call-a-url.md)
 - [Push and sign a branch](../guides/push-and-sign-a-branch.md)
 - [Start a run from a run](../guides/start-a-run-from-a-run.md)
+- [Call an MCP tool from a Machine](../guides/call-an-mcp-tool-from-a-machine.md)
 - [Workspaces](workspaces.md), [The Menu](the-menu.md), [Secrets and trust](secrets-and-trust.md)
 - Reference: [`command`](../reference/authoring-surface/command.md), [`http`](../reference/authoring-surface/http.md),
   [`push`](../reference/authoring-surface/push.md), [`dispatch`](../reference/authoring-surface/dispatch.md),
-  [`fromPick`](../reference/authoring-surface/frompick.md), [`answer`](../reference/authoring-surface/answer.md)
+  [`mcp`](../reference/authoring-surface/mcp.md), [`fromPick`](../reference/authoring-surface/frompick.md),
+  [`answer`](../reference/authoring-surface/answer.md)
 - [ADR-0067](../reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md):
   an Effect is an actor slot, and runs at most once unless marked idempotent
 - [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md): an Effector holds
   an Effect's secrets and signs its wire
 - [ADR-0071](../reference/decisions/0071-a-run-starts-a-run-through-a-dispatch-effect.md): a run starts a run through a
   `dispatch` Effect
+- [ADR-0079](../reference/decisions/0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md):
+  a Machine calls an MCP server as an Effect, and the Machine is the approval

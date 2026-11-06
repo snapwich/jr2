@@ -102,6 +102,8 @@ Dial. Thus:
 - `jr2 up` gives each pod the model key of the providers that the definitions of its Agents name. For an Agent in a
   Sandbox, use a Dial model of a provider that a definition in that Sandbox names. For a Menu-only Agent, use a provider
   that a Menu-only definition of the Instance names.
+- In the same way, `jr2 up` gives each pod the secret of each MCP server that the definitions of its Agents name. The
+  [MCP tools](../reference/glossary.md#mcp-tools) of an Agent come from its definition only. A Turn cannot change them.
 
 ## Continue a conversation
 

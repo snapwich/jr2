@@ -71,6 +71,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/kinds"
 	"github.com/snapwich/jr2/effector/internal/mackind"
+	"github.com/snapwich/jr2/effector/internal/mcpkind"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
 	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/scrub"
@@ -262,10 +263,11 @@ func run(logger *log.Logger) error {
 // mount is where this Effector's own files are: what a credentialed command's child is kept from.
 type mount struct{ key, config, secrets, git string }
 
-// kindsFor is this placement's kinds: `http` and `dispatch` (ADR-0071) in the Instance Effector,
-// which holds a foreign Orchestrator's token as an Effect secret, and the Hook door's `mac` check
-// (ADR-0068); in a Sandbox Effector (JR2_EFFECTOR_WORK set) `http` with a file body too, push and
-// the credentialed command, whose child is confined with Landlock, and no dispatch. A Sandbox
+// kindsFor is this placement's kinds: `http`, `dispatch` (ADR-0071) and `mcp` (ADR-0079) in the
+// Instance Effector, which holds a foreign Orchestrator's token and an MCP server's secret as Effect
+// secrets, and the Hook door's `mac` check (ADR-0068); in a Sandbox Effector (JR2_EFFECTOR_WORK
+// set) `http` with a file body too, push and the credentialed command, whose child is confined with
+// Landlock, and no dispatch. A Sandbox
 // Effector on a kernel that cannot confine a child stops its start (it never becomes ready),
 // whatever its Workspace holds (ADR-0077).
 func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Scrubber, roots *x509.CertPool,
@@ -276,6 +278,7 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 		WorkRoot: work}, Reaper: reaper.New()}
 	if work == "" {
 		r.Dispatch = &dispatchkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots}
+		r.Mcp = &mcpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots}
 		// The Hook door's `mac` check (ADR-0068): a Hook's secret is placed here as an Effect's is.
 		r.Mac = &mackind.Checker{Secrets: held}
 		return r, nil

@@ -207,7 +207,7 @@ const TABLE = [
       {
         name: "skip-provider-preflight",
         description:
-          "do not run the provider preflight: no check pod checks the models, so a check that fails when the model works does not stop the converge",
+          "do not run the provider preflight: no check pod checks the models and no MCP server's tool list is read, so a check that fails when the model or the server works does not stop the converge",
       },
       NAMESPACE_FLAG,
       CONTEXT_FLAG,

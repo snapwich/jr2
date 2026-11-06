@@ -1,0 +1,5 @@
+{
+  "kind": "mcp",
+  "mcp": { "server": "notes", "read": { "uri": "file:///a.md" }, "call": { "tool": "x", "arguments": {} } },
+  "maxBody": 65536
+}

@@ -24,6 +24,8 @@ import {
   loadCharts,
   loadWorkflows,
   machineBodies,
+  mcpRefusals,
+  mcpUrlRefusals,
   openPartRefusals,
   partsOf,
   placementWalkOf,
@@ -110,7 +112,16 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
   // A zod `input` that no door reads (ADR-0033) is in the same listing, first: the door refuses it
   // with the same line.
   // A standing Pool that is not the top Machine of its Workflow (ADR-0017) is in the listing too.
-  const open = [...doorRefusals(workflows), ...standingPoolRefusals(workflows), ...openPartRefusals(workflows)];
+  // An Agent's `mcp` list against the config's `mcp` block (ADR-0079) is in the same listing: a
+  // server name the block does not declare is refused as an Open part is, with its customize() line,
+  // and the door refuses the same lines. The urls are the host's alone (`.env`).
+  const open = [
+    ...doorRefusals(workflows),
+    ...standingPoolRefusals(workflows),
+    ...openPartRefusals(workflows),
+    ...mcpRefusals(workflows, config),
+    ...mcpUrlRefusals(config),
+  ];
   if (open.length) {
     for (const line of open) activity(io, `refusing: ${line}`);
     return undefined;
@@ -172,6 +183,18 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
           io,
           `  ${e.name}${where}: dispatch ${e.workflow}${e.wait ? " wait" : ""} → ${to} — ${e.timeoutMs / 1000}s, ` +
             `${where2}${names}`,
+        );
+        continue;
+      }
+      if (e.kind === "mcp") {
+        // The server's url and secret are the config's (ADR-0079): the line names the server, and
+        // its timeout is the server's unless the Effect sets one.
+        const asks =
+          e.op === "call" ? `call ${e.server ?? "<open>"}/${e.tool ?? "<open>"}` : `${e.op} ${e.server ?? "<open>"}`;
+        const timeout = e.timeoutMs > 0 ? `${e.timeoutMs / 1000}s` : "the server's timeout";
+        activity(
+          io,
+          `  ${e.name}${where}: mcp ${asks} — ${timeout}, in the Instance Effector${e.idempotent ? ", idempotent" : ""}`,
         );
         continue;
       }

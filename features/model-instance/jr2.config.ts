@@ -37,6 +37,12 @@ export default defineConfig({
   // The @kind Size (ADR-0060): small enough for several trials in flight on one node, and the
   // ceiling the `noticed` claim's memory kill is measured against (ADR-0061).
   sandbox: { resources: { limits: { memory: "1Gi", cpu: "500m" } } },
+  // The `mcp-then-pick` claim's order system (ADR-0079): a fake MCP server the tier serves on the
+  // host (`features/steps/fake-mcp.ts`), at a url that rides env, as the @kind tier's provider url
+  // does: it is deployment-varying, and no definition reads it. This tier has no CA of its own, so
+  // the server is plain HTTP and has no secret, which a server with no `secret` may be. In-cluster
+  // the url reads empty, which is safe: the Harness reads what `jr2 up` resolved.
+  mcp: { orders: { url: process.env.JR2_FAKE_MCP_URL ?? "" } },
   // The key is a Held secret either way (ADR-0059). A catalog provider (`profile.key`) reads a known
   // model key, so the key goes in `secrets` under that name, exactly as a user's instance holds it;
   // a custom provider's key is its `apiKey`.

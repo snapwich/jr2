@@ -64,8 +64,17 @@ export default defineConfig({
   //
   // `PROBE_KEY` is a Held secret (ADR-0059, ADR-0076): the `sibling` workflow's `workspace()` grants
   // it, so its Agents' confined programs hold its Stand-in in env, and the Custodian puts the value
-  // in `x-probe-key` toward the scripted model's host alone. Its own header, because two secrets
-  // bound to one host share no header.
+  // in `x-probe-key` toward the scripted model's host alone.
+  //
+  // `MCP_A_KEY` and `MCP_B_KEY` are the two secrets of the fake MCP server (ADR-0079): the servers
+  // `lookup-a` and `lookup-b` of the `mcp` block below name one each. With no `hosts`, each is bound
+  // to its server's url host, in `authorization` — one host and one header for both, and for the
+  // provider key, so the Custodian chooses each value by the Stand-in a request carries (ADR-0059).
+  // The `tooled` workflow's Agent names both servers, so its Sandbox's Custodian holds both. The
+  // `advisedtooled` workflow's Menu-only Agent names `lookup-b`, so the Instance Harness's Custodian
+  // holds `MCP_B_KEY`. The
+  // `mcpcalled` workflow's `mcp` Effect calls `lookup-a`, so `MCP_A_KEY` is an Effect secret of the
+  // Instance Effector too.
   //
   // `GH_HOOK` and `CHAT_SIGNING` are the two Hooks' secrets (ADR-0068, ADR-0078): each Hook has a
   // `mac` verifier, so `jr2 up` places its secret in the Instance Effector alone, which checks each
@@ -84,7 +93,18 @@ export default defineConfig({
       hosts: [process.env.JR2_FAKE_PROVIDER_URL ?? ""],
       headers: ["x-probe-key"],
     },
+    { name: "MCP_A_KEY", value: process.env.JR2_MCP_A_KEY },
+    { name: "MCP_B_KEY", value: process.env.JR2_MCP_B_KEY },
   ],
+  // The fake remote MCP server (ADR-0079), on the host, as the scripted model is: HTTPS under the
+  // tier's CA (`caBundle` below), at a url that rides env like the provider's (`features/steps/
+  // fake-mcp.ts`). Two names for one server, each with its own secret, as an Instance with two
+  // workspaces of one service declares them. In-cluster the url reads empty, which is safe: the
+  // Harness and the Effector read what `jr2 up` resolved.
+  mcp: {
+    "lookup-a": { url: process.env.JR2_FAKE_MCP_URL ?? "", secret: "MCP_A_KEY" },
+    "lookup-b": { url: process.env.JR2_FAKE_MCP_URL ?? "", secret: "MCP_B_KEY" },
+  },
   // The Size of every Sandbox this tier provisions (ADR-0060): below the kit default, because jr2
   // reserves the whole Size and the tier runs several scenarios at once on ONE kind node — at 2Gi
   // and one cpu each, beside every scenario's kit-sized control pods, a 4-core runner leaves

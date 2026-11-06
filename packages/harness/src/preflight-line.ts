@@ -31,3 +31,40 @@ export function preflightStart(specifier: string): string {
  * first event and 60 s of the gaps that follow. `provider-preflight.ts` stops a model at it, and
  * `jr2 up` gives the pod as long for each model; the CLI's test holds its own number to this one. */
 export const PREFLIGHT_MODEL_BUDGET_SECONDS = 360;
+
+// The MCP check's lines (ADR-0079), after the models' lines, one server at a time:
+//
+//   jr2.preflight mcp=<server> start
+//   jr2.preflight mcp=<server> listed=<JSON list of the tool names, sorted>
+//   jr2.preflight mcp=<server> <refused|warn|fault>=<reason on one line>
+//
+// `refused` is the server's 401 or 403 (the reason is the status); `warn` is a server that did not
+// answer as MCP; `fault` is a check this Harness cannot make. `jr2 up` compares each list with the
+// allowlists: the pod does not know which Agent lists which tool.
+
+/** How one server answered the MCP check. */
+export type McpPreflightVerdict =
+  | { kind: "listed"; tools: string[] }
+  | { kind: "refused" | "warn" | "fault"; reason: string };
+
+/** One MCP result line. A list is JSON on one line; a reason goes on one line. */
+export function mcpPreflightLine(server: string, verdict: McpPreflightVerdict): string {
+  const said =
+    verdict.kind === "listed"
+      ? `listed=${JSON.stringify(verdict.tools)}`
+      : `${verdict.kind}=${verdict.reason.replace(/\s+/g, " ").trim()}`;
+  return `${PREFLIGHT_PREFIX} mcp=${server} ${said}`;
+}
+
+/** The line before a server's check. */
+export function mcpPreflightStart(server: string): string {
+  return `${PREFLIGHT_PREFIX} mcp=${server} start`;
+}
+
+/** Each MCP server's whole budget in the check, in seconds: every request of its listing. The check
+ * stops a server at it, and `jr2 up` gives the pod as long for each server; the CLI's test holds
+ * its own number (`CHECK_MCP_SECONDS`) to this one. */
+export const PREFLIGHT_MCP_BUDGET_SECONDS = 60;
+
+/** The argv word that comes before the MCP servers to check: no model specifier is this. */
+export const PREFLIGHT_MCP_ARG = "--mcp";

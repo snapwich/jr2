@@ -1,0 +1,5 @@
+{
+  "kind": "mcp",
+  "mcp": { "server": "notes", "prompt": { "name": "release-note", "arguments": { "version": 1 } } },
+  "maxBody": 65536
+}

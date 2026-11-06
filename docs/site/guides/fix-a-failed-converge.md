@@ -311,9 +311,18 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   A check can fail when the model works, for example a model that loads for longer than the check waits. When you know
   that the models work, run `jr2 up --skip-provider-preflight`. No check pod runs, and the converge goes on. `jr2 up`
   writes one line:
-  `warning: provider: preflight skipped (--skip-provider-preflight) — these models were not checked: <model>, …`. A
-  model that does not work then fails in a run, as `agent.fault`, and not at the converge. Remove the flag when the
-  check works again.
+  `warning: provider: preflight skipped (--skip-provider-preflight) — these models were not checked: <model>, …`. When
+  an Agent names a remote MCP server, the line ends with
+  `; these MCP servers' tool lists were not checked: <server>, …`. A model that does not work then fails in a run, as
+  `agent.fault`, and not at the converge. Remove the flag when the check works again.
+
+- When an Agent names a remote MCP server, the check pod also asks the server for its tools, through its Custodian. Each
+  name in an allowlist must be a tool of the server:
+  `error: mcp: workflow "<workflow>": Agent "<slot>" allowlists the tool "<tool>", which "<server>" does not list — it lists: <tools> (ADR-0079)`.
+  A server that refuses the token (a 401 or a 403) is an error too:
+  `error: mcp: "<server>" at <url> refused the request from a pod on <where> (HTTP <status>) — a wrong or expired value of <NAME>, or a binding of it (hosts, headers, paths) that does not let its Stand-in through to the url; every call of an Agent that names it would fail (ADR-0079)`.
+  A server that does not answer is a warning. [Give an Agent MCP tools](give-an-agent-mcp-tools.md#rules) gives each
+  text.
 
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See

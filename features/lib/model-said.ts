@@ -6,6 +6,9 @@ import { spawn } from "node:child_process";
 
 /** Labels the printer uses for what is not a tool call. */
 const NOT_A_CALL = new Set(["prompt", "text", "thinking", "compacted"]);
+/** A printed call's label: a Menu or Working tool by its bare name, lower-case snake, or an MCP
+ * tool as `<server>/<tool>` (ADR-0023, ADR-0079). */
+const CALL_LABEL = /^(?:[a-z][a-z0-9_]*|[a-z][a-z0-9-]*\/[A-Za-z0-9_-]+)$/;
 
 /** One line of a printed conversation that matters to a claim: a tool call by name, or a prompt
  * the model read — the Frame's, a nudge, or a Turn part restated at a step boundary — by its first
@@ -114,7 +117,7 @@ export function answersIn(kept: string, marker: string): Answered[] | undefined 
       call.answer = body;
       if (answer[2] === "error") call.error = true;
       open = (more) => (call.answer += `\n${more}`);
-    } else if (label !== undefined && !NOT_A_CALL.has(label) && /^[a-z][a-z0-9_]*$/.test(label)) {
+    } else if (label !== undefined && !NOT_A_CALL.has(label) && CALL_LABEL.test(label)) {
       const call: Answered = { call: label, input: body };
       out.push(call);
       const key = `${agent}\0${label}`;
@@ -161,7 +164,9 @@ export function promptedAgents(lines: readonly string[]): string[] {
  * `[<agent>] [admitted] ...`), is `undefined`.
  */
 export function printedLine(line: string): { agent: string; iid: string; rest: string } | undefined {
-  const m = /^\[([^\]]+)\] \[([^\]\s]*\/[^\]\s]*)\] ?(.*)$/.exec(line);
+  // An Instance ID is `<runId>/<machine path>/<agent>`: two slashes or more. An MCP tool's label,
+  // `<server>/<tool>`, has one (ADR-0079), so a line whose ID was taken off already keeps it.
+  const m = /^\[([^\]]+)\] \[([^\]\s/]*\/[^\]\s/]*\/[^\]\s]*)\] ?(.*)$/.exec(line);
   return m ? { agent: m[1]!, iid: m[2]!, rest: m[3]! } : undefined;
 }
 
@@ -211,8 +216,9 @@ function saidFrom(lines: string[], at: number, agent: string): Said[] {
       continue;
     }
     // A body spans lines and only its first carries the label; a thinking line that happens to
-    // open with `[Output Generation]` is not a call. A tool's name is lower-case snake, always.
-    if (!NOT_A_CALL.has(m[1]!) && /^[a-z][a-z0-9_]*$/.test(m[1]!)) out.push({ call: m[1]! });
+    // open with `[Output Generation]` is not a call. A tool's name is lower-case snake, and an MCP
+    // tool's is `<server>/<tool>`.
+    if (!NOT_A_CALL.has(m[1]!) && CALL_LABEL.test(m[1]!)) out.push({ call: m[1]! });
   }
   return out;
 }

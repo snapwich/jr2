@@ -48,7 +48,7 @@
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnyActorRef, AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
-import { isAgent, isOpenAgent, type AgentDeclaration } from "./agent.ts";
+import { isAgent, isOpenAgent, type AgentDeclaration, type AgentMcpServer, type WorkspaceAccess } from "./agent.ts";
 import { argvText, isEffect, placementOf, type EffectParts, type EffectSlot, type Placement } from "./effect.ts";
 import { isGateSlot } from "./gate.ts";
 import { effectBindingLine, openPartsOf, type OpenEffectPart } from "./open-effect.ts";
@@ -602,6 +602,20 @@ export type CarriedEffect = {
         input?: Record<string, unknown>;
         open?: Array<"target">;
       }
+    /** An mcp Effect (ADR-0079): what it asks of which server, by the server's name in the `mcp`
+     * block of `jr2.config.ts`. It names no secret of its own: `jr2 up` reads the server's url and
+     * secret from the config and places them in the Instance Effector. An Open server or tool is
+     * absent until bound. `timeoutMs` is the author's; 0 when the author set none, and the server's
+     * `timeout` then applies. */
+    | {
+        kind: "mcp";
+        op: "call" | "read" | "prompt";
+        server?: string;
+        tool?: string;
+        secrets: string[];
+        idempotent: boolean;
+        open?: Array<"server" | "tool">;
+      }
   );
 
 /** One state that can fail the run (ADR-0073): it invokes a `fail()` slot. `state` is the state's
@@ -650,9 +664,22 @@ export type CarriedParts = {
   /**
    * The Instance Harness is needed (ADR-0031): an Agent declares `workspace: "none"`, or an Open
    * body allows it. `models` are the models its Turns may run: those Agents', and those Open bodies'
-   * allowed ones. Absent when nothing needs it.
+   * allowed ones. `servers` are the MCP servers those Agents name (ADR-0079), sorted, deduped.
+   * Absent when nothing needs it.
    */
-  instanceHarness?: { models: string[] };
+  instanceHarness?: { models: string[]; servers: string[] };
+  /** Every Agent slot whose definition names an MCP server (ADR-0079), at each `customize()` route
+   * the walk reached it by, in walk order: what `jr2 up` checks against the config's `mcp` block. */
+  mcpAgents: CarriedMcpAgent[];
+};
+
+/** An Agent that names MCP servers (ADR-0079): its slot, the `customize()` route to its Machine,
+ * where its Turns run, and its `mcp` list as written. */
+export type CarriedMcpAgent = {
+  slot: string;
+  path: OpenSlot["path"];
+  workspace: WorkspaceAccess;
+  mcp: readonly AgentMcpServer[];
 };
 
 /** A machine actor, told apart from a promise/callback/observable one by having a state tree.
@@ -743,6 +770,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const openEffects: CarriedParts["openEffects"] = [];
   const sizes: CarriedSize[] = [];
   const openBodies: CarriedParts["openBodies"] = [];
+  const mcpAgents: CarriedMcpAgent[] = [];
   // The Machine that declares each Open body: where its lent Agents are read (not carried data).
   const bodyWrappers = new Map<CarriedParts["openBodies"][number], AnyStateMachine>();
   let sandboxed = false;
@@ -833,8 +861,11 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     const body = wrapperBodyOf(machine);
     for (const { state, slot } of failingStatesOf(machine)) failures.push({ machine: machine.id, state, slot, path });
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
-      if (isAgent(logic)) collectAgent(path, name, logic.definition);
-      else if (isOpenBody(logic)) {
+      if (isAgent(logic)) {
+        collectAgent(path, name, logic.definition);
+        const { mcp, workspace } = logic.definition;
+        if (mcp?.length) mcpAgents.push({ slot: name, path, workspace: workspace ?? "write", mcp });
+      } else if (isOpenBody(logic)) {
         const body = { slot: name, declaration: openBodyDeclarationOf(logic), path };
         openBodies.push(body);
         bodyWrappers.set(body, machine);
@@ -863,6 +894,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const noneBodies = openBodies.filter((b) => bodyTurnsRunIn(bodyWrappers.get(b)!, b.declaration, "instance"));
   const harnessModels = new Set<string>(menuOnly.map((a) => a.definition.model).filter(bound));
   for (const body of noneBodies) for (const m of body.declaration.allows.models) harnessModels.add(m);
+  const harnessServers = new Set(menuOnly.flatMap((a) => (a.definition.mcp ?? []).map((e) => e.server)));
   return {
     agents,
     failures,
@@ -876,7 +908,10 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     composesSandbox: sandboxed,
     openBodies,
     models: [...models].sort(),
-    ...(menuOnly.length || noneBodies.length ? { instanceHarness: { models: [...harnessModels].sort() } } : {}),
+    ...(menuOnly.length || noneBodies.length
+      ? { instanceHarness: { models: [...harnessModels].sort(), servers: [...harnessServers].sort() } }
+      : {}),
+    mcpAgents,
   };
 }
 
@@ -986,6 +1021,22 @@ export function carriedEffectOf(
       ...(parts.file ? { file: true as const } : {}),
     };
   }
+  if (parts.kind === "mcp") {
+    return {
+      name,
+      path,
+      route,
+      kind: "mcp",
+      placement,
+      op: parts.op,
+      ...(parts.server === open ? {} : { server: parts.server }),
+      ...(parts.tool === undefined || parts.tool === open ? {} : { tool: parts.tool }),
+      secrets: [],
+      idempotent: parts.idempotent,
+      timeoutMs: parts.timeoutMs ?? 0,
+      ...(openParts.length ? { open: openParts as Array<"server" | "tool"> } : {}),
+    };
+  }
   if (parts.kind === "push") {
     const { sign, squash, force, pin, timeoutMs, slot } = parts;
     return {
@@ -1050,6 +1101,10 @@ export type WorkspacePod = {
    * down to the next `workspace()`, which is a pod of its own, and every model an Open body below
    * it allows a Chart's own Agents when it allows "write" or "read" (ADR-0070). Sorted, deduped. */
   models: string[];
+  /** The MCP servers that the Agents whose Turns run in this pod name (ADR-0079), with the Agent
+   * that names each and its allowlist: what places each server's secret in this pod, and what the
+   * allowlist rule reads. Absent when none names one. */
+  mcp?: Array<{ slot: string; path: OpenSlot["path"]; entry: AgentMcpServer }>;
   /** The Effects placed in this pod's Sandbox Effector (ADR-0068): every `push`, file-body `http` and
    * credentialed `command` slot below the `workspace()`, down to the next `workspace()` — read off
    * their plain data, statically. Empty → the pod gets no Sandbox Effector and no Secret. */
@@ -1086,6 +1141,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
     on: Set<AnyStateMachine>,
     effects: Map<string, CarriedEffect>,
     cuts: Set<string>,
+    mcp: NonNullable<WorkspacePod["mcp"]>,
     path: OpenSlot["path"],
     route: PlacementRoute,
   ): void => {
@@ -1093,12 +1149,14 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
     on.add(machine);
     const body = wrapperBodyOf(machine);
     const visit = (child: AnyStateMachine, at: OpenSlot["path"], to: PlacementRoute) => {
-      if (!composesSandbox(child)) modelsIn(child, models, on, effects, cuts, at, to);
+      if (!composesSandbox(child)) modelsIn(child, models, on, effects, cuts, mcp, at, to);
     };
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) {
         const { model, workspace } = logic.definition;
         if (workspace !== "none" && typeof model === "string") models.add(model);
+        // A "none" Agent's servers are the Instance Harness's (ADR-0079), never this pod's.
+        if (workspace !== "none") for (const entry of logic.definition.mcp ?? []) mcp.push({ slot: name, path, entry });
         continue;
       }
       // A Turn under an Open body may run in this pod with any model the body allows (ADR-0070):
@@ -1133,7 +1191,8 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
       const models = new Set<string>();
       const effects = new Map<string, CarriedEffect>();
       const cuts = new Set<string>();
-      modelsIn(machine, models, new Set(), effects, cuts, path, route);
+      const mcp: NonNullable<WorkspacePod["mcp"]> = [];
+      modelsIn(machine, models, new Set(), effects, cuts, mcp, path, route);
       const parts = sandboxPartsOf(machine);
       const bindings: Record<string, string | undefined> = {};
       if (parts.repos !== open) {
@@ -1149,6 +1208,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
         models: [...models].sort(),
         effects: [...effects.values()],
         ...(cuts.size ? { cuts: [...cuts] } : {}),
+        ...(mcp.length ? { mcp } : {}),
         ...(parts.effector ? { effector: { ...parts.effector } } : {}),
         ...(parts.image !== undefined ? { image: parts.image } : {}),
         bindings,

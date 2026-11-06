@@ -18,6 +18,7 @@ export * from "./effect.ts";
 export * from "./http-effect.ts";
 export * from "./sandbox-effect.ts";
 export * from "./dispatch-effect.ts";
+export * from "./mcp-effect.ts";
 export type { EffectBinding, OpenEffect, OpenEffectPart } from "./open-effect.ts";
 export { openPartsText } from "./open-effect.ts";
 export * from "./effector-wire.ts";

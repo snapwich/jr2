@@ -23,7 +23,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import type { JR2Config, HarnessEnvVar } from "./config.ts";
+import { isStdioServer, type JR2Config, type HarnessEnvVar } from "./config.ts";
 import {
   CREDENTIAL_FILES,
   DOMAIN_WRITABLE_ROOTS,
@@ -280,6 +280,23 @@ export function heldSecretsOf(
     catalogHosts.set(id, target.port === 443 ? target.host : `${target.host}:${target.port}`);
   }
 
+  // R7 for an MCP server (ADR-0079): one with a `secret` needs an https url, because the Custodian
+  // carries TLS only. Its url's host is the default binding of the secret it names (`hostsOf`).
+  const serverHosts = new Map<string, Array<{ server: string; host: string; port: number; path: string }>>();
+  for (const [server, declared] of Object.entries(config.mcp ?? {})) {
+    if (isStdioServer(declared) || declared.secret === undefined || !claimed.has(declared.secret)) continue;
+    const target = httpsTarget(declared.url);
+    if (!target) {
+      throw new Error(
+        `mcp.${server}.url must be an https:// URL — the server has a secret, ${declared.secret}, and the Custodian ` +
+          "carries TLS only (ADR-0059, ADR-0079). Read it from .env: " +
+          `mcp: { "${server}": { url: process.env.${server.toUpperCase().replace(/-/g, "_")}_URL ?? "", secret: "${declared.secret}" } }`,
+      );
+    }
+    const path = new URL(declared.url).pathname || "/";
+    serverHosts.set(declared.secret, [...(serverHosts.get(declared.secret) ?? []), { server, ...target, path }]);
+  }
+
   // jr2's own names (ADR-0076): the Harness's start takes a `JR2_` name from jr2's composition alone,
   // and refuses to start on an envFrom key that starts with `JR2_` (`effector nocore --harness-env`).
   // A user's `JR2_MENU_ONLY` or `JR2_START_ENV` would turn the domain off or replace its env.
@@ -453,8 +470,10 @@ export function heldSecretsOf(
     const source = sourceOf(e, lookups);
     if (source.kind === "literal") values[e.name] = e.value as string;
 
-    // R6
-    const headers = [...(e.headers ?? DEFAULT_CREDENTIAL_HEADERS)];
+    // R6. An MCP server's secret with no binding goes in `authorization` alone (ADR-0079): the
+    // Harness sends `Authorization: Bearer <Stand-in>`.
+    const mcpDefault = e.hosts === undefined && e.headers === undefined && serverHosts.has(e.name);
+    const headers = [...(e.headers ?? (mcpDefault ? ["authorization"] : DEFAULT_CREDENTIAL_HEADERS))];
     const seenHeader = new Set<string>();
     for (const [j, header] of headers.entries()) {
       if (!HEADER_TOKEN.test(header) || FRAMING_HEADERS.has(header) || header.startsWith("proxy-")) {
@@ -467,6 +486,16 @@ export function heldSecretsOf(
       if (seenHeader.has(header)) throw new Error(`${e.at}.headers lists "${header}" twice (ADR-0059)`);
       seenHeader.add(header);
     }
+    // R6 for an MCP server's secret (ADR-0079): the Harness sends its Stand-in in `authorization`
+    // alone, so a binding without that header removes it on each call.
+    for (const s of serverHosts.get(e.name) ?? []) {
+      if (headers.includes("authorization")) break;
+      throw new Error(
+        `${e.at}.headers leaves out "authorization", where the Harness sends the Stand-in of ${e.name} to ` +
+          `mcp.${s.server}.url — each call of that server would arrive with no credential. Add it, or drop headers ` +
+          "to take that default (ADR-0059, ADR-0079)",
+      );
+    }
 
     // R12
     const paths = e.paths === undefined ? undefined : [...e.paths];
@@ -478,9 +507,18 @@ export function heldSecretsOf(
         );
       }
     }
+    // R12 for an MCP server's secret (ADR-0079): every call goes to the url's path, so `paths` must
+    // cover it, by the prefix rule the Custodian applies.
+    for (const s of serverHosts.get(e.name) ?? []) {
+      if (paths === undefined || paths.some((p) => pathCovers(p, s.path))) continue;
+      throw new Error(
+        `${e.at}.paths does not cover ${s.path}, the path of mcp.${s.server}.url, whose secret ${e.name} is — ` +
+          `each call of that server would be refused with 403. Add "${s.path}", or drop paths (ADR-0059, ADR-0079)`,
+      );
+    }
 
     // R5 (+ the §3.4 default and R9)
-    const hosts = hostsOf(e, catalogHosts, lookups.models ?? []);
+    const hosts = hostsOf(e, catalogHosts, lookups.models ?? [], serverHosts.get(e.name) ?? []);
     secrets.push({
       name: e.name,
       source,
@@ -538,24 +576,6 @@ export function heldSecretsOf(
     }
   }
 
-  // R5: one header on one host names one secret.
-  const byTarget = new Map<string, { name: string; headers: string[] }[]>();
-  for (const s of secrets) {
-    for (const h of s.hosts) {
-      const key = `${h.host}:${h.port}`;
-      for (const other of byTarget.get(key) ?? []) {
-        const shared = s.headers.filter((header) => other.headers.includes(header));
-        if (shared.length > 0) {
-          throw new Error(
-            `${s.name} and ${other.name} are both bound to ${key} in header ${shared.join(", ")} — one header on ` +
-              "one host carries one secret; give each its own `headers` (ADR-0059)",
-          );
-        }
-      }
-      byTarget.set(key, [...(byTarget.get(key) ?? []), { name: s.name, headers: s.headers }]);
-    }
-  }
-
   return { manifest: { version: 1, secrets }, values, warnings };
 }
 
@@ -604,15 +624,30 @@ export function sourceOf(
 
 /** R5 and R9: where one secret may go. A known model key with no `hosts` goes where its provider's
  * calls go — the catalog override's host, else the table's — so the key and the calls read one
- * config and cannot drift. */
+ * config and cannot drift. An MCP server's secret with no `hosts` goes to the host of the url of
+ * each server that names it (ADR-0079), for the same reason. */
 function hostsOf(
   e: { at: string; name: string; hosts?: readonly string[] },
   catalogHosts: ReadonlyMap<string, string>,
   models: readonly string[],
+  servers: ReadonlyArray<{ server: string; host: string; port: number }>,
 ): Array<{ host: string; port: number }> {
   const known = MODEL_KEYS[e.name];
   const effective = new Map<string, string | undefined>();
   for (const provider of known?.providers ?? []) effective.set(provider, catalogHosts.get(provider) ?? known?.host);
+
+  if (e.hosts === undefined && servers.length > 0) {
+    const out: Array<{ host: string; port: number }> = [];
+    const add = (t: { host: string; port: number }) => {
+      if (!out.some((o) => o.host === t.host && o.port === t.port)) out.push({ host: t.host, port: t.port });
+    };
+    for (const s of servers) add(s);
+    // A model key that an MCP server also names keeps its provider's host beside the servers'.
+    const defaults = new Set(effective.values());
+    const only = defaults.size === 1 ? [...defaults][0] : undefined;
+    if (only !== undefined) add(parseTarget(`${e.at}.hosts`, only));
+    return out;
+  }
 
   if (e.hosts === undefined || e.hosts.length === 0) {
     const defaults = new Set(effective.values());
@@ -636,7 +671,21 @@ function hostsOf(
         `or drop hosts to take that default (ADR-0059)`,
     );
   }
+  for (const s of servers) {
+    if (targets.some((t) => t.host === s.host && t.port === s.port)) continue;
+    throw new Error(
+      `${e.at}.hosts leaves out ${s.host}${s.port === 443 ? "" : `:${s.port}`}, the host of mcp.${s.server}.url, ` +
+        `whose secret ${e.name} is — each call of that server would arrive with the Stand-in and fail with 401. ` +
+        "Add it, or drop hosts to take that default (ADR-0059, ADR-0079)",
+    );
+  }
   return targets;
+}
+
+/** Whether the `paths` entry `prefix` lets a request to `path` through: the Custodian's rule — the
+ * same path, or `prefix` and then a `/` (or `prefix` ends in `/`). */
+function pathCovers(prefix: string, path: string): boolean {
+  return path === prefix || (path.startsWith(prefix) && (prefix.endsWith("/") || path.charAt(prefix.length) === "/"));
 }
 
 /** An `https://` URL's host and port, or undefined for anything else. */
