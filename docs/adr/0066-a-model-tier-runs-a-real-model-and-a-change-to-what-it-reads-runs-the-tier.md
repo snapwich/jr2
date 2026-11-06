@@ -239,8 +239,8 @@ recover, finish — are exercised only one scripted tool call at a time.
   below: a trial whose measure is recorded — its first pick after the answer; the body seen back in `coding` after it is
   `revise` — and that does not finish within its time is cancelled and counts as finished. Its time is a trial's bound,
   15 minutes, counted from the desk's first answer. A measured trial whose run settles before then without its task's
-  final — a fault — is not cut, and fails "every trial finished". The prompt, the floor and the measure did not change.
-  Both were decided under the user's deferral on 2026-10-12 and confirmed by the user on 2026-10-12.
+  final — a fault — is not cut, and is unfinished: a miss. The prompt, the floor and the measure did not change. Both
+  were decided under the user's deferral on 2026-10-12 and confirmed by the user on 2026-10-12.
 - The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link) and
   `cut-pick` (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step
   deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
@@ -339,11 +339,14 @@ recover, finish — are exercised only one scripted tool call at a time.
   conversation: the MCP call (`<server>/<tool>`), then the pick. A trial whose model never called the tool is a miss,
   and one that stopped after the tool with no pick is a miss. Its first measured run (2026-11-05) read 10 of 10, none
   void, so its floor is 9 of 10, and its cell is a baseline.
-- **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
-  `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
-  wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but
-  name. A run that ended `failed` (a claim workflow fails on a fault and on a lost Workspace), a run in `error` and an
-  unsettled run never finished.
+- **A trial passes only when its measure passed and its run finished, and an unfinished trial is a miss.** The floor
+  decides, as for any other miss, and the scorecard line counts the unfinished trials (`9/10 (1 unfinished)`), so a hang
+  stays visible and a lower count reports below its baseline. A run that ended `failed` (a claim workflow fails on a
+  fault and on a lost Workspace), a run in `error` and an unsettled run never finished. A claim whose workflow has two
+  task finals (`wake`, `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its
+  measure already counts the wrong one a miss. Rejected: a separate check that fails the scenario when any trial did not
+  finish. It made one miss that left its run active fail a scenario whose floor allows one miss, so the floor was 10 of
+  10 in all but name; and a hang in every trial still fails the floor.
 - `wake` (below, under `push-wake`) has run four times, 10 of 10 each, and is a baseline.
 - **A claim's setup may change; its floor and what counts as a pass may not.** A setup is the part of a trial that
   brings the model to the moment the claim measures. When a claim falls below its floor because that moment seldom
@@ -416,9 +419,9 @@ recover, finish — are exercised only one scripted tool call at a time.
     Two voids stay, each a setup that did not happen. In the first, the first Turn does not pick `started` in its time:
     the run is live, and its body is in `starting`. In the second, no server answers at the `kill` Gate: a server that
     outlives its bash call is the model's job. A body that left `starting` for `faulted` (`agent.fault`) or `lost`
-    (`workspace.lost`) invokes `fail`, and the run ends `failed`. It is not void, and it fails "every trial finished",
-    as the finished rule above says. The bound stays half the trials, rounded up. Rejected: a larger bound for
-    `noticed`, and a fault in `starting` counted as void.
+    (`workspace.lost`) invokes `fail`, and the run ends `failed`. It is not void: it did not finish, so it is a miss, as
+    the finished rule above says. The bound stays half the trials, rounded up. Rejected: a larger bound for `noticed`,
+    and a fault in `starting` counted as void.
 
     Two more voids are new. In the first, the kill does not take the server. The guard's list (`GET /memory-kills`,
     91699c24) holds no new kill, or the port still answers after the hog. Then the exec fails, or the kernel's OOM

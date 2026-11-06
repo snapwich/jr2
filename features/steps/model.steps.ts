@@ -1525,21 +1525,26 @@ function claimOf(world: E2EWorld): Claim {
  * against the floor, and prints as a void, never as a miss. */
 function atLeast(claim: Claim, floor: number, what: string, of: (t: Trial) => boolean, cell = claim.cell): void {
   claim.floors[cell] = floor;
-  const verdict = (t: Trial) => (of(t) ? "pass" : t.void ? "void, past the bound of replacements" : "miss");
+  // A trial passes only when its measure passed AND its run finished (ADR-0066): a run left active,
+  // or one that ended failed, is a miss, and the floor decides, as for any other miss.
+  const passes = (t: Trial) => of(t) && t.finished;
+  const verdict = (t: Trial) =>
+    passes(t) ? "pass" : t.void ? "void, past the bound of replacements" : t.finished ? "miss" : "miss, unfinished";
   for (const t of claim.trials) console.log(`trial ${t.runId} ${cell} ${verdict(t)}: ${t.note}`);
-  const passed = claim.trials.filter(of).length;
-  const failed = claim.trials.filter((t) => !of(t)).map((t) => `  ${t.runId} (${verdict(t)}): ${t.note}`);
+  const passed = claim.trials.filter(passes).length;
+  const failed = claim.trials.filter((t) => !passes(t)).map((t) => `  ${t.runId} (${verdict(t)}): ${t.note}`);
   assert.ok(
     passed >= floor,
     `${what} in ${passed} of ${claim.trials.length} trials, below the floor of ${floor} (${cell}):\n${failed.join("\n")}`,
   );
 }
 
-/** What a cell counts: the primary claim's measure, or a second claim measured on the same trials. */
+/** What a cell counts: the primary claim's measure, or a second claim measured on the same trials,
+ * in a trial whose run finished (ADR-0066). */
 function measureOf(claim: Claim, cell: string): (t: Trial) => boolean {
-  if (cell === claim.cell) return (t) => t.measured;
+  if (cell === claim.cell) return (t) => t.measured && t.finished;
   const name = cell.slice(0, cell.indexOf("/"));
-  return (t) => t.also?.[name] === true;
+  return (t) => t.also?.[name] === true && t.finished;
 }
 
 // --- scorecard ------------------------------------------------------------------------------------------
@@ -1562,6 +1567,7 @@ async function recordCell(
   trials: number,
   floor?: number,
   usage?: CellUsage,
+  unfinished = 0,
 ) {
   const key = modelKey(world);
   const at = new Date().toISOString();
@@ -1578,7 +1584,7 @@ async function recordCell(
     { passed: number; trials: number }
   > | null;
   const base = baseline?.[cell];
-  let line = `${key} ${cell}: ${passed}/${trials}`;
+  let line = `${key} ${cell}: ${passed}/${trials}${unfinished ? ` (${unfinished} unfinished)` : ""}`;
   if (base) {
     const drift = passed / trials - base.passed / base.trials;
     line += drift < 0 ? ` — BELOW baseline ${base.passed}/${base.trials}` : ` (baseline ${base.passed}/${base.trials})`;
@@ -1765,12 +1771,6 @@ Then("no Sandbox was provisioned in any trial", async function (this: E2EWorld):
   }
 });
 
-Then("every trial finished", function (this: E2EWorld): void {
-  const claim = claimOf(this);
-  const unfinished = claim.trials.filter((t) => !t.finished).map((t) => `  ${t.runId}: ${t.note}`);
-  assert.equal(unfinished.length, 0, `trials that did not finish (${claim.cell}):\n${unfinished.join("\n")}`);
-});
-
 Then("the cell {string} is written to the scorecard", async function (this: E2EWorld, cell: string): Promise<void> {
   const claim = claims.get(this);
   if (claim) {
@@ -1778,7 +1778,16 @@ Then("the cell {string} is written to the scorecard", async function (this: E2EW
     assert.ok(cell === claim.cell || second, `the scenario names a cell it ran (${claim.cell})`);
     const measure = measureOf(claim, cell);
     const usage = cell === claim.cell ? cellUsage(claim.spent) : undefined;
-    await recordCell(this, cell, claim.trials.filter(measure).length, claim.trials.length, claim.floors[cell], usage);
+    const unfinished = claim.trials.filter((t) => !t.finished && !t.void).length;
+    await recordCell(
+      this,
+      cell,
+      claim.trials.filter(measure).length,
+      claim.trials.length,
+      claim.floors[cell],
+      usage,
+      unfinished,
+    );
     return;
   }
   // The run: one trial, measured by the steps before this one reaching here.

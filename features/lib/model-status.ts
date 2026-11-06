@@ -22,7 +22,7 @@ export function bodyIn(s: { children?: RunChild[] }, name: string): boolean {
  * noticed's setup void (ADR-0066): the first Turn did not pick `started` in its time, so the second
  * Turn, which the claim measures, did not start. Told by the run when the step stops waiting: still
  * live, and its body still in `starting`. A run that settled — a fault, a lost Workspace — is no
- * void: "every trial finished" reads it.
+ * void: it did not finish, so its trial is a miss.
  */
 export function stillStarting(s: { status: string; children?: RunChild[] }): boolean {
   return !isSettled(s.status) && bodyIn(s, "starting");

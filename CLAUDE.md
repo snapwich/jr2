@@ -155,7 +155,8 @@ trial in flight, on a 16 CPU, 45 GB host that three kind clusters share). One ch
 second suite fails at once, whatever its profile, and two suites at once need two worktrees.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
-`scorecard: <model> <cell>: k/N`. Every trial, pass or not, keeps its evidence in
+`scorecard: <model> <cell>: k/N`, with `(u unfinished)` when a trial's run did not finish. A trial passes only when its
+measure passed and its run finished: an unfinished trial is a miss. Every trial, pass or not, keeps its evidence in
 `features/.tmp/model-trials/<model>/<cell>/<runId>/` — the printed conversation, the Effector's log, the Harness history
 view, the Machine's final record and, for a push claim, the push remote's log (ADR-0066). Each cell also records the
 tokens and the cost its trials spent, off their Settlements, and prints
