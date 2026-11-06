@@ -78,5 +78,6 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
   the watch and the Harness attach. ADR-0001: the operator publishes pod facts on the Sandbox's status, and writes
   status only on change — every write is now a watch event at the Orchestrator.
 - The Harness gains a route that is not about a conversation. It is jr2's own work in the container ADR-0005 gives it.
-- The CLI keeps `kubectl` on the user's machine (`jr2 up`, `jr2 ssh`, ADR-0009); only the Orchestrator stops using it.
+- The CLI keeps `kubectl` on the user's machine (`jr2 up`, the `jr2 workspace` verbs, ADR-0009); only the Orchestrator
+  stops using it.
 - Tests fake the client with a small HTTP server instead of a `kubectl` stub.

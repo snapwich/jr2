@@ -89,8 +89,9 @@ to ask about.
   ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)) is the run's data, not its Machine's shape: the Chart's
   text and its hash ride the body's own snapshot, restore admits the text again and compares the hash, and a mismatch or
   a refusal is drift naming the body slot and the reason, after the stamp check and in the same words.
-- **A drifted run is not in `jr2 runs`**, which lists only the live registry. It is reachable through the announce line
-  and `jr2 status <id>`. If stranded runs become common enough to browse, the listing is where that belongs.
+- **A drifted run is in `jr2 runs --status drifted`** and in the Console's list of ended runs, with its reason
+  ([ADR-0009](0009-cli-and-instance-interface.md)), and `jr2 status <id>` reads it whole. It is not in the default
+  listing, which is the live runs.
 - **The digest is only as complete as the walk.** A state running `enqueueActions` can spawn children no static analysis
   recovers (`machine-doc.ts`'s `opaqueStates`); the opacity is folded into the hash, but what it hides is not. Drift
   inside such a subtree can go unnoticed.

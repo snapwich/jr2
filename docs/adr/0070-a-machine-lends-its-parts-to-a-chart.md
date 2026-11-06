@@ -177,10 +177,9 @@ their own maintainers, and the escapes shipped in systems that used them were in
   token, not the publish token, because a Chart is data and cannot reach the process, which is the whole point of this
   decision; it lives on the Orchestrator's volume at `.jr2/charts/<wrapper>/<name>.chart.json` beside the Assemblies,
   written durably, and survives restarts. A live run holds its Chart through the text in its own snapshot, so a `DELETE`
-  while a run is live answers at once and the run goes on. It lists in `jr2 runs` and the Console with its origin shown:
-  `jr2 runs` keeps its result, the live runs, and prints the listing beside it as activity, with `--workflows` to make
-  the listing the result ([ADR-0009](0009-cli-and-instance-interface.md)); there is no verb for `PUT` or `DELETE`, an
-  MCP or `curl` is the client. `GET /workflows` lists each wrapper with its Charts inside its entry, not beside it, and
+  while a run is live answers at once and the run goes on. It lists in `jr2 workflows` and the Console with its origin
+  shown ([ADR-0009](0009-cli-and-instance-interface.md)); there is no verb for `PUT` or `DELETE`, an MCP or `curl` is
+  the client. `GET /workflows` lists each wrapper with its Charts inside its entry, not beside it, and
   `GET /workflows/<wrapper>` carries each Open body's declaration. So a Workflow is one of three things: a Machine from
   the Assembly, a Chart file from the Assembly, or a runtime Chart, and the last two are children of the first. **There
   is no collision rule between a Machine and a Chart**: a Machine's name is a filename stem and holds no slash, a

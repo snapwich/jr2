@@ -33,23 +33,27 @@ guarded        each route below, opened by one scope of a Caller   run state + c
 
   ```
   start    POST /workflows/:name/runs, POST /workflows/:wrapper/charts/:name/runs
-  read     GET /runs (the runs of its Workflows), GET /runs/:id (the whole status), GET /runs/:id/events
-  answer   POST /runs/:id/gates/:gate/events, GET /gates, and the `gates` of GET /runs/:id
+  read     GET /runs (summaries of the runs of its Workflows, live and ended), GET /runs/:id (the whole status),
+           GET /runs/:id/events, GET /runs/:id/conversations[/:iid[/events]] (the kept conversations, ADR-0023)
+  answer   POST /runs/:id/gates/:gate/events, GET /gates (the open Gates it may answer), and the `gates` of GET /runs/:id
   cancel   POST /runs/:id/events (CANCEL)
-  steer    POST /runs/:id/steering, GET /runs/:id/agents (the conversation list { agent, open, steerable }, ADR-0002)
+  steer    POST /runs/:id/steering, GET /runs/:id/agents (the slot list { agent, open, steerable }, ADR-0002)
   ```
 
   `answer` alone opens a run's `gates` and their routing, and never its `context`: a person who answers a Gate reads the
   Gate's `meta`, which the author wrote for that person. So `GET /runs/:id` gives `read` the status and `answer` the
   `gates`; with `answer` alone the answer is the run's observation (below) and its `gates`. `GET /runs` leaves out the
   runs of the Workflows that the Caller may not read; it refuses no run, and refuses only a Caller with no `read` scope
-  at all (ADR-0078). `GET /runs/resolve` answers ids to a Caller with any scope, for the Workflows of its scopes.
-  `GET /whoami` answers any Caller. A route that no scope names stays the Instance token's: the runtime Chart routes
-  (`PUT` and `DELETE /workflows/:wrapper/charts/:name`), `GET /repos`, a Hook's log (`GET /hooks/:name`, which can hold
-  a payload's fields and a handler's words), and the Instance-token door on `/agents/:iid/*` (ADR-0013).
-  `POST /hooks/:name` is outside the bands: the Hook's own verifier authenticates it
-  ([ADR-0011](0011-workflow-defined-events.md)). The band is named for what it checks, not for a role — "operator" in
-  this repo is the Kubernetes operator (ADR-0001).
+  at all (ADR-0078). `answer` can name single Gates of a Workflow (ADR-0078). Then the gate POST refuses another Gate of
+  that Workflow, and `GET /gates` (its entries are ADR-0011's) and the `gates` of `GET /runs/:id` list only the Gates
+  that the Caller may answer. Neither gives the run's `context`. `GET /runs/resolve` answers ids to a Caller with any
+  scope, for the Workflows of its scopes. `GET /whoami` answers any Caller. A route that no scope names stays the
+  Instance token's: the runtime Chart routes (`PUT` and `DELETE /workflows/:wrapper/charts/:name`), `GET /repos`, a
+  Hook's log (`GET /hooks/:name`, which can hold a payload's fields and a handler's words), and the Instance-token door
+  on `/agents/:iid/*` (ADR-0013) except the conversation route, which takes only a control token
+  ([ADR-0023](0023-the-harness-prints-the-conversation.md)). `POST /hooks/:name` is outside the bands: the Hook's own
+  verifier authenticates it ([ADR-0011](0011-workflow-defined-events.md)). The band is named for what it checks, not for
+  a role — "operator" in this repo is the Kubernetes operator (ADR-0001).
 
 - **The observer gets a PROJECTION, not a credential.** `RunObservation` is
   `{ runId, workflow, status, value, children }` — identity, and where in the Machine the run is. What is absent is the
@@ -106,8 +110,11 @@ guarded        each route below, opened by one scope of a Caller   run state + c
   form; then it prints there as the model read it. The answer also carries an Effect's output as the model read it: a
   `command` Effect's output prints there up to the bound, and a Held value an upstream echoed into that output prints
   with it (ADR-0023, ADR-0059). What remains, deliberately, is that on a shared cluster the population who can read an
-  Agent's reasoning, and what its picks answered, is whoever can read pod logs. If that becomes unacceptable, the fix is
-  the read-through ADR-0023 declined to build — behind `read`, on this surface, where the band already works.
+  Agent's reasoning, and what its picks answered, is whoever can read pod logs. The Orchestrator's kept copy of the same
+  conversation is not part of the exception: it is on this surface, behind `read`, and `jr2 logs` and the Console read
+  it there (ADR-0023). Thus `read` opens the same residual of a pick's answer for as long as the run is kept
+  (`runs.retain`, ADR-0065). If the pod-log audience becomes unacceptable, the print is what to turn off, and the record
+  stays.
 
 Evidence: `packages/orchestrator/src/http.ts` (the middlewares), `run-host.ts` (`observe` / `RunObservation` /
 `RunChild`), `test/auth.test.ts` (the boundary), `test/callers.test.ts` (each scope on its routes),

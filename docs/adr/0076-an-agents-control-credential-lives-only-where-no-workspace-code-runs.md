@@ -57,17 +57,33 @@ code from `/work`.
   to find what a rule allows: a link gets no rule (what it names gets its own rule where it is allowed, and the kernel
   checks the path that a link resolves to), and the confiner refuses to start when a rule's path has a link on it. A
   rule on a link would allow what the link names at each restart, and a confined process can change that.
+- **A person's shell is a process of the domain.** `jr2 workspace shell`
+  ([ADR-0009](0009-cli-and-instance-interface.md)) is `kubectl exec -c harness` of a small client in `/opt/jr2`, which
+  starts as the Harness starts (`effector nocore --harness-env`). The client starts nothing itself. It asks the Harness,
+  on a Unix socket in `/run/jr2/shell`, for the shell or for the one command after `--`, and the Harness asks the
+  spawner. So the shell is in the one domain, with the domain's env (the Stand-ins that the Workspace grants), its umask
+  and git identity, and the Workspace's cwd. It sees, signals and traces the Agents' processes, as a later `bash` call
+  does: a person can stop a dev server that an Agent left. With a terminal, the spawner opens a pseudo-terminal for the
+  shell, as its controlling terminal in a session of its own. The client sends the keys, the terminal's size and the
+  hang-up, and the spawner closes the terminal when the shell exits. The output has flow control: while the socket to
+  the client is full, the Harness pauses the spawn, and the spawner reads none of its output until the resume. So the
+  terminal fills and the shell's writes block, as on a slow terminal, and a fast shell does not fill the memory of the
+  Harness that serves the Agents' Turns. `/run/jr2/shell` is an emptyDir of the Harness container alone, and the domain
+  can make no file under `/run/jr2`, so no process of the domain listens in the Harness's place. A process of the domain
+  can connect to the socket, because Landlock does not control a connect. So the client proves that it is not one: its
+  first frame carries a digest of the control Stand-in, which it reads from the file and which the domain cannot read.
+  The Stand-in itself never goes on the socket. Without the proof, the Harness starts nothing.
 - **The domain can do what the container's uid can do, except reach jr2's secrets.** The rules give every right on every
   path, with one exception: `/run/jr2`. There the domain can list the names in each folder, and do nothing else.
   Landlock only narrows the Unix permissions, so a confined program can do everything that the uid can do without
   Landlock, except:
   - reach the contents of `/run/jr2`: read, write, truncate, make, remove, move or link a file or a folder there.
     `/run/jr2` holds the control Stand-in, each held secret's Stand-in, the folder of the Custodian's control socket,
-    and the Harness's conversations. Every path that jr2 holds for the Harness alone is under `/run/jr2`. Landlock
-    allows a path only by its rules, so the confiner allows every sibling of `/run/jr2` and of each folder above it, one
-    level at a time. It also gives the root the right to list names on its whole tree, so `ls /`, `ls /run` and `find /`
-    work as they do outside jr2. That right lists the names under `/run/jr2` too: a held secret's name, a conversation's
-    file name. These names are not secrets.
+    the folder of the shell's socket, and the Harness's conversations. Every path that jr2 holds for the Harness alone
+    is under `/run/jr2`. Landlock allows a path only by its rules, so the confiner allows every sibling of `/run/jr2`
+    and of each folder above it, one level at a time. It also gives the root the right to list names on its whole tree,
+    so `ls /`, `ls /run` and `find /` work as they do outside jr2. That right lists the names under `/run/jr2` too: a
+    held secret's name, a conversation's file name. These names are not secrets.
   - trace the Harness process, or read its `/proc/<pid>/environ` or `/proc/<pid>/mem`. A confined process cannot ptrace
     a process outside its domain.
   - at Landlock ABI 6 or later, connect to an abstract Unix socket that a process outside the domain made. The
@@ -170,8 +186,9 @@ code from `/work`.
   the security boundary: the boundary is that only the Harness holds the credential.
 - **Two tokens, each checked on its own routes.** This is defence in depth:
   - The **control token** is what the Custodian puts in place of the secret control Stand-in. It is valid only on the
-    agent routes (`/agents/<iid>/surface`, `/agents/<iid>/events`, `/agents/<iid>/deliveries/<id>`, and the route on
-    which the Harness acknowledges a notice), and it carries the stated slot.
+    agent routes (`/agents/<iid>/surface`, `/agents/<iid>/events`, `/agents/<iid>/deliveries/<id>`, the route on which
+    the Harness acknowledges a notice, and `/agents/<iid>/conversation`, on which it sends the entries of the
+    conversation, [ADR-0023](0023-the-harness-prints-the-conversation.md)), and it carries the stated slot.
   - The **fetch token** is what the Custodian puts in place of the public Sandbox Stand-in that `jr2-upload-pack` holds
     as a constant. It is valid only on `POST /sandboxes/<sandbox>/fetch`
     ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). The Custodian
@@ -209,6 +226,13 @@ code from `/work`.
 
 ## Considered options
 
+- **A raw `kubectl exec -c harness` shell (the old `jr2 ssh`).** Rejected: it runs outside the Landlock domain and can
+  read `/run/jr2`, so a person's shell, and any code that the person runs in it, reaches the control Stand-in.
+  `jr2 workspace shell` is a process of the spawner's domain ([ADR-0009](0009-cli-and-instance-interface.md)).
+- **A person's shell in a sibling domain with the same rules**, which the client makes again with the confiner, so the
+  spawner needs no pseudo-terminal and the Harness needs no socket. Rejected: the shell reaches what an Agent's `bash`
+  reaches and nothing more, but it is not in the Agents' domain. It cannot trace their processes, and at ABI 6 or later
+  it cannot signal them, so a person cannot stop a runaway dev server, which is a usual reason to open a shell.
 - **One Harness container for each agent slot, each with its own secret Stand-in.** Rejected. Kubernetes isolates one
   container from another, but all the slots share the writable `/work`. Code that one Agent plants there runs in a
   sibling's container when the sibling's `bash`, git or tests run, or when a `command` Effect runs there, and that code

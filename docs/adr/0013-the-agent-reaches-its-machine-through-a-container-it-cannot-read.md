@@ -32,7 +32,7 @@ is needed either (ADR-0006).
   ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). The fetch token's Stand-in
   is public, `jr2-held-JR2_SANDBOX_TOKEN`, and `jr2-upload-pack` holds it as a constant. The Harness reaches the
   Orchestrator only through the Custodian: the agent routes on its control socket, `/run/jr2/custodian/control.sock`,
-  which no confined program can replace (ADR-0076), and the fetch on `127.0.0.1:8081`. The Custodian forwards five
+  which no confined program can replace (ADR-0076), and the fetch on `127.0.0.1:8081`. The Custodian forwards six
   routes, with each route's own token put in place of its Stand-in, and answers every other route itself:
 
   ```
@@ -40,6 +40,7 @@ is needed either (ADR-0006).
   POST /agents/<iid>/events           a pick                              → the Orchestrator
   GET  /agents/<iid>/deliveries/<id>  an outstanding pick's answer        → the Orchestrator
   POST /agents/<iid>/notices          a step boundary's notices heard     → the Orchestrator
+  POST /agents/<iid>/conversation     a batch of the conversation's entries (ADR-0023) → the Orchestrator
   POST /fetch                         the ask (ADR-0053), for THIS pod's Sandbox → POST /sandboxes/<name>/fetch
   anything else                       404
   ```
@@ -69,6 +70,7 @@ is needed either (ADR-0006).
   POST /agents/:iid/events             → validate + deliver → the receipt, or 409  [control token]
   GET  /agents/:iid/deliveries/:id     → an outstanding pick's answer, long-polled [control token]
   POST /agents/:iid/notices            → the notices a step boundary appended, heard (ADR-0062) [control token]
+  POST /agents/:iid/conversation       → a batch of the conversation's entries (ADR-0023)  [control token]
   ```
 
   The receipt is `{ delivered, event, moved, turnComplete, allowed, deliveryId }`. A pick the workflow is still running

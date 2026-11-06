@@ -42,11 +42,12 @@ carved out for "the Orchestrator ending a run for its own reasons" was being spe
   wrapper's `teardown` is a STATE, entered when the body reaches final, and an actor stop skips it; so the host destroys
   every Sandbox the run owns after the stop, the same idempotent delete `teardown` runs.
   `POST /runs/:id/events { type: "CANCEL", keep: true }` — `jr2 send <run> --event CANCEL --keep` — leaves them for
-  inspection instead: with no Lease they age out at the operator's idle timeout, and `jr2 ssh` reaches them until then.
-  Whether to keep is a fact of the moment of the cancel, never a config key. A **faulted** run keeps its Workspaces as
-  before ([ADR-0012](0012-workspace-wrapper-machine.md)'s destroy-less terminal, ADR-0021): a fault is the case nobody
-  chose, and the pod is the evidence. A **failed** run deletes them, as a `done` run does: a Failure is an end that the
-  Machine chose ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)).
+  inspection instead: with no Lease they age out at the operator's idle timeout, and `jr2 workspace shell` reaches them
+  until then; `jr2 workspace rm` removes one sooner. Whether to keep is a fact of the moment of the cancel, never a
+  config key. A **faulted** run keeps its Workspaces as before ([ADR-0012](0012-workspace-wrapper-machine.md)'s
+  destroy-less terminal, ADR-0021): a fault is the case nobody chose, and the pod is the evidence. A **failed** run
+  deletes them, as a `done` run does: a Failure is an end that the Machine chose
+  ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)).
 
 ## Considered options
 

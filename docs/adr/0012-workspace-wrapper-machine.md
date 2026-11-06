@@ -88,8 +88,15 @@ the same contract as a temp directory.
 
 - The body chooses how many Agents work in its Workspace (ADR-0004, ADR-0075). The wrapper has no lock machinery for
   them.
-- The workspace labels the CR with its run (`jr2.dev/run`, `jr2.dev/workflow`), which is what `jr2 ls` groups by
-  (ADR-0009).
+- The workspace labels the CR with its run, its Workflow and its path (`jr2.dev/run`, `jr2.dev/workflow`,
+  `jr2.dev/workspace`), and writes the exact path in the annotation `jr2.dev/workspace-path`. The path is the workspace
+  actor's path in the run's Machine: actor ids joined by `/`, and a Pool child's id is its item's id, which can hold any
+  character. A label value holds at most 63 characters from `[A-Za-z0-9._-]`, so the label holds a form of the path for
+  a selector only: each other character becomes `-`, leading and trailing characters that are not alphanumeric are
+  removed (a label value must start and end with one), and a value above 63 characters is cut and ends with a hash, as
+  the CR's name does. A person selects by it with `kubectl -l`; no jr2 reader does. The `jr2 workspace` verbs list the
+  CRs by `jr2.dev/run` and compare a handle, `<run-prefix>/<workspace path>`, with the annotation, with no Orchestrator
+  (ADR-0009). They do not select by a run prefix, because a label selector matches only a whole value.
 - **Lost workspace: the wrapper emits, the body decides.** While the body runs, a lease actor beside it renews the
   Sandbox's keepalive and follows the Sandbox watch for whether the workspace it attached to is still there (ADR-0021,
   ADR-0063) — continuously, and on snapshot restore as the first tick of that same loop rather than a separate

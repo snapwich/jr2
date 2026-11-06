@@ -151,7 +151,8 @@ a pod, jr2 drops this lock and adds a `@model` claim that an Agent runs the fetc
   (ADR-0021).
 - **An Agent's commits on a side branch are not published**, and `found` says `held`. A warning field can follow after
   v1.
-- **`jr2 status <run>` shows each path and branch.** `jr2 ls` shows only Sandboxes, because it reads cluster labels.
+- **`jr2 status <run>` shows each path and branch.** `jr2 workspace ls` shows only Sandboxes, because it reads cluster
+  labels.
 
 ## Example
 

@@ -286,9 +286,11 @@ from env.
 
 ## Consequences
 
-- The everyday story is two commands ever: `jr2 init`, `jr2 up`. The full CLI: `init`, `up`, `down`, `gc` (ADR-0039),
-  `run`, `runs`, `status`, `logs`, `send`, `kit push` (ADR-0044), plus the workspace verbs `ls`, `ssh`, `rm` (ADR-0009;
-  decided, not yet in the binary).
+- The everyday story is two commands ever: `jr2 init`, `jr2 up`. The rest of the CLI is in ADR-0009's table, and the
+  workspace verbs `workspace ls|shell|forward|rm` are among them.
+- **The workspace verbs are not run-verbs.** They address the Sandbox CRs of the current context with its kube
+  credentials alone: no port-forward to the Orchestrator, no Instance token and no Caller scope. So they work when the
+  Orchestrator is down, and kube RBAC on the Sandbox CRs and their pods is the whole gate.
 - **Simplification must not surprise**: `up` prompts exactly when meeting a cluster that isn't yet home, and run-verbs
   print the context they're talking to — the ambient-context magic stays visible.
 - The snapshot store (sqlite) moves onto a PVC in the instance's namespace; `.jr2/` shrinks to scratch.

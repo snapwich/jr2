@@ -41,10 +41,25 @@ presents a credential; the page never ships with one.
   token) drops the UI back to observer mode rather than failing per widget.
 - **Gate discovery is a frame-triggered guarded read, not an open-band extension.** A Gate exists exactly while its
   invoking state is entered ([ADR-0011](0011-workflow-defined-events.md)), and every entry/exit lands a status frame on
-  the open workflow feed (ADR-0022) — so on each frame, a Console whose Caller has `answer` re-fetches `GET /runs/:id`
-  for the affected run and folds `gates` into its store. Perfectly synchronized, no polling loop, and the observation
-  projection is untouched. A delivery's success is likewise confirmed by the next frame emptying the card, never by
-  local bookkeeping.
+  the open workflow feed (ADR-0022) — so a Console whose Caller has `answer` reads `GET /gates` on entry and again on
+  each frame, and folds the Gates into its store. `GET /gates` lists only the Gates that the Caller may answer, across
+  every Workflow (ADR-0078), so the Gate cards are the person's inbox and never show a Gate the person cannot answer.
+  Synchronized, no polling loop, and the observation projection is untouched. A delivery's success is likewise confirmed
+  by the next frame emptying the card, never by local bookkeeping.
+- **The rail lists ended runs too.** It lists the live runs and, under them, the ended runs of the selected Workflow
+  from `GET /runs?status=ended&workflow=<name>` (ADR-0009), each with its status, and a `drifted` run with its reason
+  (ADR-0030). An ended run opens as a live one does: its graph, its last status and its conversations, for as long as
+  jr2 keeps the run (ADR-0065). A run on an older Assembly carries the mark "older Assembly · <hash>" and is drawn on
+  its own Machine, live or ended: an ended run's row names the Machine it ran on
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). A `drifted` run has no
+  Machine to draw, so it shows its drift reason in place of the graph. The Console shows each outstanding pick as
+  "outstanding since".
+- **A conversation opens in a bottom drawer.** A full-width drawer across the bottom of the page shows the run's
+  conversations ([ADR-0023](0023-the-harness-prints-the-conversation.md)). A person can change its height, and the page
+  keeps the height for that viewer. Closed, it is a bar of tabs, one for each Agent slot, with a dot on a slot whose
+  Turn is live. Open, it shows the selected slot's conversation and follows a live Turn, with the Steering box beside it
+  for a Caller with `steer`. It reads the conversation routes, so it needs `read`. The right drawer keeps Attention and
+  Activity.
 - **Page addresses content-negotiate; JSON is the default dialect.** `/` and `/workflows/:name` serve the Console shell
   to `Accept: text/html` and JSON to everything else — so the workflow-detail resource keeps its natural address (the
   run-input schema's home, [ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)) and no future page has to
@@ -59,6 +74,8 @@ presents a credential; the page never ships with one.
   where the browser talks to the Service directly and the CLI is not in the path.
 - **The Instance token alone.** Rejected (ADR-0078): a person who must answer Gates and holds no cluster RBAC would then
   hold every act on every run. A scoped Caller's credential is what that person holds.
+- **The conversation in the right drawer.** Rejected: a conversation needs the page's width, and the right drawer keeps
+  Attention and Activity.
 - **Announce gates on the open observation feed** (even just `{runId, gate}`). Rejected: it widens the projection for a
   convenience the credential already solves, and the open band has an unresolved exposure question as it stands (spawn
   ids — the ADR-0014 open call). The projection stays the one place the line is drawn.
