@@ -29,36 +29,33 @@ order of the time of each entry:
 jr2 logs <run id>
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Work in /work/target/task, on branch jr2/task-84f810c8-dda7-4577-a57e-4a09a4e7f507 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] <jr2-turn>
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Working directory: /work/target/task
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Allowed now: `mcp__jr2__finish`.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] </jr2-turn>
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [thinking] The user wants me to:
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 1. Run `node bin/greet.js` from the `docs/intro/repo` directory within the worktree
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 2. Report what it printed
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 3. Commit my work and call finish
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Let me first run the command.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [text]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [bash] cd /work/target/task && node docs/intro/repo/bin/greet.js
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [thinking] The command printed "hello, world". Now I need to finish with that information.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [text]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [finish] {"summary":"Ran `node bin/greet.js` from docs/intro/repo. It printed: hello, world"}
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [finish answer] Delivered "finish" to the workflow (delivery 1b61fa16-50b7-4202-b7ed-b46a6ead5930). The workflow consumed it and moved on: your turn is over.
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] Work in /work/target/task, on branch jr2/task-48ebf9ad-1e5d-4997-a330-d91ec762f83c — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] <jr2-turn>
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] Working directory: /work/target/task
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] Allowed now: `mcp__jr2__finish`.
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] </jr2-turn>
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] [thinking] The user wants me to:
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] 1. Run `node bin/greet.js` in the directory `docs/intro/repo`
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] 2. Finish with what it printed
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] Let me first check if this file exists and what it contains, then run it.
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] [text]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] [bash] node docs/intro/repo/bin/greet.js
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] [thinking] The command printed "hello, world". Now I need to finish with that.
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] [text]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder]
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] [finish] {"summary":"Ran `node bin/greet.js` in docs/intro/repo. It printed: hello, world"}
+[coder] [7a0e8b50-7b3e-4d83-837c-d07857d81868/body/coder] [finish answer] Delivered "finish" to the workflow (delivery a86c2340-377a-4c4d-a138-2872c38c1219). The workflow consumed it and moved on: your turn is over.
 ```
 
 The thinking, the calls and the text are the words of the model, so your conversation is different. Your ids are
@@ -145,8 +142,6 @@ Then run [`jr2 up`](../reference/cli.md#up). The Orchestrator uses the new `reta
 hour. When `runs.volume` is larger than the volume claim, `jr2 up` makes the claim larger, but only when its
 StorageClass allows expansion. The `standard` class of kind does not. Thus on kind, with the claim of `5Gi` that the
 first `jr2 up` made, `jr2 up` refuses, and applies nothing:
-
-<!-- output: not run -->
 
 ```text
 …

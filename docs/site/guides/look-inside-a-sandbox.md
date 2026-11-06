@@ -30,18 +30,16 @@ the Instance:
 jr2 workspace ls <run id>
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-WORKSPACE     SANDBOX                 WORKFLOW  PHASE  AGE  RUN
-a1322024/x:2  ws-a1322024-x-2-h8pgwk  task      Ready  16s  held
+WORKSPACE     SANDBOX                  WORKFLOW  PHASE  AGE  RUN
+7a0e8b50/x:0  ws-7a0e8b50-x-0-1eolpdi  task      Ready  32s  held
 ```
 
 - `WORKSPACE` is the handle of the Workspace: the first 8 characters of the run id, then the path of the Workspace in
   the run. In the commands below, write it in place of `<workspace>`. You can also give the name of the Sandbox, or the
   first characters of the run id, then `/` and the path.
-- `SANDBOX` is the name of the Sandbox, here `ws-a1322024-x-2-h8pgwk`. Your name is different. The pod has the same
+- `SANDBOX` is the name of the Sandbox, here `ws-7a0e8b50-x-0-1eolpdi`. Your name is different. The pod has the same
   name.
 - A run that has two Workspaces at the same time has two rows.
 - `PHASE` is `Pending` until the pod is ready and its node has a fresh cache of each
@@ -108,8 +106,8 @@ git -C /work/<Repo Slot>/default worktree list
 For the slot `target` of a run of `task`, the output is:
 
 ```text
-/work/target/default  7f258f6 (detached HEAD)
-/work/target/task     e467788 [jr2/task-1f34eef3-5749-4d7c-a16b-488c56ec88cd]
+/work/target/default  9f67321f (detached HEAD)
+/work/target/task     9f67321f [jr2/task-48ebf9ad-1e5d-4997-a330-d91ec762f83c]
 ```
 
 The first line is the clone, on the base of the Repo Slot. Here the base is a tag, so the clone is detached. On a
@@ -187,11 +185,9 @@ A Sandbox that a cancel with `--keep` or a fault left stays until the operator d
 jr2 workspace rm <workspace>
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-removed Workspace a1322024/x:2 (ws-a1322024-x-2-h8pgwk)
+removed Workspace 7a0e8b50/x:0 (ws-7a0e8b50-x-0-1eolpdi)
 ```
 
 `jr2 workspace rm` removes only a Sandbox that `jr2 workspace ls` shows as `released` or `idle`. To remove the Sandbox

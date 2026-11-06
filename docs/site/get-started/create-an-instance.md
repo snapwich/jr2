@@ -79,14 +79,12 @@ jr2 up
 `jr2 up` checks the folder with the TypeScript compiler before it changes the cluster. Then it converges the cluster of
 your current kubectl context. The first time, it asks before it makes the namespace. Type `y`:
 
-<!-- output: not run -->
-
 ```text
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 agents: (none) (carried by 1 workflow machine(s))
 assembly: staging
-assembly: ba71fa27f37f (kit v<version>; 1 workflow(s): ping)
+assembly: 50e6f81e3bfb (kit v<version>; 1 workflow(s): ping)
 kubernetes: v1.36.1 (floor 1.35, ADR-0037)
 first contact: deploy instance "my-instance" to context kind-jr2 (create namespace "my-instance")? [y/N] y
 platforms: linux/amd64 (from 1 schedulable node(s))
@@ -95,13 +93,14 @@ images: installed kit — the published v<version> Harness, operator and Orchest
 orchestrator: waiting for rollout
 orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
 instance effector: none (no Effect is placed there, and no Hook needs it)
-assembly: publishing ba71fa27f37f (no current Assembly)
-assembly: ba71fa27f37f is current — workflows: ping
+assembly: publishing 50e6f81e3bfb (no current Assembly)
+assembly: 50e6f81e3bfb is current — workflows: ping
 swept nothing — every labeled image is named by a live root
+…
 converged — `jr2 run <workflow>` when ready
 ```
 
-`<version>` is the Kit version, such as `0.4.1`. `ba71fa27f37f` is the hash of the
+`<version>` is the Kit version, such as `0.4.1`. `50e6f81e3bfb` is the hash of the
 [Assembly](../reference/glossary.md#assembly) of your Instance: your Workflows and your config. Your hash can be
 different. It changes each time that your Workflows or your config change.
 
@@ -120,13 +119,11 @@ jr2 run ping --input '{"message":"hi"}'
 `jr2 run` starts a run of `ping` and stays attached to it. When the run ends, it prints the last status of the run as
 JSON:
 
-<!-- output: not run -->
-
 ```text
 → context kind-jr2 / namespace my-instance
-run a256ff8a-f99f-42f5-975c-4f93a5008c56 (ping) — attached
+run db1fd16f-166f-4575-b8fb-60cd80321308 (ping) — attached
   → done "done"
-{"runId":"a256ff8a-f99f-42f5-975c-4f93a5008c56","workflow":"ping","instanceId":"0e82cc83-7c15-426f-86ff-e7354873a429","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"ba71fa27f37f"}
+{"runId":"db1fd16f-166f-4575-b8fb-60cd80321308","workflow":"ping","instanceId":"71af068c-e150-4802-8b1c-6d07d3bb4a08","startedAt":"2026-11-06T19:15:47.436Z","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"50e6f81e3bfb","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}
 ```
 
 Your run id and your [Instance ID](../reference/glossary.md#instance-id) are not the same as the ones here. The run is

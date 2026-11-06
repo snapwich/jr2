@@ -1,6 +1,6 @@
 import { assign } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup, steer } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, steer } from "@jr2/orchestrator";
 
 // The writer's pick: the draft is ready for review.
 const done = defineEvent({
@@ -20,30 +20,33 @@ const approve = defineEvent({
   input: z.object({}),
 });
 
-type Context = { version: string; draft?: string };
+type Context = { version: string; draft?: string; fault?: string };
 
 export const machine = jr2Setup({
   types: {} as { input: { version: string }; context: Context },
   events: [done, note, approve],
   actors: {
     writer: agent({
-      model: "anthropic/claude-haiku-5-5",
+      model: "local/qwen3.6-35b-a3b",
       instructions: "You write short release notes.",
       workspace: "none",
     }),
     // A Caller cannot steer the reviewer. The Machine can.
     reviewer: agent({
-      model: "anthropic/claude-haiku-5-5",
+      model: "local/qwen3.6-35b-a3b",
       instructions: "You review release notes for clear and correct words.",
       workspace: "none",
       steerable: false,
     }),
+    fail: fail(),
   },
 }).createMachine({
   id: "notes",
   input: z.object({ version: z.string() }),
   context: ({ input }) => ({ version: input.version }),
   initial: "writing",
+  // A Turn that fails in either state ends the run `failed`, with the reason of the Turn.
+  on: { "agent.fault": { target: ".failed", actions: assign({ fault: ({ event }) => event.reason }) } },
   states: {
     writing: {
       invoke: {
@@ -69,5 +72,6 @@ export const machine = jr2Setup({
       },
     },
     published: { type: "final" },
+    failed: { invoke: { src: "fail", input: ({ context }) => ({ reason: context.fault ?? "the Turn failed" }) } },
   },
 });

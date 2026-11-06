@@ -136,23 +136,22 @@ Sandbox Image.
 `jr2 up` asks each remote server for its tools before it converges, from the check pod and through its Custodian. Each
 name in an allowlist must be a tool of the server:
 
-<!-- output: not run -->
-
 ```text
 …
-mcp: listing the tools of "slack-acme" at https://mcp.slack.example/mcp on the Instance Harness, through a Custodian that holds SLACK_ACME_TOKEN, with its Stand-in
-mcp: listing the tools of "slack-partner" at https://mcp.slack.example/mcp on the Instance Harness, through a Custodian that holds SLACK_PARTNER_TOKEN, with its Stand-in
+mcp: listing the tools of "slack-acme" at <your MCP URL> on the Instance Harness, through a Custodian that holds SLACK_ACME_TOKEN, with its Stand-in
+mcp: listing the tools of "slack-partner" at <your MCP URL> on the Instance Harness, through a Custodian that holds SLACK_PARTNER_TOKEN, with its Stand-in
 provider: the check pod has up to 5 min to start, then up to 6 min for its model and 1 min for each of its 2 MCP servers
 …
-mcp: "slack-acme" lists <n> tool(s); every allowlisted name is there
-mcp: "slack-partner" lists <n> tool(s); every allowlisted name is there
+mcp: "slack-acme" lists 2 tool(s); every allowlisted name is there
+mcp: "slack-partner" lists 2 tool(s); every allowlisted name is there
 …
 ```
 
-The check pod has the placement of the pods that run the Agent: here, the Instance Harness. `<n>` is the number of tools
-of the server. `jr2 up` stops when a name is not there, and when the server refuses the token. It only warns when the
-server does not answer. `--skip-provider-preflight` skips the check of the tools and the check of the models. `jr2 up`
-does not check a stdio server.
+`<your MCP URL>` is the URL of your server. The check pod has the placement of the pods that run the Agent: here, the
+Instance Harness. The number in `lists 2 tool(s)` is the number of tools of the server, and yours can be different.
+`jr2 up` stops when a name is not there, and when the server refuses the token. It only warns when the server does not
+answer. `--skip-provider-preflight` skips the check of the tools and the check of the models. `jr2 up` does not check a
+stdio server.
 
 The Harness reads the tools of each server at the first Turn of a conversation. It keeps the allowed tools, sorted by
 name, and it records them with the conversation. Each later Turn of the conversation gets the same tools, also after a

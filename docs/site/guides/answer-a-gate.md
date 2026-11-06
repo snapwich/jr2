@@ -37,7 +37,7 @@ jr2 run release --input '{"version":"1.4.0"}'
 
 ```text
 → context <context> / namespace <namespace>
-run 2319932e-02c1-4f9d-98db-3c5a410395da (release) — attached
+run 0c948d65-fd6f-453a-87fa-71ec00c7fe68 (release) — attached
   → active "review"
 ```
 
@@ -49,14 +49,12 @@ next steps in a second terminal. [Start a run](start-a-run.md) gives the other w
 Run [`jr2 status`](../reference/cli.md#status) with the run id:
 
 ```sh
-jr2 status 2319
+jr2 status 0c94
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","instanceId":"c898d8c7-e48b-4a56-8101-7148905b6aed","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"83858e28b054","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
+{"runId":"0c948d65-fd6f-453a-87fa-71ec00c7fe68","workflow":"release","instanceId":"6db54032-0b87-4005-9583-049f7335b75f","startedAt":"2026-11-06T19:15:39.018Z","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"19d0bf0cbe10","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
 started by: token/instance on behalf of kubernetes-admin
 ```
 
@@ -77,11 +75,9 @@ can answer, the oldest first. Give `--workflow <name>` to see only the Gates of 
 jr2 gates --workflow release
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-[{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"},"openedAt":"2026-11-03T10:31:07.112Z"}]
+[{"runId":"0c948d65-fd6f-453a-87fa-71ec00c7fe68","workflow":"release","gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"},"openedAt":"2026-11-06T19:15:39.019Z"}]
 ```
 
 Each entry has the fields of a Gate in `gates`, and also `runId`, `workflow` and `openedAt`, the time when the Gate
@@ -97,25 +93,23 @@ Run [`jr2 send`](../reference/cli.md#send). Give the Gate in `--gate`, the event
 event as a JSON object in `--input`:
 
 ```sh
-jr2 send 2319 --gate review --event reject --input '{"reason":"The changelog is not ready."}'
+jr2 send 0c94 --gate review --event reject --input '{"reason":"The changelog is not ready."}'
 ```
 
 ```text
 → context <context> / namespace <namespace>
-delivered reject to gate "review" on 2319932e-02c1-4f9d-98db-3c5a410395da
+delivered reject to gate "review" on 0c948d65-fd6f-453a-87fa-71ec00c7fe68
 ```
 
 `jr2 send` prints `delivered` only when the run took the event. In the first terminal, the run ends. A `reject` ends the
 release, so the `rejected` state invokes [`fail`](../reference/authoring-surface/fail.md) with the reason, and the run
 ends `failed`. Its output is the [Failure](../reference/glossary.md#failure), and `jr2 run` exits with `1`:
 
-<!-- output: not run -->
-
 ```text
   → active "rejected"
   → failed "rejected"
 failed: The changelog is not ready.
-{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","instanceId":"c898d8c7-e48b-4a56-8101-7148905b6aed","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"failed","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"answers":[{"gate":"review","type":"reject","at":"2026-11-03T10:32:51.906Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"83858e28b054","output":{"reason":"The changelog is not ready."}}
+{"runId":"0c948d65-fd6f-453a-87fa-71ec00c7fe68","workflow":"release","instanceId":"6db54032-0b87-4005-9583-049f7335b75f","startedAt":"2026-11-06T19:15:39.018Z","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"failed","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"answers":[{"gate":"review","type":"reject","at":"2026-11-06T19:15:52.901Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"19d0bf0cbe10","output":{"reason":"The changelog is not ready."}}
 ```
 
 The run ended, so its Gate closed. Each example below answers a run that waits. Before each example, start a new run in
@@ -133,7 +127,7 @@ jr2 send <run id> --gate review --event approve
 
 ```text
 → context <context> / namespace <namespace>
-delivered approve to gate "review" on c099e2dc-6dd2-45da-9358-0723c8b83c68
+delivered approve to gate "review" on 342fef91-53a1-4640-87bf-6fb4395beebf
 ```
 
 `jr2 send` prints the full run id, also when you give a prefix.
@@ -212,8 +206,6 @@ that waits for one version. It needs `curl` and `jq`. Save it as `approve-releas
 JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN VERSION=1.4.0 sh approve-release.sh
 ```
 
-<!-- output: not run -->
-
 ```text
 {"ok":true}
 ```
@@ -227,7 +219,7 @@ JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN jr2 send <run id> --gate review -
 
 ```text
 → http://localhost:4000
-delivered approve to gate "review" on c44c6e49-452d-4150-8ce4-4d036363d2a0
+delivered approve to gate "review" on cad78069-0d8d-4c04-9cf4-3f771693274f
 ```
 
 ## Rules

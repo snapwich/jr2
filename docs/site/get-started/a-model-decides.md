@@ -160,8 +160,7 @@ there:
 ```text
 …
 → context kind-jr2 / namespace my-instance
-run 8fecb896-2100-4ee6-88d6-788eaf0d7244 (triage) — attached
-  → active "triaging"
+run f40a189e-b554-4310-b6e5-3b92c74e414e (triage) — attached
   → active "triaging"
   → active "clarify"
 ```
@@ -178,15 +177,13 @@ request that says what to change and how to tell that it is done is clear, and t
 example, this run started with the request
 `Add a --version flag to the CLI. It prints the installed version and exits.`:
 
-<!-- output: not run -->
-
 ```text
 …
 → context kind-jr2 / namespace my-instance
-run 89cc6ea5-9e2d-4f8a-8d02-18a6e47f2a5c (triage) — attached
+run 4eafe1a5-b45d-4613-8ae3-4c85b26eeb0c (triage) — attached
   → active "triaging"
   → done "accepted"
-{"runId":"89cc6ea5-9e2d-4f8a-8d02-18a6e47f2a5c","workflow":"triage","instanceId":"fac049b9-9dd2-4ba5-aca8-0b3ebe619701","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"accepted","context":{"request":"Add a --version flag to the CLI. It prints the installed version and exits.","exchange":[],"summary":"Add a --version flag to the CLI that prints the installed version and exits."},"children":[],"waiting":[],"held":[],"assembly":"3eb6cd4d61bf","output":{"outcome":"accepted","summary":"Add a --version flag to the CLI that prints the installed version and exits."}}
+{"runId":"4eafe1a5-b45d-4613-8ae3-4c85b26eeb0c","workflow":"triage","instanceId":"d4daa575-f8ac-4ba9-af2e-406084adbd89","startedAt":"2026-11-06T19:24:22.161Z","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"accepted","context":{"request":"Add a --version flag to the CLI. It prints the installed version and exits.","exchange":[],"summary":"Add a --version flag to the CLI that prints the installed version and exits."},"children":[],"waiting":[],"held":[],"assembly":"9ff0a4d3c5da","output":{"outcome":"accepted","summary":"Add a --version flag to the CLI that prints the installed version and exits."}}
 ```
 
 Your run id and your [Instance ID](../reference/glossary.md#instance-id) are different, and so is the `summary`, the
@@ -202,16 +199,14 @@ The Gate holds the question of the Agent in its `meta`. In the send terminal, ru
 jr2 status <run id>
 ```
 
-`<run id>` is the run id that `jr2 run` printed. You can give its first 4 characters or more, such as `8fecb896`.
+`<run id>` is the run id that `jr2 run` printed. You can give its first 4 characters or more, such as `f40a189e`.
 [`jr2 status`](../reference/cli.md#status) prints the status of the run as one line of JSON. The Gate is in `gates`, at
 the end:
-
-<!-- output: not run -->
 
 ```text
 …
 → context kind-jr2 / namespace my-instance
-{"runId":"8fecb896-2100-4ee6-88d6-788eaf0d7244","workflow":"triage","instanceId":"a814d943-9b27-410c-a790-2c4225aa05ba","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"clarify","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"Where specifically should the version number be displayed (e.g., CLI flag, About screen, or help output), and what exact user action should trigger it?"}]},"children":[],"waiting":[],"held":[],"assembly":"3eb6cd4d61bf","gates":[{"gate":"clarify","path":["clarify"],"accepts":[{"name":"answer","description":"Answer the triager's question. It triages the request again with the answer in hand.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"info":{"type":"string","description":"The answer, in prose."}},"required":["info"],"additionalProperties":false}}],"acceptsNow":["answer"],"meta":{"question":"Where specifically should the version number be displayed (e.g., CLI flag, About screen, or help output), and what exact user action should trigger it?"}}]}
+{"runId":"f40a189e-b554-4310-b6e5-3b92c74e414e","workflow":"triage","instanceId":"6a6fb1c4-d6d8-4867-a51b-693c0772cc7b","startedAt":"2026-11-06T19:23:30.814Z","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"clarify","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"Where should the version number be displayed to users (e.g., a specific command like `--version`, an 'About' screen, or a startup log message)?"}]},"children":[],"waiting":[],"held":[],"assembly":"9ff0a4d3c5da","gates":[{"gate":"clarify","path":["clarify"],"accepts":[{"name":"answer","description":"Answer the triager's question. It triages the request again with the answer in hand.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"info":{"type":"string","description":"The answer, in prose."}},"required":["info"],"additionalProperties":false}}],"acceptsNow":["answer"],"meta":{"question":"Where should the version number be displayed to users (e.g., a specific command like `--version`, an 'About' screen, or a startup log message)?"}}]}
 started by: token/instance on behalf of kubernetes-admin
 ```
 
@@ -231,20 +226,18 @@ jr2 send <run id> --gate clarify --event answer --input '{"info":"Add a --versio
 ```text
 …
 → context kind-jr2 / namespace my-instance
-delivered answer to gate "clarify" on 8fecb896-2100-4ee6-88d6-788eaf0d7244
+delivered answer to gate "clarify" on f40a189e-b554-4310-b6e5-3b92c74e414e
 ```
 
 The run goes back to `triaging`, and the Agent reads your answer. Look at the first terminal. When the Agent picks
 `accept`, the run ends, and `jr2 run` prints the last status:
-
-<!-- output: not run -->
 
 ```text
 …
   → active "triaging"
   → active "triaging"
   → done "accepted"
-{"runId":"8fecb896-2100-4ee6-88d6-788eaf0d7244","workflow":"triage","instanceId":"a814d943-9b27-410c-a790-2c4225aa05ba","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"Where specifically should the version number be displayed (e.g., CLI flag, About screen, or help output), and what exact user action should trigger it?","info":"Add a --version flag to the CLI. It prints the installed version and exits."}],"summary":"Add a --version flag to the CLI that prints the installed version and exits."},"children":[],"waiting":[],"held":[],"answers":[{"gate":"clarify","type":"answer","at":"2026-11-03T10:21:07.482Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"3eb6cd4d61bf","output":{"outcome":"accepted","summary":"Add a --version flag to the CLI that prints the installed version and exits."}}
+{"runId":"f40a189e-b554-4310-b6e5-3b92c74e414e","workflow":"triage","instanceId":"6a6fb1c4-d6d8-4867-a51b-693c0772cc7b","startedAt":"2026-11-06T19:23:30.814Z","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"Where should the version number be displayed to users (e.g., a specific command like `--version`, an 'About' screen, or a startup log message)?","info":"Add a --version flag to the CLI. It prints the installed version and exits."}],"summary":"Add a --version flag to the CLI that prints the installed version and exits."},"children":[],"waiting":[],"held":[],"answers":[{"gate":"clarify","type":"answer","at":"2026-11-06T19:24:02.957Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"9ff0a4d3c5da","output":{"outcome":"accepted","summary":"Add a --version flag to the CLI that prints the installed version and exits."}}
 ```
 
 `summary` is the request as the model wrote it again, in one sentence. Your summary is different. The `output` of the
@@ -265,12 +258,12 @@ This request does not say what is wrong. The run goes to `clarify` and waits, as
 ```text
 …
 → context kind-jr2 / namespace my-instance
-run 84079cb2-3cdd-4b9a-ae39-51ab873c5f3c (triage) — attached
+run 7e6c9deb-ca65-4103-b517-abf6b0028aff (triage) — attached
   → active "triaging"
   → active "clarify"
 ```
 
-`84079cb2-3cdd-4b9a-ae39-51ab873c5f3c` is the id of the second run. Your run id is different. If the Agent picks
+`7e6c9deb-ca65-4103-b517-abf6b0028aff` is the id of the second run. Your run id is different. If the Agent picks
 `accept` or `reject`, start the run again.
 
 ## Answer from the Console

@@ -110,7 +110,7 @@ jr2 run rollout --input '{"service":"billing","version":"1.4.0"}'
 
 ```text
 → context kind-jr2 / namespace my-instance
-run b7c3d871-e3ae-46af-8bb3-774913bcd6cc (rollout) — attached
+run a5bafe11-80bf-426b-905f-6fb19952c093 (rollout) — attached
   → active "canary"
 ```
 
@@ -124,21 +124,19 @@ jr2 send <run id> --gate canary --event roll_back --input '{"reason":"The error 
 
 ```text
 → context kind-jr2 / namespace my-instance
-delivered roll_back to gate "canary" on b7c3d871-e3ae-46af-8bb3-774913bcd6cc
+delivered roll_back to gate "canary" on a5bafe11-80bf-426b-905f-6fb19952c093
 ```
 
 In the first terminal, the run ends. A `roll_back` ends the rollout, so the run ends `failed`, with the reason of the
 person as its output, and `jr2 run` exits with `1`. Its `context` holds the default of `canaryPercent`, the `instanceId`
 that jr2 added, and the `reason`:
 
-<!-- output: not run -->
-
 ```text
   emit {"type":"decided","promoted":false}
   → active "rolledBack"
   → failed "rolledBack"
 failed: The error rate went up.
-{"runId":"b7c3d871-e3ae-46af-8bb3-774913bcd6cc","workflow":"rollout","instanceId":"b79e7e8b-6289-4dbc-a9a3-be945f8b1173","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"failed","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"b79e7e8b-6289-4dbc-a9a3-be945f8b1173","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"answers":[{"gate":"canary","type":"roll_back","at":"2026-11-03T11:04:12.659Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"83858e28b054","output":{"reason":"The error rate went up."}}
+{"runId":"a5bafe11-80bf-426b-905f-6fb19952c093","workflow":"rollout","instanceId":"f779766e-49c3-49ad-92bd-10208710843b","startedAt":"2026-11-06T19:17:57.979Z","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"failed","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"f779766e-49c3-49ad-92bd-10208710843b","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"answers":[{"gate":"canary","type":"roll_back","at":"2026-11-06T19:18:06.269Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"bedde6f8c51c","output":{"reason":"The error rate went up."}}
 ```
 
 Your instance id and your `assembly` hash are different.

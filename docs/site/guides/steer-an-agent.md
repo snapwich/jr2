@@ -15,7 +15,19 @@ The examples on this page use the [Workflow](../reference/glossary.md#workflow) 
 and a reviewer reads them. When the reviewer sends a note, the Machine relays it to the writer as a Steering message.
 Save the file as `workflows/notes.ts` in your [Instance](../reference/glossary.md#instance). Then run `jr2 up`:
 
-<<< @/examples/guides/steer-an-agent/notes.ts
+::: tabs key:provider
+
+== Anthropic
+
+<<< @/examples/guides/steer-an-agent/anthropic/notes.ts
+
+== Local
+
+<<< @/examples/guides/steer-an-agent/local/notes.ts
+
+:::
+
+The Agents use the model of the tab.
 
 In the commands, replace these values:
 
@@ -32,11 +44,10 @@ Give each `jr2` command in the Instance folder.
 jr2 run notes --input '{"version":"1.4.0"}'
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-run 5c1f0b8e-6d4a-4f0e-9a51-2a8d7c3e9b10 (notes) — attached
+run 683ce1a3-2208-4616-8323-244774bf9a8b (notes) — attached
+  → active "writing"
   → active "writing"
 ```
 
@@ -49,10 +60,8 @@ the path `root`. An Agent in a child Machine has the path of that Machine, such 
 [`jr2 steer`](../reference/cli.md#steer) the run id alone to list the slots:
 
 ```sh
-jr2 steer 5c1f
+jr2 steer 683c
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
@@ -67,14 +76,12 @@ The list has each Agent of each Machine instance that is live now, also an Agent
 ## Send the message
 
 ```sh
-jr2 steer 5c1f root/writer "Put the breaking change first."
+jr2 steer 683c root/writer "Put the breaking change first."
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-sent a Steering message to root/writer on 5c1f0b8e-6d4a-4f0e-9a51-2a8d7c3e9b10: its open Turn hears it at its next step boundary
+sent a Steering message to root/writer on 683ce1a3-2208-4616-8323-244774bf9a8b: its open Turn hears it at its next step boundary
 ```
 
 Then one of these things occurs:
@@ -91,14 +98,13 @@ entry has the slot, the author, the text, the time, and the `outcome`: `held` wh
 it, or `not-delivered` when its Machine instance ended first.
 
 ```sh
-jr2 status 5c1f
+jr2 status 683c
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"5c1f0b8e-6d4a-4f0e-9a51-2a8d7c3e9b10","workflow":"notes",…,"steering":[{"id":"9d2e4c1a-0b7f-4e3d-8c6a-5f1e2d3c4b5a","agent":"root/writer","author":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"text":"Put the breaking change first.","at":"2026-11-03T15:02:11.204Z","outcome":"heard"}],…}
+{"runId":"683ce1a3-2208-4616-8323-244774bf9a8b","workflow":"notes",…,"steering":[{"id":"533f6b72-3fa4-4011-a0cf-e3301131ae73","agent":"root/writer","author":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"text":"Put the breaking change first.","at":"2026-11-06T19:17:53.570Z","outcome":"heard"},{"id":"08caa70d-25d8-4c35-9385-e3439aed0481","agent":"root/writer","author":{"kind":"machine","from":{"party":"agent","id":"reviewer"}},"text":"Please add missing articles for grammatical correctness:\n\n1. In **Dark Mode Support**: \"toggle **the** dark theme\".\n2. In **Bug Fixes**: \"Fixed **a** crash\" or \"Fixed **an** issue causing **a** crash\".","at":"2026-11-06T19:18:50.569Z","outcome":"heard"}],…}
+started by: token/instance on behalf of kubernetes-admin
 ```
 
 The model reads the message after the notices of the Turn and before its Allowed picks. The Harness tells the model that
@@ -127,10 +133,8 @@ curl -X POST http://localhost:4000/runs/<run id>/steering \
   -d '{"agent":"root/writer","text":"Put the breaking change first."}'
 ```
 
-<!-- output: not run -->
-
 ```text
-{"id":"9d2e4c1a-0b7f-4e3d-8c6a-5f1e2d3c4b5a","agent":"root/writer","open":true}
+{"id":"a1648ed6-c9ac-450e-9a20-7665707bf5d5","agent":"root/writer","open":true}
 ```
 
 The status is 202.

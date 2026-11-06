@@ -25,13 +25,11 @@ Run [`jr2 run`](../reference/cli.md#run) in the Instance folder, with the name o
 jr2 run ping --input '{"message":"hi"}'
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-run e3972b4c-eef9-4e7d-9068-3556332d2ba6 (ping) — attached
+run 17b959ed-5200-4d98-adae-403dd706277b (ping) — attached
   → done "done"
-{"runId":"e3972b4c-eef9-4e7d-9068-3556332d2ba6","workflow":"ping","instanceId":"8e13475a-d325-45d4-bc64-0627086e97ba","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"16f4181d70d9"}
+{"runId":"17b959ed-5200-4d98-adae-403dd706277b","workflow":"ping","instanceId":"32e6e954-8cc5-4b52-b6df-6c9ef6533192","startedAt":"2026-11-06T19:16:12.219Z","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"50e6f81e3bfb","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}
 ```
 
 Your run id, your instance id and your `assembly` hash are different. When your Instance folder has a `.env` file, the

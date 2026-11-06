@@ -61,12 +61,10 @@ back to `listening`.
 jr2 runs
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 → context kind-jr2 / namespace my-instance
-[{"runId":"45b52048-0848-4015-ad56-6ff8ae33d817","workflow":"triage","status":"active","startedBy":{"kind":"run","run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage"},"startedAt":"2026-10-24T06:20:43.470Z","assembly":"3229103a2952","openGates":0,"dispatchedBy":{"run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage","effect":"08423831-751f-41e5-9d93-1fa063faaf61","depth":1}},{"runId":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","workflow":"intake","status":"active","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-10-24T06:20:41.902Z","assembly":"3229103a2952","openGates":0}]
+[{"runId":"e8a74de7-f3f3-4621-876e-e5f117af5fff","workflow":"triage","status":"active","startedBy":{"kind":"run","run":"f45bed48-9950-4e63-9cda-4df368e9a62f","slot":"triage"},"startedAt":"2026-11-06T19:23:24.220Z","assembly":"19d0bf0cbe10","openGates":0,"dispatchedBy":{"run":"f45bed48-9950-4e63-9cda-4df368e9a62f","slot":"triage","effect":"c63bce4d-e353-4fee-9035-6b13dfac4917","depth":1}},{"runId":"f45bed48-9950-4e63-9cda-4df368e9a62f","workflow":"intake","status":"active","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-11-06T19:23:21.744Z","assembly":"19d0bf0cbe10","openGates":1}]
 ```
 
 The first line, `…`, is the line `→ .env:`, with the keys that the CLI took from `.env`. In `dispatchedBy`, `run` is the
@@ -78,13 +76,13 @@ is the number of runs before it in the chain. The list gives the newest start fi
 [`jr2 status`](../reference/cli.md#status) prints the link in both directions, on stderr. For the run of `intake`:
 
 ```text
-dispatched: 45b52048-0848-4015-ad56-6ff8ae33d817 (triage)
+dispatched: e8a74de7-f3f3-4621-876e-e5f117af5fff (triage)
 ```
 
 For the run of `triage`:
 
 ```text
-dispatched by: 91ca85e1-5092-4e10-9ec6-d14e37811ca1 (triage), depth 1
+dispatched by: f45bed48-9950-4e63-9cda-4df368e9a62f (triage), depth 1
 ```
 
 The two runs are independent. A `CANCEL` of `intake` does not cancel the run of `triage`. Answer the `clarify` Gate of

@@ -109,7 +109,7 @@ jr2 run issues --input '{"workers":2}'
 ```text
 …
 → context kind-jr2 / namespace my-instance
-run e1effd33-9bf6-4137-ae70-3aa504910784 (issues) — attached
+run 7c248a11-445a-4123-8ce2-834cb57706d7 (issues) — attached
   → active "discovering"
   → active "discovering"
   → active "discovering"
@@ -134,7 +134,8 @@ jr2 status <run id>
 ```text
 …
 → context kind-jr2 / namespace my-instance
-{"runId":"e1effd33-9bf6-4137-ae70-3aa504910784","workflow":"issues",…,"gates":[{"gate":"source",…},{"gate":"issue-3.body.review",…},{"gate":"issue-2.body.review",…}]}
+{"runId":"7c248a11-445a-4123-8ce2-834cb57706d7","workflow":"issues",…,"gates":[{"gate":"source",…},{"gate":"issue-3.body.review",…},{"gate":"issue-2.body.review",…}]}
+…
 ```
 
 In the JSON that it prints, `gates` holds each open Gate of the run:
@@ -162,7 +163,7 @@ jr2 send <run id> --gate issue-2.body.review --event approve
 ```text
 …
 → context kind-jr2 / namespace my-instance
-delivered approve to gate "issue-2.body.review" on e1effd33-9bf6-4137-ae70-3aa504910784
+delivered approve to gate "issue-2.body.review" on 7c248a11-445a-4123-8ce2-834cb57706d7
 ```
 
 The Pool then calls `next` again, and starts a worker for the next issue.
@@ -183,7 +184,7 @@ jr2 send <run id> --gate source --event issues_changed
 ```text
 …
 → context kind-jr2 / namespace my-instance
-delivered issues_changed to gate "source" on e1effd33-9bf6-4137-ae70-3aa504910784
+delivered issues_changed to gate "source" on 7c248a11-445a-4123-8ce2-834cb57706d7
 ```
 
 Without the event, the Pool calls `next` again when a worker finishes, or after `pollEvery`. A script can send the same
@@ -200,13 +201,11 @@ how.
 When the last worker finishes and no issue is ready, the run ends. In the first terminal, `jr2 run` prints the last
 state of the Pool, then the status of the run as JSON:
 
-<!-- output: not run -->
-
 ```text
 …
   → active "discovering"
   → done "drained"
-{"runId":"e1effd33-9bf6-4137-ae70-3aa504910784","workflow":"issues","instanceId":"db9712c8-7c19-4d18-8fb1-8c01d326808f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"db9712c8-7c19-4d18-8fb1-8c01d326808f"},"cap":2,"active":[],"items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{},"held":[],"ready":[],"claimed":{},"again":[],"latch":false,"status":"drained"},"children":[],"waiting":[],"held":[],"answers":[{"gate":"source","type":"issues_changed","at":"2026-11-03T10:52:36.114Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"ca3b0e760c85","output":{"status":"drained","items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{}}}
+{"runId":"7c248a11-445a-4123-8ce2-834cb57706d7","workflow":"issues","instanceId":"1d3090c8-645b-4e22-b343-68d548aab5f4","startedAt":"2026-11-06T19:20:02.886Z","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"1d3090c8-645b-4e22-b343-68d548aab5f4"},"cap":2,"active":[],"items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{},"held":[],"ready":[],"claimed":{},"again":[],"latch":false,"taken":3,"carried":[],"refused":[],"status":"drained"},"children":[],"waiting":[],"held":[],"answers":[{"gate":"issue-2.body.review","type":"approve","at":"2026-11-06T19:21:49.638Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}},{"gate":"source","type":"issues_changed","at":"2026-11-06T19:21:57.842Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}},{"gate":"issue-3.body.review","type":"approve","at":"2026-11-06T19:22:03.493Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}},{"gate":"issue-1.body.review","type":"approve","at":"2026-11-06T19:22:33.752Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"f5bb024883b4","output":{"status":"drained","items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{}},"worktrees":[{"slot":"app","path":"/work/app/task","branch":"jr2/issue-3"},{"slot":"app","path":"/work/app/task","branch":"jr2/issue-2"},{"slot":"app","path":"/work/app/task","branch":"jr2/issue-1"}]}
 ```
 
 In the JSON, `context.items` holds the output of each worker that finished, by item id. `context.failures` holds the

@@ -55,8 +55,6 @@ before it changes the cluster, and publishes it in the [Assembly](../reference/g
 jr2 workflows
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 → context kind-jr2 / namespace my-instance
@@ -81,7 +79,7 @@ jr2 run notes/summary --input '{"topic":"the greet CLI"}'
 ```text
 …
 → context kind-jr2 / namespace my-instance
-run 08a1a07b-b5d8-4e8b-aec5-811eab9289ec (notes/summary) — attached
+run ff5db853-9afc-4563-9db4-e5c2a49b15a2 (notes/summary) — attached
   → active "running"
   → active "running"
   → done "done"
@@ -111,7 +109,7 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" -H "content-type: application/json
 ```
 
 ```text
-{"name":"notes/brief","origin":"runtime","hash":"4685124c248a"}
+{"name":"notes/brief","origin":"runtime","hash":"4f2fb0e7474c"}
 ```
 
 `hash` is the hash of the Chart text. The status code is `201` for a new name, and `200` when the Chart replaced a

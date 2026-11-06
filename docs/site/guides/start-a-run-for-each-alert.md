@@ -66,8 +66,6 @@ SENTRY_HOOK=<secret>
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 standing: sentry → alerts → triage
@@ -75,7 +73,8 @@ standing: sentry → alerts → triage
 secret SENTRY_HOOK: an Effect secret in the Instance Effector (hook sentry)
 the Instance Effector: holds SENTRY_HOOK
 …
-standing alerts → triage: live, run 5d0c3f4e-2b7a-4c55-9a51-0f6f2f4c7d21, 0 held items
+standing alerts → triage: live, run 0d08bbbc-d34e-47fb-9b4b-8e788e328eb4, 0 held items
+…
 ```
 
 `jr2 up` puts the secret in the [Instance Effector](../reference/glossary.md#instance-effector) only, which checks each
@@ -108,10 +107,8 @@ curl -s -X POST http://localhost:4000/hooks/sentry \
   -d "$BODY"
 ```
 
-<!-- output: not run -->
-
 ```text
-{"delivery":"test-1","seen":false,"delivered":[],"refused":[],"ignored":0,"sources":[{"pool":"5d0c3f4e-2b7a-4c55-9a51-0f6f2f4c7d21","workflow":"alerts","source":"source","verdict":"held","key":"sentry-4505"}]}
+{"delivery":"test-1","seen":false,"delivered":[],"refused":[],"ignored":0,"sources":[{"pool":"0d08bbbc-d34e-47fb-9b4b-8e788e328eb4","workflow":"alerts","source":"source","verdict":"held","key":"sentry-4505"}]}
 ```
 
 The Pool holds the alert, and starts a run of `triage` for it when a slot is free. Send the same command again. The

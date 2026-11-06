@@ -117,7 +117,7 @@ seats: workflow "task" — who may send what, per state (ADR-0015)
   task.working agent:coder: [finish]
   task.review gate: [approve, request_changes]
 …
-sandbox image "default": building jr2-sandbox-my-instance-default:6389bdf72d50-amd64
+sandbox image "default": building jr2-sandbox-my-instance-default:5e601a543032-amd64
   no USER declared — the pod's uid-1000 fallback applies
   kind load → cluster "jr2"
 …
@@ -141,7 +141,7 @@ jr2 run task --input '{"prompt":"In docs/site/tutorial/greet, one test fails. Fi
 ```text
 …
 → context kind-jr2 / namespace my-instance
-run 290b4be9-1e24-46a2-8cb5-27fabb3bbd3c (task) — attached
+run 79b90360-cdbf-4538-8611-d52da1b8b914 (task) — attached
   → active "placing"
   → active "provisioning"
   → active "attaching"
@@ -167,8 +167,9 @@ the Gate. Its `gate` is `body.review`, and the line ends with its `meta`. After 
 for each Worktree that the run cut:
 
 ```text
-…"gate":"body.review",…,"meta":{"summary":"Fixed a bug in docs/site/tutorial/greet/src/greet.js where the name argument wasn't being trimmed. The test \"trims the name\" failed because input like \" ada \" produced \"hello,  ada \" instead of \"hello, ada\". Added `.trim()` to the name extraction so whitespace is stripped before constructing the greeting. All 6 tests now pass.","branch":"jr2/task-1f34eef3-5749-4d7c-a16b-488c56ec88cd","worktree":"/work/target/task"}}]}
-worktree: /work/target/task (target), branch jr2/task-1f34eef3-5749-4d7c-a16b-488c56ec88cd
+…"gate":"body.review",…,"meta":{"summary":"Fixed the failing \"trims the name\" test in docs/site/tutorial/greet. The bug was in src/greet.js where the name argument wasn't being trimmed, causing `greet([\" ada \"])` to output `'hello,  ada '` instead of `'hello, ada'`. Added `.trim()` to the name extraction line. All 6 tests now pass.","branch":"jr2/task-1e805d38-68ac-4ec9-acc8-fc5ce6a68f6b","worktree":"/work/target/task"}}]}
+started by: token/instance on behalf of kubernetes-admin
+worktree: /work/target/task (target), branch jr2/task-1e805d38-68ac-4ec9-acc8-fc5ce6a68f6b
 ```
 
 Run the command again until `gates` holds the Gate.
@@ -178,7 +179,7 @@ Run the command again until `gates` holds the Gate.
 - `worktree` is the folder in the Sandbox that holds the branch. It is
   [the Worktree](../reference/glossary.md#worktree).
 
-Copy `branch` and `worktree` from your output. The part after `jr2/task-`, here `1f34eef3-5749-4d7c-a16b-488c56ec88cd`,
+Copy `branch` and `worktree` from your output. The part after `jr2/task-`, here `1e805d38-68ac-4ec9-acc8-fc5ce6a68f6b`,
 is the [Instance ID](../reference/glossary.md#instance-id) of the run. `jr2 status` prints it as `instanceId`. It is not
 the run id. Do not make the branch name from the run id. With the Instance token, the drawer of the
 [Console](../reference/glossary.md#console) shows the same `meta`.
@@ -194,17 +195,15 @@ List the Workspaces of the run with [`jr2 workspace ls`](../reference/cli.md#wor
 jr2 workspace ls <run id>
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 → context kind-jr2 / namespace my-instance
-WORKSPACE     SANDBOX                  WORKFLOW  PHASE  AGE  RUN
-290b4be9/x:0  ws-290b4be9-x-0-19gh8ze  task      Ready  5m   held
+WORKSPACE      SANDBOX                   WORKFLOW  PHASE  AGE  RUN
+79b90360/x:23  ws-79b90360-x-23-1gex8om  task      Ready  81s  held
 ```
 
-`290b4be9/x:0` is the handle of the Workspace: the first 8 characters of the run id, then the path of the Workspace in
-the run. `ws-290b4be9-x-0-19gh8ze` is the name of the Sandbox. The name of the Sandbox is a handle too. Your values are
+`79b90360/x:23` is the handle of the Workspace: the first 8 characters of the run id, then the path of the Workspace in
+the run. `ws-79b90360-x-23-1gex8om` is the name of the Sandbox. The name of the Sandbox is a handle too. Your values are
 different. The commands below write the handle as `<workspace>`. `held` tells that the run holds the Sandbox.
 
 ## Look inside the Sandbox
@@ -224,12 +223,12 @@ node --test
 ```
 
 ```text
-✔ greets the world by default (1.0597ms)
-✔ greets a name (0.162102ms)
-✔ shouts (0.08266ms)
-✔ trims the name (0.057171ms)
-✔ prints help (3.806196ms)
-✔ refuses an unknown flag (0.222015ms)
+✔ greets the world by default (1.208079ms)
+✔ greets a name (0.113673ms)
+✔ shouts (0.070218ms)
+✔ trims the name (0.054069ms)
+✔ prints help (0.712678ms)
+✔ refuses an unknown flag (0.242712ms)
 ℹ tests 6
 ℹ suites 0
 ℹ pass 6
@@ -237,7 +236,7 @@ node --test
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 53.312932
+ℹ duration_ms 49.489997
 ```
 
 Your times are different. Read the commits of the coder. The branch starts at the release tag, so the commits after the
@@ -248,7 +247,7 @@ git log --oneline v<version>..HEAD
 ```
 
 ```text
-e467788 fix: trim name in greet.js to handle leading/trailing whitespace
+8afef7d (HEAD -> jr2/task-1e805d38-68ac-4ec9-acc8-fc5ce6a68f6b) fix: trim name in greet to handle leading/trailing whitespace
 ```
 
 Each line is one commit. The commit ids and the messages come from the model. The author of each commit is
@@ -270,7 +269,7 @@ jr2 send <run id> --gate body.review --event request_changes --input '{"notes":"
 ```text
 …
 → context kind-jr2 / namespace my-instance
-delivered request_changes to gate "body.review" on 290b4be9-1e24-46a2-8cb5-27fabb3bbd3c
+delivered request_changes to gate "body.review" on 79b90360-cdbf-4538-8611-d52da1b8b914
 ```
 
 The coder continues the same conversation, with your notes as its next prompt. The Sandbox and the branch stay. Run
@@ -299,7 +298,7 @@ Username for 'https://github.com': <you>
 Password for 'https://<you>@github.com':
 …
 To https://github.com/<you>/jr2.git
- * [new branch]      jr2/task-1f34eef3-5749-4d7c-a16b-488c56ec88cd -> jr2/task-1f34eef3-5749-4d7c-a16b-488c56ec88cd
+ * [new branch]      jr2/task-1e805d38-68ac-4ec9-acc8-fc5ce6a68f6b -> jr2/task-1e805d38-68ac-4ec9-acc8-fc5ce6a68f6b
 ```
 
 `origin` fetches through the Repo cache of the node, and pushes to your fork. Open your fork on GitHub to see the
@@ -326,7 +325,7 @@ jr2 send <run id> --gate body.review --event approve
 ```text
 …
 → context kind-jr2 / namespace my-instance
-delivered approve to gate "body.review" on 290b4be9-1e24-46a2-8cb5-27fabb3bbd3c
+delivered approve to gate "body.review" on 79b90360-cdbf-4538-8611-d52da1b8b914
 ```
 
 In the first terminal, `jr2 run` prints the end of the run, then the final status as one line of JSON, and stops:
@@ -335,7 +334,7 @@ In the first terminal, `jr2 run` prints the end of the run, then the final statu
 …
   → active "teardown"
   → done "done"
-{"runId":"290b4be9-1e24-46a2-8cb5-27fabb3bbd3c","workflow":"task",…,"output":{"branch":"jr2/task-1f34eef3-5749-4d7c-a16b-488c56ec88cd"},"worktrees":[{"slot":"target","path":"/work/target/task","branch":"jr2/task-1f34eef3-5749-4d7c-a16b-488c56ec88cd"}]}
+{"runId":"79b90360-cdbf-4538-8611-d52da1b8b914","workflow":"task",…,"output":{"branch":"jr2/task-1e805d38-68ac-4ec9-acc8-fc5ce6a68f6b"},"worktrees":[{"slot":"target","path":"/work/target/task","branch":"jr2/task-1e805d38-68ac-4ec9-acc8-fc5ce6a68f6b"}]}
 ```
 
 ## Make sure that the Sandbox is gone
@@ -345,8 +344,6 @@ List the Workspaces of the run again:
 ```sh
 jr2 workspace ls <run id>
 ```
-
-<!-- output: not run -->
 
 ```text
 …

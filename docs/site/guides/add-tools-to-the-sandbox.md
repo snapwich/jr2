@@ -190,12 +190,10 @@ pod, through the API server of the cluster, until you push Ctrl-C:
 jr2 workspace forward <workspace> 3000
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-127.0.0.1:41733
-forwarding 127.0.0.1:41733 → a1322024/x:2:3000 — Ctrl-C ends it
+127.0.0.1:36779
+forwarding 127.0.0.1:36779 → 7a0e8b50/x:0:3000 — Ctrl-C ends it
 ```
 
 The address on stdout is the local address. The port changes on each run.

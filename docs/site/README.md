@@ -770,7 +770,9 @@ The user must decide these items. Until then, obey the rule for each item.
   1. Run `just dist-up`. Use the `jr2` that it installs, because the reader uses the installed CLI, not a checkout.
   2. Make the Instance as the pages tell the reader: `jr2 init my-instance`, with the model of the Local tab. When a
      page needs a fork, use a public GitHub repo that has the `main` and the release tags of jr2, and show it as
-     `<you>/jr2`.
+     `<you>/jr2`. When a page needs a remote MCP server, serve the fake of `features/steps/fake-mcp.ts` on the host with
+     the tools of the page, over HTTPS under a CA of its own (`issueCa` and `issueLeaf` of `@jr2/cli`) that the
+     Instance's `harness.caBundle` names, and show its URL as `<your MCP URL>`.
   3. Run each command, copy what it prints, and remove the comment. When the run of a block also gives other blocks on
      the same page, walk them again from that run, so that the page shows one run.
   4. When the commands cannot give the output that the page needs, stop and ask. Do not write the output.

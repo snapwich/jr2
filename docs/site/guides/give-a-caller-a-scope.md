@@ -50,8 +50,6 @@ Run `jr2 up`. It makes the value of each new name one time, and keeps it in a Se
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 caller token "chat-bridge": made — `jr2 caller token chat-bridge` prints it
@@ -71,8 +69,6 @@ API, so your Kubernetes RBAC decides who can read it:
 ```sh
 jr2 caller token ci
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
@@ -96,10 +92,7 @@ Run [`jr2 whoami`](../reference/cli.md#whoami) with the token:
 JR2_URL=http://localhost:4000 JR2_TOKEN=$(jr2 caller token ci) jr2 whoami
 ```
 
-<!-- output: not run -->
-
 ```text
-→ context <context> / namespace <namespace>
 → http://localhost:4000
 {"via":"token","name":"ci","may":{"start":["release"],"read":["release"]}}
 ```
@@ -116,8 +109,6 @@ Run [`jr2 caller rotate`](../reference/cli.md#caller-rotate). It makes a new val
 jr2 caller rotate ci
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
 caller token "ci": rotated — the old value stops working when the Orchestrator reads the new digest, about a minute; `jr2 caller token ci` prints the new one
@@ -129,8 +120,6 @@ Give the new value to the Caller. No pod restarts.
 
 Remove its entry from `callers.tokens`, and run `jr2 up`. It deletes the Secret of the name, and the value stops
 working:
-
-<!-- output: not run -->
 
 ```text
 …

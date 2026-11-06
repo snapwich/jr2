@@ -132,8 +132,6 @@ runs, and where. [`jr2 up`](../reference/cli.md#up) runs the same check before i
 jr2 check
 ```
 
-<!-- output: not run -->
-
 ```text
 jr2 check — instance "my-instance" (no cluster)
 typecheck: tsc --noEmit (the instance's own compiler)

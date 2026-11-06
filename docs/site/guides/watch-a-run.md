@@ -33,7 +33,7 @@ jr2 run release --input '{"version":"2.0.0"}' --detach
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320"}
+{"runId":"41ca7842-786f-44ca-9083-47109500da5f"}
 ```
 
 Your run ids, instance ids and `assembly` hash are different from the values on this page.
@@ -46,11 +46,9 @@ Run [`jr2 runs`](../reference/cli.md#runs):
 jr2 runs
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-[{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","status":"active","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-10-24T06:18:02.114Z","assembly":"28c844453c20","openGates":1}]
+[{"runId":"41ca7842-786f-44ca-9083-47109500da5f","workflow":"release","status":"active","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-11-06T19:17:04.653Z","assembly":"19d0bf0cbe10","openGates":1}]
 ```
 
 `jr2 runs` prints a JSON array of the runs that did not end, the newest start first. Each item is a summary of the run:
@@ -72,11 +70,9 @@ takes a duration, such as `2h` or `7d`, or an ISO-8601 time:
 jr2 runs --status ended --workflow release --since 7d
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-[{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","status":"failed","reason":"The changelog is not ready.","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-10-24T06:02:41.508Z","endedAt":"2026-10-24T06:04:12.930Z","assembly":"28c844453c20","openGates":0}]
+[{"runId":"cad78069-0d8d-4c04-9cf4-3f771693274f","workflow":"release","status":"done","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-11-06T19:16:37.594Z","endedAt":"2026-11-06T19:16:39.762Z","assembly":"19d0bf0cbe10","openGates":0},{"runId":"a4099c00-88a6-4add-8068-dcf39e8c4224","workflow":"release","status":"done","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-11-06T19:16:30.787Z","endedAt":"2026-11-06T19:16:34.593Z","assembly":"19d0bf0cbe10","openGates":0},{"runId":"08b42407-1c4f-4776-9879-7c505bfa6695","workflow":"release","status":"done","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-11-06T19:16:18.276Z","endedAt":"2026-11-06T19:16:22.355Z","assembly":"19d0bf0cbe10","openGates":0},{"runId":"342fef91-53a1-4640-87bf-6fb4395beebf","workflow":"release","status":"done","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-11-06T19:16:00.147Z","endedAt":"2026-11-06T19:16:05.091Z","assembly":"19d0bf0cbe10","openGates":0},{"runId":"0c948d65-fd6f-453a-87fa-71ec00c7fe68","workflow":"release","status":"failed","reason":"The changelog is not ready.","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-11-06T19:15:39.018Z","endedAt":"2026-11-06T19:15:52.902Z","assembly":"19d0bf0cbe10","openGates":0}]
 ```
 
 An ended run has `endedAt`. `reason` tells why a run is `failed`, `error`, `lost` or `drifted`. `--status` also takes a
@@ -89,14 +85,12 @@ comma list of statuses, such as `--status failed,error`. jr2 keeps an ended run 
 Run [`jr2 status`](../reference/cli.md#status) with the run id. It reads a run that ended too:
 
 ```sh
-jr2 status a2d8
+jr2 status 41ca
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"2.0.0"}}]}
+{"runId":"41ca7842-786f-44ca-9083-47109500da5f","workflow":"release","instanceId":"a17469b8-b648-44dc-acb9-dcce6fcb81ad","startedAt":"2026-11-06T19:17:04.653Z","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"19d0bf0cbe10","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"2.0.0"}}]}
 started by: token/instance on behalf of kubernetes-admin
 ```
 
@@ -138,22 +132,20 @@ Run [`jr2 watch`](../reference/cli.md#watch). It prints the state now, then each
 the lines that `jr2 run` prints while it is attached:
 
 ```sh
-jr2 watch a2d8
+jr2 watch 41ca
 ```
 
 While `jr2 watch` runs, send `approve` to the Gate in a second terminal:
 
 ```sh
-jr2 send a2d8 --gate review --event approve
+jr2 send 41ca --gate review --event approve
 ```
 
 The run ends. `jr2 watch` prints the state when it attached, then the last status, and stops:
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-run a2d8b5b5-645c-44d2-8175-a949493e2320 (release) — attached
+run 41ca7842-786f-44ca-9083-47109500da5f (release) — attached
   → active "review"
   → done "released"
 ```
@@ -162,14 +154,12 @@ When the run ended before you attach, `jr2 watch` prints only its last status. W
 one JSON line:
 
 ```sh
-jr2 watch a2d8 --json
+jr2 watch 41ca --json
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"answers":[{"gate":"review","type":"approve","at":"2026-11-03T10:44:18.237Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"28c844453c20"}
+{"runId":"41ca7842-786f-44ca-9083-47109500da5f","workflow":"release","instanceId":"a17469b8-b648-44dc-acb9-dcce6fcb81ad","startedAt":"2026-11-06T19:17:04.653Z","status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"19d0bf0cbe10","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"answers":[{"gate":"review","type":"approve","at":"2026-11-06T19:17:14.022Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}]}
 ```
 
 After the last status of a run that failed, `jr2 watch` prints `failed: <reason>`, as `jr2 run` does. `jr2 watch` exits
@@ -234,7 +224,7 @@ jr2 run release --input '{"version":"2.0.0"}' --detach
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"2a009f09-13d4-44ba-9e17-fd665acc7aa8"}
+{"runId":"0e4a6a62-587e-4550-aee8-58642dde0637"}
 ```
 
 To read its feed, forward a port to the Orchestrator, as [Start a run](start-a-run.md#start-a-run-with-the-http-api)
@@ -254,10 +244,10 @@ The feed sends the status when you attached, then the last status, and closes:
 
 ```text
 event: status
-data: {"runId":"2a009f09-13d4-44ba-9e17-fd665acc7aa8","workflow":"release","status":"active","value":"review","children":[]}
+data: {"runId":"0e4a6a62-587e-4550-aee8-58642dde0637","workflow":"release","status":"active","value":"review","children":[]}
 
 event: status
-data: {"runId":"2a009f09-13d4-44ba-9e17-fd665acc7aa8","workflow":"release","status":"done","value":"released","children":[]}
+data: {"runId":"0e4a6a62-587e-4550-aee8-58642dde0637","workflow":"release","status":"done","value":"released","children":[]}
 ```
 
 The first event is the status when you attach. The feed of one run closes when the run ends. While the run waits, the

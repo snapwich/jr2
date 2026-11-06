@@ -24,7 +24,7 @@ jr2 send <run id> --event CANCEL
 
 ```text
 → context <context> / namespace <namespace>
-sent CANCEL to 0a90c659-a2f4-44ed-ae03-ca711ca30ce4
+sent CANCEL to 8280a27f-fb24-4399-86b4-05a7ae779e86
 ```
 
 `jr2` prints the full run id, also when you give a prefix. Your run id is different. Then these things occur:
@@ -38,7 +38,7 @@ sent CANCEL to 0a90c659-a2f4-44ed-ae03-ca711ca30ce4
   [Start a run from a run](start-a-run-from-a-run.md).
 
 A `jr2 run` that is attached to the run prints `→ cancelled`, then the state that the run was in. Then it prints the
-status of the run as JSON and exits with the code 0.
+status of the run as JSON and exits with the code 1.
 
 ## Keep the Sandboxes
 
@@ -50,7 +50,7 @@ jr2 send <run id> --event CANCEL --keep
 
 ```text
 → context <context> / namespace <namespace>
-sent CANCEL to 723cf388-c1cf-4b42-a628-8b7715754ca1; its Workspaces are kept
+sent CANCEL to 442d95df-0ff4-4231-b371-2940ef8ecead; its Workspaces are kept
 ```
 
 The run ends as before, but the Orchestrator does not delete its Sandboxes. To open a shell in one, see
@@ -74,11 +74,9 @@ the `WORKSPACE` column to [`jr2 workspace rm`](../reference/cli.md#workspace-rm)
 jr2 workspace rm <workspace>
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-removed Workspace 723cf388/x:12 (ws-723cf388-x-12-1k4kghb)
+removed Workspace 442d95df/x:47 (ws-442d95df-x-47-11p1uzl)
 ```
 
 Your handle and your Sandbox name are different. `jr2 workspace rm` refuses the Sandbox of a run that is live.
@@ -91,7 +89,10 @@ jr2 status <run id>
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"0a90c659-a2f4-44ed-ae03-ca711ca30ce4","workflow":"task","instanceId":"19b49b58-2ea4-4d79-b100-49aad6e12013","status":"cancelled","value":"running",…}
+{"runId":"8280a27f-fb24-4399-86b4-05a7ae779e86","workflow":"task","instanceId":"88d5f67e-d6c7-4a44-bd1d-7e0e5973aaa3","startedAt":"2026-11-06T19:23:56.027Z","status":"cancelled","value":"running",…}
+started by: token/instance on behalf of kubernetes-admin
+cancelled by: token/instance on behalf of kubernetes-admin
+worktree: /work/target/task (target), branch jr2/task-88d5f67e-d6c7-4a44-bd1d-7e0e5973aaa3
 ```
 
 `jr2 status` prints the status of the run as one line of JSON. Its `status` is `cancelled`, and its `value` is the state

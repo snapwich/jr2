@@ -42,14 +42,12 @@ jr2 up
 
 For an Instance that has only `ping`, the output is:
 
-<!-- output: not run -->
-
 ```text
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 agents: (none) (carried by 1 workflow machine(s))
 assembly: staging
-assembly: 0adf5bff234d (kit v<version>; 1 workflow(s): ping)
+assembly: 0756fbb530cb (kit v<version>; 1 workflow(s): ping)
 …
 sandbox images: skipped (no registered Machine composes a Sandbox)
 …
@@ -57,13 +55,13 @@ orchestrator: applying (image ghcr.io/snapwich/jr2-orchestrator:<version>)
 orchestrator: waiting for rollout
 orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
 instance effector: none (no Effect is placed there, and no Hook needs it)
-assembly: publishing 0adf5bff234d (current is ba71fa27f37f)
-assembly: 0adf5bff234d is current — workflows: ping
-swept nothing — every labeled image is named by a live root
+assembly: publishing 0756fbb530cb (current is 50e6f81e3bfb)
+assembly: 0756fbb530cb is current — workflows: ping
+…
 converged — `jr2 run <workflow>` when ready
 ```
 
-`0adf5bff234d` is the hash of the new [Assembly](../reference/glossary.md#assembly), and `ba71fa27f37f` is the hash of
+`0756fbb530cb` is the hash of the new [Assembly](../reference/glossary.md#assembly), and `50e6f81e3bfb` is the hash of
 the Assembly that was current. Your hashes can be different. `<version>` is the
 [Kit version](../reference/glossary.md#kit-version). The hash changed, because the Workflow changed. Thus `jr2 up`
 published the new Assembly to the [Orchestrator](../reference/glossary.md#orchestrator). The image of the Orchestrator
@@ -82,13 +80,11 @@ Run the Workflow:
 jr2 run ping --input '{"message":"hi"}'
 ```
 
-<!-- output: not run -->
-
 ```text
 → context kind-jr2 / namespace my-instance
-run 7df09f94-d26d-44c3-ba1e-0279f16ccacb (ping) — attached
+run 8b6c68a2-2ab6-498b-9cc5-bb722d71140f (ping) — attached
   → done "done"
-{"runId":"7df09f94-d26d-44c3-ba1e-0279f16ccacb","workflow":"ping","instanceId":"b2ec6504-553e-495a-a8be-62715c6d8595","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"done","context":{"message":"hi","reply":"pong, again: hi"},"children":[],"waiting":[],"held":[],"assembly":"0adf5bff234d"}
+{"runId":"8b6c68a2-2ab6-498b-9cc5-bb722d71140f","workflow":"ping","instanceId":"919c7165-d20e-472b-b889-1ba4209a488b","startedAt":"2026-11-06T19:17:06.158Z","status":"done","value":"done","context":{"message":"hi","reply":"pong, again: hi"},"children":[],"waiting":[],"held":[],"assembly":"0756fbb530cb","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}
 ```
 
 Your run id and your instance id are different. The `reply` comes from the new Machine, and `assembly` is the hash of
@@ -114,8 +110,9 @@ A second `jr2 up` with no change builds nothing and publishes nothing:
 
 ```text
 …
-assembly: 0adf5bff234d (current — publish skipped)
+assembly: 0756fbb530cb (current — publish skipped)
 swept nothing — every labeled image is named by a live root
+…
 converged — `jr2 run <workflow>` when ready
 ```
 
