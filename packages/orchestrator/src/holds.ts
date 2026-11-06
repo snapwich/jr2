@@ -31,9 +31,9 @@ export type Hold = {
   deliveryId: string;
   /** The pick's event name. */
   pick: string;
-  /** The Agent slot that picked — the Console's "held since" names it. */
+  /** The Agent slot that picked — the Console's "outstanding since" names it. */
   agent: string;
-  /** ISO time the pick was delivered: the Console's "held since". */
+  /** ISO time the pick was delivered: the Console's "outstanding since". */
   since: string;
   /** The Sandbox whose token may read the answer (ADR-0013) — the registration's, kept because the
    * answer outlives a registration that a route out of the Agent's state ends. */

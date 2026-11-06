@@ -9,8 +9,8 @@ import { createHash } from "node:crypto";
 import { fromPromise } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { gitlab } from "@jr2/hooks/gitlab";
-import type {} from "@jr2/hooks/gitlab";
+import { gitlab } from "../src/hook-kinds/gitlab.ts";
+import type {} from "../src/hook-kinds/gitlab.ts";
 import { dispatch } from "../src/dispatch-effect.ts";
 import { hookDoor } from "../src/hooks.ts";
 import { secret } from "../src/http-effect.ts";
@@ -189,6 +189,18 @@ test("push: a carried item is held and claimed under cap, one run per key, and a
   );
   // A Pool of runs stands: it is still live, with nothing to do.
   assert.equal(host.status(pool)?.status, "active");
+});
+
+test("push: the Pool's source Gate, which hears only Hooks, is no entry of the Gate inbox (ADR-0011)", async () => {
+  const store = await mkStore();
+  const host = hostWith(store, [def("alerts", alertsPool(2)), def("triage", triage)]);
+  const { runId: pool } = await host.start("alerts");
+  await until(() => host.gates(pool).some((g) => g.gate === "source"), "the source Gate opens");
+  assert.deepEqual(host.gates(pool).find((g) => g.gate === "source")?.accepts, []);
+  assert.deepEqual(
+    host.gateInbox(() => true),
+    [],
+  );
 });
 
 test("push: a held item is in the saved blob before the verdict is answered", async () => {

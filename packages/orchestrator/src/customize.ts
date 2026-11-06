@@ -82,7 +82,7 @@ import { isEffect, type Arg } from "./effect.ts";
 import { attachLent, copyOpenBody, lentIn, openBodiesOf, openBodyDeclarationOf } from "./open-body.ts";
 import { effectChecks } from "./effect-checks.ts";
 import type { NamedSecret, Text } from "./http-effect.ts";
-import type { EventsOf, HookKinds, NoWildcardKeys } from "@jr2/hooks";
+import type { EventsOf, HookKinds, NoWildcardKeys } from "./hook-kinds/index.ts";
 import {
   gateSlotOf,
   hooksTableFault,

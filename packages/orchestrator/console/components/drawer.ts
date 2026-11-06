@@ -1,7 +1,7 @@
 // The drawer: Attention (the gate inbox) + Activity (the emit log). The Attention tab is there only
 // for a Caller with `answer` on some Workflow (ADR-0032, ADR-0078) — without it the page is the
-// observer band of ADR-0014 — and a card is only ever a re-fetched fact: it empties when the
-// server's next answer says so, never through bookkeeping on this side.
+// observer band of ADR-0014 — and a card is only ever a fact that `GET /gates` stated: it empties
+// when the server's next answer leaves it out, never through bookkeeping on this side.
 
 import { h, type JSX } from "preact";
 import { may, visibleGates, type GateCard, type Store } from "../store.ts";
@@ -95,6 +95,13 @@ function inboxCard(runId: string, workflow: string, view: GateCard, store: Store
       },
       h("span", { class: "gate-id" }, `⚑ ${view.gate}`),
       h("span", { class: "dim" }, `${workflow} · ${runId.slice(0, 8)}`),
+      view.openedAt
+        ? h(
+            "span",
+            { class: "dim", title: view.openedAt },
+            ` · open since ${new Date(view.openedAt).toLocaleTimeString()}`,
+          )
+        : null,
     ),
     view.meta && Object.keys(view.meta).length
       ? h(

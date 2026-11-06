@@ -49,6 +49,7 @@ import {
   checkPodObjectNames,
   checkPodObjects,
   instanceObjects,
+  stateVolumePlan,
   LABEL_PROVIDER_PREFLIGHT,
   PREFLIGHT_MCP_ARG,
   type HeldObjects,
@@ -166,6 +167,8 @@ class FakeCluster implements KubeAdmin {
     metadata: { name: string; namespace?: string };
     spec?: { containers?: Array<{ image?: string }> };
   }> = [];
+  /** Kinds whose `listJson` read throws, as a read does on an API blip or an RBAC refusal. */
+  listFails = new Set<string>();
   async listJson<T>(opts: {
     kind: string;
     selector?: string;
@@ -197,6 +200,13 @@ class FakeCluster implements KubeAdmin {
             key.startsWith(`${opts.namespace ?? ""}/secret/`) && opts.selector! in (o.metadata.labels ?? {}),
         )
         .map(([, o]) => o) as T[];
+    }
+    // A read by name (the state volume claim and its StorageClass, ADR-0065): what `set` put there.
+    if (opts.kind === "persistentvolumeclaim" || opts.kind === "storageclass") {
+      if (this.listFails.has(opts.kind)) throw new Error(`forbidden: cannot list ${opts.kind}`);
+      const name = /^metadata\.name=(.+)$/.exec(opts.fieldSelector ?? "")?.[1];
+      const found = this.objects.get(`${opts.namespace ?? ""}/${opts.kind}/${name}`);
+      return (found ? [found] : []) as T[];
     }
     if (opts.kind !== "pod") return [];
     const failed = this.failedPods[opts.selector ?? ""];
@@ -610,7 +620,6 @@ async function mkKit(): Promise<string> {
     "deploy/orchestrator/Dockerfile": "FROM node:24-slim\n",
     "packages/orchestrator/package.json": `{"name":"@jr2/orchestrator"}`,
     "packages/agent-protocol/package.json": `{"name":"@jr2/agent-protocol"}`,
-    "packages/hooks/package.json": `{"name":"@jr2/hooks"}`,
   };
   for (const [rel, content] of Object.entries(files)) {
     await mkdir(join(kit, dirname(rel)), { recursive: true });
@@ -1835,8 +1844,10 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   );
   assert.deepEqual(
     podSpec.containers[0].env.map((e: { name: string }) => e.name),
-    ["JR2_NAMESPACE", "NODE_EXTRA_CA_CERTS"],
+    ["JR2_NAMESPACE", "NODE_EXTRA_CA_CERTS", "JR2_STATE_VOLUME"],
   );
+  // The space guard measures against the claim's size as this converge applied it (ADR-0065).
+  assert.equal(podSpec.containers[0].env.find((e: { name: string }) => e.name === "JR2_STATE_VOLUME").value, "5Gi");
   // Built-in `fetch` trusts the API server through the ServiceAccount's own CA (ADR-0063).
   assert.equal(
     podSpec.containers[0].env.find((e: { name: string }) => e.name === "NODE_EXTRA_CA_CERTS").value,
@@ -5151,9 +5162,11 @@ async function withHttpEffect(root: string, name = "jira"): Promise<string> {
   return root;
 }
 
-/** A `@jr2/hooks` kind's module, by the file url a fixture config imports it with. */
+/** A `@jr2/orchestrator/hooks` kind's module, by the file url a fixture config imports it with. */
 const HOOK_KIND = (kind: string): string =>
-  pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "hooks", "src", `${kind}.ts`)).href;
+  pathToFileURL(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "orchestrator", "src", "hook-kinds", `${kind}.ts`),
+  ).href;
 
 test("a mac Hook alone converges the Instance Effector: its secret placed there, its kind's posts in the fence, the Hook reported (ADR-0068)", async () => {
   const root = await mkInstance(
@@ -6454,4 +6467,118 @@ test("a foreign dispatch is placed in the Instance Effector and preflighted from
     moved.err.join("\n"),
     /warning: dispatch "intake" at https:\/\/ops\.example\.com: the door redirected \(HTTP 302\); the Effector follows no redirect/,
   );
+});
+
+// The state volume (ADR-0065): `runs.volume` sizes a new claim; a claim that exists keeps its size
+// with no `runs.volume`, grows where its StorageClass allows expansion, and never shrinks.
+
+/** The state volume claim's size in the instance List this converge applied. */
+function claimSizeOf(w: World): string {
+  const list = w.kube.applied.find(isInstanceList)!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  return items.find((i) => i.kind === "PersistentVolumeClaim" && i.metadata.name === "jr2-state")!.spec.resources
+    .requests.storage;
+}
+
+/** A world whose namespace is this Instance's and holds a state claim of `size` on `storageClass`. */
+function withClaim(w: World, size: string, storageClass = "standard", expandable?: boolean): World {
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
+  w.kube.set("myinst", "persistentvolumeclaim", "jr2-state", {
+    spec: { storageClassName: storageClass, resources: { requests: { storage: size } } },
+  });
+  w.kube.set("", "storageclass", storageClass, {
+    ...(expandable !== undefined ? { allowVolumeExpansion: expandable } : {}),
+  });
+  return w;
+}
+
+test("stateVolumePlan: a new claim, a kept one, a grown one, and the two refusals", () => {
+  assert.deepEqual(stateVolumePlan(undefined), { size: "5Gi" });
+  assert.deepEqual(stateVolumePlan("20Gi"), { size: "20Gi" });
+  assert.deepEqual(stateVolumePlan(undefined, { size: "5Gi" }), { size: "5Gi" }, "the default claim says nothing");
+  const kept = stateVolumePlan(undefined, { size: "1Gi" });
+  assert.equal("size" in kept && kept.size, "1Gi");
+  assert.match("line" in kept ? kept.line! : "", /keeping the claim jr2-state at 1Gi — runs.volume is not set/);
+  assert.deepEqual(stateVolumePlan("5120Mi", { size: "5Gi" }), { size: "5Gi" }, "an equal size in other words");
+  const grown = stateVolumePlan("10Gi", { size: "5Gi", storageClass: "fast", expandable: true });
+  assert.deepEqual(grown, { size: "10Gi", line: "state volume: growing the claim jr2-state from 5Gi to 10Gi" });
+  const smaller = stateVolumePlan("2Gi", { size: "5Gi", storageClass: "fast", expandable: true });
+  assert.match(
+    "refused" in smaller ? smaller.refused : "",
+    /runs.volume is 2Gi, smaller than .* \(5Gi\) — Kubernetes never makes a claim smaller/,
+  );
+  const fixed = stateVolumePlan("10Gi", { size: "5Gi", storageClass: "standard", expandable: false });
+  assert.match("refused" in fixed ? fixed.refused : "", /StorageClass "standard" does not allow expansion/);
+});
+
+test("up sizes a new state claim from runs.volume, and 5Gi with none", async () => {
+  const sized = mkWorld(await mkInstance(`export default { name: "myinst", runs: { volume: "8Gi" } };\n`));
+  assert.equal(await up(["--yes"], sized.io), 0);
+  assert.equal(claimSizeOf(sized), "8Gi");
+  const plain = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  assert.equal(await up(["--yes"], plain.io), 0);
+  assert.equal(claimSizeOf(plain), "5Gi");
+});
+
+test("up keeps an existing claim's size when runs.volume is not set, and says so", async () => {
+  const w = withClaim(mkWorld(await mkInstance(`export default { name: "myinst" };\n`)), "1Gi");
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(claimSizeOf(w), "1Gi");
+  assert.match(w.err.join("\n"), /state volume: keeping the claim jr2-state at 1Gi/);
+});
+
+test("up reads the claim when the namespace read gives nothing, and keeps the claim's size", async () => {
+  // `getJson` reads a failure as absent: the claim read must not depend on it.
+  const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  w.kube.set("myinst", "persistentvolumeclaim", "jr2-state", {
+    spec: { storageClassName: "standard", resources: { requests: { storage: "1Gi" } } },
+  });
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(claimSizeOf(w), "1Gi");
+});
+
+test("up grows the claim on a StorageClass that expands, and refuses one that does not", async () => {
+  const config = `export default { name: "myinst", runs: { volume: "10Gi" } };\n`;
+  const grows = withClaim(mkWorld(await mkInstance(config)), "5Gi", "fast", true);
+  assert.equal(await up(["--yes"], grows.io), 0);
+  assert.equal(claimSizeOf(grows), "10Gi");
+  assert.match(grows.err.join("\n"), /growing the claim jr2-state from 5Gi to 10Gi/);
+
+  const fixed = withClaim(mkWorld(await mkInstance(config)), "5Gi", "standard");
+  assert.equal(await up(["--yes"], fixed.io), 1);
+  assert.match(
+    fixed.err.join("\n"),
+    /refusing: runs.volume is 10Gi, .*StorageClass "standard" does not allow expansion/s,
+  );
+  assert.deepEqual(fixed.kube.applied, [], "nothing is applied");
+});
+
+test("up refuses, and applies nothing, when it cannot read the state claim or its StorageClass", async () => {
+  const claim = withClaim(mkWorld(await mkInstance(`export default { name: "myinst" };\n`)), "1Gi");
+  claim.kube.listFails.add("persistentvolumeclaim");
+  assert.equal(await up(["--yes"], claim.io), 1);
+  assert.match(
+    claim.err.join("\n"),
+    /refusing: cannot read the state volume claim jr2-state in namespace "myinst" \(forbidden/,
+  );
+  assert.deepEqual(claim.kube.applied, [], "an unread claim is not applied over");
+
+  const config = `export default { name: "myinst", runs: { volume: "10Gi" } };\n`;
+  const cls = withClaim(mkWorld(await mkInstance(config)), "5Gi", "fast", true);
+  cls.kube.listFails.add("storageclass");
+  assert.equal(await up(["--yes"], cls.io), 1);
+  const said = cls.err.join("\n");
+  assert.match(said, /jr2 cannot read StorageClass "fast" to see if it allows expansion/);
+  assert.doesNotMatch(said, /does not allow expansion/, "it does not say what it could not read");
+  assert.deepEqual(cls.kube.applied, []);
+});
+
+test("up refuses a runs.volume smaller than the claim, and applies nothing", async () => {
+  const w = withClaim(
+    mkWorld(await mkInstance(`export default { name: "myinst", runs: { volume: "2Gi" } };\n`)),
+    "5Gi",
+  );
+  assert.equal(await up(["--yes"], w.io), 1);
+  assert.match(w.err.join("\n"), /refusing: runs.volume is 2Gi, smaller than the state volume claim jr2-state \(5Gi\)/);
+  assert.deepEqual(w.kube.applied, []);
 });

@@ -234,3 +234,59 @@ Then(
     assert.equal((await row.first().innerText()).replace(/\s+/g, " ").trim(), `${state} ${party} ${names}`);
   },
 );
+
+// --- the Gate inbox from GET /gates, the ended runs, the bottom drawer (ADR-0011, ADR-0023, ADR-0032)
+
+Then("the gate card for {string} says when it opened", async function (this: E2EWorld, gate: string) {
+  await thePage(this)
+    .locator("#gate-inbox .gate-card", { hasText: gate })
+    .first()
+    .locator("span", { hasText: "open since" })
+    .waitFor({ state: "visible", timeout: APPEAR });
+});
+
+Then("the Attention drawer shows no gate card for {string}", async function (this: E2EWorld, gate: string) {
+  const page = thePage(this);
+  // The inbox has painted (another card shows), so an absent card is the server's answer.
+  await page.locator("#gate-inbox .gate-card").first().waitFor({ state: "visible", timeout: APPEAR });
+  assert.equal(await page.locator("#gate-inbox .gate-card", { hasText: gate }).count(), 0);
+});
+
+Then(
+  "the rail lists the ended runs of {string} under their heading",
+  async function (this: E2EWorld, wf: string): Promise<void> {
+    const item = railItem(thePage(this), wf);
+    await item.locator(".wf-runs li.runs-head", { hasText: "ended" }).waitFor({ state: "attached", timeout: APPEAR });
+    await item
+      .locator(".wf-runs li.settled .run-id", { hasText: this.runId!.slice(0, 8) })
+      .waitFor({ state: "attached", timeout: APPEAR });
+  },
+);
+
+When("I select that run in the rail", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.runId, "a run was started");
+  await thePage(this)
+    .locator("#workflow-list .wf-runs li .run-id", { hasText: this.runId.slice(0, 8) })
+    .first()
+    .click({ timeout: APPEAR });
+});
+
+Then(
+  "the bottom drawer has a tab for {string} with a live dot",
+  async function (this: E2EWorld, slot: string): Promise<void> {
+    await thePage(this)
+      .locator("#bottom-drawer .slot-tab", { hasText: slot })
+      .locator(".live-dot")
+      .waitFor({ state: "attached", timeout: APPEAR });
+  },
+);
+
+When("I open the bottom drawer tab {string}", async function (this: E2EWorld, slot: string): Promise<void> {
+  await thePage(this).locator("#bottom-drawer .slot-tab", { hasText: slot }).click({ timeout: APPEAR });
+});
+
+Then("the conversation shows {string}", async function (this: E2EWorld, text: string): Promise<void> {
+  await thePage(this)
+    .locator("#bottom-drawer #conversation", { hasText: text })
+    .waitFor({ state: "visible", timeout: APPEAR });
+});

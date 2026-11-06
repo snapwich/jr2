@@ -31,6 +31,12 @@
   "exports": {
     ".": "./src/index.ts",
     "./internal": "./src/internal.ts",
+    "./hooks": "./src/hook-kinds/index.ts",
+    "./hooks/github": "./src/hook-kinds/github.ts",
+    "./hooks/gitlab": "./src/hook-kinds/gitlab.ts",
+    "./hooks/slack": "./src/hook-kinds/slack.ts",
+    "./hooks/discord": "./src/hook-kinds/discord.ts",
+    "./hooks/webhook": "./src/hook-kinds/webhook.ts",
     "./tsconfig.instance.json": "./tsconfig.instance.json"
   },
   "types": "./src/index.ts",
@@ -42,7 +48,6 @@
   "dependencies": {
     "@hono/node-server": "^2.0.6",
     "@jr2/agent-protocol": "workspace:*",
-    "@jr2/hooks": "workspace:*",
     "elkjs": "^0.11.1",
     "hono": "^4.12.27",
     "jose": "^6.2.3",

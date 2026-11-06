@@ -205,22 +205,22 @@ shows its idea better than the text. See [When to draw a diagram](#when-to-draw-
 Each term has one Concept page that explains it. The table gives the terms that each page owns (from grill Q7). Another
 page that uses a term links to the page that owns it, and does not explain the term again.
 
-| Concept                           | The terms that it owns                                                                                              |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `concepts/machines-and-workflows` | Machine, Workflow, the door (the run input), Vocabulary, Emit                                                       |
-| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, `continue`, Briefing, Working tools, MCP tools, Runaway, Compaction, Steering message    |
-| `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                      |
-| `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a Hook; Gate slot, look, `reply`                      |
-| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, `mcp`, dispatched by, at-most-once, `fromPick`                       |
-| `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, cut, Size, Placing, Lease, Continuity, Sandbox Image, User Container |
-| `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                            |
-| `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                     |
-| `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set, push Source, Pool of runs, standing Pool                                      |
-| `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                          |
-| `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                              |
-| `concepts/callers-and-hooks`      | Caller, scope, on behalf of, JWT issuer, the record of each act, Hook, Hook kind, the door of a Hook, hook log      |
-| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Handoff, Kit image, Pinned image, Sandbox Image as an image to build, `gc`         |
-| `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, the week of history                   |
+| Concept                           | The terms that it owns                                                                                                         |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `concepts/machines-and-workflows` | Machine, Workflow, the door (the run input), Vocabulary, Emit                                                                  |
+| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, Conversation, `continue`, Briefing, Working tools, MCP tools, Runaway, Compaction, Steering message |
+| `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                                 |
+| `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a Hook; Gate slot, look, `reply`                                 |
+| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, `mcp`, dispatched by, at-most-once, `fromPick`                                  |
+| `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, cut, Size, Placing, Lease, Continuity, Sandbox Image, User Container            |
+| `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                                       |
+| `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                                |
+| `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set, push Source, Pool of runs, standing Pool                                                 |
+| `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                                     |
+| `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                                         |
+| `concepts/callers-and-hooks`      | Caller, scope, on behalf of, JWT issuer, the record of each act, Hook, Hook kind, the door of a Hook, hook log                 |
+| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Handoff, Kit image, Pinned image, Sandbox Image as an image to build, `gc`                    |
+| `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, `runs.retain`, the space guard                   |
 
 Workspaces owns the Sandbox Image as a part of the Sandbox. Converge owns only how `jr2 up` builds and loads it.
 
@@ -246,7 +246,7 @@ The first link in `## Read next` is the Concept in this table. A Guide can link 
 | `set-an-agents-access-and-dials`, `give-an-agent-mcp-tools`                              | `concepts/agents-and-turns`       |
 | `write-a-tool-as-an-mcp-server`                                                          | `concepts/agents-and-turns`       |
 | `answer-a-gate`, `answer-a-gate-from-a-forge`                                            | `concepts/gates`                  |
-| `steer-an-agent`                                                                         | `concepts/agents-and-turns`       |
+| `steer-an-agent`, `read-a-conversation`                                                  | `concepts/agents-and-turns`       |
 | `run-a-command-or-call-a-url`, `push-and-sign-a-branch`, `start-a-run-from-a-run`        | `concepts/effects`                |
 | `call-an-mcp-tool-from-a-machine`                                                        | `concepts/effects`                |
 | `look-inside-a-sandbox`, `add-tools-to-the-sandbox`, `size-a-workspace`                  | `concepts/workspaces`             |
@@ -353,8 +353,8 @@ The key `provider` makes each tab set on the site show the tab that the reader c
   folder for each tab: `anthropic/` and `local/`.
 - A Machine example is a complete workflow module: its imports, its Vocabulary, its Agents and `export const machine`.
 - Import only what a scaffolded Instance can import: `@jr2/orchestrator` (its root, never `/internal`), `xstate`, `zod`,
-  `@jr2/machines`, `@jr2/hooks` and `node:` modules. A page that imports `@jr2/machines` or `@jr2/hooks` tells the
-  reader to install it.
+  `@jr2/machines` and `node:` modules. The Hook kinds are `@jr2/orchestrator/hooks` and its subpaths. A page that
+  imports `@jr2/machines` tells the reader to install it.
 - A comment in an example speaks to the reader. Put the ADR links in the page, not in the comments.
 - To show a part of a file, mark the part as a region: `// #region <name>` on the line before it, and
   `// #endregion <name>` on the line after it. Give the region the name of what it holds, such as `imports` or `review`.
@@ -518,7 +518,7 @@ build fails. `docs:build` fails in both cases, so `pnpm --filter @jr2/docs-site 
 
 Put the file in `examples/<page-slug>/`, or in `examples/shared/` when two or more pages import it. `docs:build` refuses
 a `<<<` of a file outside `examples/`. `pnpm typecheck` checks every `.ts` file in `examples/` against
-`@jr2/orchestrator`, `@jr2/machines` and `@jr2/hooks`. See [Examples](#examples).
+`@jr2/orchestrator` (with `@jr2/orchestrator/hooks`) and `@jr2/machines`. See [Examples](#examples).
 
 ### Diagrams
 
@@ -674,8 +674,8 @@ It also changes each relative link:
   path is relative to the root of `@jr2/orchestrator`, which holds the bundle. In the TSDoc of another package, such as
   `@jr2/machines`, write the path with the package name, `@jr2/orchestrator/docs/<slug>.md`, so that an Assistant who
   reads the file in `node_modules` can find the page. A `docs/` path there is an error.
-- a TSDoc block tag on the Authoring surface, on `@jr2/machines` or on `@jr2/hooks` other than `@remarks`, `@param`,
-  `@returns`, `@example` and `@see`: the Reference does not show it
+- a TSDoc block tag on the Authoring surface, on `@jr2/machines` or on `@jr2/orchestrator/hooks` other than `@remarks`,
+  `@param`, `@returns`, `@example` and `@see`: the Reference does not show it
 - a TSDoc block tag on a type in a Types section, or on a Mechanism event, other than `@remarks`, `@example` and `@see`
 - a repo path or a commit id in the TSDoc that a Reference page shows, such as `test/x.test.ts`, `parts.ts` or
   `baba71f`. `jr2.config.ts`, `AGENTS.md` and `CLAUDE.md` are the author's files, so they are not errors. The code of an
@@ -728,9 +728,10 @@ The `pages` job of `.github/workflows/release.yml` runs `pnpm docs:site` and dep
 
 ### The TSDoc that the Reference shows
 
-The Reference shows the TSDoc of each export of the Authoring surface, of `@jr2/machines` and of `@jr2/hooks`, and of
-each Kit type that their signatures and fields name, to any depth. Write that TSDoc for the author: what the name does,
-what it refuses, with the full text, and what to read next. Put the reasoning of a maintainer in `//` comments above it.
+The Reference shows the TSDoc of each export of the Authoring surface, of `@jr2/machines` and of
+`@jr2/orchestrator/hooks`, and of each Kit type that their signatures and fields name, to any depth. Write that TSDoc
+for the author: what the name does, what it refuses, with the full text, and what to read next. Put the reasoning of a
+maintainer in `//` comments above it.
 
 The first sentence of the summary is the line of the name on its group page of the Authoring surface, and the
 `description` of its entry page. It ends at the first stop (`.`, `!` or `?`) that a space follows, outside a code span.
@@ -807,8 +808,8 @@ kubectl -n my-instance get secret jr2-instance -o jsonpath='{.data.JR2_INSTANCE_
 ```
 
 `jr2 run` stays attached to the run and returns only when the run ends. A run that waits at a Gate does not end. Thus
-pages 4, 5 and 6 start each run in one terminal, and give each `jr2 send` and `kubectl exec` in a second terminal. The
-pages do not use `--detach`.
+pages 4, 5 and 6 start each run in one terminal, and give each `jr2 send` and `jr2 workspace shell` in a second
+terminal. The pages do not use `--detach`.
 
 ### The models
 
@@ -917,14 +918,14 @@ jr2 run triage --input '{"request":"The greeting looks wrong sometimes."}'
   tell the reader to make the branch name or the Worktree path from the run id. The `review` Gate gives both in its
   `meta`, as `branch` and `worktree`. `jr2 status <run id>` prints them under `gates`, and the drawer of the Console
   shows them.
-- To push, the reader reads `branch` and `worktree` from the Gate. Then the reader finds the Sandbox, goes into its
-  `harness` container, and pushes from the Worktree. The label `jr2.dev/run` holds the full run id, not a prefix. The
-  pod has the name of the Sandbox:
+- To push, the reader reads `branch` and `worktree` from the Gate. Then the reader finds the Workspace with
+  `jr2 workspace ls`, opens a shell in it with `jr2 workspace shell`, and pushes from the Worktree. `jr2 workspace ls`
+  takes a prefix of the run id. The shell runs as the Agents run, and it cannot read the control Stand-in:
 
   ```sh
   jr2 status <run id>
-  kubectl -n my-instance get sandboxes -l jr2.dev/run=<run id>
-  kubectl -n my-instance exec -it <sandbox> -c harness -- bash
+  jr2 workspace ls <run id>
+  jr2 workspace shell <workspace>
   cd <worktree>
   git push origin <branch>
   ```

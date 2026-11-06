@@ -25,6 +25,7 @@ import {
   gateCount,
   machineDocSource,
   may,
+  runList,
   selectedRun,
   selectedRunFailure,
   selectedRunGates,
@@ -33,13 +34,22 @@ import {
   selectedRunWaiting,
   visibleGates,
   SETTLED_CAP,
+  activeSlot,
+  olderAssembly,
+  olderAssemblyMark,
+  selectedDocSource,
+  selectedRunDrift,
+  slotConversations,
+  slotTabs,
   type CallerView,
+  type RunSummaryView,
   type Frame,
   type GateCard,
   type WaitingLine,
   type SeatedBody,
   type WorkflowListing,
 } from "../console/store.ts";
+import { foldEntries, mergeEntries, readSse, type ConversationEntry } from "../console/conversation.ts";
 
 const run = (runId: string, status = "active", workflow = "wf") => ({
   runId,
@@ -50,6 +60,12 @@ const run = (runId: string, status = "active", workflow = "wf") => ({
 });
 
 const gate = (name = "approval"): GateCard => ({ gate: name, path: [], accepts: [{ name: "approve", input: {} }] });
+
+/** One read of `GET /gates` (ADR-0011): the whole inbox, each run's Gates in the order given. */
+const inbox = (...runs: Array<[runId: string, workflow: string, gates: GateCard[]]>): Frame => ({
+  kind: "inbox",
+  gates: runs.flatMap(([runId, workflow, gates]) => gates.map((g) => ({ runId, workflow, ...g }))),
+});
 
 /** A live credential whose Caller may answer and read every Workflow — the Instance token's scopes. */
 const unlocked: Frame[] = [
@@ -199,12 +215,11 @@ test("`select` resets the feed's state — runs, settled, emits belong to the OL
 });
 
 test("`select` keeps the global halves — the inbox and the fleet outlive a navigation", () => {
-  let store = fold({ kind: "fleet", workflow: "other", runs: [run("x", "active", "other")] }, ...unlocked, {
-    kind: "gates",
-    runId: "x",
-    workflow: "other",
-    gates: [gate()],
-  });
+  let store = fold(
+    { kind: "fleet", workflow: "other", runs: [run("x", "active", "other")] },
+    ...unlocked,
+    inbox(["x", "other", [gate()]]),
+  );
   store = applyFrame(store, { kind: "select", workflow: "wf" });
 
   assert.ok(store.fleet.has("other"), "snapshots are the fleet's, not the selection's");
@@ -240,7 +255,7 @@ test("a fleet snapshot is one workflow's whole set, replaced wholesale — same 
   store = applyFrame(store, { kind: "fleet", workflow: "other", runs: [run("y", "active", "other")] });
 
   assert.deepEqual(
-    fleetRuns(store, "other").map(({ run: r }) => r.runId),
+    fleetRuns(store, "other").map((r) => r.runId),
     ["y"],
     "the snapshot is whatever the server just said",
   );
@@ -256,7 +271,7 @@ test("fleetRuns serves the selection from the feed and the rest from snapshots",
   );
 
   assert.deepEqual(
-    fleetRuns(store, "wf").map(({ run: r, settled }) => [r.runId, settled]),
+    fleetRuns(store, "wf").map((r) => [r.runId, r.settled]),
     [
       ["b", false],
       ["a", true],
@@ -264,7 +279,7 @@ test("fleetRuns serves the selection from the feed and the rest from snapshots",
     "the selected workflow keeps the feed's memory, settled runs included",
   );
   assert.deepEqual(
-    fleetRuns(store, "other").map(({ run: r, settled }) => [r.runId, settled]),
+    fleetRuns(store, "other").map((r) => [r.runId, r.settled]),
     [["x", false]],
     "an unselected workflow is its latest snapshot — no settled half, a snapshot has no memory",
   );
@@ -292,7 +307,7 @@ test("token transitions: none → checking → live is the unlock path", () => {
 });
 
 test("leaving `live` empties the inbox — guarded data cannot outlive the credential that read it", () => {
-  const opened = fold(...unlocked, { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] });
+  const opened = fold(...unlocked, inbox(["a", "wf", [gate()]]));
 
   // The any-later-401 drop (ADR-0032): one widget's 401 is every widget's observer mode.
   const invalid = applyFrame(opened, { kind: "token", state: "invalid" });
@@ -305,83 +320,91 @@ test("leaving `live` empties the inbox — guarded data cannot outlive the crede
 });
 
 test("`checking` keeps the inbox — a re-validation that comes back fine must not flash it empty", () => {
-  const store = fold(
-    ...unlocked,
-    { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
-    { kind: "token", state: "checking" },
-  );
+  const store = fold(...unlocked, inbox(["a", "wf", [gate()]]), { kind: "token", state: "checking" });
   assert.equal(store.gates.size, 1);
 });
 
-test("a `gates` frame without a live credential is dropped — a straggling guarded re-fetch cannot repopulate the emptied inbox", () => {
-  // The re-fetch was in flight when the token was cleared; its answer lands after the `token`
-  // frame emptied the map. Folding it would be invisible while locked but surface intact on the
-  // next unlock — guarded data outliving the credential that read it.
-  const store = fold(
-    ...unlocked,
-    { kind: "token", state: "none" },
-    { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
-  );
+test("an `inbox` frame without a live credential is dropped — a straggling guarded read cannot repopulate the emptied inbox", () => {
+  // The read was in flight when the token was cleared; its answer lands after the `token` frame
+  // emptied the map. Folding it would be invisible while locked but surface intact on the next
+  // unlock — guarded data outliving the credential that read it.
+  const store = fold(...unlocked, { kind: "token", state: "none" }, inbox(["a", "wf", [gate()]]));
   assert.equal(store.gates.size, 0);
 });
 
 // ---- The gate inbox -----------------------------------------------------------------------------
-// Frame-triggered guarded re-fetches (ADR-0032): every `gates` frame is one run's WHOLE open-gate
-// set off `GET /runs/:id`. A delivery's success is the next re-fetch coming back empty — the
-// reducer does no bookkeeping of its own.
+// Frame-triggered guarded reads (ADR-0032): every `inbox` frame is the WHOLE answer of `GET /gates`
+// (ADR-0011), every open Gate the Caller may answer. A delivery's success is the next read coming
+// back without the card — the reducer does no bookkeeping of its own.
 
-test("a `gates` frame fills a card; an empty re-fetch is the ONLY thing that empties it", () => {
-  let store = fold(...unlocked, { kind: "gates", runId: "a", workflow: "wf", gates: [gate("approval"), gate("veto")] });
+test("an `inbox` frame fills the cards; a read without the card is the ONLY thing that empties it", () => {
+  let store = fold(...unlocked, inbox(["a", "wf", [gate("approval"), gate("veto")]]));
   assert.equal(gateCount(store), 2);
 
-  // Re-delivery replaces wholesale — level-triggered, so a duplicate re-fetch is idempotent.
-  store = applyFrame(store, { kind: "gates", runId: "a", workflow: "wf", gates: [gate("approval")] });
+  // Re-delivery replaces wholesale — level-triggered, so a duplicate read is idempotent.
+  store = applyFrame(store, inbox(["a", "wf", [gate("approval")]]));
   assert.deepEqual(
     store.gates.get("a")?.gates.map((g) => g.gate),
     ["approval"],
   );
 
-  // The delivery succeeded server-side; the frame-triggered re-fetch reports no open gates. THAT is
-  // what removes the card — never a local "I posted, so it worked".
-  store = applyFrame(store, { kind: "gates", runId: "a", workflow: "wf", gates: [] });
+  // The delivery succeeded server-side; the frame-triggered read lists no open Gate. THAT is what
+  // removes the card — never a local "I posted, so it worked".
+  store = applyFrame(store, inbox());
   assert.equal(store.gates.size, 0);
   assert.equal(gateCount(store), 0);
 });
 
-test("`gone` takes the run's card with it — a gate exists only while its state is entered", () => {
-  const store = fold(
-    { kind: "status", status: run("a") },
-    ...unlocked,
-    { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
-    { kind: "gone", runId: "a" },
+test("the inbox keeps the server's order and each Gate's open time, and the card holds no run id", () => {
+  const openedAt = "2026-11-06T09:00:00.000Z";
+  const store = fold(...unlocked, {
+    kind: "inbox",
+    gates: [
+      { runId: "b", workflow: "wf", ...gate("old"), openedAt },
+      { runId: "a", workflow: "other", ...gate("mid") },
+      { runId: "b", workflow: "wf", ...gate("new") },
+    ],
+  });
+  assert.deepEqual([...store.gates.keys()], ["b", "a"], "oldest first, as `GET /gates` lists them");
+  assert.deepEqual(
+    store.gates.get("b")?.gates.map((g) => [g.gate, g.openedAt]),
+    [
+      ["old", openedAt],
+      ["new", undefined],
+    ],
   );
+  assert.equal("runId" in (store.gates.get("b")?.gates[0] ?? {}), false);
+});
+
+test("`gone` takes the run's card with it — a gate exists only while its state is entered", () => {
+  const store = fold({ kind: "status", status: run("a") }, ...unlocked, inbox(["a", "wf", [gate()]]), {
+    kind: "gone",
+    runId: "a",
+  });
   assert.equal(store.gates.size, 0);
   assert.ok(store.settled.has("a"), "the run itself still settles as ever");
 });
 
-test("a whole-set frame settles the inbox cards its runs left behind", () => {
-  // A run that ended during a disconnect gets no `gone` and will never be re-fetched again — the
-  // `runs` frame's wholeness is what says its card is stale. Same for a fleet snapshot's workflow.
+test("a whole-set frame of runs leaves the inbox alone — `GET /gates` is its own whole set", () => {
+  // The inbox is every Workflow's, read whole on each frame: a `runs` frame or a snapshot does not
+  // speak for it, and the next read settles a card of a run that ended during a disconnect.
   let store = fold(
     { kind: "select", workflow: "wf" },
     ...unlocked,
-    { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
-    { kind: "gates", runId: "x", workflow: "other", gates: [gate()] },
+    inbox(["a", "wf", [gate()]], ["x", "other", [gate()]]),
   );
   store = applyFrame(store, { kind: "runs", runs: [run("b")] });
-  assert.ok(!store.gates.has("a"), "the reconnected feed does not know `a` — neither does the inbox");
-  assert.ok(store.gates.has("x"), "another workflow's card is not this frame's to settle");
-
   store = applyFrame(store, { kind: "fleet", workflow: "other", runs: [] });
-  assert.ok(!store.gates.has("x"), "and the snapshot settles its own workflow's the same way");
+  assert.deepEqual([...store.gates.keys()], ["a", "x"]);
+  store = applyFrame(store, inbox());
+  assert.equal(store.gates.size, 0, "the read is what settles them");
 });
 
 test("the visible inbox follows the selection until widened; the badge count never filters", () => {
   let store = fold(
     { kind: "select", workflow: "wf" },
     ...unlocked,
-    { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
-    { kind: "gates", runId: "x", workflow: "other", gates: [gate(), gate("veto")] },
+    inbox(["a", "wf", [gate()]], ["x", "other", [gate(), gate("veto")]]),
   );
 
   assert.deepEqual(
@@ -444,8 +467,7 @@ test("selectedRunGates follows the selected run — the pin is a view over facts
     { kind: "select", workflow: "wf" },
     ...unlocked,
     { kind: "runs", runs: [run("a"), run("b")] },
-    { kind: "gates", runId: "a", workflow: "wf", gates: [gate()] },
-    { kind: "gates", runId: "b", workflow: "wf", gates: [gate("veto")] },
+    inbox(["a", "wf", [gate()]], ["b", "wf", [gate("veto")]]),
   );
   assert.deepEqual(
     selectedRunGates(store).map((g) => g.gate),
@@ -457,7 +479,7 @@ test("selectedRunGates follows the selected run — the pin is a view over facts
     selectedRunGates(store).map((g) => g.gate),
     ["veto"],
   );
-  store = applyFrame(store, { kind: "gates", runId: "b", workflow: "wf", gates: [] });
+  store = applyFrame(store, inbox(["a", "wf", [gate()]]));
   assert.deepEqual(selectedRunGates(store), [], "an emptied card takes the pin with it");
 });
 
@@ -513,7 +535,7 @@ test("`waiting` follows the selected run, is whole per run, and an empty re-fetc
   assert.equal(store.waiting.size, 0, "placed: the next re-fetch says nothing waits");
 });
 
-test('an outstanding pick rides the same re-fetch: "held since" for the selected run, cleared when it is answered (ADR-0024)', () => {
+test('an outstanding pick rides the same re-fetch: "outstanding since" for the selected run, cleared when it is answered (ADR-0024)', () => {
   const since = "2026-10-06T10:00:00.000Z";
   let store = fold(
     { kind: "select", workflow: "wf" },
@@ -664,7 +686,7 @@ test("a bound run draws its own Machine, per run id; any other run draws the Wor
     path: "/workflows/charted/runs/r1/machine",
   });
   assert.deepEqual(machineDocSource("charted", { runId: "r2" }), {
-    key: "workflow:charted",
+    key: "workflow:charted@",
     path: "/workflows/charted/machine",
   });
   assert.deepEqual(machineDocSource("charted", null), machineDocSource("charted", { runId: "r3" }));
@@ -680,7 +702,7 @@ test("a named Chart's name rides the doc route as one encoded segment", () => {
 
 test("the doc choice follows the selected run's observation: a status that says `bound` moves it", () => {
   let store = fold({ kind: "select", workflow: "charted" }, { kind: "runs", runs: [run("a", "active", "charted")] });
-  assert.equal(machineDocSource("charted", selectedRun(store)).key, "workflow:charted");
+  assert.equal(machineDocSource("charted", selectedRun(store)).key, "workflow:charted@");
   store = applyFrame(store, { kind: "status", status: { ...run("a", "active", "charted"), bound: true } });
   assert.equal(machineDocSource("charted", selectedRun(store)).key, "run:a");
 });
@@ -748,7 +770,7 @@ test("`dispatchedBy` is kept through `runs`, `status` and `gone`, with no token"
 
 test("a fleet snapshot keeps `dispatchedBy` for an unselected workflow's runs", () => {
   const store = applyFrame(emptyStore(), { kind: "fleet", workflow: "wf", runs: [dispatched("a")] });
-  assert.equal(fleetRuns(store, "wf")[0]?.run.dispatchedBy?.slot, "review");
+  assert.equal(fleetRuns(store, "wf")[0]?.dispatchedBy?.slot, "review");
 });
 
 test("the row badge and the pane strip name the caller; a run nobody dispatched shows neither", () => {
@@ -906,14 +928,13 @@ test("the nav names the Caller: the shown name, else via/name, and the party it 
   assert.equal(callerScopes({ ...ci, may: { answer: "all", start: [] } }), "answer: all");
 });
 
-test("a Gate card shows only where `answer` opens its Workflow — `read` alone re-fetches, but sends nothing", () => {
-  // `read: all` makes the page re-fetch run `b` (its waits, its starter); its open Gate must not
-  // become a send form that meets a 403 (ADR-0032).
+test("a Gate card shows only where `answer` opens its Workflow — `read` alone reads the run, but sends nothing", () => {
+  // The server lists only what the Caller may answer; an entry for `b` (an older server, or a
+  // grant that changed mid-read) must not become a send form that meets a 403 (ADR-0032).
   const store = fold(
     { kind: "fleet", workflow: "b", runs: [run("rb", "active", "b")] },
     ...unlockAs({ via: "token", name: "ops", may: { answer: ["a"], read: "all" } }),
-    { kind: "gates", runId: "ra", workflow: "a", gates: [gate()] },
-    { kind: "gates", runId: "rb", workflow: "b", gates: [gate()] },
+    inbox(["ra", "a", [gate()]], ["rb", "b", [gate()]]),
     { kind: "inboxScope", all: true },
   );
   assert.equal(may(store, "answer"), true, "the Attention tab shows: `answer` opens `a`");
@@ -930,11 +951,24 @@ test("a Gate card shows only where `answer` opens its Workflow — `read` alone 
   );
 
   // A new Caller keeps only the cards its own `answer` opens.
-  const narrowed = applyFrame(fold(...unlocked, { kind: "gates", runId: "ra", workflow: "a", gates: [gate()] }), {
+  const narrowed = applyFrame(fold(...unlocked, inbox(["ra", "a", [gate()]])), {
     kind: "caller",
     caller: { via: "token", name: "viewer", may: { read: "all" } },
   });
   assert.equal(narrowed.gates.size, 0);
+});
+
+test("an `answer` item that names single Gates opens its Workflow's Gate cards, and the nav says its Gates", () => {
+  const caller: CallerView = {
+    via: "token",
+    name: "release",
+    may: { answer: ["triage", { workflow: "deploy", gates: ["approve", "ship"] }] },
+  };
+  const store = fold(...unlockAs(caller), inbox(["rd", "deploy", [gate("approve")]]));
+  assert.equal(may(store, "answer", "deploy"), true, "the item opens a Gate of the Workflow (ADR-0078)");
+  assert.equal(may(store, "answer", "intake"), false);
+  assert.equal(store.gates.get("rd")?.gates.length, 1, "the server listed the Gate, so the card stays");
+  assert.equal(callerScopes(caller), "answer: triage, deploy (approve, ship)");
 });
 
 test("a 401 or a cleared credential drops the Caller with the rest of the guarded state", () => {
@@ -989,4 +1023,433 @@ test("the starter is guarded state: it goes with the credential, the selection a
   assert.equal(applyFrame(live, { kind: "runs", runs: [] }).starters.size, 0, "the run left unseen");
   assert.equal(applyFrame(live, { kind: "gone", runId: "a" }).starters.size, 1, "a settled run keeps it");
   assert.equal(applyFrame(live, { kind: "starter", runId: "a", startedBy: null }).starters.size, 0);
+});
+
+// ---- The ended runs in the rail (ADR-0032, ADR-0009) --------------------------------------------
+
+const ended = (runId: string, status = "done", extra: Partial<RunSummaryView> = {}): RunSummaryView => ({
+  runId,
+  workflow: "wf",
+  status,
+  startedAt: "2026-11-01T00:00:00.000Z",
+  ...extra,
+});
+
+test("the rail lists live runs, then the ended runs: the ones the page watched end, then `GET /runs`'s", () => {
+  const store = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    { kind: "status", status: run("a") },
+    { kind: "status", status: run("w") },
+    { kind: "gone", runId: "w" },
+    {
+      kind: "history",
+      workflow: "wf",
+      runs: [ended("w", "failed", { reason: "boom" }), ended("old", "drifted", { reason: "gone Assembly" })],
+    },
+  );
+  assert.deepEqual(
+    fleetRuns(store, "wf").map((r) => [r.runId, r.status, r.settled, r.reason ?? null]),
+    [
+      ["a", "active", false, null],
+      ["w", "failed", true, "boom"],
+      ["old", "drifted", true, "gone Assembly"],
+    ],
+    "a run in both halves is one row, with the listing's status and reason",
+  );
+});
+
+test("the ended runs are guarded, are the selection's, and go with the credential and a navigation", () => {
+  const listed: Frame = { kind: "history", workflow: "wf", runs: [ended("e")] };
+  assert.equal(fold({ kind: "select", workflow: "wf" }, listed).history, null, "no credential, no list");
+  const noRead = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlockAs({ via: "token", name: "ci", may: { answer: "all" } }),
+    listed,
+  );
+  assert.equal(noRead.history, null, "without `read` the rail lists live runs only");
+  const other = fold({ kind: "select", workflow: "wf" }, ...unlocked, { ...listed, workflow: "other" });
+  assert.equal(other.history, null, "a list for a Workflow the page left is dropped");
+
+  const store = fold({ kind: "select", workflow: "wf" }, ...unlocked, listed);
+  assert.equal(store.history?.runs.length, 1);
+  assert.equal(applyFrame(store, { kind: "select", workflow: "next" }).history, null);
+  assert.equal(applyFrame(store, { kind: "token", state: "invalid" }).history, null);
+});
+
+test("an ended run opened from the rail stays selected, and its last status lights the graph", () => {
+  let store = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    { kind: "runs", runs: [run("a")] },
+    { kind: "history", workflow: "wf", runs: [ended("e", "failed")] },
+    { kind: "selectRun", runId: "e" },
+  );
+  store = applyFrame(store, { kind: "status", status: run("a") });
+  assert.equal(store.selectedRunId, "e", "a listed ended run is a run the page can say something about");
+  assert.equal(selectedRun(store), null, "no status read yet");
+
+  store = applyFrame(store, { kind: "endedStatus", status: run("e", "failed") });
+  assert.equal(selectedRun(store)?.status, "failed");
+  assert.equal(store.runs.has("e"), false, "it is held with the ended runs");
+  store = applyFrame(store, { kind: "failure", runId: "e", reason: "no tests" });
+  assert.equal(selectedRunFailure(store), "no tests", "its Failure folds like a watched run's");
+
+  const live = applyFrame(store, { kind: "endedStatus", status: run("a", "done") });
+  assert.equal(live.settled.has("a"), false, "the feed speaks for a live run, not this read");
+  const stranger = applyFrame(store, { kind: "endedStatus", status: run("zz", "done") });
+  assert.equal(stranger.settled.has("zz"), false, "a run the rail does not list is not held");
+  assert.equal(stranger.opened.has("zz"), false);
+});
+
+test("an ended run read with `read` goes with the credential: no row, no selection, no lit state", () => {
+  let store = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    { kind: "history", workflow: "wf", runs: [ended("old1", "done")] },
+    { kind: "selectRun", runId: "old1" },
+    { kind: "endedStatus", status: { ...run("old1", "done"), value: "shipped" } },
+  );
+  assert.equal(selectedRun(store)?.value, "shipped");
+  assert.equal(store.settled.has("old1"), false, "held apart from the runs the page watched end");
+  store = applyFrame(store, { kind: "token", state: "invalid" });
+  assert.deepEqual(runList(store), []);
+  assert.equal(store.selectedRunId, null, "the selection does not stay on a run the page may not show");
+  assert.equal(selectedRun(store), null);
+});
+
+test("a change of Caller drops what the old one read: a Caller without `read` sees live runs only", () => {
+  let store = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    { kind: "runs", runs: [run("live1")] },
+    { kind: "history", workflow: "wf", runs: [ended("old1", "done")] },
+    { kind: "selectRun", runId: "old1" },
+    { kind: "endedStatus", status: run("old1", "done") },
+    {
+      kind: "waiting",
+      runId: "live1",
+      workflow: "wf",
+      waiting: [],
+      held: [{ agent: "coder", pick: "approve", since: "t" }],
+    },
+  );
+  assert.deepEqual(
+    runList(store).map((r) => r.runId),
+    ["live1", "old1"],
+  );
+  store = [
+    { kind: "token", state: "checking" } as Frame,
+    ...unlockAs({ via: "token", name: "bridge", may: { answer: "all" } }),
+  ].reduce(applyFrame, store);
+  assert.deepEqual(
+    runList(store).map((r) => r.runId),
+    ["live1"],
+  );
+  assert.equal(store.history, null);
+  assert.equal(store.opened.size, 0);
+  assert.equal(store.waiting.size, 0);
+  assert.equal(store.selectedRunId, "live1", "the selection moves to a run the page can show");
+
+  const same = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    { kind: "history", workflow: "wf", runs: [ended("old1", "done")] },
+    { kind: "token", state: "checking" },
+    ...unlocked,
+  );
+  assert.equal(same.history?.runs.length, 1, "a re-validation of the same Caller keeps what it read");
+});
+
+// ---- A run on an older Assembly (ADR-0069) ------------------------------------------------------
+
+const assembly = (current: string | null, held: Record<string, string[]> = {}): Frame => ({
+  kind: "assembly",
+  current,
+  held: Object.entries(held).map(([hash, runs]) => ({ hash, runs })),
+});
+
+test("a run on an Assembly that is not the current one carries the mark, live from `GET /assembly`, ended from `GET /runs`", () => {
+  const store = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    { kind: "runs", runs: [run("a"), run("b")] },
+    assembly("cafe00000000", { cafe00000000: ["a"], "0123456789ab": ["b"] }),
+    {
+      kind: "history",
+      workflow: "wf",
+      runs: [ended("e", "done", { assembly: "fedcba987654" }), ended("f", "done", { assembly: "cafe00000000" })],
+    },
+  );
+  assert.equal(olderAssembly(store, "a"), null, "on the current Assembly");
+  assert.equal(olderAssembly(store, "b"), "0123456789ab");
+  assert.equal(olderAssemblyMark(store, "b"), "older Assembly · 01234567");
+  assert.equal(olderAssemblyMark(store, "e"), "older Assembly · fedcba98");
+  assert.equal(olderAssembly(store, "f"), null);
+  assert.equal(olderAssembly(store, "unknown"), null, "a run whose Assembly the page does not know is not marked");
+  assert.equal(olderAssembly(fold(assembly(null, { x: ["b"] })), "b"), null, "no Assembly, no mark");
+});
+
+test("a run on an older Assembly is drawn on its own Machine, before its status is read too", () => {
+  let store = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    { kind: "runs", runs: [run("a"), run("b")] },
+    assembly("cafe00000000", { cafe00000000: ["a"], "0123456789ab": ["b"] }),
+  );
+  assert.deepEqual(selectedDocSource(store), { key: "workflow:wf@cafe00000000", path: "/workflows/wf/machine" });
+  store = applyFrame(store, { kind: "selectRun", runId: "b" });
+  assert.deepEqual(selectedDocSource(store), { key: "run:b", path: "/workflows/wf/runs/b/machine" });
+
+  store = applyFrame(store, {
+    kind: "history",
+    workflow: "wf",
+    runs: [ended("e", "done", { assembly: "fedcba987654" })],
+  });
+  store = applyFrame(store, { kind: "selectRun", runId: "e" });
+  assert.equal(selectedRun(store), null);
+  assert.deepEqual(selectedDocSource(store), { key: "run:e", path: "/workflows/wf/runs/e/machine" });
+  assert.equal(selectedDocSource(emptyStore()), null);
+});
+
+test("the Workflow's doc key names the current Assembly: a publish draws the new Machine", () => {
+  let store = fold({ kind: "select", workflow: "wf" }, { kind: "runs", runs: [run("a")] }, assembly("cafe00000000"));
+  assert.equal(selectedDocSource(store)?.key, "workflow:wf@cafe00000000");
+  store = applyFrame(store, assembly("beef00000000", { beef00000000: ["a"] }));
+  assert.equal(selectedDocSource(store)?.key, "workflow:wf@beef00000000", "a new current Assembly is a new doc");
+});
+
+test("an older-Assembly run that the page watched end stays on its own Machine, with its mark", () => {
+  // An observer: no `read`, so no `GET /runs` summary supplies the hash after the run ends.
+  let store = fold(
+    { kind: "select", workflow: "wf" },
+    { kind: "runs", runs: [run("r1")] },
+    assembly("cafe00000000", { "0123456789ab": ["r1"] }),
+  );
+  assert.equal(selectedDocSource(store)?.key, "run:r1");
+  store = applyFrame(store, { kind: "status", status: run("r1", "done") });
+  store = applyFrame(store, { kind: "gone", runId: "r1" });
+  store = applyFrame(store, assembly("cafe00000000"));
+  assert.equal(store.selectedRunId, "r1");
+  assert.equal(selectedDocSource(store)?.key, "run:r1", "not drawn on the current Machine");
+  assert.equal(olderAssemblyMark(store, "r1"), "older Assembly · 01234567");
+});
+
+test("an ended run on the current Assembly is drawn on its own kept Machine: its status binds no Chart any more", () => {
+  let store = fold(
+    { kind: "select", workflow: "charted" },
+    ...unlocked,
+    { kind: "runs", runs: [{ ...run("c", "active", "charted"), bound: true, chartHashes: ["aaaaaaaaaaaa"] }] },
+    assembly("cafe00000000", { cafe00000000: ["c"] }),
+    { kind: "selectRun", runId: "c" },
+  );
+  assert.equal(selectedDocSource(store)?.key, "run:c:aaaaaaaaaaaa");
+  store = applyFrame(store, { kind: "status", status: run("c", "done", "charted") });
+  store = applyFrame(store, { kind: "gone", runId: "c" });
+  assert.deepEqual(selectedDocSource(store), { key: "run:c", path: "/workflows/charted/runs/c/machine" });
+
+  store = applyFrame(store, {
+    kind: "history",
+    workflow: "charted",
+    runs: [ended("d", "done", { assembly: "cafe00000000" })],
+  });
+  store = applyFrame(store, { kind: "selectRun", runId: "d" });
+  assert.equal(selectedDocSource(store)?.key, "run:d", "an ended run of the history, not the Workflow's Machine");
+});
+
+test("a drifted run has no Machine to draw: the pane shows its reason", () => {
+  let store = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    {
+      kind: "history",
+      workflow: "wf",
+      runs: [ended("d", "drifted", { reason: "Assembly 0123 is not on the volume" }), ended("e")],
+    },
+    { kind: "selectRun", runId: "d" },
+  );
+  assert.equal(selectedRunDrift(store), "Assembly 0123 is not on the volume");
+  store = applyFrame(store, { kind: "selectRun", runId: "e" });
+  assert.equal(selectedRunDrift(store), null);
+});
+
+// ---- The kept conversations: the bottom drawer (ADR-0023, ADR-0032) -----------------------------
+
+const row = (instanceId: string, slot: string, open = false) => ({
+  agent: slot.split("/").pop()!,
+  slot,
+  instanceId,
+  open,
+  bytes: 10,
+  cut: false,
+});
+
+const entry = (seq: number, kind: string, text: string): ConversationEntry => ({
+  id: `e${seq}`,
+  seq,
+  at: `2026-11-06T10:00:0${seq % 10}.000Z`,
+  agent: "coder",
+  kind,
+  text,
+});
+
+test("one tab for each Agent slot, a dot where a Turn is open, steerable as `GET /runs/:id/agents` says", () => {
+  const store = fold(
+    { kind: "select", workflow: "wf" },
+    ...unlocked,
+    { kind: "runs", runs: [run("a")] },
+    {
+      kind: "conversations",
+      runId: "a",
+      rows: [
+        row("a/plan/planner", "plan/planner"),
+        row("a/code/coder", "code/coder", true),
+        row("a/plan/planner#2", "plan/planner"),
+      ],
+    },
+    {
+      kind: "agents",
+      runId: "a",
+      agents: [
+        { agent: "code/coder", open: true, steerable: true },
+        { agent: "review/reviewer", open: false, steerable: true },
+      ],
+    },
+  );
+  assert.deepEqual(slotTabs(store), [
+    { slot: "plan/planner", open: false, steerable: false },
+    { slot: "code/coder", open: true, steerable: true },
+    { slot: "review/reviewer", open: false, steerable: true },
+  ]);
+  assert.equal(activeSlot(store), "code/coder", "with no choice, the slot whose Turn is open");
+  const chosen = applyFrame(store, { kind: "bottom", open: true, slot: "plan/planner" });
+  assert.equal(activeSlot(chosen), "plan/planner");
+  assert.equal(chosen.bottom.open, true);
+  assert.deepEqual(
+    slotConversations(chosen, "plan/planner").map((c) => c.row.instanceId),
+    ["a/plan/planner", "a/plan/planner#2"],
+    "a slot whose conversation began again shows each, the first first",
+  );
+  assert.equal(
+    activeSlot(applyFrame(chosen, { kind: "bottom", slot: "gone/agent" })),
+    "code/coder",
+    "a slot the run lacks falls back",
+  );
+});
+
+test("entries merge in sequence order, each once, and a list or entries for another run are dropped", () => {
+  let store = fold({ kind: "select", workflow: "wf" }, ...unlocked, { kind: "runs", runs: [run("a"), run("b")] });
+  store = applyFrame(store, { kind: "conversations", runId: "a", rows: [row("a/x/coder", "x/coder", true)] });
+  store = applyFrame(store, {
+    kind: "entries",
+    runId: "a",
+    instanceId: "a/x/coder",
+    entries: [entry(1, "prompt", "go"), entry(2, "text", "ok")],
+  });
+  store = applyFrame(store, {
+    kind: "entries",
+    runId: "a",
+    instanceId: "a/x/coder",
+    entries: [entry(2, "text", "ok"), entry(3, "text", "done")],
+  });
+  assert.deepEqual(
+    slotConversations(store, "x/coder")[0]?.entries.map((e) => e.seq),
+    [1, 2, 3],
+  );
+  assert.equal(applyFrame(store, { kind: "conversations", runId: "b", rows: [] }), store, "not the selected run");
+  store = applyFrame(store, { kind: "conversationEnd", runId: "a", instanceId: "a/x/coder", cut: true });
+  assert.deepEqual(slotConversations(store, "x/coder")[0]?.ended, { cut: true });
+
+  const moved = applyFrame(store, { kind: "selectRun", runId: "b" });
+  assert.equal(moved.talk, null, "another run starts from nothing");
+  assert.equal(applyFrame(store, { kind: "token", state: "none" }).talk, null, "guarded: gone with the credential");
+  assert.equal(
+    fold(
+      { kind: "select", workflow: "wf" },
+      { kind: "runs", runs: [run("a")] },
+      { kind: "conversations", runId: "a", rows: [] },
+    ).talk,
+    null,
+    "no credential, no conversation",
+  );
+});
+
+test("mergeEntries keeps the order of sequence numbers whatever the order they come in", () => {
+  const kept = [entry(1, "text", "a"), entry(4, "text", "d")];
+  assert.deepEqual(
+    mergeEntries(kept, [entry(3, "text", "c"), entry(1, "text", "a"), entry(2, "text", "b")]).map((e) => e.seq),
+    [1, 2, 3, 4],
+  );
+  assert.equal(mergeEntries(kept, []), kept, "nothing new is the same list");
+});
+
+test("foldEntries folds a pick's answer into its call, and tells a Steering message, a notice and a refusal apart", () => {
+  const items = foldEntries([
+    entry(1, "prompt", "Implement the ticket."),
+    entry(2, "thinking", "First I read the file."),
+    entry(3, "bash", "ls -la"),
+    entry(4, "approve", '{"summary":"ok"}'),
+    entry(5, "approve error", "approve is not allowed now"),
+    entry(
+      6,
+      "prompt",
+      "<jr2-turn>\nSteering message from `alice`, from outside the workflow run. It is an instruction to you:\n> stop",
+    ),
+    entry(7, "prompt", "<jr2-turn>\nNotice: This conversation is new; earlier context is gone (fault).\n</jr2-turn>"),
+    entry(8, "submit answer", "receipt 7"),
+    entry(9, "compacted", "context 9000 → ~2000 tokens (window 32000)"),
+    entry(10, "thinking level", "model has no level"),
+    entry(11, "cut", "the conversation reached 8 MiB"),
+    entry(12, "line", "a body with no label"),
+  ]);
+  assert.deepEqual(
+    items.map((i) => i.type),
+    ["prompt", "thinking", "call", "call", "steering", "notice", "call", "compacted", "mark", "cut", "mark"],
+  );
+  assert.deepEqual(
+    items[2],
+    { type: "call", at: items[2]!.at, tool: "bash", input: "ls -la" },
+    "a Working tool keeps no result",
+  );
+  assert.deepEqual(
+    (items[3] as { result?: unknown }).result,
+    { text: "approve is not allowed now", error: true },
+    "a refusal joins its pick",
+  );
+  assert.deepEqual(items[6], {
+    type: "call",
+    at: items[6]!.at,
+    tool: "submit",
+    input: "",
+    result: { text: "receipt 7", error: false },
+  });
+});
+
+test("foldEntries cuts a prompt at its notices and Steering messages: the task text stays a prompt", () => {
+  const items = foldEntries([
+    entry(
+      1,
+      "prompt",
+      "Implement the ticket.\n<jr2-turn>\nNotice: This conversation is new; earlier context is gone (fault).\n" +
+        "Steering message from the workflow:\n> use main\nAllowed picks: approve\n</jr2-turn>",
+    ),
+  ]);
+  assert.deepEqual(
+    items.map((i) => [i.type, (i as { text: string }).text]),
+    [
+      ["prompt", "Implement the ticket.\n<jr2-turn>"],
+      ["notice", "Notice: This conversation is new; earlier context is gone (fault)."],
+      ["steering", "Steering message from the workflow:\n> use main"],
+      ["prompt", "Allowed picks: approve\n</jr2-turn>"],
+    ],
+  );
+});
+
+test("readSse reads whole events and keeps the part a later chunk completes", () => {
+  const first = readSse(': ping\n\nevent: entry\ndata: {"seq":1}\n\nevent: en');
+  assert.deepEqual(first.events, [{ event: "entry", data: '{"seq":1}' }]);
+  const second = readSse(`${first.rest}d\r\ndata: {"cut":false}\r\n\r\n`);
+  assert.deepEqual(second.events, [{ event: "end", data: '{"cut":false}' }]);
+  assert.equal(second.rest, "");
+  assert.deepEqual(readSse("data: a\ndata: b\n\n").events, [{ event: "message", data: "a\nb" }]);
 });

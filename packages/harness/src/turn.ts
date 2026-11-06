@@ -73,6 +73,7 @@ import { ENGINE_ADAPTER } from "./engine-choice.ts";
 import type { EnginePart } from "./transcript.ts";
 import { lacksLevel, mapThinkingLevel, PROVIDER_RETRIES, providerLimit, ranAt, resolveModel } from "./provider.ts";
 import type { EngineSeat } from "./record.ts";
+import type { ConversationKeeper } from "./keep.ts";
 import { mcpServersFor, resolveDefinition, type HarnessSpec, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage, SubmissionUsage } from "./wire.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
@@ -108,6 +109,9 @@ export type TurnDeps = {
   maxRetries?: number;
   /** Where the conversation prints (ADR-0023). Default `process.stdout` (the pod log). */
   printerOut?: PrinterOut;
+  /** The kept conversation (`keep.ts`, ADR-0023): each body the print makes is also an entry, sent
+   * to the Orchestrator in batches. Omitted, nothing is kept past the pod. */
+  keep?: Pick<ConversationKeeper, "add" | "kick" | "slot">;
   /** The process's memory guard (ADR-0061), watching every `bash` call. `main.ts` passes the one
    * over this pod's cgroup; omitted, no guard watches. */
   guard?: MemoryGuard;
@@ -195,7 +199,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   const maxRetries = deps.maxRetries ?? PROVIDER_RETRIES;
   /** The request hook writes the Compaction line itself (the engine has no event for one),
    * so the printer's destination is resolved once here rather than only inside `attachPrinter`. */
-  const out = deps.printerOut ?? process.stdout;
+  const base = deps.printerOut ?? process.stdout;
+  const keep = deps.keep;
+  const out: PrinterOut = keep ? { write: (chunk) => base.write(chunk), keep: (body) => keep.add(body) } : base;
   const summaryRetry = summaryRetryPolicy(deps.maxRetries);
   const standing = deps.standing ?? standingBriefing({});
   /** The last Allowed-picks list the model read (`between-steps.ts`): the Turn part sets it per
@@ -267,6 +273,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     // control request of this Turn. An admission that states none (a wire test's) states an empty
     // slot, which the Orchestrator refuses on the first control request.
     menuOptions.slot = submission.slot ?? "";
+    if (keep) keep.slot = menuOptions.slot;
     work.running.clear();
     work.polls = 0;
     work.seat = seat;
@@ -425,6 +432,13 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         ]);
       });
       attachPrinter(engine, deps.agentName, deps.instanceId, out);
+      // The kept conversation's entries go before the model answer's picks run (ADR-0023): the engine
+      // runs a message's calls after the message ends. The send does not wait: `kick` only starts it.
+      if (keep) {
+        engine.subscribe((event) => {
+          if (event.type === "message_end" && event.message.role === "assistant") keep.kick();
+        });
+      }
       // The step boundary — the engine's placement of the engine-neutral check (`between-steps.ts`,
       // ADR-0029): after a model answer's tool results and before the next request, the Turn part
       // is restated when the Allowed picks changed since the model last read them. The engine awaits
@@ -598,6 +612,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       }
     } finally {
       signal.removeEventListener("abort", onAbort);
+      // At the Turn's end, before the Submission settles: the last entries start on their way. The
+      // Turn does not wait for them (ADR-0023).
+      keep?.kick();
     }
   };
 }

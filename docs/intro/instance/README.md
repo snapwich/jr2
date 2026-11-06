@@ -68,7 +68,8 @@ then answer:
 
 ```sh
 jr2 status                                                   # the run, the Gate, the branch
-jr2 logs <runId> -f
+jr2 watch <runId>                                            # the run, to its end
+jr2 logs <runId> -f                                          # its Agents' conversations
 jr2 send <runId> --gate body.review --event request_changes --input '{"notes":"Also accept -v."}'
 jr2 send <runId> --gate body.review --event approve
 ```

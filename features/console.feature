@@ -137,3 +137,57 @@ Feature: The Console in a real browser
       And the Console offers a start button for "ping"
       When I sign out
       Then the Console offers no start button
+
+  Rule: the inbox is the Gates that GET /gates gives this Caller, each with when it opened
+    ADR-0011, ADR-0032, ADR-0078: the Gate cards come from the Gate inbox, so a Caller whose
+    `answer` scope names one Gate of a Workflow sees that Gate's card and no other.
+
+    Scenario: a token that may answer the legal Gate sees its card, and not the security Gate's
+      Given a fresh instance
+      And the instance also has the "signoff" workflow
+      And the instance declares the Caller token "legal" with scopes '{"answer": [{"workflow": "signoff", "gates": ["legal"]}], "read": ["signoff"]}'
+      And the orchestrator is serving
+      And I start the "signoff" workflow detached
+      When I open the Console at "/workflows/signoff"
+      And I enter the Caller token "legal"
+      Then the Attention drawer shows a gate card for "L-1"
+      And the gate card for "L-1" says when it opened
+      And the Attention drawer shows no gate card for "S-1"
+
+  Rule: the rail lists the selected Workflow's ended runs under its live runs
+    ADR-0032: with `read`, the rail shows the runs that `GET /runs?status=ended` lists for the
+    Workflow, each with its status, under a heading.
+
+    Scenario: a run that ended is listed as ended, with its status
+      Given a fresh instance
+      And the orchestrator is serving
+      And I run "ping" with message "hi"
+      When I open the Console at "/workflows/ping"
+      And I enter the Instance token
+      Then the rail lists the ended runs of "ping" under their heading
+      And the rail shows the run as "done"
+
+  Rule: the bottom drawer shows an Agent's conversation
+    ADR-0023, ADR-0032: closed, the bottom drawer is a tab for each Agent slot of the selected run,
+    with a dot while a Turn is open. Open, it shows the slot's kept conversation, and follows it.
+
+    Scenario: the coder's tab opens its conversation, and a new entry appears in it
+      Given a fresh instance
+      And the instance also has the "review" workflow
+      And the orchestrator signs its tokens with a key that this scenario holds
+      And the orchestrator is serving
+      And I start the "review" workflow against the stub harness in the pod "ws-review-0"
+      And the Harness of pod "ws-review-0" sends the coder's entries:
+        | kind   | text                     |
+        | prompt | Do the work.             |
+        | text   | I will add the greeting. |
+      When I open the Console at "/workflows/review"
+      And I enter the Instance token
+      And I select that run in the rail
+      Then the bottom drawer has a tab for "root/coder" with a live dot
+      When I open the bottom drawer tab "root/coder"
+      Then the conversation shows "I will add the greeting."
+      When the Harness of pod "ws-review-0" sends the coder's entries:
+        | kind | text           |
+        | text | A second line. |
+      Then the conversation shows "A second line."

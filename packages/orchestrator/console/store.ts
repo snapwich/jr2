@@ -1,8 +1,8 @@
 // What the page BELIEVES, kept apart from what it has painted (canvas.ts's `shown`/`queue`).
 //
 // A pure reducer over everything the Console hears — the selected workflow's feed frames
-// (ADR-0022), fleet snapshots, gate re-fetches (ADR-0032), the token's state, the reader's own
-// selections — no DOM, no fetch, no module state — so the interesting cases are testable under
+// (ADR-0022), fleet snapshots, the Gate inbox (ADR-0032), the ended runs, the kept conversations,
+// the token's state, the reader's own selections — no DOM, no fetch, no module state — so the interesting cases are testable under
 // `node:test` with no jsdom and no build step. The renderer downstream is already a pure function
 // of (doc, status); this is the other half.
 //
@@ -12,9 +12,11 @@
 // The feed is LEVEL-TRIGGERED: every `status` carries a whole observation and `runs` carries the
 // whole live set, so nothing here merges patches or replays a log. Re-delivery of any frame is
 // idempotent by construction, which is the entire reconnect story — there is no cursor to resume
-// from and no gap to detect. The gate inbox rides the same idiom one band up: every `gates` frame
-// is a whole re-fetch of one run's open gates, so an emptied card is a fact the server stated,
-// never bookkeeping this side did after a delivery (ADR-0032).
+// from and no gap to detect. The Gate inbox rides the same idiom one band up: every `inbox` frame
+// is a whole read of `GET /gates`, every open Gate the Caller may answer, so an emptied card is a
+// fact the server stated, never bookkeeping this side did after a delivery (ADR-0032).
+
+import { mergeEntries, type AgentLine, type ConversationEntry, type ConversationRow } from "./conversation.ts";
 
 /** A run as the OPEN observation band reports it (ADR-0014): identity and where it is, nothing of
  *  what it is carrying. Mirrors `RunObservation` in run-host.ts. */
@@ -75,12 +77,49 @@ export type FleetEntry = {
   shadows?: { origin: WorkflowOrigin; unrunnable?: string };
 };
 
-/** One open gate as `GET /runs/:id` reports it — mirrors `GateView` in run-host.ts. */
+/** One open gate as `GET /gates` reports it — mirrors `GateView` in run-host.ts, with the time it
+ *  opened. */
 export type GateCard = {
   gate: string;
   path: string[];
   accepts: Array<{ name: string; description?: string; input: unknown }>;
+  acceptsNow?: string[];
   meta?: Record<string, unknown>;
+  openedAt?: string;
+  /** The Hook kinds that this Gate hears (ADR-0011). */
+  hook?: string[];
+};
+
+/** One entry of `GET /gates` (ADR-0011): an open Gate that the Caller may answer, with its run —
+ *  mirrors `GateInboxEntry` in run-host.ts. Never the run's context. */
+export type InboxGate = GateCard & { runId: string; workflow: string };
+
+/** One run of `GET /runs` (ADR-0009) — mirrors `RunSummary` in run-list.ts. The Console lists the
+ *  ended ones of the selected Workflow under its live runs. */
+export type RunSummaryView = {
+  runId: string;
+  workflow: string;
+  status: string;
+  /** Why a run is `drifted` or `lost`, a Failure's reason, or a fault (ADR-0030, ADR-0073). */
+  reason?: string;
+  startedAt?: string;
+  endedAt?: string;
+  /** The hash of the Assembly the run started under (ADR-0069). */
+  assembly?: string;
+  openGates?: number;
+  dispatchedBy?: DispatchedByView;
+  swept?: string;
+};
+
+/** One row of a Workflow's run list in the rail: a live run, a run that this page watched end, or
+ *  an ended run that `GET /runs` lists. */
+export type RailRun = {
+  runId: string;
+  status: string;
+  /** The run is not live. */
+  settled: boolean;
+  reason?: string;
+  dispatchedBy?: DispatchedByView;
 };
 
 /** One Workspace waiting for capacity as `GET /runs/:id` reports it (ADR-0064) — mirrors
@@ -88,7 +127,8 @@ export type GateCard = {
 export type WaitingLine = { child: string; on: "node" | "quota"; message: string; since: string };
 
 /** One outstanding pick as `GET /runs/:id` reports it (ADR-0024) — mirrors `RunHeld` in
- *  run-host.ts. There is no default time bound on a held Turn: "held since" is how a human sees one.
+ *  run-host.ts. There is no default time bound on a held Turn: "outstanding since" is how a human
+ *  sees one.
  *  Guarded like the reason a Workspace waits: a pick names what an Agent did. */
 export type HeldLine = { agent: string; pick: string; since: string };
 
@@ -101,6 +141,10 @@ export type ScopeName = "start" | "answer" | "cancel" | "read" | "steer";
 /** The Workflows a scope opens: every one, or the named ones. Mirrors `ScopeGrant` in config.ts. */
 export type ScopeGrant = "all" | readonly string[];
 
+/** What the `answer` scope opens (ADR-0078): every Gate, or a list of Workflow names and of
+ *  `{ workflow, gates }` items that name single Gates. Mirrors `AnswerGrant` in config.ts. */
+export type AnswerGrant = "all" | ReadonlyArray<string | { workflow: string; gates: readonly string[] }>;
+
 /** The page's Caller as `GET /whoami` gives it (ADR-0078) — mirrors `Caller` in tokens.ts. What it
  *  `may` do decides which controls render (ADR-0032); the server still checks each request. */
 export type CallerView = {
@@ -109,7 +153,7 @@ export type CallerView = {
   /** The name that jr2 shows, when it is not `name` (a JWT's `email`). */
   shown?: string;
   onBehalfOf?: string;
-  may: Partial<Record<ScopeName, ScopeGrant>>;
+  may: Partial<Record<Exclude<ScopeName, "answer">, ScopeGrant>> & { answer?: AnswerGrant };
 };
 
 /** Who started a run, as `GET /runs/:id` gives it (ADR-0078) — mirrors `RunStarter` in callers.ts. */
@@ -134,7 +178,15 @@ export type Frame =
   | { kind: "toggleWorkflow"; workflow: string }
   | { kind: "token"; state: TokenState }
   | { kind: "caller"; caller: CallerView }
-  | { kind: "gates"; runId: string; workflow: string; gates: GateCard[] }
+  | { kind: "inbox"; gates: InboxGate[] }
+  | { kind: "history"; workflow: string; runs: RunSummaryView[] }
+  | { kind: "endedStatus"; status: ObservedRun }
+  | { kind: "assembly"; current: string | null; held: Array<{ hash: string; runs: string[] }> }
+  | { kind: "conversations"; runId: string; rows: ConversationRow[] }
+  | { kind: "agents"; runId: string; agents: AgentLine[] }
+  | { kind: "entries"; runId: string; instanceId: string; entries: ConversationEntry[] }
+  | { kind: "conversationEnd"; runId: string; instanceId: string; cut: boolean; swept?: string }
+  | { kind: "bottom"; open?: boolean; slot?: string | null }
   | { kind: "waiting"; runId: string; workflow: string; waiting: WaitingLine[]; held?: HeldLine[] }
   | { kind: "failure"; runId: string; reason: string | null }
   | { kind: "starter"; runId: string; startedBy: StarterView | null }
@@ -162,10 +214,11 @@ export type Frame =
  * `token`    the credential's STATE, never its value — the secret stays in sessionStorage
  *            (ADR-0032), outside anything a test would snapshot. "none" | "checking" | "live" |
  *            "invalid". Anything but "live" means observer mode.
- * `gates`    the gate inbox: runId -> { workflow, gates } from `GET /runs/:id` re-fetches. Guarded
- *            data (Instance band), so it cannot outlive the credential that read it.
+ * `gates`    the Gate inbox: runId -> { workflow, gates }, from `GET /gates` (ADR-0011), which lists
+ *            only the Gates that the Caller may answer. Each read replaces it whole. Guarded data,
+ *            so it cannot outlive the credential that read it.
  * `waiting`  why each run's Workspaces in `placing` wait (ADR-0064): runId -> { workflow, waiting },
- *            off the SAME `GET /runs/:id` re-fetch as `gates`, under the same rules — guarded, whole
+ *            off a `GET /runs/:id` re-fetch, under the rules of `gates` — guarded, whole
  *            per run, gone with the credential. The open band sees `placing` lit and nothing more.
  * `failures` the reason of each run this page knows that ended `failed` (ADR-0073): runId -> reason,
  *            off the SAME `GET /runs/:id` re-fetch, under the same rules — guarded (the open band
@@ -178,6 +231,18 @@ export type Frame =
  * `starters` who started each run this page knows (ADR-0078): runId -> starter, off the SAME
  *            `GET /runs/:id` re-fetch as `failures`, under the same rules — guarded, gone with the
  *            credential, gone with the run.
+ * `opened`   the last status of each ended run that the person opened from the rail and that this
+ *            page did not watch end (`GET /runs/:id`, ADR-0032). Guarded (`read`): gone with the
+ *            credential, with a change of Caller and with the selection. At most {@link SETTLED_CAP}.
+ * `history`  the selected Workflow's ended runs, from `GET /runs?status=ended&workflow=` (ADR-0009):
+ *            what the rail lists under the live runs. Needs `read`; guarded, gone with the
+ *            credential and with the selection.
+ * `assembly` the current Assembly's hash and the hash each live run holds (`GET /assembly`, open):
+ *            what marks a run "older Assembly" (ADR-0069).
+ * `talk`     the SELECTED run's kept conversations (ADR-0023): its rows, its Agent slots for
+ *            Steering, and the entries read so far by Instance ID. Guarded, and gone with the
+ *            credential or when the selection moves to another run.
+ * `bottom`   the bottom drawer: open or closed, and the Agent slot it shows (null: the first).
  * `inboxAll` the widen control: false = the inbox follows the selection, true = every workflow.
  * `startFormFor` which workflow's start-run form is open, if any.
  * `selectedNodeId` the diagram node the reader clicked — an elk node id (scope + state id), one at
@@ -189,6 +254,7 @@ export type Frame =
 export type Store = {
   runs: Map<string, ObservedRun>;
   settled: Map<string, ObservedRun>;
+  opened: Map<string, ObservedRun>;
   emits: Array<{ runId: string; type: string }>;
   selectedRunId: string | null;
   selectedNodeId: string | null;
@@ -204,8 +270,22 @@ export type Store = {
   failures: Map<string, string>;
   caller: CallerView | null;
   starters: Map<string, StarterView>;
+  history: { workflow: string; runs: RunSummaryView[] } | null;
+  assembly: { current: string | null; held: Map<string, string> };
+  talk: Talk | null;
+  bottom: { open: boolean; slot: string | null };
   inboxAll: boolean;
   startFormFor: string | null;
+};
+
+/** The selected run's kept conversations (see {@link Store}). `ended` holds each conversation whose
+ *  stream ended, and whether it was cut or swept. */
+export type Talk = {
+  runId: string;
+  rows: ConversationRow[];
+  agents: AgentLine[];
+  entries: Map<string, ConversationEntry[]>;
+  ended: Map<string, { cut: boolean; swept?: string }>;
 };
 
 /** How many finished runs stay on the page. Enough to see what just happened, bounded so a page
@@ -220,6 +300,7 @@ export function emptyStore(): Store {
   return {
     runs: new Map(),
     settled: new Map(),
+    opened: new Map(),
     emits: [],
     selectedRunId: null,
     selectedNodeId: null,
@@ -235,23 +316,35 @@ export function emptyStore(): Store {
     failures: new Map(),
     caller: null,
     starters: new Map(),
+    history: null,
+    assembly: { current: null, held: new Map() },
+    talk: null,
+    bottom: { open: false, slot: null },
     inboxAll: false,
     startFormFor: null,
   };
 }
 
 /** Fold one frame into the store, returning a new one. Unknown frame kinds are ignored, so a server
- *  that learns a new frame type does not break a page still running yesterday's script. */
+ *  that learns a new frame type does not break a page still running yesterday's script. The kept
+ *  conversations belong to the selected run: when a frame moves the selection to another run, they
+ *  go. */
 export function applyFrame(store: Store, frame: Frame): Store {
+  const next = foldFrame(store, frame);
+  if (next.talk && next.talk.runId !== next.selectedRunId) return { ...next, talk: null };
+  return next;
+}
+
+function foldFrame(store: Store, frame: Frame): Store {
   switch (frame.kind) {
     case "runs": {
       // The server's whole truth about what is live. Runs that ended during a disconnect are simply
       // ABSENT — no `gone` was delivered for them and none is needed; they were never ours to settle.
-      // The same wholeness settles the inbox: a selected-workflow run the frame does not mention can
-      // never be re-fetched again, so its card leaves with it. A failure stays while its run is live
-      // or settled here.
+      // The same wholeness settles the waits: a selected-workflow run the frame does not mention can
+      // never be re-fetched again, so its waits leave with it. A failure stays while its run is
+      // live, settled here or listed as ended.
       const runs = new Map(frame.runs.map((r): [string, ObservedRun] => [r.runId, r]));
-      const orphan = (id: string): boolean => !runs.has(id) && !store.settled.has(id);
+      const orphan = (id: string): boolean => !runs.has(id) && !store.settled.has(id) && !inHistory(store, id);
       let failures = store.failures;
       for (const id of [...failures.keys()].filter(orphan)) failures = mapWithout(failures, id);
       let starters = store.starters;
@@ -259,7 +352,6 @@ export function applyFrame(store: Store, frame: Frame): Store {
       return select({
         ...store,
         runs,
-        gates: dropAbsent(store.gates, store.workflow, new Set(frame.runs.map((r) => r.runId))),
         waiting: dropAbsent(store.waiting, store.workflow, new Set(frame.runs.map((r) => r.runId))),
         failures,
         starters,
@@ -280,16 +372,7 @@ export function applyFrame(store: Store, frame: Frame): Store {
       if (!departing) return store.gates === gates && store.waiting === waiting ? store : { ...store, gates, waiting };
       const runs = new Map(store.runs);
       runs.delete(frame.runId);
-      const settled = new Map(store.settled).set(frame.runId, departing);
-      let failures = store.failures;
-      let starters = store.starters;
-      while (settled.size > SETTLED_CAP) {
-        const evicted = settled.keys().next().value!;
-        settled.delete(evicted);
-        failures = mapWithout(failures, evicted);
-        starters = mapWithout(starters, evicted);
-      }
-      return select({ ...store, runs, settled, gates, waiting, failures, starters });
+      return select(settle({ ...store, runs, gates, waiting }, departing));
     }
 
     case "emit":
@@ -321,14 +404,17 @@ export function applyFrame(store: Store, frame: Frame): Store {
         expanded,
         runs: new Map(),
         settled: new Map(),
+        opened: new Map(),
         emits: [],
         selectedRunId: null,
         selectedNodeId: null,
         connection: "connecting",
         // Each failure and starter belongs to a run of the old selection's `runs` or `settled`,
-        // which go.
+        // which go; so does its list of ended runs.
         failures: new Map(),
         starters: new Map(),
+        history: null,
+        bottom: { ...store.bottom, slot: null },
       };
     }
 
@@ -344,12 +430,11 @@ export function applyFrame(store: Store, frame: Frame): Store {
 
     case "fleet": {
       // One unselected workflow's REST snapshot — the same wholeness contract as a `runs` frame,
-      // so it settles that workflow's inbox cards the same way (a run the snapshot does not carry
-      // will never be re-fetched again).
+      // so it settles that workflow's waits the same way (a run the snapshot does not carry will
+      // never be re-fetched again).
       const fleet = new Map(store.fleet).set(frame.workflow, frame.runs);
       const present = new Set(frame.runs.map((r) => r.runId));
-      const gates = dropAbsent(store.gates, frame.workflow, present);
-      return { ...store, fleet, gates, waiting: dropAbsent(store.waiting, frame.workflow, present) };
+      return { ...store, fleet, waiting: dropAbsent(store.waiting, frame.workflow, present) };
     }
 
     case "toggleWorkflow": {
@@ -362,9 +447,10 @@ export function applyFrame(store: Store, frame: Frame): Store {
       // Guarded data cannot outlive the credential that read it: leaving "live" for "none" or
       // "invalid" (the any-later-401 drop of ADR-0032) empties the inbox. "checking" keeps it — a
       // re-validation of a token that turns out fine should not flash the inbox empty.
-      // The Caller goes with it: a page with no credential acts as nobody.
+      // The Caller goes with it: a page with no credential acts as nobody. A selected run that only
+      // the guarded listing named goes too.
       if (frame.state === "none" || frame.state === "invalid") {
-        return {
+        return select({
           ...store,
           token: frame.state,
           gates: new Map(),
@@ -372,37 +458,140 @@ export function applyFrame(store: Store, frame: Frame): Store {
           failures: new Map(),
           caller: null,
           starters: new Map(),
-        };
+          history: null,
+          opened: new Map(),
+          talk: null,
+        });
       }
       return { ...store, token: frame.state };
 
-    case "caller":
+    case "caller": {
       // What `GET /whoami` said the credential is (ADR-0078). It comes before the `token` frame
       // that makes the page live, so the first live render already knows which controls to show.
       // A card that the new Caller's `answer` does not open goes, as the `gates` fold would refuse it.
-      return {
+      const next = {
         ...store,
         caller: frame.caller,
         gates: keepWhere(store.gates, (entry) => grantOpens(frame.caller?.may.answer, entry.workflow)),
       };
+      if (sameCaller(store.caller, frame.caller)) return next;
+      // Another Caller: what the old one read does not belong to the new one (the page reads it
+      // again for the new one when it goes live). The selection stays only where the page can
+      // still say something about it.
+      return select({
+        ...next,
+        waiting: new Map(),
+        failures: new Map(),
+        starters: new Map(),
+        history: null,
+        opened: new Map(),
+        talk: null,
+      });
+    }
 
-    case "gates": {
-      // A whole re-fetch of one run's open gates (`GET /runs/:id` on a frame — ADR-0032). Empty
-      // means the card LEAVES: that is how a delivery's success shows, and the only way it does.
-      // No credential, no inbox: a re-fetch that was in flight when the token dropped must not
-      // repopulate the map the `token` frame just emptied (invisible while locked, but it would
-      // surface intact on the next unlock — guarded data outliving the credential that read it).
+    case "inbox": {
+      // A whole read of `GET /gates` (ADR-0011, ADR-0032): every open Gate that the Caller may
+      // answer, oldest first. It replaces the inbox, so a card that is not in it LEAVES: that is
+      // how a delivery's success shows, and the only way it does. No credential, no inbox: a read
+      // that was in flight when the token dropped must not fill the map the `token` frame just
+      // emptied (guarded data outliving the credential that read it).
       if (store.token !== "live") return store;
-      // A card is a send form, so the inbox holds one only where `answer` opens its Workflow
-      // (ADR-0032). A Caller with `read` alone re-fetches the run too, for its waits and starter,
-      // and its gates must not become a form that meets a 403.
-      if (!frame.gates.length || !may(store, "answer", frame.workflow)) {
-        return { ...store, gates: mapWithout(store.gates, frame.runId) };
+      const gates = new Map<string, { workflow: string; gates: GateCard[] }>();
+      for (const { runId, workflow, ...card } of frame.gates) {
+        // The server lists only what the Caller may answer; a card is a send form, so the page
+        // checks the Workflow again and holds no form that would meet a 403 (ADR-0032).
+        if (!may(store, "answer", workflow)) continue;
+        const entry = gates.get(runId) ?? { workflow, gates: [] };
+        entry.gates.push(card);
+        gates.set(runId, entry);
       }
-      const gates = new Map(store.gates);
-      gates.set(frame.runId, { workflow: frame.workflow, gates: frame.gates });
       return { ...store, gates };
     }
+
+    case "history": {
+      // The selected Workflow's ended runs (`GET /runs?status=ended`, ADR-0009): whole, newest
+      // first. Guarded (`read`), and only for the Workflow the page still shows.
+      if (store.token !== "live" || frame.workflow !== store.workflow || !may(store, "read", frame.workflow)) {
+        return store;
+      }
+      const live = new Set(store.runs.keys());
+      return select({
+        ...store,
+        history: { workflow: frame.workflow, runs: frame.runs.filter((r) => !live.has(r.runId)) },
+      });
+    }
+
+    case "endedStatus": {
+      // The last status of an ended run that the person opened from the rail (ADR-0032): read off
+      // `GET /runs/:id`, held with the runs this page watched end, so the graph lights where the run
+      // ended. Not for a live run (the feed speaks for it), and not for another Workflow's run.
+      const status = frame.status;
+      if (store.token !== "live" || store.runs.has(status.runId) || status.workflow !== store.workflow) return store;
+      // A run this page watched end: its last status joins what the open feed said of it.
+      if (store.settled.has(status.runId)) return select(settle(store, status));
+      // A run only the guarded listing names: held apart, so it goes with the credential.
+      if (!inHistory(store, status.runId) || !may(store, "read", status.workflow)) return store;
+      const opened = new Map(store.opened);
+      opened.delete(status.runId);
+      opened.set(status.runId, status);
+      while (opened.size > SETTLED_CAP) opened.delete(opened.keys().next().value!);
+      return select({ ...store, opened });
+    }
+
+    case "assembly": {
+      // Open structure (`GET /assembly`, ADR-0069): the current Assembly, and each live run's.
+      const held = new Map<string, string>();
+      for (const { hash, runs } of frame.held) for (const runId of runs) held.set(runId, hash);
+      // `GET /assembly` names live runs only. A run that this page watched end keeps the hash it
+      // held while it was live, so it stays drawn on its own Machine, with its mark.
+      for (const runId of store.settled.keys()) {
+        const was = store.assembly.held.get(runId);
+        if (was !== undefined && !held.has(runId)) held.set(runId, was);
+      }
+      return { ...store, assembly: { current: frame.current, held } };
+    }
+
+    case "conversations": {
+      // The selected run's kept conversations, whole (ADR-0023). Guarded (`read`), and only for
+      // the run the page shows: a list that comes back after the selection moved is dropped.
+      if (store.token !== "live" || frame.runId !== store.selectedRunId) return store;
+      const talk = store.talk ?? emptyTalk(frame.runId);
+      return { ...store, talk: { ...talk, rows: frame.rows } };
+    }
+
+    case "agents": {
+      // The selected run's Agent slots as Steering sees them (ADR-0002): which ones may be steered.
+      if (store.token !== "live" || frame.runId !== store.selectedRunId) return store;
+      const talk = store.talk ?? emptyTalk(frame.runId);
+      return { ...store, talk: { ...talk, agents: frame.agents } };
+    }
+
+    case "entries": {
+      // Entries of one conversation, off a page or the stream: added in sequence order, each once.
+      if (store.token !== "live" || frame.runId !== store.selectedRunId || !frame.entries.length) return store;
+      const talk = store.talk ?? emptyTalk(frame.runId);
+      const kept = talk.entries.get(frame.instanceId) ?? [];
+      const merged = mergeEntries(kept, frame.entries);
+      if (merged === kept) return store;
+      return { ...store, talk: { ...talk, entries: new Map(talk.entries).set(frame.instanceId, merged) } };
+    }
+
+    case "conversationEnd": {
+      // The stream of one conversation ended: its Turn closed, or it was cut or swept.
+      if (store.token !== "live" || frame.runId !== store.selectedRunId) return store;
+      const talk = store.talk ?? emptyTalk(frame.runId);
+      const end = { cut: frame.cut, ...(frame.swept !== undefined ? { swept: frame.swept } : {}) };
+      return { ...store, talk: { ...talk, ended: new Map(talk.ended).set(frame.instanceId, end) } };
+    }
+
+    case "bottom":
+      return {
+        ...store,
+        bottom: {
+          open: frame.open ?? store.bottom.open,
+          slot: frame.slot === undefined ? store.bottom.slot : frame.slot,
+        },
+      };
 
     case "waiting": {
       // The same guarded re-fetch's other half (ADR-0064), folded the same way: whole per run, and
@@ -431,7 +620,8 @@ export function applyFrame(store: Store, frame: Frame): Store {
         const failures = mapWithout(store.failures, frame.runId);
         return failures === store.failures ? store : { ...store, failures };
       }
-      if (!store.runs.has(frame.runId) && !store.settled.has(frame.runId)) return store;
+      if (!store.runs.has(frame.runId) && !store.settled.has(frame.runId) && !store.opened.has(frame.runId))
+        return store;
       if (store.failures.get(frame.runId) === frame.reason) return store;
       return { ...store, failures: new Map(store.failures).set(frame.runId, frame.reason) };
     }
@@ -444,7 +634,8 @@ export function applyFrame(store: Store, frame: Frame): Store {
         const starters = mapWithout(store.starters, frame.runId);
         return starters === store.starters ? store : { ...store, starters };
       }
-      if (!store.runs.has(frame.runId) && !store.settled.has(frame.runId)) return store;
+      if (!store.runs.has(frame.runId) && !store.settled.has(frame.runId) && !store.opened.has(frame.runId))
+        return store;
       return { ...store, starters: new Map(store.starters).set(frame.runId, frame.startedBy) };
     }
 
@@ -457,6 +648,49 @@ export function applyFrame(store: Store, frame: Frame): Store {
     default:
       return store;
   }
+}
+
+/** No conversation read yet for `runId`. */
+function emptyTalk(runId: string): Talk {
+  return { runId, rows: [], agents: [], entries: new Map(), ended: new Map() };
+}
+
+/** `runId` is one of the selected Workflow's ended runs that `GET /runs` listed, and the Caller
+ *  may still read them. */
+function inHistory(store: Store, runId: string): boolean {
+  return listedEnded(store).some((r) => r.runId === runId);
+}
+
+/** The ended runs that `GET /runs` listed, when the Caller may read the selected Workflow; else
+ *  none (ADR-0032: without `read`, the rail lists live runs only). */
+function listedEnded(store: Store): RunSummaryView[] {
+  // The Caller's grant, not `may`: a re-validation (`checking`) of the same Caller keeps the rows.
+  if (!store.history || !grantOpens(store.caller?.may.read, store.history.workflow)) return [];
+  return store.history.runs;
+}
+
+/** The same Caller, so what the page read for one is still the other's. */
+function sameCaller(a: CallerView | null, b: CallerView | null): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Hold `run` with the runs that this page watched end, newest last, at most {@link SETTLED_CAP}.
+ *  A run that the cap drops takes its failure and starter with it, unless `GET /runs` still lists
+ *  it. */
+function settle(store: Store, run: ObservedRun): Store {
+  const settled = new Map(store.settled);
+  settled.delete(run.runId);
+  settled.set(run.runId, run);
+  let failures = store.failures;
+  let starters = store.starters;
+  while (settled.size > SETTLED_CAP) {
+    const evicted = settled.keys().next().value!;
+    settled.delete(evicted);
+    if (inHistory(store, evicted)) continue;
+    failures = mapWithout(failures, evicted);
+    starters = mapWithout(starters, evicted);
+  }
+  return { ...store, settled, failures, starters };
 }
 
 /** A copy of `map` without `key` — or `map` itself when the key was never there, so a caller can
@@ -506,9 +740,8 @@ function dropAbsent<V extends { workflow: string }>(
  * A settled run still counts as selectable — a reader watching a run to its end keeps watching it.
  */
 function select(store: Store): Store {
-  if (store.selectedRunId && (store.runs.has(store.selectedRunId) || store.settled.has(store.selectedRunId))) {
-    return store;
-  }
+  const id = store.selectedRunId;
+  if (id && (store.runs.has(id) || store.settled.has(id) || store.opened.has(id) || inHistory(store, id))) return store;
   const next = store.runs.keys().next();
   return { ...store, selectedRunId: next.done ? null : next.value };
 }
@@ -516,24 +749,58 @@ function select(store: Store): Store {
 /** The run the page is currently showing, live or settled — whichever half still holds it. */
 export function selectedRun(store: Store): ObservedRun | null {
   if (store.selectedRunId === null) return null;
-  return store.runs.get(store.selectedRunId) ?? store.settled.get(store.selectedRunId) ?? null;
+  const id = store.selectedRunId;
+  return (
+    store.runs.get(id) ?? store.settled.get(id) ?? (inHistory(store, id) ? store.opened.get(id) : undefined) ?? null
+  );
 }
 
-/** The selected workflow's run list as the rail draws it: live runs first, then what we watched
- *  leave (newest first). One ordered list keeps the renderer from having to know there are two
- *  maps behind it. */
-export function runList(store: Store): Array<{ run: ObservedRun; settled: boolean }> {
+/** A run row of the rail, from a run the page holds. */
+function railRun(run: ObservedRun, settled: boolean): RailRun {
+  return {
+    runId: run.runId,
+    status: run.status,
+    settled,
+    ...(run.dispatchedBy ? { dispatchedBy: run.dispatchedBy } : {}),
+  };
+}
+
+/** The selected workflow's run list as the rail draws it: live runs first, then the ended runs —
+ *  those this page watched end (newest first), then those `GET /runs` lists that the page did not
+ *  watch (ADR-0032). One ordered list keeps the renderer from having to know there are three
+ *  sources behind it. An ended row has the listing's status and reason when the listing has it. */
+export function runList(store: Store): RailRun[] {
+  const listed = new Map(listedEnded(store).map((r) => [r.runId, r]));
+  const ended = (run: ObservedRun): RailRun => {
+    const summary = listed.get(run.runId);
+    return summary ? summaryRow(summary, run.dispatchedBy) : railRun(run, true);
+  };
+  const watched = [...store.settled.values()].reverse();
+  const seen = new Set(watched.map((r) => r.runId));
   return [
-    ...[...store.runs.values()].map((run) => ({ run, settled: false })),
-    ...[...store.settled.values()].reverse().map((run) => ({ run, settled: true })),
+    ...[...store.runs.values()].map((run) => railRun(run, false)),
+    ...watched.filter((run) => !store.runs.has(run.runId)).map(ended),
+    ...[...listed.values()].filter((r) => !seen.has(r.runId) && !store.runs.has(r.runId)).map((r) => summaryRow(r)),
   ];
 }
 
-/** One workflow's rail rows: the feed's view for the selection, the REST snapshot for the rest.
- *  Same shape either way, so the painter draws a run row without knowing which side fed it. */
-export function fleetRuns(store: Store, workflow: string): Array<{ run: ObservedRun; settled: boolean }> {
+/** An ended run's rail row, from its `GET /runs` summary. */
+function summaryRow(summary: RunSummaryView, dispatchedBy = summary.dispatchedBy): RailRun {
+  return {
+    runId: summary.runId,
+    status: summary.status,
+    settled: true,
+    ...(summary.reason !== undefined ? { reason: summary.reason } : {}),
+    ...(dispatchedBy ? { dispatchedBy } : {}),
+  };
+}
+
+/** One workflow's rail rows: the feed's view (and the ended runs) for the selection, the REST
+ *  snapshot for the rest. Same shape either way, so the painter draws a run row without knowing
+ *  which side fed it. */
+export function fleetRuns(store: Store, workflow: string): RailRun[] {
   if (workflow === store.workflow) return runList(store);
-  return (store.fleet.get(workflow) ?? []).map((run) => ({ run, settled: false }));
+  return (store.fleet.get(workflow) ?? []).map((run) => railRun(run, false));
 }
 
 /**
@@ -584,26 +851,82 @@ export function fleetEntries(listing: readonly WorkflowListing[]): FleetEntry[] 
 
 /**
  * Which Machine doc the center pane draws (ADR-0070), as a cache key and the route that serves it.
- * A run that binds a Chart draws its own Machine, the Chart compiled into the Open body, so its doc
- * is per run id; every other selection draws the Workflow's Machine, shared by all its runs. The
+ * A run that binds a Chart draws its own Machine, the Chart compiled into the Open body, and so does
+ * a run on an older Assembly or a run that is not live (`own`), so their doc is per run id; every
+ * other selection draws the
+ * Workflow's Machine, shared by all its runs. The
  * Workflow name rides the route as one encoded segment (`<wrapper>%2F<name>` for a named Chart).
  */
 export function machineDocSource(
   workflow: string,
   run: Pick<ObservedRun, "runId" | "bound" | "chartHashes"> | null,
+  own = false,
+  current: string | null = null,
 ): { key: string; path: string } {
   const base = `/workflows/${encodeURIComponent(workflow)}`;
-  if (run?.bound === true) {
+  // A run on an older Assembly, or an ended run, is drawn on its own Machine too (ADR-0069): the
+  // current Machine's states are not the states it moves through, and an ended run's status binds
+  // no Chart any more.
+  if (run && (run.bound === true || own)) {
     // The run id and the Charts it binds now: a second Chart in the run's life is a new doc.
     const charts = run.chartHashes?.length ? `:${run.chartHashes.join(",")}` : "";
     return { key: `run:${run.runId}${charts}`, path: `${base}/runs/${encodeURIComponent(run.runId)}/machine` };
   }
-  return { key: `workflow:${workflow}`, path: `${base}/machine` };
+  // The current Assembly is in the key: after a publish, the Workflow's Machine is a new doc.
+  return { key: `workflow:${workflow}@${current ?? ""}`, path: `${base}/machine` };
+}
+
+/** The Assembly hash that `runId` holds, when it is not the current one (ADR-0069): from
+ *  `GET /assembly` for a live run, and from the `GET /runs` summary for an ended one. Null when the
+ *  run is on the current Assembly, or the page does not know the run's Assembly. */
+export function olderAssembly(store: Store, runId: string): string | null {
+  const current = store.assembly.current;
+  if (current === null) return null;
+  const hash = heldAssembly(store, runId);
+  return hash !== undefined && hash !== current ? hash : null;
+}
+
+/** The Assembly hash that `runId` holds, as far as the page knows: from `GET /assembly` (kept for a
+ *  run this page watched end), else from the `GET /runs` summary. */
+export function heldAssembly(store: Store, runId: string): string | undefined {
+  return store.assembly.held.get(runId) ?? listedEnded(store).find((r) => r.runId === runId)?.assembly;
+}
+
+/** The mark of a run on an older Assembly, as the rail and the Machine pane show it (ADR-0032):
+ *  "older Assembly · <short hash>". Null for a run on the current one. */
+export function olderAssemblyMark(store: Store, runId: string): string | null {
+  const hash = olderAssembly(store, runId);
+  return hash === null ? null : `older Assembly · ${hash.slice(0, 8)}`;
+}
+
+/** Why the SELECTED run is `drifted` (ADR-0030): it has no Machine to draw, so the pane shows this
+ *  in place of the graph. Null for every other run. */
+export function selectedRunDrift(store: Store): string | null {
+  const id = store.selectedRunId;
+  if (id === null || store.runs.has(id)) return null;
+  const summary = listedEnded(store).find((r) => r.runId === id);
+  const status = summary?.status ?? store.settled.get(id)?.status ?? store.opened.get(id)?.status;
+  if (status !== "drifted") return null;
+  return summary?.reason ?? "this run's Machine cannot be read";
+}
+
+/** The doc that the center pane draws for the selection: the selected run's own Machine when it
+ *  binds a Chart or is on an older Assembly, else the Workflow's (ADR-0069, ADR-0070). Null with no
+ *  selected Workflow. */
+export function selectedDocSource(store: Store): { key: string; path: string } | null {
+  if (!store.workflow) return null;
+  const run = selectedRun(store);
+  const id = store.selectedRunId;
+  // A run that is not live is drawn on the Machine its terminal write kept (ADR-0069): its status
+  // binds no Chart any more, and its Assembly can be gone. So is a run on an older Assembly.
+  const own = id !== null && (!store.runs.has(id) || olderAssembly(store, id) !== null);
+  const subject = run ?? (own && id !== null ? { runId: id } : null);
+  return machineDocSource(store.workflow, subject, own, store.assembly.current);
 }
 
 /** The fleet row's badge for a dispatched run (ADR-0071): `↳ <run8>`, the caller's run id cut as
  *  the row cuts its own. Null for a run nobody dispatched. */
-export function dispatchBadge(run: ObservedRun): string | null {
+export function dispatchBadge(run: ObservedRun | RailRun): string | null {
   const by = run.dispatchedBy;
   return by ? `↳ ${by.run.slice(0, 8)}` : null;
 }
@@ -673,8 +996,8 @@ export function selectedRunFailure(store: Store): string | null {
   return store.failures.get(store.selectedRunId) ?? null;
 }
 
-/** The SELECTED run's outstanding picks, each with since when it is held (ADR-0024) — empty in
- *  observer mode. */
+/** The SELECTED run's outstanding picks, each with since when it is outstanding (ADR-0024) — empty
+ *  in observer mode. */
 export function selectedRunHeld(store: Store): HeldLine[] {
   if (store.selectedRunId === null) return [];
   return store.waiting.get(store.selectedRunId)?.held ?? [];
@@ -727,14 +1050,25 @@ export function gateCount(store: Store): number {
 
 // ---- The Caller (ADR-0032, ADR-0078) ------------------------------------------------------------
 
-/** Whether a grant opens `workflow`. A Chart wrapper's name opens each of its named Charts
- *  (`plan` opens `plan/weekly`), because a named Chart runs its wrapper's Machine (ADR-0070). The
- *  same rule as `grantOpens` in tokens.ts, which is what the server checks. */
-function grantOpens(grant: ScopeGrant | undefined, workflow: string): boolean {
+/** Whether a grant opens `workflow`: for `answer`, at least one Gate of it (ADR-0078). A Chart
+ *  wrapper's name opens each of its named Charts (`plan` opens `plan/weekly`), because a named Chart
+ *  runs its wrapper's Machine (ADR-0070). The same rule as `grantOpens` in tokens.ts, which is what
+ *  the server checks. The server lists only the Gates of a run that the Caller may answer, so the
+ *  Console does not check the Gate's name. */
+function grantOpens(grant: AnswerGrant | undefined, workflow: string): boolean {
   if (grant === undefined) return false;
   if (grant === "all") return true;
   const cut = workflow.indexOf("/");
-  return grant.includes(workflow) || (cut > 0 && grant.includes(workflow.slice(0, cut)));
+  return grant.some((item) => {
+    const name = typeof item === "string" ? item : item.workflow;
+    return name === workflow || (cut > 0 && name === workflow.slice(0, cut));
+  });
+}
+
+/** One item of a grant as the nav's title says it: a Workflow name, or `deploy (approve, ship)`
+ *  for an item that names single Gates. */
+function grantItem(item: string | { workflow: string; gates: readonly string[] }): string {
+  return typeof item === "string" ? item : `${item.workflow} (${item.gates.join(", ")})`;
 }
 
 /**
@@ -766,7 +1100,7 @@ export function callerScopes(caller: CallerView | null): string {
   const lines = (["start", "answer", "cancel", "read", "steer"] as const).flatMap((scope) => {
     const grant = caller.may[scope];
     if (grant === undefined || (grant !== "all" && grant.length === 0)) return [];
-    return [`${scope}: ${grant === "all" ? "all" : grant.join(", ")}`];
+    return [`${scope}: ${grant === "all" ? "all" : grant.map(grantItem).join(", ")}`];
   });
   return lines.length ? lines.join(" · ") : "no scope";
 }
@@ -783,4 +1117,67 @@ export function selectedRunStarter(store: Store): string | null {
   const shown = by.shown !== undefined ? ` (${by.shown})` : "";
   const behalf = by.onBehalfOf !== undefined ? ` on behalf of ${by.onBehalfOf}` : "";
   return `started by ${by.via}/${by.name}${shown}${behalf}`;
+}
+
+// ---- The kept conversations (ADR-0023, ADR-0032) ------------------------------------------------
+
+/** One tab of the bottom drawer: an Agent slot of the selected run, a dot when its Turn is open,
+ *  and whether a Steering message can go to it. */
+export type SlotTab = { slot: string; open: boolean; steerable: boolean };
+
+/** A conversation's slot: the ledger's slot, else the Agent's name. */
+function slotOf(row: ConversationRow): string {
+  return row.slot ?? row.agent;
+}
+
+/** The bottom drawer's tabs: each Agent slot of the selected run, in the order its first
+ *  conversation began, then the slots that `GET /runs/:id/agents` names and no conversation has
+ *  yet. */
+export function slotTabs(store: Store): SlotTab[] {
+  const talk = store.talk;
+  if (!talk) return [];
+  const tabs = new Map<string, SlotTab>();
+  for (const row of talk.rows) {
+    const slot = slotOf(row);
+    const tab = tabs.get(slot) ?? { slot, open: false, steerable: false };
+    tab.open ||= row.open;
+    tabs.set(slot, tab);
+  }
+  for (const line of talk.agents) {
+    const tab = tabs.get(line.agent) ?? { slot: line.agent, open: false, steerable: false };
+    tab.open ||= line.open;
+    tab.steerable = line.steerable;
+    tabs.set(line.agent, tab);
+  }
+  return [...tabs.values()];
+}
+
+/** The slot that the bottom drawer shows: the one the person chose while the run has it, else the
+ *  first slot with an open Turn, else the first slot. Null when the run has none. */
+export function activeSlot(store: Store): string | null {
+  const tabs = slotTabs(store);
+  const chosen = store.bottom.slot;
+  if (chosen !== null && tabs.some((t) => t.slot === chosen)) return chosen;
+  return (tabs.find((t) => t.open) ?? tabs[0])?.slot ?? null;
+}
+
+/** One conversation of a slot as the drawer shows it: its row, the entries read so far, and how
+ *  its stream ended, if it did. */
+export type SlotConversation = {
+  row: ConversationRow;
+  entries: ConversationEntry[];
+  ended?: { cut: boolean; swept?: string };
+};
+
+/** The conversations of `slot`, the first first: a slot whose conversation began again (a new
+ *  conversation after a fault, ADR-0057) has more than one. */
+export function slotConversations(store: Store, slot: string | null): SlotConversation[] {
+  const talk = store.talk;
+  if (!talk || slot === null) return [];
+  return talk.rows
+    .filter((row) => slotOf(row) === slot)
+    .map((row) => {
+      const ended = talk.ended.get(row.instanceId);
+      return { row, entries: talk.entries.get(row.instanceId) ?? [], ...(ended ? { ended } : {}) };
+    });
 }

@@ -87,7 +87,7 @@ test("sweep deletes old non-live rows only — not a live row of any age, not a 
 
     const swept = await store.sweep(new Date(Date.now() - 7 * DAY_MS));
 
-    assert.equal(swept, 4);
+    assert.deepEqual([...swept].sort(), ["old-done", "old-drifted", "old-error", "old-lost"]);
     for (const id of ["old-done", "old-error", "old-lost", "old-drifted"]) {
       assert.equal(await store.load(id), null, `${id} is swept`);
     }
@@ -95,6 +95,31 @@ test("sweep deletes old non-live rows only — not a live row of any age, not a 
     assert.equal((await store.load("fresh-done"))?.status, "done");
     // A swept id frees its abbreviations (ADR-0009).
     assert.deepEqual(await store.findIdsByPrefix("old-", 10), ["old-live"]);
+    await store.close();
+  });
+});
+
+test("keepMachine keeps one copy for each structure, and the sweep deletes a copy that no kept row names (ADR-0069)", async () => {
+  await withDb(async (path) => {
+    const store = new SqliteSnapshotStore(path);
+    await store.init();
+    await store.save("a", { workflow: "wf" }, "done");
+    await store.save("b", { workflow: "wf/named" }, "done");
+    await store.save("c", { workflow: "wf" }, "done");
+    store.keepMachine("a", "m1", { workflow: "wf", root: "one" });
+    store.keepMachine("b", "m1", { workflow: "wf", root: "ignored: the key has its copy" });
+    store.keepMachine("c", "m2", { workflow: "wf", root: "two" });
+    assert.deepEqual(store.keptMachine("a"), { workflow: "wf", doc: { workflow: "wf", root: "one" } });
+    assert.deepEqual(store.keptMachine("b"), { workflow: "wf/named", doc: { workflow: "wf", root: "one" } });
+    assert.equal(store.keptMachine("nope"), undefined);
+
+    age(path, "c", 8);
+    await store.sweep(new Date(Date.now() - 7 * DAY_MS));
+    const keys = new DatabaseSync(path).prepare("SELECT key FROM run_machines ORDER BY key").all();
+    assert.deepEqual(
+      keys.map((r) => (r as { key: string }).key),
+      ["m1"],
+    );
     await store.close();
   });
 });

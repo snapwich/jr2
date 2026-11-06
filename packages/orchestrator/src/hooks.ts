@@ -38,13 +38,13 @@
 //      Slack click) goes out after the answer, to a url under the kind's `posts` only.
 //
 // The hook log (snapshot-store.ts) keeps a line for each step after the verifier, and for a body
-// that is too large, a week, with the status that the rules give.
+// that is too large, for `runs.retain`, with the status that the rules give.
 
 import { createHash, createPublicKey, timingSafeEqual, verify as verifySignature } from "node:crypto";
-import type { Hook, HookKind, HookParts, HookRequest, Json, Signed, Unsigned } from "@jr2/hooks";
-import { hookParts, hookRequest, schemaFor, signatureBytes, signedBytes } from "@jr2/hooks/door";
+import type { Hook, HookKind, HookParts, HookRequest, Json, Signed, Unsigned } from "./hook-kinds/index.ts";
+import { hookParts, hookRequest, schemaFor, signatureBytes, signedBytes } from "./hook-kinds/door.ts";
 import { randomBytes } from "node:crypto";
-import type { Answer, Delivery } from "@jr2/hooks";
+import type { Answer, Delivery } from "./hook-kinds/index.ts";
 import type { CallerRecord } from "./callers.ts";
 import { createEffectorClient, type EffectState, type EffectorTransport, type HookMac } from "./effector-wire.ts";
 import type { HookFanIn, HookReply, RunHost } from "./run-host.ts";

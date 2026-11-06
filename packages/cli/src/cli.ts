@@ -11,8 +11,13 @@ import { loadDotenv } from "./env.ts";
 import { init } from "./commands/init.ts";
 import { run } from "./commands/run.ts";
 import { runs } from "./commands/runs.ts";
+import { workflows } from "./commands/workflows.ts";
+import { gates } from "./commands/gates.ts";
 import { status } from "./commands/status.ts";
 import { logs } from "./commands/logs.ts";
+import { watch } from "./commands/watch.ts";
+import { workspace } from "./commands/workspace.ts";
+import { completion } from "./commands/completion.ts";
 import { send } from "./commands/send.ts";
 import { steer } from "./commands/steer.ts";
 import { up } from "./commands/up.ts";
@@ -52,7 +57,9 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
     // `jr2.config.ts` (whose deployment-varying values are read from there — ADR-0019).
     loadDotenv(io);
     const entries = cmd === undefined ? [] : commandsFor(cmd);
-    if (entries.length && asksForHelp(entries, rest)) {
+    // `completion __complete` carries the line being completed, which can hold `-h` itself.
+    const completing = cmd === "completion" && rest[0] === "__complete";
+    if (entries.length && !completing && asksForHelp(entries, rest)) {
       // `jr2 caller rotate --help` prints that sub-verb's entry; `jr2 caller --help` prints each.
       const named = entries.filter((c) => c.sub !== undefined && c.sub === rest[0]);
       activity(io, (named.length ? named : entries).map(renderCommand).join("\n\n"));
@@ -69,8 +76,14 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await run(rest, io);
       case "runs":
         return await runs(rest, io);
+      case "workflows":
+        return await workflows(rest, io);
+      case "gates":
+        return await gates(rest, io);
       case "status":
         return await status(rest, io);
+      case "watch":
+        return await watch(rest, io);
       case "logs":
         return await logs(rest, io);
       case "send":
@@ -93,6 +106,10 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await hooks(rest, io);
       case "caller":
         return await caller(rest, io);
+      case "workspace":
+        return await workspace(rest, io);
+      case "completion":
+        return await completion(rest, io);
       case "version":
       case "--version":
         return await version(rest, io);

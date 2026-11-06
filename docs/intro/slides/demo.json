@@ -42,7 +42,7 @@
       "note": "Detached on purpose: the run parks at the review Gate and would hold this pane."
     },
     "watch": {
-      "cmd": "jr2 logs $RUN -f",
+      "cmd": "jr2 watch $RUN",
       "note": "Optional — the Console behind these slides is already showing this.",
       "interrupt": true
     },

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineHookKind, json } from "@jr2/hooks";
+import { defineHookKind, json } from "@jr2/orchestrator/hooks";
 
 // The payload of each event key that a handler hears. Name only the fields that the handlers read:
 // a loose object keeps the other fields, so a new field from Stripe breaks nothing.
@@ -43,7 +43,7 @@ export const stripe = defineHookKind({
 // #endregion kind
 
 // The kind's id and payloads, for the types of the handlers.
-declare module "@jr2/hooks" {
+declare module "@jr2/orchestrator/hooks" {
   interface HookKinds {
     stripe: typeof stripe;
   }

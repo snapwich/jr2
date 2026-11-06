@@ -93,6 +93,10 @@ export type SpawnRequest = {
   cwd: string;
   /** A pipe for its stdin; else /dev/null. */
   stdin?: boolean;
+  /** A pseudo-terminal of this size, in characters, as its stdin, stdout and stderr and its
+   * controlling terminal, in a session of its own: a person's shell (`workspace-shell.ts`). Its
+   * output comes to `onStdout`, and `write` types on it. */
+  tty?: { rows: number; cols: number };
 };
 
 /** A started process. Its output comes to the handlers; `exited` settles once, last. */
@@ -108,6 +112,13 @@ export interface Spawned {
   end(): void;
   /** A signal to its whole process group. Nothing when the group has ended. */
   signal(signal: NodeJS.Signals): void;
+  /** The size of its terminal (a spawn with `tty`). Nothing for a spawn without one, or that ended. */
+  resize(rows: number, cols: number): void;
+  /** Stop reading its output until `resume`: its pipes or its terminal fill, and its writes block.
+   * The output that the spawner read before the pause still comes. Nothing for a spawn that ended. */
+  pause(): void;
+  /** Read its output again after `pause`. */
+  resume(): void;
 }
 
 export type SpawnHandlers = {
@@ -215,6 +226,21 @@ class SpawnedProcess implements Spawned {
     this.#owner.sendOn(this.#live, { op: "stdin-end", id: this.#id });
   }
 
+  resize(rows: number, cols: number): void {
+    // The spawner answers a wrong size with an error frame, which for a spawn breaks the channel:
+    // a size that it refuses is not sent.
+    if (!isTermSize(rows) || !isTermSize(cols)) return;
+    this.#owner.sendOn(this.#live, { op: "resize", id: this.#id, rows, cols });
+  }
+
+  pause(): void {
+    this.#owner.sendOn(this.#live, { op: "pause", id: this.#id });
+  }
+
+  resume(): void {
+    this.#owner.sendOn(this.#live, { op: "resume", id: this.#id });
+  }
+
   signal(signal: NodeJS.Signals): void {
     // On the spawner that started it, by its id: the spawner knows the group for some minutes
     // after its exit. When that spawner is gone, the Harness signals the group itself: a process
@@ -264,6 +290,10 @@ export class Spawner implements FileOps {
       proc.fail(new SpawnerGoneError("the spawner is closed: this Harness starts no process"));
       return proc;
     }
+    if (req.tty && (!isTermSize(req.tty.rows) || !isTermSize(req.tty.cols))) {
+      proc.fail(new SpawnError(file, "EINVAL", `${req.tty.rows}x${req.tty.cols} is no terminal size`));
+      return proc;
+    }
     live.calls.set(id, { kind: "spawn", file, state: "starting", handlers, proc });
     this.#hold(live);
     this.sendOn(live, {
@@ -273,6 +303,7 @@ export class Spawner implements FileOps {
       env: { ...req.env },
       cwd: req.cwd,
       stdin: req.stdin === true,
+      ...(req.tty ? { tty: { rows: req.tty.rows, cols: req.tty.cols } } : {}),
     });
     return proc;
   }
@@ -561,6 +592,11 @@ export class Spawner implements FileOps {
     live.calls.delete(id);
     this.#hold(live);
   }
+}
+
+/** A terminal's rows or columns: what the spawner takes (1 to 65535). */
+function isTermSize(n: number): boolean {
+  return Number.isInteger(n) && n >= 1 && n <= 0xffff;
 }
 
 function isEntryName(v: unknown): v is string {

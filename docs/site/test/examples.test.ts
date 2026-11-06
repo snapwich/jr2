@@ -26,14 +26,14 @@ const packageOf = (specifier: string): string =>
 // Instance does. Under pnpm an Instance imports only what its package.json lists, so an example
 // that imports anything else typechecks here and is refused by `jr2 up` there. So each bare import
 // is a dependency `jr2 init` scaffolds (templates/default, which init.test holds equal to it),
-// @jr2/machines, which the machines page tells the reader to add, or @jr2/hooks, whose kinds a Gate
-// slot's handlers import for their types, and which its guide tells the reader to add.
+// or @jr2/machines, which the machines page tells the reader to add. The Hook kinds are
+// `@jr2/orchestrator/hooks`, part of the kit.
 test("every @example imports only what a scaffolded Instance can import", async () => {
   const { examples } = generateReference(referenceContext(REPO, allPages(await readSitemap())));
   const scaffold = JSON.parse(await readFile(join(REPO, "templates/default/package.json"), "utf8")) as {
     dependencies: Record<string, string>;
   };
-  const allowed = new Set([...Object.keys(scaffold.dependencies), "@jr2/machines", "@jr2/hooks"]);
+  const allowed = new Set([...Object.keys(scaffold.dependencies), "@jr2/machines"]);
   const strays = examples.flatMap((e) =>
     ts
       .preProcessFile(e.code, true, true)

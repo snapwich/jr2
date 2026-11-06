@@ -19,7 +19,7 @@
 // persisted — so the snapshot is JSON-safe and restore re-attaches by rewriting the child's
 // persisted input (drop `prompt`, set `attach` from the ledger) rather than re-POSTing the prompt.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   createActor,
@@ -95,7 +95,18 @@ import {
   type MachineDoc,
   type MachineStateDoc,
 } from "./machine-doc.ts";
-import type { SnapshotStore, StandingHead } from "./snapshot-store.ts";
+import type { EndedRow, SnapshotStore, StandingHead } from "./snapshot-store.ts";
+import {
+  encodeCursor,
+  isAfter,
+  LIVE_STATUS,
+  newestFirst,
+  placingOf,
+  type RunListQuery,
+  type RunPage,
+  type RunSummary,
+} from "./run-list.ts";
+import { grantOpens } from "./tokens.ts";
 import { HAND_OVER, standingCarryOf, standingPoolOf, standingTaken, standingTook } from "./pool.ts";
 import type { AgentAdmission } from "./actor.ts";
 import type { AnyHandler } from "./gate.ts";
@@ -244,6 +255,8 @@ export type RunRecord = {
   runId: string;
   workflow: string;
   instanceId: string;
+  /** When the run started, ISO-8601 (ADR-0009): the order of `GET /runs`. */
+  startedAt: string;
   dispatchedBy?: DispatchedBy;
   startedBy?: RunStarter;
   /** The Caller whose `jr2 run` resumed this standing run (ADR-0017, ADR-0078). */
@@ -430,6 +443,16 @@ export class SteeringRefused extends Error {
   }
 }
 
+/** Why `POST /runs/:runId/gates/:gate/events` refuses a Caller (ADR-0078): the Gate is open, and
+ * the Caller's `answer` scope does not open it. `gate` is the Gate's name, its invoke id. */
+export class GateRefused extends Error {
+  readonly gate: string;
+  constructor(gate: string) {
+    super(`the "answer" scope does not open Gate "${gate}"`);
+    this.gate = gate;
+  }
+}
+
 /**
  * Stop every actor under `actor`, at any depth, deepest first. A machine that ended in `error` has
  * stopped processing — its own stop is a no-op — so its children are reached through its snapshot
@@ -611,6 +634,16 @@ export type SourceLine = { pool: string; workflow: string; source: string } & So
 /** A run's current observable state. `fault` carries the error message when status is "error"
  * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). A run that ends
  * "failed" (ADR-0073) has no `fault`: its `output` is the Failure's `{ reason, detail? }`. */
+/** Where a kept conversation's entries may come from ({@link RunHost.conversationPlace}). No
+ * `agent` when the run's ledger does not name the Instance ID. */
+export type ConversationPlace = {
+  runId: string;
+  live: boolean;
+  agent?: string;
+  sandbox?: string;
+  slot?: string;
+};
+
 export type RunStatus = RunRecord & {
   status: string;
   value: unknown;
@@ -622,7 +655,7 @@ export type RunStatus = RunRecord & {
    * never carries it — the open band sees only that a Workspace is in `placing`. */
   waiting: RunWaiting[];
   /** Every pick of this run that is outstanding (ADR-0024): the Agent, its pick, and since when —
-   * the Console's "held since". There is no default time bound on a held Turn; this is how a
+   * the Console's "outstanding since". There is no default time bound on a held Turn; this is how a
    * human sees one. Behind the token, like `context`: a pick names what the Agent did. */
   held: RunHeld[];
   fault?: string;
@@ -636,6 +669,9 @@ export type RunStatus = RunRecord & {
   /** The hash of the Assembly the run started under (ADR-0069). Absent for a run no Assembly
    * started. */
   assembly?: string;
+  /** The space guard deleted the run's kept conversations (ADR-0065, ADR-0023): `jr2 logs` and
+   * the Console show this in place of them. The run's row stays. */
+  swept?: "conversation swept: no space";
   /** The run binds at least one Chart (ADR-0070): its Machine is the bound one, `runMachine`. */
   bound?: true;
   /** The hashes of the Charts the run binds now, distinct and sorted (ADR-0070). A run can bind a
@@ -778,6 +814,34 @@ export type GateView = {
   acceptsNow: string[];
   meta?: Record<string, unknown>;
 };
+
+/** One entry of the Gate inbox (`GET /gates` — ADR-0011): an open Gate as {@link GateView} gives it,
+ * with its run, the run's Workflow, and when it opened, ISO-8601. `hook` names the Hook kinds that
+ * the Gate hears, when it hears one. Never the run's context (ADR-0014). */
+export type GateInboxEntry = { runId: string; workflow: string } & GateView & {
+    openedAt: string;
+    hook?: string[];
+  };
+
+/** The name of a Gate (ADR-0078): its invoke id, which its events carry as their sender. */
+function gateNameOf(reg: Registration): string {
+  return reg.sender?.id ?? reg.invokeId ?? reg.id;
+}
+
+/** A Gate's registration as callers discover it (ADR-0011). */
+function gateViewOf(reg: Registration): GateView {
+  return {
+    gate: reg.id,
+    path: reg.path ?? [],
+    accepts: [...reg.defs.values()].map((def) => ({
+      name: def.name,
+      description: def.description,
+      input: z.toJSONSchema(def.input),
+    })),
+    acceptsNow: acceptsNow(reg),
+    meta: reg.meta,
+  };
+}
 
 /** One event on an Agent's Menu, as the surface serves it: a tool, its `input` schema the tool's
  * parameters. `semantics` rides along so the Harness refuses a reserved one (ADR-0013). */
@@ -1140,6 +1204,9 @@ export class StandingRefused extends Error {
 type RunBlob = {
   workflow: string;
   instanceId: string;
+  /** When the run started (ADR-0009). The store copies it into a column of its own, which orders
+   * `GET /runs`. Absent in a blob written before the field. */
+  startedAt?: string;
   /** The run that dispatched this one (ADR-0071), its key included: the store finds a run by its
    * key here (`findByDispatch`), so a re-sent start answers the run it already made. */
   dispatchedBy?: DispatchedBy;
@@ -1153,6 +1220,10 @@ type RunBlob = {
   handedOverTo?: string;
   /** The last answers to the run's Gates, with their Callers (ADR-0078). */
   answers?: GateAnswer[];
+  /** When each open Gate opened, ISO-8601, by its gate id (ADR-0011): what `GET /gates` orders by.
+   * Kept in the blob so that a restored run's Gate keeps the time it first opened, not the time of
+   * the restore. A Gate that closed is not in it. */
+  gatesOpenedAt?: Record<string, string>;
   /** The shape of the Machine that WROTE this snapshot (ADR-0030). `workflow` says which def to
    * look up; this says whether the def found there is still the one this snapshot can be read by.
    * Absent means written before the stamp existed, which restore treats as drift — the point is to
@@ -1250,6 +1321,10 @@ type LiveRun = {
   fault?: string;
   /** The Failure that ended the run, if it failed (ADR-0073): persisted as `RunBlob.failure`. */
   failure?: FailureInput;
+  /** The bound Machine as it was while the run last bound a Chart (ADR-0069, ADR-0070), and the
+   * hashes of those Charts: the terminal write keeps this doc, because the terminal snapshot binds
+   * no Chart. Not persisted: a restored run takes it again at its next save. */
+  lastBound?: { hashes: string[]; doc: MachineDoc };
   /** The Caller that cancelled the run (ADR-0078): persisted as `RunBlob.cancelledBy`. */
   cancelledBy?: CallerRecord;
   /** The run that took over from this standing run (ADR-0017): persisted as `RunBlob.handedOverTo`. */
@@ -1260,6 +1335,9 @@ type LiveRun = {
   /** The last answers to the run's Gates (ADR-0078): persisted as `RunBlob.answers`, seeded on
    * restore. */
   answers: GateAnswer[];
+  /** When each open Gate opened, by its gate id (ADR-0011): persisted as `RunBlob.gatesOpenedAt`,
+   * seeded on restore before the actor starts, so a Gate that registers again keeps its time. */
+  gatesOpenedAt: Map<string, string>;
   /** Per-run observers fed by `persist()` (status) and the actor's `emit` (emit) — SSE/CLI watch. */
   listeners: Set<(e: RunFeedEvent) => void>;
   /** The run's feed-so-far (ADR-0023): what a Workspace attaching mid-run gets replayed as its
@@ -1275,7 +1353,19 @@ type LiveRun = {
 export class RunHost {
   /** The internal registration table both delivery surfaces share (ADR-0011). Callback actors
    * (`gate`, the Agent slots) reach it via the run binding, not this field. */
-  private readonly table = new RegistrationTable();
+  // A Gate's `openedAt` (ADR-0011): recorded when it registers, unless its run's blob already
+  // holds one (a restore), and dropped when it closes. A run that a host parks keeps the time in
+  // its last save, because a stopped run is not saved again.
+  private readonly table = new RegistrationTable({
+    opened: (reg) => {
+      if (reg.kind !== "gate") return;
+      const opened = this.runs.get(reg.runId)?.gatesOpenedAt;
+      if (opened && !opened.has(reg.id)) opened.set(reg.id, new Date(this.now()).toISOString());
+    },
+    closed: (reg) => {
+      if (reg.kind === "gate") this.runs.get(reg.runId)?.gatesOpenedAt.delete(reg.id);
+    },
+  });
 
   private readonly store: SnapshotStore;
   private readonly reconcile: (run: RunRecord) => boolean | Promise<boolean>;
@@ -1487,42 +1577,52 @@ export class RunHost {
   /**
    * The run's bound Machine (ADR-0070): the Workflow's Machine with each bound Open body's subgraph
    * the compiled Chart's (its `src` stays the slot key, so the live child joins it as before) —
-   * from the live actor's bound Machine, or, for a stored run, compiled again from the text its
-   * blob holds. Undefined for an unknown run, and for a stored run whose Workflow is not registered.
+   * from the live actor's bound Machine; for an ended run, the copy its terminal write kept
+   * (ADR-0069); for a stored run with no copy, compiled again from the text its blob holds. Undefined
+   * for an unknown run, and for a stored run with no copy whose Workflow is not registered.
    */
   async runMachine(runId: string): Promise<MachineDoc | undefined> {
     const live = this.runs.get(runId);
-    let workflow: string;
-    let machine: AnyStateMachine;
-    let bodies: Array<{ route: BoundChartRoute; compiled: AnyStateMachine | string }>;
-    if (live) {
-      workflow = live.record.workflow;
-      machine = live.def.machine;
-      const refs = new Map<string, AnyActorRef>();
-      const collect = (ref: AnyActorRef, path: string[]): void => {
-        for (const [id, child] of Object.entries(childrenOfRef(ref))) {
-          refs.set([...path, id].join("/"), child);
-          collect(child, [...path, id]);
-        }
-      };
-      collect(live.actor, []);
-      bodies = boundChartRoutesOf(live.actor.getSnapshot()).map((route) => {
-        const ref = refs.get(route.path.join("/"));
-        return { route, compiled: (ref && boundMachineOf(ref)) ?? "the live body holds no compiled Chart" };
-      });
-    } else {
-      const stored = await this.store.load(runId);
-      const blob = stored?.snapshot as RunBlob | null | undefined;
-      if (!blob) return undefined;
-      const def = this.workflowDefs.get(blob.workflow) ?? this.workflowDefs.get(wrapperName(blob.workflow));
-      if (!def) return undefined;
-      workflow = blob.workflow;
-      machine = def.machine;
-      bodies = boundChartRoutesOf(blob.snapshot).map((route) => ({
-        route,
-        compiled: compileStored(def.machine, route),
-      }));
-    }
+    if (live) return this.liveMachineDoc(live);
+    // An ended run's Machine as its terminal write kept it (ADR-0069): the Machine it ran on, which
+    // can be of an Assembly that is no longer held.
+    const kept = this.store.keptMachine(runId);
+    if (kept) return { ...(kept.doc as MachineDoc), workflow: kept.workflow };
+    const stored = await this.store.load(runId);
+    const blob = stored?.snapshot as RunBlob | null | undefined;
+    if (!blob) return undefined;
+    const def = this.workflowDefs.get(blob.workflow) ?? this.workflowDefs.get(wrapperName(blob.workflow));
+    if (!def) return undefined;
+    return this.boundDoc(
+      blob.workflow,
+      def.machine,
+      boundChartRoutesOf(blob.snapshot).map((route) => ({ route, compiled: compileStored(def.machine, route) })),
+    );
+  }
+
+  /** A live run's bound Machine, from its own def (the Assembly it holds) and its live actor. */
+  private liveMachineDoc(live: LiveRun): MachineDoc {
+    const refs = new Map<string, AnyActorRef>();
+    const collect = (ref: AnyActorRef, path: string[]): void => {
+      for (const [id, child] of Object.entries(childrenOfRef(ref))) {
+        refs.set([...path, id].join("/"), child);
+        collect(child, [...path, id]);
+      }
+    };
+    collect(live.actor, []);
+    const bodies = boundChartRoutesOf(live.actor.getSnapshot()).map((route) => {
+      const ref = refs.get(route.path.join("/"));
+      return { route, compiled: (ref && boundMachineOf(ref)) ?? "the live body holds no compiled Chart" };
+    });
+    return this.boundDoc(live.record.workflow, live.def.machine, bodies);
+  }
+
+  /** The Workflow's Machine doc with each bound body's Chart compiled in. */
+  private boundDoc(
+    workflow: string,
+    machine: AnyStateMachine,
+    bodies: Array<{ route: BoundChartRoute; compiled: AnyStateMachine | string }>,
+  ): MachineDoc {
     const doc = serializeMachine(workflow, machine);
     const notDrawn: NonNullable<MachineDoc["chartsNotDrawn"]> = [];
     for (const { route, compiled } of bodies) {
@@ -1564,7 +1664,7 @@ export class RunHost {
    * idempotency key, scoped to `workflow`: a run of `workflow` that already carries the key is
    * answered, `existing`, and none is started. The same key in another Workflow is another run. That is what lets a caller re-send a start whose answer it lost. The key is looked for
    * among the runs this process hosts first — a run's first save is a microtask after its spawn —
-   * then in the store. A key on a row the weekly sweep removed (ADR-0065) starts a new run: known,
+   * then in the store. A key on a row the sweep removed (ADR-0065) starts a new run: known,
    * and not guarded. The depth is recorded as sent: the caller states the callee's.
    *
    * `startedBy` is who starts it (ADR-0078), which the run records. Absent with `dispatchedBy`, the
@@ -1715,6 +1815,7 @@ export class RunHost {
       runId,
       workflow,
       instanceId,
+      startedAt: new Date(this.now()).toISOString(),
       ...(dispatchedBy ? { dispatchedBy } : {}),
       ...(startedBy ? { startedBy } : {}),
       ...(resumedBy ? { resumedBy } : {}),
@@ -1876,6 +1977,8 @@ export class RunHost {
         runId: stored.runId,
         workflow: blob.workflow,
         instanceId: blob.instanceId,
+        // A blob written before the field has its row's start: its first save.
+        startedAt: blob.startedAt ?? stored.startedAt ?? new Date(this.now()).toISOString(),
         ...(blob.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
         ...(blob.startedBy ? { startedBy: blob.startedBy } : {}),
         ...(blob.resumedBy ? { resumedBy: blob.resumedBy } : {}),
@@ -1920,6 +2023,9 @@ export class RunHost {
         // …and the answers to its Gates, with their Callers (ADR-0078): the record of who acted.
         const restored = this.runs.get(stored.runId);
         if (restored) restored.answers = [...(blob.answers ?? [])];
+        // …and when each of its open Gates opened (ADR-0011), before the actor starts and the
+        // Gates register again.
+        if (restored) restored.gatesOpenedAt = new Map(Object.entries(blob.gatesOpenedAt ?? {}));
         // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
         // records them again.
         startAndRearm(actor, blob.timers ?? [], this.now());
@@ -2005,6 +2111,62 @@ export class RunHost {
       this.liveSetTimer.unref?.();
     };
     next();
+  }
+
+  /**
+   * Where a kept conversation's entries may come from (ADR-0023, ADR-0076): the run, the Agent, the
+   * pod and the slot that the run's admission ledger names for the Instance ID. The live ledger, the
+   * ledger of a run that restore left unhosted, or the ledger in an ended run's row: the ledger
+   * outlives the Turn and the run, so a batch that comes after the Turn's sweep or the run's end is
+   * still placed. `live` says whether the run is live, so a batch that comes before its admission is
+   * ledgered is asked again, not dropped. Undefined for a run that is not known.
+   */
+  async conversationPlace(instanceId: string): Promise<ConversationPlace | undefined> {
+    const runId = instanceId.split("/")[0] ?? "";
+    let agents: Record<string, AgentAdmission> | undefined = this.runs.get(runId)?.agents ?? this.unhosted.get(runId);
+    let live = agents !== undefined;
+    if (!agents) {
+      const stored = await this.store.load(runId);
+      if (!stored) return undefined;
+      live = stored.status === "live";
+      agents = (stored.snapshot as RunBlob | null | undefined)?.agents ?? {};
+    }
+    // A row is keyed by the invocation's Instance ID and names the newest conversation of it. A
+    // runaway reroll (ADR-0035) replaces the conversation (`<key>-r<n>`), so a late batch of a
+    // conversation that the reroll ended (the key itself, or an earlier `<key>-r<m>`) is placed by
+    // the same row: that batch tells how the run went wrong. An exact match wins.
+    const rows = Object.entries(agents);
+    const row =
+      rows.find(([key, a]) => (a.instanceId ?? key) === instanceId) ??
+      rows.find(
+        ([key]) =>
+          instanceId === key || (instanceId.startsWith(`${key}-r`) && /^\d+$/.test(instanceId.slice(key.length + 2))),
+      );
+    if (row) {
+      const [, admission] = row;
+      if (admission.agent === undefined) return { runId, live };
+      return {
+        runId,
+        live,
+        agent: admission.agent,
+        ...(admission.sandbox !== undefined ? { sandbox: admission.sandbox } : {}),
+        ...(admission.slot !== undefined ? { slot: admission.slot } : {}),
+      };
+    }
+    return { runId, live };
+  }
+
+  /** Whether a run is live: hosted, left unhosted by a restore, or a `live` row (ADR-0065). The
+   * space guard never sweeps such a run's conversations. */
+  async runIsLive(runId: string): Promise<boolean> {
+    if (this.runs.has(runId) || this.unhosted.has(runId)) return true;
+    return (await this.store.load(runId))?.status === "live";
+  }
+
+  /** The run of the Turn that is registered for this Instance ID, or undefined when none is. A
+   * cheap read: it asks no guard and builds no Menu. */
+  agentRun(instanceId: string): string | undefined {
+    return this.table.lookup(agentAddress(instanceId))?.runId;
   }
 
   /**
@@ -2603,22 +2765,59 @@ export class RunHost {
   }
 
   /** A run's open gates as callers discover them (`GET /runs/:id` — ADR-0011). Settled/unknown
-   * run → empty: a gate is a LIVE surface, it does not outlive its state. */
-  gates(runId: string): GateView[] {
+   * run → empty: a gate is a LIVE surface, it does not outlive its state. `opens`, when given, keeps
+   * only the Gates whose name (their invoke id) it opens: the Gates that a Caller may answer
+   * (ADR-0078). */
+  gates(runId: string, opens?: (name: string) => boolean): GateView[] {
     return this.table
       .byRun(runId)
-      .filter((reg) => reg.kind === "gate")
-      .map((reg) => ({
-        gate: reg.id,
-        path: reg.path ?? [],
-        accepts: [...reg.defs.values()].map((def) => ({
-          name: def.name,
-          description: def.description,
-          input: z.toJSONSchema(def.input),
-        })),
-        acceptsNow: acceptsNow(reg),
-        meta: reg.meta,
-      }));
+      .filter((reg) => reg.kind === "gate" && (opens === undefined || opens(gateNameOf(reg))))
+      .map(gateViewOf);
+  }
+
+  /** The name of a run's open Gate (ADR-0078): its invoke id, the static name that the `answer`
+   * scope names it by. Undefined when the run has no open Gate `gate`. */
+  gateName(runId: string, gate: string): string | undefined {
+    const reg = this.table.lookup(gateAddress(runId, gate));
+    return reg?.kind === "gate" ? gateNameOf(reg) : undefined;
+  }
+
+  /**
+   * The Gate inbox (`GET /gates`, ADR-0011): every open Gate of every live run that `opens` opens
+   * (the Gates that the Caller may answer, by the run's Workflow and the Gate's name, ADR-0078),
+   * of one Workflow when `workflow` names it, oldest first. Never the run's context.
+   */
+  gateInbox(opens: (workflow: string, name: string) => boolean, workflow?: string): GateInboxEntry[] {
+    const out: GateInboxEntry[] = [];
+    for (const run of this.runs.values()) {
+      const runWorkflow = run.record.workflow;
+      if (workflow !== undefined && runWorkflow !== workflow) continue;
+      for (const reg of this.table.byRun(run.record.runId)) {
+        // A Gate that hears only Hooks (a Pool's `source` Gate) takes no event from a Caller: it is no
+        // entry of a person's inbox.
+        if (reg.kind !== "gate" || reg.defs.size === 0 || !opens(runWorkflow, gateNameOf(reg))) continue;
+        let openedAt = run.gatesOpenedAt.get(reg.id);
+        if (openedAt === undefined) {
+          openedAt = new Date(this.now()).toISOString();
+          run.gatesOpenedAt.set(reg.id, openedAt);
+        }
+        const hooks = Object.entries(reg.hooked?.hooks ?? {})
+          .filter(([, keys]) => Object.keys(keys).length > 0)
+          .map(([kind]) => kind)
+          .sort();
+        out.push({
+          runId: run.record.runId,
+          workflow: runWorkflow,
+          ...gateViewOf(reg),
+          openedAt,
+          ...(hooks.length ? { hook: hooks } : {}),
+        });
+      }
+    }
+    // Oldest first; one time is ordered by run and Gate, so two reads give one order.
+    return out.sort(
+      (a, b) => a.openedAt.localeCompare(b.openedAt) || a.runId.localeCompare(b.runId) || a.gate.localeCompare(b.gate),
+    );
   }
 
   /**
@@ -2630,6 +2829,11 @@ export class RunHost {
    *
    * `by` is the Caller that answers (ADR-0078). The event's Sender carries it, with the fields that
    * jr2 checked (ADR-0011), and the run records it as the answer's `answeredBy`.
+   *
+   * `opens`, when given, is the Caller's `answer` scope for the run's Workflow, by the Gate's name
+   * (its invoke id). An open Gate that it does not open throws {@link GateRefused}, and the 404 lists
+   * only the Gates that it opens. The check reads the registration that the delivery goes to, in the
+   * same synchronous step, so a Gate that opens while the request is in flight is checked too.
    */
   sendToGate(
     runId: string,
@@ -2637,12 +2841,14 @@ export class RunHost {
     event: { type?: unknown } & Record<string, unknown>,
     by?: CallerRecord,
     delivery?: string,
+    opens?: (name: string) => boolean,
   ): void {
+    const reg = this.table.lookup(gateAddress(runId, gate));
+    if (reg?.kind === "gate" && opens !== undefined && !opens(gateNameOf(reg))) throw new GateRefused(gateNameOf(reg));
     const { type, ...payload } = event;
     if (typeof type !== "string" || !type) {
       throw new EventValidationError(`event body must carry a string "type" (one of the gate's accepted names)`);
     }
-    const reg = this.table.lookup(gateAddress(runId, gate));
     const refused = (why: string): NotTakenError =>
       new NotTakenError(
         `gate "${gate}" is open, and the run does not take "${type}" now: ${why} — not delivered ` +
@@ -2684,7 +2890,7 @@ export class RunHost {
         );
       }
       if (err instanceof UnknownAddressError) {
-        const open = this.gates(runId).map((g) => g.gate);
+        const open = this.gates(runId, opens).map((g) => g.gate);
         throw new UnknownAddressError(
           `no open gate "${gate}" on run "${runId}"${open.length ? ` (open: ${open.join(", ")})` : ""}`,
         );
@@ -2928,11 +3134,20 @@ export class RunHost {
    * Only when something waits on it (ADR-0071).
    */
   private settledUnhosted(runId: string, status: "lost" | "drifted", reason: string, blob?: RunBlob): void {
+    // No Lease runs for a run that a restore ended without hosting it, so its Sandboxes (kept, as a
+    // drift keeps them) are marked here, and `jr2 workspace rm` can remove them (ADR-0021).
+    this.sandbox?.releaseRun?.(runId).catch((err: unknown) => {
+      console.error(
+        `run ${runId}: its Sandboxes were not marked as held by no run: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    });
     if (!this.settleListeners.has(runId)) return;
     const bare: RunStatus = {
       runId,
       workflow: blob?.workflow ?? "",
       instanceId: blob?.instanceId ?? "",
+      startedAt: blob?.startedAt ?? "",
       ...(blob?.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
       ...(blob?.startedBy ? { startedBy: blob.startedBy } : {}),
       status,
@@ -3021,7 +3236,7 @@ export class RunHost {
    * terminal run reports its `done`/`error` status + final context here rather than 404-ing. Returns
    * undefined only for a genuinely unknown run (or one marked `lost` with no row saved before, so no
    * snapshot: `markLost` keeps a saved row's blob, whose key must keep answering, ADR-0071) — and a
-   * swept one is unknown: a finished run's row lives a week (ADR-0065).
+   * swept one is unknown: a finished run's row lives for `runs.retain` (ADR-0065).
    */
   async read(runId: string): Promise<RunStatus | undefined> {
     const live = this.status(runId);
@@ -3038,6 +3253,7 @@ export class RunHost {
       runId,
       workflow: blob.workflow,
       instanceId: blob.instanceId,
+      startedAt: blob.startedAt ?? stored.startedAt ?? "",
       status,
       value: snap.value,
       context: snap.context,
@@ -3087,6 +3303,86 @@ export class RunHost {
 
   list(): RunStatus[] {
     return [...this.runs.keys()].map((id) => this.status(id)).filter((s): s is RunStatus => s !== undefined);
+  }
+
+  /**
+   * One page of the run listing (`GET /runs`, ADR-0009): the live runs from the registry, the
+   * store's `live` rows that the registry does not hold (`active`, waiting for restore), and the
+   * ended runs from the store's listing columns, in one order, newest start first. `readable` is
+   * the Workflows that the Caller may read (`"all"`, or the names of its grant, which also open
+   * their Charts): a run of another Workflow is left out. The store is asked for one row past the
+   * page, so `next` is known with no second query.
+   */
+  async history(query: RunListQuery, readable: "all" | readonly string[]): Promise<RunPage> {
+    // The rule of every other read route (`callerMay`); the store's SQL is the same rule.
+    const opens = (workflow: string): boolean => grantOpens(readable, workflow);
+    const live = query.live
+      ? this.list()
+          .filter((s) => s.status === LIVE_STATUS && opens(s.workflow))
+          .filter((s) => query.workflow === undefined || s.workflow === query.workflow)
+          .filter((s) => query.since === undefined || s.startedAt >= query.since)
+          .filter((s) => query.after === undefined || isAfter(s, query.after))
+          .map((s) => this.summaryOf(s))
+      : [];
+    const filter = {
+      ...(readable !== "all" ? { workflows: readable } : {}),
+      ...(query.workflow !== undefined ? { workflow: query.workflow } : {}),
+      ...(query.since !== undefined ? { since: query.since } : {}),
+      ...(query.after !== undefined ? { after: query.after } : {}),
+    };
+    const summary = (row: EndedRow, ended: boolean): RunSummary => ({
+      runId: row.runId,
+      workflow: row.workflow,
+      status: ended ? row.status : "active",
+      ...(row.reason !== undefined ? { reason: row.reason } : ended ? {} : { reason: "waiting for restore" }),
+      ...(row.startedBy !== undefined ? { startedBy: row.startedBy as RunStarter } : {}),
+      startedAt: row.startedAt,
+      ...(ended ? { endedAt: row.endedAt } : {}),
+      ...(row.assembly !== undefined ? { assembly: row.assembly } : {}),
+      openGates: 0,
+      ...(row.dispatchedBy !== undefined ? { dispatchedBy: row.dispatchedBy as DispatchedBy } : {}),
+    });
+    // A `live` row that the registry does not hold: a restore deferred or failed (ADR-0069,
+    // ADR-0030). Each hosted run takes at most one of the rows asked for, so asking for that many
+    // more leaves a full page.
+    const waiting = query.live
+      ? (await this.store.liveRows({ ...filter, limit: query.limit + 1 + this.runs.size }))
+          .filter((row) => !this.runs.has(row.runId))
+          .map((row) => summary(row, false))
+      : [];
+    const ended = query.ended
+      ? (await this.store.ended({ statuses: query.ended, ...filter, limit: query.limit + 1 })).map((row) =>
+          summary(row, true),
+        )
+      : [];
+    // A run is in one half: `persist()` writes the terminal row and drops the run from the registry
+    // in one synchronous step. The live one wins all the same.
+    const liveIds = new Set(live.map((r) => r.runId));
+    const merged = [...live, ...[...waiting, ...ended].filter((r) => !liveIds.has(r.runId))].sort(newestFirst);
+    const runs = merged.slice(0, query.limit);
+    const last = runs.at(-1);
+    return merged.length > query.limit && last ? { runs, next: encodeCursor(last) } : { runs };
+  }
+
+  /** A live run's summary (ADR-0009): its open Gates counted now, its Workspaces in `placing`. */
+  private summaryOf(status: RunStatus): RunSummary {
+    const placing = placingOf(status.value, status.children);
+    return {
+      runId: status.runId,
+      workflow: status.workflow,
+      status: status.status,
+      ...(status.reason !== undefined
+        ? { reason: status.reason }
+        : status.fault !== undefined
+          ? { reason: status.fault }
+          : {}),
+      ...(status.startedBy ? { startedBy: status.startedBy } : {}),
+      startedAt: status.startedAt,
+      ...(status.assembly !== undefined ? { assembly: status.assembly } : {}),
+      openGates: this.gates(status.runId).length,
+      ...(placing.length ? { placing } : {}),
+      ...(status.dispatchedBy ? { dispatchedBy: status.dispatchedBy } : {}),
+    };
   }
 
   /**
@@ -3157,6 +3453,21 @@ export class RunHost {
       for (const listener of listeners) listener({ kind: "closed" });
     }
     this.workflowListeners.clear();
+    for (const hook of [...this.closeHooks]) hook();
+    this.closeHooks.clear();
+  }
+
+  private readonly closeHooks = new Set<() => void>();
+
+  /** Run `fn` when `close()` begins, so a request that has no natural end (a follow of a kept
+   * conversation) can end and the server can close. Returns the call that removes `fn`. */
+  onClose(fn: () => void): () => void {
+    if (this.#stopping) {
+      fn();
+      return () => {};
+    }
+    this.closeHooks.add(fn);
+    return () => this.closeHooks.delete(fn);
   }
 
   /**
@@ -3203,7 +3514,7 @@ export class RunHost {
    * fault a run whose Agents were stopped on purpose.
    *
    * It then destroys every Sandbox the run owns, unless `keep` (`jr2 send <run> --event CANCEL
-   * --keep`): kept, they age out at the operator's idle timeout, and `jr2 ssh` reaches them until
+   * --keep`): kept, they age out at the operator's idle timeout, and `jr2 workspace shell` reaches them until
    * then. A faulted run never comes through here, and keeps its Workspaces (ADR-0012).
    */
   async cancel(runId: string, opts: { keep?: boolean; by?: CallerRecord } = {}): Promise<void> {
@@ -4170,6 +4481,7 @@ export class RunHost {
       childAgents,
       binding,
       answers: [],
+      gatesOpenedAt: new Map(),
       listeners: new Set(),
       feedSoFar: [],
     };
@@ -4239,6 +4551,16 @@ export class RunHost {
     // A run that ended holds no Steering message: each one still held retires, "not delivered"
     // (ADR-0002). Before the blob is built, so this save records it.
     if (status !== "live") run.notices.retire();
+    // While a Chart is bound, take the bound Machine: the terminal snapshot binds none, because
+    // xstate stops the Open body first, so the terminal write keeps this one (ADR-0069). Taken
+    // again only when the Charts change, or when the last doc could not draw one of them.
+    const hashes = status === "live" ? boundFields(snapshot).chartHashes : undefined;
+    if (
+      hashes &&
+      (hashes.join(":") !== run.lastBound?.hashes.join(":") || run.lastBound.doc.chartsNotDrawn !== undefined)
+    ) {
+      run.lastBound = { hashes, doc: this.liveMachineDoc(run) };
+    }
     const serialized = serializeSnapshot(snapshot, {
       stripContext: (ctx) => ctx, // see ADR-0007: live infra lives in `.provide` closures, not context
       stripChildInput: (input) => input,
@@ -4246,12 +4568,14 @@ export class RunHost {
     const blob: RunBlob = {
       workflow: run.record.workflow,
       instanceId: run.record.instanceId,
+      startedAt: run.record.startedAt,
       ...(run.record.dispatchedBy ? { dispatchedBy: run.record.dispatchedBy } : {}),
       ...(run.record.startedBy ? { startedBy: run.record.startedBy } : {}),
       ...(run.record.resumedBy ? { resumedBy: run.record.resumedBy } : {}),
       ...(run.cancelledBy ? { cancelledBy: run.cancelledBy } : {}),
       ...(run.handedOverTo ? { handedOverTo: run.handedOverTo } : {}),
       ...(run.answers.length ? { answers: run.answers } : {}),
+      ...(run.gatesOpenedAt.size ? { gatesOpenedAt: Object.fromEntries(run.gatesOpenedAt) } : {}),
       // Stamped on every save, off the registered TEMPLATE (never the per-run `.provide()` result —
       // providers do not change shape, and `fingerprintOf` memoizes per machine object). ADR-0030.
       machine: fingerprintOf(run.def.machine),
@@ -4280,6 +4604,19 @@ export class RunHost {
     // The save is on disk (the store writes synchronously, ADR-0065): a settled row whose transition
     // it carries keeps no tail in the next one (ADR-0067).
     dropSavedTails(run.effects, snapshot);
+    // An ended run holds no Assembly, so its row keeps the Machine it ran on (ADR-0069): the Console
+    // draws an ended run on its own Machine after a publish collects that Assembly. A failure here
+    // costs the drawing, never the run's end.
+    if (status !== "live") {
+      try {
+        const doc = run.lastBound?.doc ?? this.liveMachineDoc(run);
+        this.store.keepMachine(run.record.runId, keptMachineKey(doc), doc);
+      } catch (err) {
+        console.error(
+          `run ${run.record.runId}: its Machine was not kept: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     // Feed per-run observers (SSE/CLI watch). On the terminal transition emit the final status
     // BEFORE untrack drops the run from the registry, then drop the now-useless listener set.
@@ -4385,6 +4722,17 @@ function worktreesField(effects: Record<string, EffectRow>): { worktrees?: RunWo
     if (!out.has(key)) out.set(key, { slot, path, branch });
   }
   return out.size ? { worktrees: [...out.values()] } : {};
+}
+
+/**
+ * The key an ended run's kept Machine is stored under (ADR-0069): a digest of the doc itself, with
+ * the Workflow name blanked, so a Chart wrapper and its named Chart share one copy, and two Machines
+ * that differ in any part the doc draws (a guard, a description, an Effect's argv) keep two.
+ */
+function keptMachineKey(doc: MachineDoc): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ ...doc, workflow: "" }))
+    .digest("hex");
 }
 
 /** A status's bound fields (ADR-0070): `bound`, and the hashes of the Charts bound, distinct and

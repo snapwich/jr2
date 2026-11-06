@@ -5,15 +5,21 @@
 //
 // A named Chart is a Workflow (ADR-0070): it lists under its Chart wrapper, indented, with its origin
 // (`chart file` or `chart`) and, when a publish no longer admits it, `unrunnable` with the reason.
+//
+// Under the selected Workflow's live runs are its ended runs (ADR-0032): those `GET /runs` lists,
+// with a Caller that has `read`, each with its status, and a `drifted` run with its reason. A run on
+// an older Assembly carries the mark "older Assembly · <hash>" (ADR-0069).
 
 import { h, type JSX } from "preact";
 import {
   dispatchBadge,
   fleetEntries,
   fleetRuns,
+  heldAssembly,
   may,
+  olderAssemblyMark,
   type FleetEntry,
-  type ObservedRun,
+  type RailRun,
   type Store,
 } from "../store.ts";
 import { SchemaForm } from "./schema-form.ts";
@@ -121,31 +127,32 @@ function startForm(name: string, schemas: ReadonlyMap<string, unknown>, api: App
   );
 }
 
-function runRows(
-  name: string,
-  rows: Array<{ run: ObservedRun; settled: boolean }>,
-  store: Store,
-  api: AppApi,
-): JSX.Element {
+function runRows(name: string, rows: RailRun[], store: Store, api: AppApi): JSX.Element {
+  const live = rows.filter((r) => !r.settled);
+  const ended = rows.filter((r) => r.settled);
   return h(
     "ul",
     { class: "wf-runs" },
-    rows.length
-      ? rows.map(({ run, settled }) => runRow(name, run, settled, store, api))
-      : h("li", { class: "empty" }, "no live runs"),
+    live.length
+      ? live.map((run) => runRow(name, run, store, api))
+      : h("li", { key: "no-live", class: "empty" }, "no live runs"),
+    ended.length ? h("li", { key: "ended-head", class: "runs-head dim" }, "ended") : null,
+    ended.map((run) => runRow(name, run, store, api)),
   );
 }
 
-function runRow(name: string, run: ObservedRun, settled: boolean, store: Store, api: AppApi): JSX.Element {
+function runRow(name: string, run: RailRun, store: Store, api: AppApi): JSX.Element {
   const gates = store.gates.get(run.runId)?.gates.length ?? 0;
   const selected = name === store.workflow && run.runId === store.selectedRunId;
   // A dispatched run names its caller on the row (ADR-0071), off the open observation.
   const badge = dispatchBadge(run);
+  const older = olderAssemblyMark(store, run.runId);
   return h(
     "li",
     {
       key: run.runId,
-      class: `${settled ? "settled" : ""}${selected ? " selected" : ""}`.trim(),
+      class: `${run.settled ? "settled" : ""}${selected ? " selected" : ""}`.trim(),
+      title: run.reason !== undefined ? `${run.status}: ${run.reason}` : undefined,
       onClick: () => {
         if (name === store.workflow) api.dispatch({ kind: "selectRun", runId: run.runId });
         else void api.selectWorkflow(name, { push: true, runId: run.runId });
@@ -166,6 +173,14 @@ function runRow(name: string, run: ObservedRun, settled: boolean, store: Store, 
     gates
       ? h("span", { class: "gate-badge", title: `${gates} open gate${gates === 1 ? "" : "s"}` }, `⚑${gates}`)
       : null,
+    older ? h("span", { class: "older-assembly dim", title: olderAssemblyTitle(store, run.runId) }, older) : null,
     h("span", { class: `run-status status--${run.status}` }, run.status),
+    run.status === "drifted" && run.reason !== undefined ? h("div", { class: "run-reason dim" }, run.reason) : null,
   );
+}
+
+/** The whole hash, for the mark's title. */
+function olderAssemblyTitle(store: Store, runId: string): string {
+  const hash = heldAssembly(store, runId);
+  return `this run is on Assembly ${hash ?? "?"}; the current one is ${store.assembly.current ?? "?"}`;
 }

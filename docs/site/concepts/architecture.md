@@ -84,18 +84,25 @@ to the Orchestrator's Service, for the life of the command. The [global options]
 tell how to give a URL and a token instead. The CLI keeps no local state about the cluster.
 
 The [Console](../reference/glossary.md#console) is a page that the Orchestrator serves. You open it in a browser,
-through a port forward that you start. [Open the Console](../guides/open-the-console.md) gives the commands.
+through a port forward that you start. It draws the Machine of each live run, and marks a run that started on an older
+[Assembly](../reference/glossary.md#assembly). With the credential of a [Caller](../reference/glossary.md#caller), it
+shows the open [Gates](../reference/glossary.md#gate) that you can answer. With the credential of a Caller that has
+`read`, it also lists the ended runs, and shows the [Conversations](../reference/glossary.md#conversation) of the Agents
+in a drawer at the bottom. [Open the Console](../guides/open-the-console.md) gives the commands.
+
+The `jr2 workspace` commands do not talk to the Orchestrator. They read the Sandbox resources with your kubectl
+credentials, and open a shell or a port forward into a Sandbox pod. Thus they work when the Orchestrator is down.
 
 ## The Orchestrator
 
 The Orchestrator is one pod for each Instance (`replicas: 1`), with the Service `jr2-orchestrator` on port 4000. It
 hosts all the [Workflows](../reference/glossary.md#workflow) of the Instance and many runs of each Workflow. It keeps
-the snapshot of each run on its own volume, so a run continues after a restart. [Durable runs](durable-runs.md) tells
-how.
+the snapshot of each run on its own volume, so a run continues after a restart. It also keeps there the conversation of
+each Agent, which each Harness sends during the Turn. [Durable runs](durable-runs.md) tells how, and for how long.
 
 The pod runs the `jr2-orchestrator` [Kit image](../reference/glossary.md#kit-image), which holds no code of yours. The
-Orchestrator loads your Workflows and your config from the [Assembly](../reference/glossary.md#assembly) that `jr2 up`
-publishes to it, and it keeps each Assembly on its volume. [Converge](converge.md#the-assembly) tells how.
+Orchestrator loads your Workflows and your config from the Assembly that `jr2 up` publishes to it, and it keeps each
+Assembly on its volume. [Converge](converge.md#the-assembly) tells how.
 
 The Orchestrator does these things:
 
@@ -143,12 +150,12 @@ connect to a Harness pod, and that stop each Harness pod at the cloud metadata a
 Each Harness pod has a Custodian: each Sandbox, and the Instance Harness. The Custodian is a container beside the
 Harness. The Agent executes no code in it. It does two things:
 
-- It carries five kinds of call from the pod to the Orchestrator: the Menu reads, the picks, the polls for the answer to
-  a pick, the reports that a step boundary gave its notices to the model, and the fetch asks. It sends the first four
-  with the control token of the Sandbox, and the fetch asks with its fetch token. These five routes are all that it
-  forwards. It refuses all other routes. The Harness sends the first four on a Unix socket in `/run/jr2`. A confined
-  program cannot make a socket there, and the Custodian refuses a request on it that does not have the control Stand-in.
-  The fetch asks go to port `8081` on loopback.
+- It carries six kinds of call from the pod to the Orchestrator: the Menu reads, the picks, the polls for the answer to
+  a pick, the reports that a step boundary gave its notices to the model, the batches of the conversation's entries, and
+  the fetch asks. It sends the first five with the control token of the Sandbox, and the fetch asks with its fetch
+  token. These six routes are all that it forwards. It refuses all other routes. The Harness sends the first five on a
+  Unix socket in `/run/jr2`. A confined program cannot make a socket there, and the Custodian refuses a request on it
+  that does not have the control Stand-in. The fetch asks go to port `8081` on loopback.
 - It holds the [Held secrets](../reference/glossary.md#held-secret) of its pod, such as a model API key or the token of
   an MCP server. It puts the value into the requests that go to the hosts of each Held secret.
 

@@ -35,7 +35,6 @@ FROM --platform=$BUILDPLATFORM node:24-slim AS pack
 
 WORKDIR /kit
 COPY packages/agent-protocol ./agent-protocol
-COPY packages/hooks ./hooks
 COPY packages/orchestrator ./orchestrator
 
 # A `workspace:` range is pnpm's spelling, and npm cannot read it. pnpm rewrites it to the exact
@@ -49,7 +48,7 @@ COPY packages/orchestrator ./orchestrator
 # package an Instance installs from npm; the Orchestrator's process never reads it.
 RUN node -e ' \
   const fs = require("fs"); \
-  const dirs = ["agent-protocol", "hooks", "orchestrator"]; \
+  const dirs = ["agent-protocol", "orchestrator"]; \
   const read = (d) => JSON.parse(fs.readFileSync(`${d}/package.json`, "utf8")); \
   const versions = Object.fromEntries(dirs.map((d) => [read(d).name, read(d).version])); \
   for (const d of dirs) { \
@@ -64,7 +63,6 @@ RUN node -e ' \
   }' \
  && mkdir /tgz \
  && (cd agent-protocol && npm pack --ignore-scripts --pack-destination /tgz) \
- && (cd hooks && npm pack --ignore-scripts --pack-destination /tgz) \
  && (cd orchestrator && npm pack --ignore-scripts --pack-destination /tgz)
 
 # ---------------------------------------------------------------------------------------------
@@ -118,8 +116,7 @@ RUN node -e ' \
   if (bad.length) { for (const b of bad) console.error(`jr2: ${b}`); process.exit(1); }' \
  && rm -rf /tmp/tgz /tmp/closure.json package.json package-lock.json \
  && test -f node_modules/@jr2/orchestrator/bin/server.ts \
- && test -f node_modules/@jr2/agent-protocol/package.json \
- && test -f node_modules/@jr2/hooks/package.json
+ && test -f node_modules/@jr2/agent-protocol/package.json
 
 EXPOSE 4000
 CMD ["tsx", "node_modules/@jr2/orchestrator/bin/server.ts"]

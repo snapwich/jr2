@@ -8,9 +8,9 @@ import assert from "node:assert/strict";
 import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { discord } from "@jr2/hooks/discord";
-import { gitlab } from "@jr2/hooks/gitlab";
-import { slack } from "@jr2/hooks/slack";
+import { discord } from "../src/hook-kinds/discord.ts";
+import { gitlab } from "../src/hook-kinds/gitlab.ts";
+import { slack } from "../src/hook-kinds/slack.ts";
 import { dispatch } from "../src/dispatch-effect.ts";
 import { gate } from "../src/gate.ts";
 import { carry, pool, skip, source } from "../src/pool.ts";
@@ -369,7 +369,7 @@ test("the door refuses a follow-up to a url outside the kind's posts", async () 
     },
   });
   // A kind whose envelope gives a url of another host: the door posts nothing.
-  const { defineHookKind, json } = await import("@jr2/hooks");
+  const { defineHookKind, json } = await import("../src/hook-kinds/index.ts");
   const rogue = defineHookKind({
     api: 1,
     id: "rogue",

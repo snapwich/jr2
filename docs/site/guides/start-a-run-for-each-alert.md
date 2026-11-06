@@ -11,12 +11,8 @@ The example has three Workflows and one Hook. The alert service sends each new i
 starts one run of `triage` for each alert, with at most 8 live at one time. A `triage` run waits until a person takes
 the alert or dismisses it.
 
-Install `@jr2/hooks` in your [Instance](../reference/glossary.md#instance). It has `webhook()`, which makes the kind of
-a service that jr2 ships no kind for:
-
-```sh
-npm install @jr2/hooks
-```
+`@jr2/orchestrator/hooks/webhook` has `webhook()`, which makes the kind of a service that jr2 ships no kind for. It is
+part of `@jr2/orchestrator`, so your [Instance](../reference/glossary.md#instance) installs nothing more.
 
 ## Write the kind of the service
 
@@ -132,7 +128,7 @@ jr2 send <run id> --gate waiting --event take --input '{"who":"<you>"}'
 ```
 
 `<run id>` is the id of the `triage` run, and `<you>` is your name. To see what the door of the Hook did with each
-delivery of the last week, print its log:
+delivery that jr2 keeps (`runs.retain`, 30 days by default), print its log:
 
 ```sh
 jr2 hooks sentry
@@ -144,7 +140,7 @@ the verdict `paused`, and the Pool holds nothing. [`jr2 run alerts`](../referenc
 ## Rules
 
 - `pool()` refuses a Pool of runs that does not stand:
-  ``pool("<id>"): a Pool of runs stands: give it `standing: true`. A Pool of runs that a Caller starts and that ends is not offered: its itemId is a key that lives a week past the run, so a second batch in that week does no work (ADR-0017)``
+  ``pool("<id>"): a Pool of runs stands: give it `standing: true`. A Pool of runs that a Caller starts and that ends is not offered: its itemId is a key that lives for runs.retain past the run, so a second batch in that time does no work (ADR-0017)``
 - `pool()` refuses a `dispatch` slot without `wait: true`:
   ``pool("<id>"): its dispatch slot for "<workflow>" has no `wait: true` — with `started` alone, the Pool cannot know when a run ends, and `cap` counts nothing (ADR-0017)``
 - `pool()` refuses a `dispatch` slot with a `target`:

@@ -119,7 +119,8 @@ Feature: An Instance publishes its Assembly, and the Orchestrator serves the cur
   Rule: a run whose Assembly the volume lost is refused, kept, readable and announced
     ADR-0069, ADR-0030. Drift is "the Orchestrator can no longer read what it saved". Here the
     Assembly the snapshot names is not on the volume, so there is no Machine to resume the run
-    into. The run is refused, its snapshot is kept, it stays readable, and the boot announces it.
+    into. The run is refused, its snapshot is kept, it stays readable, the boot announces it, and
+    `jr2 runs --status drifted` lists it with its reason (ADR-0009).
     The other forms of drift (an Assembly published for another Kit version, an Assembly that does
     not load, a Machine of another shape inside one Assembly) are claims of the orchestrator's
     instance and run-host tests, not of this Rule.
@@ -135,3 +136,6 @@ Feature: An Instance publishes its Assembly, and the Orchestrator serves the cur
       Then the boot reports the run as drifted
       And the run reads as drifted, still parked at "working", and says its Assembly "is not on the volume"
       And the run is absent from the runs list
+      When I list the runs with "--status drifted"
+      Then the run appears in the runs list with status "drifted"
+      And the run's summary gives the reason "is not on the volume"

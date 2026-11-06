@@ -4,11 +4,12 @@
 // Driven over an ephemeral loopback port, like instance.test.ts. There is no folder boot: every
 // Workflow here arrives through the door.
 
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assembliesDir, kitClosure } from "../src/assembly.ts";
@@ -793,6 +794,41 @@ test("a docker context a registered Machine names beside its module is not named
     assert.deepEqual(ignored(), [], "the boot");
   } finally {
     await second.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the hourly sweep keeps an ended run for the published config's runs.retain (ADR-0065)", async () => {
+  const dir = await mkInstance();
+  const dbPath = join(dir, "state.db");
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const store = new SqliteSnapshotStore(dbPath);
+    const inst = await startInstance({ dir, store, signingKey: KEY });
+    try {
+      const short = await mkAssembly({
+        "workflows/echo.ts": machineSrc("echo"),
+        "jr2.config.ts": `export default { runs: { retain: "2d" } };\n`,
+      });
+      const res = await put(inst, short);
+      assert.equal(res.status, 200, await res.text());
+      const blob = { workflow: "echo", instanceId: "i", snapshot: { status: "done", value: "a", context: {} } };
+      await store.save("three-days", blob, "done");
+      await store.save("one-day", blob, "done");
+      const db = new DatabaseSync(dbPath);
+      const ago = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+      db.prepare(`UPDATE machine_snapshots SET updated_at = ? WHERE run_id = ?`).run(ago(3), "three-days");
+      db.prepare(`UPDATE machine_snapshots SET updated_at = ? WHERE run_id = ?`).run(ago(1), "one-day");
+      db.close();
+
+      mock.timers.tick(60 * 60 * 1000);
+      assert.equal(await inst.host.read("three-days"), undefined, "older than 2d: swept");
+      assert.equal((await inst.host.read("one-day"))?.status, "done", "one day old: kept");
+    } finally {
+      await inst.close();
+    }
+  } finally {
+    mock.timers.reset();
     await rm(dir, { recursive: true, force: true });
   }
 });

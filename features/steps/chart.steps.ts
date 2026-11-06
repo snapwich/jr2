@@ -372,17 +372,17 @@ Then("the put answers {int} with origin {string}", function (this: E2EWorld, sta
   assert.match(String(res?.body?.hash), /^[0-9a-f]{12}$/, "the answer names the Chart's hash");
 });
 
-Then("`jr2 runs` lists {string} under its wrapper", async function (this: E2EWorld, line: string): Promise<void> {
-  const r = await this.runCli(["runs"]);
-  assert.equal(r.code, 0, `jr2 runs failed: ${r.stderr}`);
+Then("`jr2 workflows` lists {string} under its wrapper", async function (this: E2EWorld, line: string): Promise<void> {
+  const r = await this.runCli(["workflows"]);
+  assert.equal(r.code, 0, `jr2 workflows failed: ${r.stderr}`);
   const escaped = line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  assert.match(r.stderr, new RegExp(`^    ${escaped}$`, "m"), `the listing on stderr:\n${r.stderr}`);
+  assert.match(r.stdout, new RegExp(`^  ${escaped}$`, "m"), `the listing:\n${r.stdout}`);
 });
 
-Then("`jr2 runs` does not list {string}", async function (this: E2EWorld, name: string): Promise<void> {
-  const r = await this.runCli(["runs"]);
-  assert.equal(r.code, 0, `jr2 runs failed: ${r.stderr}`);
-  assert.ok(!r.stderr.includes(name), `the listing on stderr names no "${name}":\n${r.stderr}`);
+Then("`jr2 workflows` does not list {string}", async function (this: E2EWorld, name: string): Promise<void> {
+  const r = await this.runCli(["workflows"]);
+  assert.equal(r.code, 0, `jr2 workflows failed: ${r.stderr}`);
+  assert.ok(!r.stdout.includes(name), `the listing names no "${name}":\n${r.stdout}`);
 });
 
 Then(

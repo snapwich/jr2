@@ -65,15 +65,18 @@ plain Gate. A Gate slot checks its `meta` against its schema when it opens.
 
 ### The callers
 
-A caller finds the open Gates of a run with [`GET /runs/:runId`](../reference/http-api.md#get-runs-runid). Each Gate
-gives its id, its events with their input schemas, `acceptsNow` and `meta` (see
-[`GateView`](../reference/http-api.md#type-gateview)). Then the caller sends one event, with its input. These callers
-use the same route,
+A caller finds the open Gates of all the live runs that it can answer with
+[`GET /gates`](../reference/http-api.md#get-gates), the oldest first, and the open Gates of one run with
+[`GET /runs/:runId`](../reference/http-api.md#get-runs-runid). Each Gate gives its id, its events with their input
+schemas, `acceptsNow` and `meta` (see [`GateView`](../reference/http-api.md#type-gateview)). Then the caller sends one
+event, with its input. These callers use the same route,
 [`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#post-runs-runid-gates-gate-events), with the
 [Instance](../reference/glossary.md#instance) token:
 
-- **The [jr2 CLI](../reference/glossary.md#jr2-cli).** [`jr2 status`](../reference/cli.md#status) prints the open Gates
-  of a run under `gates`. [`jr2 send`](../reference/cli.md#send) with `--gate` sends an event to one of them.
+- **The [jr2 CLI](../reference/glossary.md#jr2-cli).** [`jr2 gates`](../reference/cli.md#gates) prints the open Gates of
+  all the live runs that you can answer, the oldest first, each with the time when it opened.
+  [`jr2 status`](../reference/cli.md#status) prints the open Gates of one run under `gates`.
+  [`jr2 send`](../reference/cli.md#send) with `--gate` sends an event to one of them.
 - **The [Console](../reference/glossary.md#console).** When you type a token with the `answer` scope, or log in, the
   Attention tab shows a card for each open Gate of the Workflows of that scope. The card has a form for each event.
 - **A CI job.** Any client that can reach the [Orchestrator](../reference/glossary.md#orchestrator), and that holds a

@@ -628,6 +628,99 @@ func TestInTheDomainSpawnsShareItAndReachNothingDenied(t *testing.T) {
 	if b, _ := os.ReadFile(standin); string(b) != "control-stand-in-value" {
 		t.Fatalf("the Stand-in changed: %q", b)
 	}
+
+	// A person's shell (a spawn with a tty) is in the one domain: it signals an Agent's process, and
+	// it cannot read the denied path (ADR-0076).
+	h.send(spawnFrame("server2", "sleep", "100"))
+	pid2 := int(h.next("server2")["pid"].(float64))
+	shell := spawnFrame("shell", "sh", "-c", fmt.Sprintf("cat %s; kill %d; echo killed", standin, pid2))
+	shell["tty"] = map[string]int{"rows": 24, "cols": 80}
+	h.send(shell)
+	r := h.collect("shell")
+	if strings.Contains(r.stdout, "control-stand-in-value") || !strings.Contains(r.stdout, "killed") {
+		t.Fatalf("the shell: %+v", r)
+	}
+	if exit := h.next("server2"); exit["op"] != "exit" || exit["signal"] != "SIGTERM" {
+		t.Fatalf("the shell did not end an Agent's process: %v", exit)
+	}
+}
+
+// A spawn with a tty runs on a pseudo-terminal of its own: its controlling terminal, at the size
+// that the spawn and each resize name. Its stdin frames are typed on it, and its output comes on
+// stdout, the terminal's echo included.
+func TestATtySpawnRunsOnATerminalOfItsOwn(t *testing.T) {
+	h := start(t, nil)
+	f := spawnFrame("tty", "sh", "-c", `tty; stty size; read a; stty size; echo "got $a"; echo $$ $(cut -d" " -f6 /proc/$$/stat)`)
+	f["tty"] = map[string]int{"rows": 24, "cols": 80}
+	h.send(f)
+	started := h.next("tty")
+	if started["op"] != "started" {
+		t.Fatalf("not started: %v", started)
+	}
+	pid := int(started["pid"].(float64))
+	var out string
+	for !strings.Contains(out, "24 80") {
+		g := h.next("tty")
+		if g["op"] != "out" || g["stream"] != "stdout" {
+			t.Fatalf("before the size: %v (output %q)", g, out)
+		}
+		b, _ := base64.StdEncoding.DecodeString(g["data"].(string))
+		out += string(b)
+	}
+	if !strings.Contains(out, "/dev/pts/") {
+		t.Fatalf("no terminal: %q", out)
+	}
+	h.send(map[string]any{"op": "resize", "id": "tty", "rows": 40, "cols": 100})
+	h.send(map[string]any{"op": "stdin", "id": "tty", "data": base64.StdEncoding.EncodeToString([]byte("hello\n"))})
+	for {
+		g := h.next("tty")
+		if g["op"] == "exit" {
+			if g["code"] != float64(0) {
+				t.Fatalf("exit: %v (output %q)", g, out)
+			}
+			break
+		}
+		b, _ := base64.StdEncoding.DecodeString(g["data"].(string))
+		out += string(b)
+	}
+	for _, want := range []string{"40 100", "got hello", fmt.Sprintf("%d %d", pid, pid)} {
+		if !strings.Contains(strings.Join(strings.Fields(out), " "), want) {
+			t.Fatalf("no %q in %q", want, out)
+		}
+	}
+	// A resize of a spawn that ended, or one with no tty, does nothing; a bad size is EINVAL.
+	h.send(map[string]any{"op": "resize", "id": "tty", "rows": 10, "cols": 10})
+	h.send(map[string]any{"op": "resize", "id": "bad", "rows": 0, "cols": 10})
+	if g := h.next("bad"); g["op"] != "error" || g["code"] != "EINVAL" {
+		t.Fatalf("a bad size: %v", g)
+	}
+	bad := spawnFrame("bad-spawn", "true")
+	bad["tty"] = map[string]int{"rows": 0, "cols": 80}
+	h.send(bad)
+	if g := h.next("bad-spawn"); g["op"] != "error" || g["code"] != "EINVAL" {
+		t.Fatalf("a spawn with a bad size: %v", g)
+	}
+}
+
+// The terminal ends with the spawn: a job that the shell left in the background gets the hang-up,
+// and the exit frame does not wait for it.
+func TestATtySpawnsTerminalHangsUpAtItsExit(t *testing.T) {
+	h := start(t, nil)
+	f := spawnFrame("tty", "sh", "-c", "sleep 100 & echo $!")
+	f["tty"] = map[string]int{"rows": 24, "cols": 80}
+	h.send(f)
+	r := h.collect("tty")
+	if r.exit["code"] != float64(0) {
+		t.Fatalf("exit: %+v", r)
+	}
+	bg, err := strconv.Atoi(strings.TrimSpace(r.stdout))
+	if err != nil {
+		t.Fatalf("no pid: %q", r.stdout)
+	}
+	if !gone(bg) {
+		_ = syscall.Kill(bg, syscall.SIGKILL)
+		t.Fatalf("the background job %d outlived its terminal", bg)
+	}
 }
 
 // Many spawns at once each answer their own output and exit, and the frames of one never carry
@@ -665,5 +758,65 @@ func TestConcurrentSpawnsKeepTheirOwnFrames(t *testing.T) {
 		if got[id] != want {
 			t.Errorf("%s: %q", id, got[id])
 		}
+	}
+}
+
+// A paused spawn's output is not read: its pipe fills, its writes block, and no exit comes while it
+// is paused, even after the grace. At the resume, all of its output comes, then its exit.
+func TestAPausedSpawnsOutputWaitsForTheResume(t *testing.T) {
+	h := start(t, nil)
+	const size = 8 << 20
+	f := spawnFrame("big", "sh", "-c", fmt.Sprintf("read go; head -c %d /dev/zero", size))
+	f["stdin"] = true
+	h.send(f)
+	if g := h.next("big"); g["op"] != "started" {
+		t.Fatalf("not started: %v", g)
+	}
+	h.send(map[string]any{"op": "pause", "id": "big"})
+	h.send(map[string]any{"op": "stdin", "id": "big", "data": base64.StdEncoding.EncodeToString([]byte("go\n"))})
+	got := 0
+	quiet := time.After(GraceAfterExit*3 + 200*time.Millisecond)
+wait:
+	for {
+		select {
+		case g, ok := <-h.frames:
+			if !ok {
+				t.Fatalf("the channel ended; stderr: %s", h.stderr.String())
+			}
+			if g["op"] == "exit" {
+				t.Fatalf("an exit while paused: %v", g)
+			}
+			if g["op"] == "out" {
+				b, _ := base64.StdEncoding.DecodeString(g["data"].(string))
+				got += len(b)
+			}
+		case <-quiet:
+			break wait
+		}
+	}
+	// One read can land as the pause lands; no more.
+	if got > 128<<10 {
+		t.Fatalf("%d bytes came while paused", got)
+	}
+	h.send(map[string]any{"op": "resume", "id": "big"})
+	r := result{}
+	for {
+		g := h.next("big")
+		if g["op"] == "exit" {
+			r.exit = g
+			break
+		}
+		b, _ := base64.StdEncoding.DecodeString(g["data"].(string))
+		got += len(b)
+	}
+	if got != size || r.exit["code"] != float64(0) {
+		t.Fatalf("got %d bytes, exit %v", got, r.exit)
+	}
+	// A pause of a spawn that ended, or of no spawn, does nothing.
+	h.send(map[string]any{"op": "pause", "id": "big"})
+	h.send(map[string]any{"op": "resume", "id": "none"})
+	h.send(spawnFrame("after", "echo", "ok"))
+	if r := h.collect("after"); r.stdout != "ok\n" {
+		t.Fatalf("%+v", r)
 	}
 }

@@ -141,13 +141,13 @@ test("each @jr2/machines export is on its page", async () => {
   for (const name of Object.keys(machines)) assert.ok(text.includes(`\n### \`${name}\`\n`), name);
 });
 
-test("each export of each @jr2/hooks module is on its page, in the group of its module", async () => {
+test("each export of each @jr2/orchestrator/hooks module is on its page, in the group of its module", async () => {
   // The modules a kind or a config imports; `door` is the Orchestrator's, and not on the page.
   const text = page("reference/hooks");
   const groups = text.split(/^## /m);
   for (const specifier of [
-    "@jr2/hooks",
-    ...["github", "gitlab", "slack", "discord", "webhook"].map((m) => `@jr2/hooks/${m}`),
+    "@jr2/orchestrator/hooks",
+    ...["github", "gitlab", "slack", "discord", "webhook"].map((m) => `@jr2/orchestrator/hooks/${m}`),
   ]) {
     const mod = (await import(specifier)) as Record<string, unknown>;
     const group = groups.find((g) => g.startsWith(`\`${specifier}\`\n`)) ?? assert.fail(`no group ${specifier}`);
@@ -311,10 +311,12 @@ test("each JR2Config field, nested, is on the config page", () => {
     const props = type.getProperties();
     // A type the Authoring surface documents (Size) is linked, not opened.
     if (depth > 0 && type.aliasSymbol && ctx.names.get(type.aliasSymbol.name)?.page.startsWith(`${SURFACE}/`)) return;
-    // A type of another package (a Hook, which a kind's constructor makes, ADR-0078) is a value the
-    // config holds, not fields it writes: the page does not open it.
+    // A type of another package, or of the Hook kinds (a Hook, which a kind's constructor makes,
+    // ADR-0078), is a value the config holds, not fields it writes: the page does not open it.
     const home = type.aliasSymbol?.declarations?.[0]?.getSourceFile().fileName ?? "";
-    if (depth > 0 && home !== "" && !home.includes("/packages/orchestrator/")) return;
+    const foreign =
+      !home.includes("/packages/orchestrator/") || home.includes("/packages/orchestrator/src/hook-kinds/");
+    if (depth > 0 && home !== "" && foreign) return;
     // A config type that two fields use (Scopes) is opened at the first and linked at the next.
     const alias = type.aliasSymbol?.name;
     if (depth > 0 && alias !== undefined && ctx.names.get(alias)?.page === "reference/config.md") {

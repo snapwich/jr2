@@ -8,8 +8,8 @@ See where a run is and what its [Agents](../reference/glossary.md#agent) do, in 
 
 The CLI shows the status of a run: where its [Machine](../reference/glossary.md#machine) is, its context, and its open
 [Gates](../reference/glossary.md#gate). The Console shows where the Machine is and, with the credential of a
-[Caller](../reference/glossary.md#caller) that has the `answer` scope, the open Gates. The pod log shows the
-conversation of each Agent: its prompts, its text, and its calls.
+[Caller](../reference/glossary.md#caller) that has the `answer` scope, the open Gates. `jr2 logs` and the pod log show
+the [Conversation](../reference/glossary.md#conversation) of each Agent: its prompts, its text, and its calls.
 
 The examples on this page use a run of the [Workflow](../reference/glossary.md#workflow) `release`. Its Gate `review`
 waits for `approve` or `reject`. [Answer a Gate](answer-a-gate.md) gives the file `workflows/release.ts`. In the
@@ -50,20 +50,39 @@ jr2 runs
 
 ```text
 → context <context> / namespace <namespace>
-workflows:
-  ping (machine)
-  release (machine)
-[{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}]
+[{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","status":"active","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-10-24T06:18:02.114Z","assembly":"28c844453c20","openGates":1}]
 ```
 
-`jr2 runs` prints a JSON array of the runs that did not end. On stderr, it first lists the Workflows that a run can
-start, each with where it comes from: `machine`, `chart file` or `chart`. A Chart wrapper lists its named Charts under
-it. `jr2 runs --workflows` prints that list as the JSON result. To read a run that ended, use `jr2 status <run id>`. A
-run with a [Workspace](../reference/glossary.md#workspace) that waits for capacity also has `placing`: the path of each
-such Workspace in the run. `jr2 status` tells why it waits. A run that a `dispatch`
-[Effect](../reference/glossary.md#effect) started has `dispatchedBy` after its id: the run that started it, the slot of
-the Effect, the id of the Effect (`effect`), and its `depth` in the chain.
-[Start a run from a run](start-a-run-from-a-run.md) shows it.
+`jr2 runs` prints a JSON array of the runs that did not end, the newest start first. Each item is a summary of the run:
+its id, its Workflow, its status, who started it and when, its [Assembly](../reference/glossary.md#assembly), and the
+number of its open Gates (`openGates`). `--status ended` lists the runs that ended, and `--status all` lists both.
+`--workflow` and `--since` (such as `7d`) filter the list. [`jr2 workflows`](../reference/cli.md#workflows) lists the
+Workflows that a run can start. To read the state and the context of a run, use `jr2 status <run id>`. A run with a
+[Workspace](../reference/glossary.md#workspace) that waits for capacity also has `placing`: the path of each such
+Workspace in the run. `jr2 status` tells why it waits. A run that a `dispatch` [Effect](../reference/glossary.md#effect)
+started has `dispatchedBy`: the run that started it, the slot of the Effect, the id of the Effect (`effect`), and its
+`depth` in the chain. [Start a run from a run](start-a-run-from-a-run.md) shows it.
+
+## List the runs that ended
+
+Give `--status ended` to list the runs that ended. Give `--workflow` and `--since` to make the list shorter. `--since`
+takes a duration, such as `2h` or `7d`, or an ISO-8601 time:
+
+```sh
+jr2 runs --status ended --workflow release --since 7d
+```
+
+<!-- output: not run -->
+
+```text
+→ context <context> / namespace <namespace>
+[{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","status":"failed","reason":"The changelog is not ready.","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-10-24T06:02:41.508Z","endedAt":"2026-10-24T06:04:12.930Z","assembly":"28c844453c20","openGates":0}]
+```
+
+An ended run has `endedAt`. `reason` tells why a run is `failed`, `error`, `lost` or `drifted`. `--status` also takes a
+comma list of statuses, such as `--status failed,error`. jr2 keeps an ended run for
+[`runs.retain`](../reference/config.md#runs), 30 days by default. `jr2 runs` reads every page of the list.
+[`GET /runs`](../reference/http-api.md#get-runs) gives the list one page at a time, with a `cursor`.
 
 ## Read the status of a run
 
@@ -94,7 +113,7 @@ The status is a [`RunStatus`](../reference/http-api.md#type-runstatus), with the
 | `fault`     | The error, when the status is `error`.                                                                                                                        |
 | `output`    | The output of the Machine, when the run ended. For `failed`, the Failure: `{ reason, detail? }`.                                                              |
 | `reason`    | Why jr2 set the status, when the Machine did not set it, such as `drifted`.                                                                                   |
-| `assembly`  | The hash of the [Assembly](../reference/glossary.md#assembly) that the run started under, and holds.                                                          |
+| `assembly`  | The hash of the Assembly that the run started under, and holds.                                                                                               |
 | `gates`     | Each open Gate. [Answer a Gate](answer-a-gate.md) explains its fields.                                                                                        |
 | `worktrees` | Each [Worktree](../reference/glossary.md#worktree) that the run cut: its `slot`, its `path`, and its `branch`, which is `null` when the Worktree is detached. |
 
@@ -115,34 +134,49 @@ and the [Repos](../reference/glossary.md#repo) of the Instance.
 
 ## Follow a run
 
-Run [`jr2 logs`](../reference/cli.md#logs) with `-f`. It prints the status now, then each change, until the run ends:
+Run [`jr2 watch`](../reference/cli.md#watch). It prints the state now, then each change, until the run ends. It prints
+the lines that `jr2 run` prints while it is attached:
 
 ```sh
-jr2 logs -f a2d8
+jr2 watch a2d8
 ```
 
-While `jr2 logs -f` runs, send `approve` to the Gate in a second terminal:
+While `jr2 watch` runs, send `approve` to the Gate in a second terminal:
 
 ```sh
 jr2 send a2d8 --gate review --event approve
 ```
 
-The run ends. `jr2 logs -f` prints the status when it attached, then the last status, and stops:
+The run ends. `jr2 watch` prints the state when it attached, then the last status, and stops:
 
 <!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}
+run a2d8b5b5-645c-44d2-8175-a949493e2320 (release) — attached
+  → active "review"
+  → done "released"
+```
+
+When the run ended before you attach, `jr2 watch` prints only its last status. With `--json`, it prints each status as
+one JSON line:
+
+```sh
+jr2 watch a2d8 --json
+```
+
+<!-- output: not run -->
+
+```text
+→ context <context> / namespace <namespace>
 {"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"answers":[{"gate":"review","type":"approve","at":"2026-11-03T10:44:18.237Z","answeredBy":{"via":"token","name":"instance","onBehalfOf":"kubernetes-admin"}}],"assembly":"28c844453c20"}
 ```
 
-When the run ended before you attach, `jr2 logs -f` prints only its last status. Without `-f`, `jr2 logs` prints the
-status now, and stops. `jr2 logs` exits with `0` when it reads the run, also when the run ended with the status `error`.
-Read `status` in the last line.
+After the last status of a run that failed, `jr2 watch` prints `failed: <reason>`, as `jr2 run` does. `jr2 watch` exits
+with `0` when it reads the run, also when the run ended with the status `error`. Read `status` in the last status.
 
-`jr2 logs` prints each status as one JSON line on stdout. It prints the other activity of the run on stderr, one line
-for each item of activity:
+Without `--json`, `jr2 watch` prints each line on stdout. With `--json`, it prints each status as one JSON line on
+stdout, and the other activity of the run on stderr, one line for each item of activity:
 
 | Line                                                                      | What happened                                                                                                                   |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -178,6 +212,8 @@ and `read` scopes for the Workflow ([Open the Console](open-the-console.md) give
   [Failure](../reference/glossary.md#failure): `failed: <reason>`, as `jr2 status` shows it. With no token, the rail
   shows only the status `failed`, in orange.
 - For the run that you selected, the Console shows who started it, such as `started by token/ci`.
+- The Fleet rail lists the ended runs of the Workflow under its live runs. The bottom drawer shows the conversation of
+  each Agent slot of the run that you selected ([Open the Console](open-the-console.md#read-a-conversation)).
 
 ## Watch from a program
 
@@ -229,8 +265,23 @@ feed also sends a comment line, `:`, at intervals, to keep the connection open.
 
 ## Read an Agent's conversation
 
-The [Harness](../reference/glossary.md#harness) that runs an Agent's Turn prints the conversation to the log of its
-container, `harness`. Read it with `kubectl logs`. Add `-f` to follow it.
+Run [`jr2 logs`](../reference/cli.md#logs) with the run id. It prints the conversation of each Agent of the run, in the
+order of the time of each entry. Give an Agent slot or the name of an Agent to print only that Agent. Add `-f` to follow
+the conversations while the run continues:
+
+```sh
+jr2 logs <run id> coder -f
+```
+
+The Orchestrator keeps each conversation for as long as it keeps the run, so `jr2 logs` also reads a run that ended.
+[Read a conversation](read-a-conversation.md) tells what each line shows, how long jr2 keeps a conversation, and how the
+Console shows it.
+
+## Read the pod log
+
+The [Harness](../reference/glossary.md#harness) that runs an Agent's Turn also prints the conversation to the log of its
+container, `harness`. The lines have the form that `jr2 logs` prints. Read them with `kubectl logs`. Add `-f` to follow
+them. A cluster that sends its pod logs to a log store keeps them there for as long as that store keeps them.
 
 For a [Menu](../reference/glossary.md#menu)-only Agent, an Agent with `workspace: "none"`, read the log of the
 [Instance Harness](../reference/glossary.md#instance-harness):
@@ -240,97 +291,44 @@ kubectl -n <namespace> logs -f statefulset/jr2-instance-harness -c harness
 ```
 
 The Instance Harness runs the Turns of all the Menu-only Agents of the Instance. Thus its log can hold the lines of more
-than one run. Each line of a conversation holds its Instance ID, which starts with the run id. To read the lines of one
-run, keep the lines that hold `[<run id>/`:
+than one run. Each line of a conversation holds its [Instance ID](../reference/glossary.md#instance-id), which starts
+with the run id. To read the lines of one run, keep the lines that hold `[<run id>/`:
 
 ```sh
 kubectl -n <namespace> logs statefulset/jr2-instance-harness -c harness | grep -F '[<run id>/'
 ```
 
-For an Agent that works in a Workspace, read the log of its Sandbox. Find the Sandbox with the full run id, as
-[Look inside a Sandbox](look-inside-a-sandbox.md) shows. The pod has the name of the Sandbox:
+For an Agent that works in a Workspace, read the log of its Sandbox. Find the Sandbox with
+[`jr2 workspace ls`](../reference/cli.md#workspace-ls), as [Look inside a Sandbox](look-inside-a-sandbox.md) shows. The
+pod has the name of the Sandbox, in the `SANDBOX` column:
 
 ```sh
-kubectl -n <namespace> get sandboxes -l jr2.dev/run=<run id>
+jr2 workspace ls <run id>
 kubectl -n <namespace> logs -f <sandbox> -c harness
 ```
 
-For example, this is the log of a run of the `task` Workflow of
-[An Agent in a Sandbox](../get-started/an-agent-in-a-sandbox.md), with the prompt
-``In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.``:
+The log of a Sandbox also tells the story of its run, in lines that start with `[run]`. `jr2 logs` does not print these
+lines:
 
 ```text
 jr2 harness serving on :8080
 [run] [status] running · body: cutting
 [run] [status] running · body: working
 [coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Work in /work/target/task, on branch jr2/task-84f810c8-dda7-4577-a57e-4a09a4e7f507 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] <jr2-turn>
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Working directory: /work/target/task
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Allowed now: `mcp__jr2__finish`.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] </jr2-turn>
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [thinking] The user wants me to:
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 1. Run `node bin/greet.js` from the `docs/intro/repo` directory within the worktree
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 2. Report what it printed
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 3. Commit my work and call finish
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Let me first run the command.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [text]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [bash] cd /work/target/task && node docs/intro/repo/bin/greet.js
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [thinking] The command printed "hello, world". Now I need to finish with that information.
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [text]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
-[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [finish] {"summary":"Ran `node bin/greet.js` from docs/intro/repo. It printed: hello, world"}
+…
 [coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [finish answer] Delivered "finish" to the workflow (delivery 1b61fa16-50b7-4202-b7ed-b46a6ead5930). The workflow consumed it and moved on: your turn is over.
 [run] [status] running · body: review
 ```
 
-The thinking, the calls and the text are the words of the model, so your log is different. Your ids are different too.
-
-Each line of a conversation starts with the name of the Agent in brackets, then the
-[Instance ID](../reference/glossary.md#instance-id) of the conversation in brackets. The Instance ID starts with the run
-id. The first line of each message then has a label in brackets. The next lines of the same message have no label:
-
-| Line                                          | What it shows                                                                                                                                                                    |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[<agent>] [<iid>] [prompt] <text>`           | A message that the model reads: the prompt of the Turn, or a message that jr2 adds to the Turn.                                                                                  |
-| `[<agent>] [<iid>] [thinking] <text>`         | The thinking of the model.                                                                                                                                                       |
-| `[<agent>] [<iid>] [text] <text>`             | The text of the model.                                                                                                                                                           |
-| `[<agent>] [<iid>] [<call>] <input>`          | A call of a [Working tool](../reference/glossary.md#working-tools), or a pick from the Menu. `<input>` is a path for read, write and edit, the command for `bash`, or else JSON. |
-| `[<agent>] [<iid>] [<server>/<tool>] <input>` | A call of an [MCP tool](../reference/glossary.md#mcp-tools): the server's name in `jr2.config.ts`, then the tool. `<input>` is JSON. A pick never prints with a `/`.             |
-| `[<agent>] [<iid>] [<pick> answer] <text>`    | The answer that the model got for a pick from its Menu.                                                                                                                          |
-| `[<agent>] [<iid>] [<pick> error] <text>`     | An answer to a pick that the model reads as an error, such as a refusal.                                                                                                         |
-| `[<agent>] [<iid>] [compacted] <text>`        | The Harness made the context of the conversation smaller: `context <before> → ~<after> tokens (window <window>)`.                                                                |
-| `[<agent>] [<iid>] [thinking level] <text>`   | The model has no thinking level of the name that the Turn asked for, and the line names the level that the model ran at. The Harness prints it one time for each Turn.           |
-
-The log of a Sandbox also tells the story of its run, in lines that start with `[run]`. `[run] [status] <state>` gives
-the state of the run, then the state of each Machine that it invokes, separated by `·`, such as
-`running · body: working`. When the run ends, the line gives its status. `[run] [emit] <type> <payload>` gives an Emit.
-A Turn that runs in a different Harness shows only as `[<agent>] [admitted] <prompt>` and
+`[run] [status] <state>` gives the state of the run, then the state of each Machine that it invokes, separated by `·`,
+such as `running · body: working`. When the run ends, the line gives its status. `[run] [emit] <type> <payload>` gives
+an Emit. A Turn that runs in a different Harness shows only as `[<agent>] [admitted] <prompt>` and
 `[<agent>] [pick] <pick> <input>`. `<input>` is the JSON of the input of the pick, and it is absent for a pick with no
 input. The lines of the story of the run have no Instance ID.
 
-The Harness does not print the result of a Working tool or of an MCP tool. For example, it does not print the text of a
-file that the Agent read, or the output of a command that the Agent ran.
-
-The Harness cuts an input that is longer than 2000 characters at its end, and marks the cut with `…`. It cuts a long
-answer to a pick in its middle, and marks the cut with `… [<n> characters cut] …`. The model reads the full text. The
-Harness cuts only the log.
-
 The log of a Sandbox goes away with its pod. The Workspace deletes its Sandbox when its body gets to its final state,
 and when a [Failure](../reference/glossary.md#failure) goes up through it. `jr2 send <run id> --event CANCEL` without
-`--keep` also deletes it. To keep the log, save it before then:
-
-```sh
-kubectl -n <namespace> logs <sandbox> -c harness > <file>
-```
+`--keep` also deletes it. `jr2 logs` still reads the conversations after that.
 
 ::: warning
 
@@ -355,11 +353,13 @@ cluster, decide who can read the pod logs.
 ## Read next
 
 - [Durable runs](../concepts/durable-runs.md)
-- [ADR-0009](../reference/decisions/0009-cli-and-instance-interface.md): `jr2 runs`, `jr2 status`, `jr2 logs`, and run
-  id prefixes.
+- [ADR-0009](../reference/decisions/0009-cli-and-instance-interface.md): `jr2 runs`, `jr2 status`, `jr2 watch`,
+  `jr2 logs`, and run id prefixes.
 - [ADR-0014](../reference/decisions/0014-observation-is-open-run-state-is-not.md): what the Console and the feeds show
   without the token.
 - [ADR-0022](../reference/decisions/0022-observation-is-a-level-triggered-feed.md): the feeds.
-- [ADR-0023](../reference/decisions/0023-the-harness-prints-the-conversation.md): the conversation in the pod log.
+- [ADR-0023](../reference/decisions/0023-the-harness-prints-the-conversation.md): the conversation in the pod log, and
+  the copy that the Orchestrator keeps.
 - [Architecture](../concepts/architecture.md): the Harness and the Instance Harness.
+- [Read a conversation](read-a-conversation.md)
 - [Look inside a Sandbox](look-inside-a-sandbox.md)

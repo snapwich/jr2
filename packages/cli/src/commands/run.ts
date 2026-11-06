@@ -28,7 +28,7 @@ import type {
   PlacingMarker,
   PoolMarker,
 } from "@jr2/orchestrator/internal";
-import { JR2Client, JR2HttpError } from "../client.ts";
+import { JR2Client, JR2HttpError, type RunFeedEvent } from "../client.ts";
 import { failureActivity } from "./status.ts";
 import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
@@ -71,36 +71,8 @@ export async function run(args: string[], io: Io): Promise<number> {
 
     activity(io, `run ${runId} (${workflow}) — attached`);
     for await (const ev of client.events(runId)) {
-      if (ev.kind === "emit") {
-        activity(io, `  emit ${JSON.stringify(ev.event)}`);
-        continue;
-      }
-      if (ev.kind === "retry") {
-        activity(io, `  retry ${ev.child} attempt ${ev.attempt} (${ev.reason})`);
-        continue;
-      }
-      if (ev.kind === "placing" || ev.kind === "placed") {
-        activity(io, `  ${placingActivity(ev)}`);
-        continue;
-      }
-      if (ev.kind === "child-error") {
-        activity(io, `  ${childErrorActivity(ev)}`);
-        continue;
-      }
-      if (ev.kind === "looked") {
-        activity(io, `  ${lookedActivity(ev)}`);
-        continue;
-      }
-      if (ev.kind === "hook-refused") {
-        activity(io, `  ${hookRefusedActivity(ev)}`);
-        continue;
-      }
-      if (ev.kind === "pool") {
-        activity(io, `  ${poolActivity(ev)}`);
-        continue;
-      }
-      activity(io, `  → ${ev.status.status} ${JSON.stringify(ev.status.value)}`);
-      if (ev.status.status !== "active") {
+      activity(io, `  ${attachedLine(ev)}`);
+      if (ev.kind === "status" && ev.status.status !== "active") {
         const failed = failureActivity(ev.status);
         if (failed) activity(io, failed);
         result(io, ev.status);
@@ -110,13 +82,37 @@ export async function run(args: string[], io: Io): Promise<number> {
     // `events()` re-attaches until the run settles (ADR-0022), so reaching here means the run left
     // the live set without settling: stopped, parked for the next boot's restore (ADR-0025). Never
     // a success, and nothing on stdout to be mistaken for a result.
-    activity(
-      io,
-      `run ${runId} is parked: stopped before it settled — \`jr2 logs -f ${runId}\` follows it once restored`,
-    );
+    activity(io, `run ${runId} is parked: stopped before it settled — \`jr2 watch ${runId}\` follows it once restored`);
     return 1;
   } finally {
     target.close?.();
+  }
+}
+
+/**
+ * One event of a run's feed as the line `jr2 run` prints while it is attached, and `jr2 watch`
+ * prints (ADR-0009): an Emit, a retry, a wait for capacity, a child's error, a Gate's look, a
+ * Hook's refused delivery, a Pool's mark, or where the run stands.
+ */
+export function attachedLine(ev: RunFeedEvent): string {
+  switch (ev.kind) {
+    case "emit":
+      return `emit ${JSON.stringify(ev.event)}`;
+    case "retry":
+      return `retry ${ev.child} attempt ${ev.attempt} (${ev.reason})`;
+    case "placing":
+    case "placed":
+      return placingActivity(ev);
+    case "child-error":
+      return childErrorActivity(ev);
+    case "looked":
+      return lookedActivity(ev);
+    case "hook-refused":
+      return hookRefusedActivity(ev);
+    case "pool":
+      return poolActivity(ev);
+    case "status":
+      return `→ ${ev.status.status} ${JSON.stringify(ev.status.value)}`;
   }
 }
 

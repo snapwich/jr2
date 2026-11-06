@@ -91,9 +91,25 @@ button:hover {
   color: var(--phosphor);
 }
 
+/* The page under the nav: the work row above, the bottom drawer across the full width below. */
 main {
   flex: 1;
   display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The work row: the rail, then the Machine and the right drawer. */
+#work {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+#upper {
+  flex: 1;
+  display: flex;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -268,6 +284,199 @@ main {
 
 #held .held-head {
   font-family: var(--mono);
+}
+
+/* A run on an older Assembly (ADR-0069): the graph is the run's own Machine. */
+.notice-line {
+  color: var(--amber);
+  font-family: var(--mono);
+}
+.older-assembly {
+  font-size: 11px;
+  margin-right: 6px;
+}
+.run-reason {
+  flex-basis: 100%;
+  font-size: 11px;
+  white-space: normal;
+}
+.runs-head {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: default;
+}
+
+/* ---- The bottom drawer: the selected run's conversations (ADR-0023, ADR-0032) ---- */
+
+#bottom-drawer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+  background: var(--ink-2);
+  border-top: 1px solid var(--line);
+}
+/* A window made shorter after the height was set: the Machine keeps at least 160px. */
+#bottom-drawer.bottom--open {
+  max-height: max(120px, calc(100vh - 160px));
+}
+.bottom-resize {
+  touch-action: none; /* a drag on a touch screen moves the edge, not the page */
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 1;
+}
+.bottom-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.bottom-title {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 8px 0 4px;
+}
+.slot-tab {
+  font-size: 12px;
+  color: var(--text-dim);
+  border-color: transparent;
+  white-space: nowrap;
+}
+.slot-tab.tab--active {
+  color: var(--text);
+  border-color: var(--line);
+}
+.live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--phosphor);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.bottom-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  border-top: 1px solid var(--line-soft);
+}
+.conversation-pane {
+  flex: 1;
+  min-width: 0;
+  /* In a column (a narrow screen), the pane's own minimum would be the whole conversation: it
+     would spill out of the drawer, and push the Steering box off the screen. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#conversation {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px 16px;
+}
+.conversation-block + .conversation-block {
+  margin-top: 16px;
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+}
+.conversation-head {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.conv-text,
+.conv-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.conv-text {
+  margin: 6px 0;
+}
+#conversation details {
+  margin: 4px 0;
+}
+#conversation summary {
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-body {
+  margin: 4px 0 4px 16px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--line);
+}
+.conv-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.conv-thinking {
+  color: var(--text-dim);
+}
+.conv-steering .conv-label,
+.conv-steering .conv-body {
+  color: var(--blue);
+}
+.conv-notice .conv-label,
+.conv-notice .conv-body {
+  color: var(--amber);
+}
+.conv-call .conv-label {
+  color: var(--phosphor);
+}
+.conv-answer {
+  border-left-color: var(--phosphor);
+}
+.conv-refused .conv-label,
+.conv-refused .conv-answer {
+  color: var(--red);
+  border-left-color: var(--red);
+}
+.conv-mark {
+  margin: 6px 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.conv-cut,
+.conv-swept {
+  color: var(--orange);
+}
+.steering-box {
+  width: 300px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.steering-box textarea {
+  flex: 1;
+  min-height: 60px;
+}
+/* A narrow screen: the Steering box goes under the conversation, not beside it. */
+@media (max-width: 720px) {
+  .bottom-body {
+    flex-direction: column;
+  }
+  .steering-box {
+    width: auto;
+    border-left: 0;
+    border-top: 1px solid var(--line-soft);
+  }
 }
 
 /* ---- Machine (SVG) ---- */
@@ -632,6 +841,7 @@ ul {
   display: flex;
   gap: 8px;
   align-items: baseline;
+  flex-wrap: wrap;
 }
 .wf-runs li:hover {
   border-color: var(--line);

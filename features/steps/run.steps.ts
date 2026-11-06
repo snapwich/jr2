@@ -28,6 +28,12 @@ When("I list the runs", async function (this: E2EWorld): Promise<void> {
   await this.runCli(["runs"]);
 });
 
+/** `jr2 runs` with its filters (ADR-0009), split on spaces: `--status ended --workflow ping`. */
+When("I list the runs with {string}", async function (this: E2EWorld, flags: string): Promise<void> {
+  const r = await this.runCli(["runs", ...flags.split(" ")]);
+  assert.equal(r.code, 0, `jr2 runs ${flags} failed: ${r.stderr}`);
+});
+
 When("I check the status of that run", async function (this: E2EWorld): Promise<void> {
   assert.ok(this.runId, "a runId was carried from a prior step");
   await this.runCli(["status", this.runId]);
@@ -52,22 +58,22 @@ When("I start {string} with input {string}", async function (this: E2EWorld, wf:
   await this.runCli(["run", wf, "--detach", "--input", input]);
 });
 
-/** `jr2 logs <runId>` with no `-f`: the feed replays the run's current status on attach, and the
- * verb prints that and stops — on a settled run, its terminal status, once. */
-When("I read the logs of that run", async function (this: E2EWorld): Promise<void> {
+/** `jr2 watch <runId> --json`: the feed replays the run's current status on attach, and the verb
+ * follows it to the end — on a settled run, it prints its terminal status, once. */
+When("I watch that run", async function (this: E2EWorld): Promise<void> {
   assert.ok(this.runId, "a runId was carried from a prior step");
-  await this.runCli(["logs", this.runId]);
+  await this.runCli(["watch", this.runId, "--json"]);
 });
 
 /**
- * `jr2 logs -f` on a LIVE run, ended from outside: the follow is started and left running, the run
+ * `jr2 watch` on a LIVE run, ended from outside: the follow is started and left running, the run
  * is cancelled by a second invocation, and the follow must then print the settled status and
  * exit on its own. The two invocations overlap on purpose — that is what "follows until it
  * settles" means — and `last` is the follow's, assigned after both are done.
  */
-When("I follow the logs of that run while it is cancelled", async function (this: E2EWorld): Promise<void> {
+When("I watch that run while it is cancelled", async function (this: E2EWorld): Promise<void> {
   assert.ok(this.runId, "a runId was carried from a prior step");
-  const following = this.runCli(["logs", this.runId, "-f"]);
+  const following = this.runCli(["watch", this.runId, "--json"]);
   // Let the follow attach before the run ends, so what it sees is a delta and not only a replay;
   // either way the assertion holds, since a settled run streams its final status once.
   await sleep(500);
@@ -132,6 +138,18 @@ Then("the run appears in the runs list", function (this: E2EWorld): void {
     list.some((r) => r.runId === this.runId),
     "the live run is listed",
   );
+});
+
+Then("the run appears in the runs list with status {string}", function (this: E2EWorld, status: string): void {
+  const list = this.resultJson<Array<{ runId: string; status: string }>>();
+  const found = list.find((r) => r.runId === this.runId);
+  assert.ok(found, `the run is listed: ${JSON.stringify(list)}`);
+  assert.equal(found.status, status);
+});
+
+Then("the run does not appear in the runs list", function (this: E2EWorld): void {
+  const list = this.resultJson<Array<{ runId: string }>>();
+  assert.ok(!list.some((r) => r.runId === this.runId), `the run is not listed: ${JSON.stringify(list)}`);
 });
 
 /** A deployed Orchestrator always wires its data plane (ADR-0069); a host-booted one has none, and

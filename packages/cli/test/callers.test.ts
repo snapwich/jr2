@@ -105,10 +105,10 @@ test("the client sends jr2-on-behalf-of beside the bearer, and never without one
   const seen: Array<Record<string, string>> = [];
   const fetch = async (_url: string, init?: RequestInit) => {
     seen.push(Object.fromEntries(new Headers(init?.headers).entries()));
-    return Response.json([]);
+    return Response.json({ runs: [] });
   };
-  await new JR2Client("http://o", fetch, "tok", "alice").list();
-  await new JR2Client("http://o", fetch, undefined, "alice").list();
+  await new JR2Client("http://o", fetch, "tok", "alice").runs();
+  await new JR2Client("http://o", fetch, undefined, "alice").runs();
   assert.equal(seen[0]!["jr2-on-behalf-of"], "alice");
   assert.equal(seen[0]!.authorization, "Bearer tok");
   assert.equal(seen[1]!["jr2-on-behalf-of"], undefined);

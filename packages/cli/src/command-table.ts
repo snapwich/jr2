@@ -40,8 +40,8 @@ export type Arg = { readonly name: string; readonly optional?: boolean; readonly
 /** One env var the verb reads. */
 export type EnvVar = { readonly name: string; readonly description: string };
 
-/** The ADR-0009 output classes: one JSON result on stdout, a report table on stdout, activity
- * alone, or one value alone on stdout (a credential, for `$(…)`). */
+/** The ADR-0009 output classes: one JSON result on stdout, a report (a table or lines) on stdout,
+ * activity alone, or one value alone on stdout (a credential, for `$(…)`). */
 export type OutputKind = "result" | "report" | "activity" | "value";
 
 /** What a verb prints. `form` names the spelling that prints it, when that is not the whole verb. */
@@ -295,17 +295,61 @@ const TABLE = [
     verb: "runs",
     args: [],
     flags: [
-      { name: "workflows", description: "print the Workflow listing as the JSON result instead" },
+      {
+        name: "status",
+        value: "s",
+        description: "live (the default), ended, all, or a comma list such as done,failed,drifted",
+      },
+      { name: "workflow", value: "name", description: "only the runs of this Workflow" },
+      {
+        name: "since",
+        value: "when",
+        description: "only the runs that started since: a duration (2h, 7d) or an ISO-8601 time",
+      },
       ...TARGET_FLAGS,
     ],
     env: TARGET_ENV,
-    summary: 'list live runs; "placing" names the Workspaces that wait for capacity, and "status <runId>" says why',
+    summary:
+      'list runs, newest first (live by default); "placing" names the Workspaces that wait for capacity, and "status <runId>" says why',
     lines: [
-      "the Workflows a run can start on stderr, each with its origin (machine, chart file, chart) and a Chart wrapper's Charts under it; --workflows prints that listing as the result",
-      "a runtime Chart has no verb: PUT or DELETE /workflows/<wrapper>/charts/<name> with the Instance token (an MCP or curl), then `jr2 run <wrapper>/<name>` starts it",
+      "each run is a summary: runId, workflow, status, reason, startedBy, startedAt, endedAt, assembly, openGates; an ended run is listed while jr2 keeps it (runs.retain)",
+      "`jr2 workflows` lists the Workflows that a run can start",
     ],
     output: RESULT,
-    adrs: ["0009", "0064", "0070"],
+    adrs: ["0009", "0030", "0064", "0065"],
+  },
+  {
+    verb: "workflows",
+    args: [],
+    flags: [
+      { name: "json", description: "print the listing (GET /workflows) as the one report object instead of the tree" },
+      ...TARGET_FLAGS,
+    ],
+    env: TARGET_ENV,
+    summary: "list the Workflows that a run can start, each with its origin: machine, chart file or chart",
+    lines: [
+      "a Chart wrapper's named Charts indent under it; an unrunnable one says why",
+      "a runtime Chart has no verb: PUT or DELETE /workflows/<wrapper>/charts/<name> with the Instance token (an MCP or curl), then `jr2 run <wrapper>/<name>` starts it",
+    ],
+    output: [{ kind: "report" }],
+    adrs: ["0009", "0070"],
+  },
+  {
+    verb: "gates",
+    args: [],
+    flags: [
+      { name: "workflow", value: "name", description: "only the Gates of this Workflow's runs" },
+      ...TARGET_FLAGS,
+    ],
+    env: TARGET_ENV,
+    summary: "list the open Gates that this Caller may answer, across the live runs, oldest first",
+    lines: [
+      "each Gate is an entry: runId, workflow, gate, path, accepts, acceptsNow, meta, openedAt, and hook (the Hook kinds that it hears); never a run's context",
+      "needs the answer scope; a scope that names single Gates ({ workflow, gates }) lists only those Gates",
+      "`jr2 send <runId> --gate <gate> --event <name>` answers one",
+    ],
+    output: RESULT,
+    adrs: ["0009", "0011", "0078"],
   },
   {
     verb: "status",
@@ -321,14 +365,44 @@ const TABLE = [
     adrs: ["0048", "0051", "0073"],
   },
   {
-    verb: "logs",
+    verb: "watch",
     args: [RUN_ID],
-    flags: [{ name: "follow", short: "f", description: "follow until the run settles" }, ...TARGET_FLAGS],
+    flags: [
+      { name: "json", description: "print each status as one JSON line, and the other events on stderr" },
+      ...TARGET_FLAGS,
+    ],
     env: TARGET_ENV,
-    summary: "replay a run's status; -f to follow until it settles",
-    lines: [],
-    output: RESULT,
-    adrs: ["0009"],
+    summary: "follow a run's feed to its end, with the lines that `jr2 run` prints while it is attached",
+    lines: ["on attach it prints where the run is now; an ended run prints its last status once"],
+    output: [{ kind: "report" }],
+    adrs: ["0009", "0022"],
+  },
+  {
+    verb: "logs",
+    args: [
+      RUN_ID,
+      {
+        name: "agent",
+        optional: true,
+        description: "one Agent slot, as `jr2 steer <runId>` lists it, or an Agent name (default: every Agent)",
+      },
+    ],
+    flags: [
+      {
+        name: "follow",
+        short: "f",
+        description: "print each new entry as it is kept, until the run is not live and no conversation is open",
+      },
+      ...TARGET_FLAGS,
+    ],
+    env: TARGET_ENV,
+    summary: "print a run's conversations as the Harness prints them, every Agent interleaved by time, or one Agent",
+    lines: [
+      "each line is `[<agent>] [<instance id>] [<label>] <text>`; Menu-only Agents too; a Working tool's result is never in it",
+      "reads what the Orchestrator keeps of each conversation, so it works after the Sandbox is gone, while jr2 keeps the run (runs.retain); pod logs stay `kubectl logs`",
+    ],
+    output: [{ kind: "report" }],
+    adrs: ["0009", "0023", "0065"],
   },
   {
     verb: "send",
@@ -406,7 +480,8 @@ const TABLE = [
       ...TARGET_FLAGS,
     ],
     env: TARGET_ENV,
-    summary: "print a Hook's log: each delivery of the last week, newest first, and what the door did with it",
+    summary:
+      "print a Hook's log: each delivery that jr2 keeps (runs.retain), newest first, and what the door did with it",
     lines: [
       "a line is a handshake, a delivery and its outcome, a repeat (seen), a payload that the parse refused (with zod's issues), a request that the kind could not read, or a follow-up post that failed",
       "needs the Instance token: no scope opens it",
@@ -438,6 +513,98 @@ const TABLE = [
     ],
     output: ACTIVITY,
     adrs: ["0078"],
+  },
+  {
+    verb: "workspace",
+    sub: "ls",
+    args: [{ name: "run", optional: true, description: "only the Workspaces of this run, or of a prefix of its id" }],
+    flags: [JSON_REPORT, NAMESPACE_FLAG, CONTEXT_FLAG],
+    env: [],
+    summary: "list the Workspaces: handle, Sandbox name, Workflow, phase, age, and whether a run holds it",
+    lines: [
+      "reads the Sandbox CRs over the kube API, with no Orchestrator: kube RBAC is the gate",
+      "a handle is <run-prefix>/<workspace path>, or the Sandbox's name",
+      "held: the run's Lease marked it (a live run, or one that an Orchestrator crash left); released: its run is over; idle: no Lease renewed it for the idle timeout",
+    ],
+    output: [{ kind: "report" }],
+    adrs: ["0009", "0012", "0021"],
+  },
+  {
+    verb: "workspace",
+    sub: "shell",
+    args: [
+      { name: "ws", description: "the Workspace: <run-prefix>/<path>, or its Sandbox's name" },
+      { name: "-- cmd", optional: true, description: "one command to run in place of a shell" },
+    ],
+    flags: [
+      {
+        name: "user",
+        description: "a shell in the User Container (`kubectl exec -c user`), which needs a shell in its image",
+      },
+      NAMESPACE_FLAG,
+      CONTEXT_FLAG,
+    ],
+    env: [],
+    summary:
+      "a shell in the Workspace as its Agents work: started by the Harness's spawner in the Agents' Landlock domain, with the Workspace's granted Stand-ins and its folder",
+    lines: [
+      "it never reaches the control Stand-in or a Stand-in that the Workspace does not grant",
+      "`jr2 workspace shell <ws> -- git status` runs one command, with no terminal: a Ctrl-C ends jr2, and the command gets the end of its input but no signal, so a command that does not end at the end of its input (a dev server) can run on",
+    ],
+    output: ACTIVITY,
+    adrs: ["0009", "0076"],
+  },
+  {
+    verb: "workspace",
+    sub: "forward",
+    args: [
+      { name: "ws", description: "the Workspace: <run-prefix>/<path>, its Sandbox's name, or <name>.jr2" },
+      { name: "port", description: "the port in the Sandbox pod" },
+    ],
+    flags: [
+      {
+        name: "stdio",
+        description: "carry one connection on stdin and stdout, for an ssh ProxyCommand",
+      },
+      NAMESPACE_FLAG,
+      CONTEXT_FLAG,
+    ],
+    env: [],
+    summary: "forward a local port to a port in the Workspace's pod; prints 127.0.0.1:<port> and holds it until Ctrl-C",
+    lines: [
+      "ssh: Host *.jr2 with ProxyCommand jr2 workspace forward %h 22 --stdio -n <ns>, then ssh <sandbox name>.jr2",
+      "there is no Service for the User Container: the forward goes through the kube API",
+    ],
+    output: [{ kind: "value" }],
+    adrs: ["0005", "0009"],
+  },
+  {
+    verb: "workspace",
+    sub: "rm",
+    args: [{ name: "ws", description: "the Workspace: <run-prefix>/<path>, or its Sandbox's name" }],
+    flags: [NAMESPACE_FLAG, CONTEXT_FLAG],
+    env: [],
+    summary: "remove a Sandbox that no run holds: released, or idle past its idle timeout",
+    lines: [
+      "refuses the Sandbox of a live run: cancel the run first; there is no --force",
+      "the keepalive's age is read on the API server's clock",
+    ],
+    output: ACTIVITY,
+    adrs: ["0009", "0021"],
+  },
+  {
+    verb: "completion",
+    args: [{ name: "shell", description: "bash, zsh or fish" }],
+    flags: [],
+    env: [],
+    summary: "print the shell completion script",
+    lines: [
+      "the script asks this jr2 for each completion, so the verbs and flags are the command table's",
+      "it completes Workspace handles, live run ids, Workflow names and a run's Agent slots too; a lookup that takes more than 2 s offers nothing",
+      "bash: source <(jr2 completion bash); zsh: source <(jr2 completion zsh); fish: jr2 completion fish | source",
+    ],
+    output: [{ kind: "value" }],
+    adrs: ["0009"],
   },
 ] as const satisfies readonly Command[];
 
@@ -484,8 +651,8 @@ export const SECTIONS: readonly Section[] = [
     title: "output",
     text:
       `result verbs (${printing("result").join(", ")}) print one JSON result on stdout and activity on stderr, ` +
-      `so \`jr2 run … | jq\` yields the result; report verbs (${printing("report").join(", ")}) print a table on ` +
-      `stdout, or the one object with --json; activity verbs (${printing("activity").join(", ")}) print activity alone; ` +
+      `so \`jr2 run … | jq\` yields the result; report verbs (${printing("report").join(", ")}) print a table or lines on ` +
+      `stdout, or their JSON with --json (watch: one JSON line for each status; logs has no --json); activity verbs (${printing("activity").join(", ")}) print activity alone; ` +
       `value verbs (${printing("value").join(", ")}) print one value alone on stdout, for \`$(…)\`, and activity on stderr`,
   },
 ];

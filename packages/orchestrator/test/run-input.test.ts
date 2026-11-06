@@ -62,6 +62,7 @@ const parkedSandbox = (): SandboxPort => ({
   harnessRestarts: () => () => {},
   attach: () => new Promise(() => {}),
   renew: async () => {},
+  releaseHold: async () => {},
   continuity: () => () => {},
   memoryFault: async () => undefined,
   destroy: async () => {},

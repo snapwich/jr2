@@ -60,6 +60,8 @@ import {
   REPO_CACHE_HOSTPATH,
   SERVICE_ACCOUNT_CA,
   STATE_PVC,
+  STATE_VOLUME_DEFAULT,
+  memoryBytes,
   type EffectorPlan,
   type SandboxEffectorPlan,
   effectorManifestKey,
@@ -433,10 +435,58 @@ export type HeldObjects = {
 /** Does any pod hold a secret? */
 export const holdsAny = (held: HeldObjects): boolean => held.pods.some((p) => p.manifest.secrets.length > 0);
 
+/** What `jr2 up` does with the state volume claim (ADR-0065): the size to apply and the one line
+ * that says what changed, or the refusal's text. */
+export type StateVolumePlan = { size: string; line?: string } | { refused: string };
+
+/**
+ * The size of the Orchestrator's state volume claim (ADR-0065). `configured` is `runs.volume`;
+ * `claim` the claim that exists, with its StorageClass and whether the class allows expansion
+ * (`undefined` when `jr2 up` did not read it). A new claim takes `runs.volume` or the default. A
+ * claim that exists keeps its size when the config sets none, grows when the config sets a larger
+ * size on a class that expands, and refuses a smaller size, or a larger one on a class that does
+ * not expand: Kubernetes never makes a claim smaller, and grows it only where the class allows.
+ */
+export function stateVolumePlan(
+  configured: string | undefined,
+  claim?: { size: string; storageClass?: string; expandable?: boolean },
+): StateVolumePlan {
+  if (!claim) return { size: configured ?? STATE_VOLUME_DEFAULT };
+  if (configured === undefined) {
+    if (memoryBytes(claim.size) === memoryBytes(STATE_VOLUME_DEFAULT)) return { size: claim.size };
+    return {
+      size: claim.size,
+      line: `state volume: keeping the claim ${STATE_PVC} at ${claim.size} — runs.volume is not set, and the default ${STATE_VOLUME_DEFAULT} is for a new claim`,
+    };
+  }
+  const want = memoryBytes(configured);
+  const have = memoryBytes(claim.size);
+  if (want === have) return { size: claim.size };
+  if (want < have) {
+    return {
+      refused:
+        `runs.volume is ${configured}, smaller than the state volume claim ${STATE_PVC} (${claim.size}) — Kubernetes never ` +
+        `makes a claim smaller. Set runs.volume to ${claim.size} or more (ADR-0065)`,
+    };
+  }
+  const named = claim.storageClass ? `StorageClass "${claim.storageClass}"` : "claim's StorageClass";
+  if (claim.expandable !== true) {
+    return {
+      refused:
+        `runs.volume is ${configured}, larger than the state volume claim ${STATE_PVC} (${claim.size}), and its ${named} ` +
+        `does not allow expansion (allowVolumeExpansion is not true). Keep runs.volume at ${claim.size}, or use a ` +
+        `StorageClass that allows expansion (ADR-0065)`,
+    };
+  }
+  return { size: configured, line: `state volume: growing the claim ${STATE_PVC} from ${claim.size} to ${configured}` };
+}
+
 /** Everything `jr2 up` converges inside the instance's namespace, as one apply-able List. */
 export function instanceObjects(opts: {
   name: string;
   namespace: string;
+  /** The size of the state volume claim (`stateVolumePlan`, ADR-0065). Default: `5Gi`. */
+  stateVolume?: string;
   /** The Orchestrator Kit image's ref (ADR-0069). The Deployment carries no content hash: the
    * Assembly's hash is an Orchestrator fact, read from `GET /assembly`. */
   image: string;
@@ -499,7 +549,7 @@ export function instanceObjects(opts: {
       metadata: meta(STATE_PVC),
       spec: {
         accessModes: ["ReadWriteOnce"],
-        resources: { requests: { storage: "1Gi" } },
+        resources: { requests: { storage: opts.stateVolume ?? STATE_VOLUME_DEFAULT } },
       },
     },
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(ORCHESTRATOR_SA) },
@@ -696,6 +746,9 @@ export function instanceObjects(opts: {
                   // built-in `fetch`, which trusts the ServiceAccount's CA through this and nothing
                   // else — no TLS code, no dependency.
                   { name: "NODE_EXTRA_CA_CERTS", value: SERVICE_ACCOUNT_CA },
+                  // The claim's size as this converge applied it (ADR-0065): the space guard
+                  // measures against it, because a hostPath class's `statfs` gives the node's disk.
+                  { name: "JR2_STATE_VOLUME", value: opts.stateVolume ?? STATE_VOLUME_DEFAULT },
                 ],
                 // The Orchestrator creates Repo resources and never clones (ADR-0051) — the cache
                 // agent on each node does, reading the credential Secret a Repo's `secretRef`

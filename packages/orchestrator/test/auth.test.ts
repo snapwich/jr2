@@ -215,9 +215,9 @@ test("observation is open, and carries no context — the Console's whole diet",
   assert.equal(feed.status, 200, "no token needed to watch a workflow either");
   await feed.body!.cancel();
 
-  // ...and the guarded listing still says everything, to the Instance token alone.
-  const [full] = (await (await app.request("/runs", get(INSTANCE_TOKEN))).json()) as Array<Record<string, unknown>>;
-  assert.ok(full && "context" in full, "the Instance token's view is unchanged");
+  // ...and the guarded read still says everything, to the Instance token alone.
+  const full = (await (await app.request(`/runs/${runId}`, get(INSTANCE_TOKEN))).json()) as Record<string, unknown>;
+  assert.ok("context" in full, "the Instance token's view is unchanged");
 });
 
 test("no Agent token delivers to a gate — an Agent does not approve its own review", async () => {

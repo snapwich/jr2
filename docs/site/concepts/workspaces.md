@@ -184,10 +184,10 @@ A Sandbox pod has two containers, and two more when the Machine needs them:
 ### The Sandbox Image
 
 The [Sandbox Image](../reference/glossary.md#sandbox-image) is the image of the Harness container. It holds the tools
-that an Agent's Working tools can use, and the shell that you get when you run `kubectl exec` into the pod. The image is
-yours. Its floor is glibc, git and a writable `HOME`. [Add tools to the Sandbox](../guides/add-tools-to-the-sandbox.md)
-gives the full list. jr2 adds nothing to the image. It mounts its own runtime into the pod at `/opt/jr2`, and starts the
-Harness from there. Thus the `ENTRYPOINT` and the `CMD` of the image do not run.
+that an Agent's Working tools can use, and the shell that you get with `jr2 workspace shell`. The image is yours. Its
+floor is glibc, git and a writable `HOME`. [Add tools to the Sandbox](../guides/add-tools-to-the-sandbox.md) gives the
+full list. jr2 adds nothing to the image. It mounts its own runtime into the pod at `/opt/jr2`, and starts the Harness
+from there. Thus the `ENTRYPOINT` and the `CMD` of the image do not run.
 
 `image` names it in one of two forms:
 

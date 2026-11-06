@@ -37,6 +37,8 @@ class FakeSandbox implements SandboxPort {
   provisioned = new Map<string, { runId: string; workflow: string }>();
   /** The Assembly each place request named (ADR-0069). */
   assemblies: Array<string | undefined> = [];
+  /** The Workspace path each place request named (ADR-0012): the label and the annotation. */
+  paths: string[] = [];
   /** Who is listening to the watch, per Sandbox name (ADR-0063). */
   private listeners = new Map<string, Set<(seen: Continuity) => void>>();
   private _present = true;
@@ -128,6 +130,7 @@ class FakeSandbox implements SandboxPort {
     this.repos.push(req.repos);
     this.routes.push(req.route);
     this.assemblies.push(req.assembly);
+    this.paths.push(req.path);
     this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
     if (!this.holdPlacing) return;
     await new Promise<void>((resolve, reject) => {
@@ -154,6 +157,11 @@ class FakeSandbox implements SandboxPort {
   async renew(name: string): Promise<void> {
     this.calls.push(`renew:${name}`);
     if (this.failRenew) throw new Error("the API server is having a day");
+  }
+  /** The Sandboxes the Lease marked `released` (ADR-0021), in order. */
+  released: string[] = [];
+  async releaseHold(name: string): Promise<void> {
+    this.released.push(name);
   }
   continuity(name: string, listener: (seen: Continuity) => void): () => void {
     let set = this.listeners.get(name);
@@ -1588,6 +1596,181 @@ test("cancel with keep destroys nothing: the Sandboxes age out at the idle timeo
   const settled = renews(sandbox);
   await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
   assert.equal(renews(sandbox), settled, "kept is not leased: nothing claims it");
+});
+
+test("the hold mark: a park writes nothing, a step of the wrapper writes nothing, a kept cancel releases (ADR-0021)", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const first = new RunHost({ store, sandbox });
+  first.register(twoDef());
+  const { runId } = await first.start("two");
+  await waitFor(() => first.gates(runId).length === 2);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sandbox.released, [], "placing → running is a step: each next state has its own Lease");
+
+  await first.stop(runId); // a park: the CR stays `held` for the restored run's Lease
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sandbox.released, []);
+
+  const second = new RunHost({ store, sandbox });
+  second.register(twoDef());
+  await second.restore();
+  await waitFor(() => second.gates(runId).length === 2);
+  await second.cancel(runId, { keep: true });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual([...sandbox.released].sort(), [...sandbox.provisioned.keys()].sort());
+});
+
+/** A body that a defect ends: its gate's answer runs an action that throws. */
+const defectBody = jr2Setup({
+  types: {} as { input: Workspaced<{}, never> },
+  events: [approveDef],
+}).createMachine({
+  id: "defect",
+  on: { "workspace.lost": ".lost" },
+  initial: "working",
+  states: {
+    lost: { type: "final" },
+    working: {
+      invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } },
+      on: {
+        approve: {
+          actions: () => {
+            throw new Error("a body defect");
+          },
+        },
+      },
+    },
+  },
+});
+
+/** A parent that keeps its run live after the Workspace: it waits at the gate `after`. `invoke` is
+ * the Workspace's invoke, beside the parent's own gate `leave`, whose answer leaves the state. */
+const liveParent = (child: AnyStateMachine, invoke: Record<string, unknown>) =>
+  jr2Setup({ actors: { child }, events: [approveDef] }).createMachine({
+    id: "live-parent",
+    initial: "running",
+    states: {
+      running: {
+        invoke: [
+          { id: "F-1", src: "child", ...invoke },
+          { src: "gate", input: { gate: "leave", accepts: ["approve"] } },
+        ],
+        on: { approve: "after" },
+      },
+      caught: { invoke: { src: "gate", input: { gate: "after", accepts: ["approve"] } } },
+      after: { invoke: { src: "gate", input: { gate: "after", accepts: ["approve"] } } },
+    },
+  });
+
+test("the hold mark: a body defect that ends the run releases its Sandbox, and leaves it (ADR-0021)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "defect", machine: workspace(defectBody, { repos: { app: APP } }), provide: () => ({}) });
+  const { runId } = await host.start("defect");
+  await waitFor(() => host.gates(runId).length === 1);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => sandbox.released.length === 1);
+  assert.deepEqual(sandbox.released, [...sandbox.provisioned.keys()]);
+  assert.deepEqual(destroyed(sandbox), [], "a fault leaves the Sandbox as evidence");
+});
+
+test("the hold mark: a body defect that the parent catches releases its Sandbox, and the renewals stop (ADR-0021)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const ws = workspace(defectBody, { repos: { app: APP } });
+  host.register({ name: "caught", machine: liveParent(ws, { onError: "caught" }), provide: () => ({}) });
+  const { runId } = await host.start("caught");
+  await waitFor(() => host.gates(runId).length === 2);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.gates(runId).some((g) => g.gate.endsWith("after")));
+  await waitFor(() => sandbox.released.length === 1);
+  assert.deepEqual(sandbox.released, [...sandbox.provisioned.keys()]);
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no Lease renews a Workspace that is over");
+  assert.equal(host.status(runId)?.status, "active", "the run lives on");
+});
+
+test("the hold mark: a parent that catches a body defect and invokes the same Machine again keeps the new Workspace `held` (ADR-0021)", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.leaseIntervalMs = 300; // the old Lease's next tick comes after the re-invoke
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  // The first body ends in a defect; the second works on. Neither holds a gate, because the errored
+  // wrapper's children are not stopped.
+  let attempt = 0;
+  const once = jr2Setup({
+    types: {} as { input: Workspaced<{}, never> },
+    actors: {
+      work: fromPromise(async ({ signal }) => {
+        if (++attempt === 1) throw new Error("a body defect");
+        await new Promise((r) => signal.addEventListener("abort", r));
+      }),
+    },
+  }).createMachine({
+    id: "once",
+    on: { "workspace.lost": ".lost" },
+    initial: "working",
+    states: { lost: { type: "final" }, working: { invoke: { src: "work" } } },
+  });
+  const ws = workspace(once, { repos: { app: APP } });
+  const retry = jr2Setup({ actors: { child: ws }, events: [approveDef] }).createMachine({
+    id: "retry-parent",
+    initial: "running",
+    states: {
+      running: { invoke: { id: "F-1", src: "child", onError: "waiting" } },
+      waiting: { invoke: { src: "gate", input: { gate: "again", accepts: ["approve"] } }, on: { approve: "running" } },
+    },
+  });
+  host.register({ name: "retry", machine: retry, provide: () => ({}) });
+  const { runId } = await host.start("retry");
+  // Each release records whether a live Workspace of the run held the name at that time.
+  const whileLive: boolean[] = [];
+  sandbox.releaseHold = async (name: string) => {
+    sandbox.released.push(name);
+    whileLive.push(JSON.stringify(host.status(runId)?.value) === '"running"');
+  };
+  await waitFor(() => host.gates(runId).some((g) => g.gate.endsWith("again")));
+  host.sendToGate(runId, "again", { type: "approve" });
+  await waitFor(() => sandbox.calls.filter((c) => c.startsWith("place:")).length === 2);
+  assert.equal(new Set(sandbox.provisioned.keys()).size, 1, "the re-invoke places the same Sandbox name");
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 3));
+  assert.equal(JSON.stringify(host.status(runId)?.value), '"running"');
+  assert.deepEqual(whileLive.filter(Boolean), [], "no Lease releases a Sandbox that a live Workspace holds");
+});
+
+test("the hold mark: a parent that leaves the Workspace's state releases its Sandbox (ADR-0021)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const ws = workspace(slotlessBody, { repos: { app: APP } });
+  host.register({ name: "leaves", machine: liveParent(ws, {}), provide: () => ({}) });
+  const { runId } = await host.start("leaves");
+  await waitFor(() => host.gates(runId).length === 2);
+  assert.deepEqual(sandbox.released, []);
+  host.sendToGate(runId, "leave", { type: "approve" });
+  await waitFor(() => sandbox.released.length === 1);
+  assert.deepEqual(sandbox.released, [...sandbox.provisioned.keys()]);
+  assert.equal(host.status(runId)?.status, "active");
+});
+
+test("a place request's path is the wrapper's actor path: the wsId at the root, the invoke ids below", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const ws = workspace(slotlessBody, { repos: { app: APP } });
+  host.register({ name: "nested", machine: liveParent(ws, {}), provide: () => ({}) });
+  const outer = jr2Setup({ actors: { inner: liveParent(ws, {}) } }).createMachine({
+    id: "outer",
+    invoke: { id: "outer", src: "inner" },
+  });
+  host.register({ name: "deeper", machine: outer, provide: () => ({}) });
+  host.register(wsDef());
+  for (const name of ["ws", "nested", "deeper"]) {
+    const { runId } = await host.start(name);
+    await waitFor(() => host.gates(runId).length >= 1);
+  }
+  assert.equal(sandbox.paths.length, 3);
+  assert.notEqual(sandbox.paths[0], "", "a root Workspace's path is its wsId");
+  assert.deepEqual(sandbox.paths.slice(1), ["F-1", "outer/F-1"]);
 });
 
 test("cancel shrugs off a delete that fails: the run is cancelled, the idle GC has the CR", async () => {

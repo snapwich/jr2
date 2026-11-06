@@ -18,11 +18,8 @@ The example is a kind for Stripe. Stripe signs `<t>.<raw body>` with the signing
 time `t` and the signature in the header `Stripe-Signature: t=<seconds>,v1=<hex>`. The type of the event is the event
 key, and the id of the event is the id of the delivery.
 
-Install `@jr2/hooks` in your [Instance](../reference/glossary.md#instance):
-
-```sh
-npm install @jr2/hooks
-```
+The interface of a kind is `@jr2/orchestrator/hooks`. It is part of `@jr2/orchestrator`, so your
+[Instance](../reference/glossary.md#instance) installs nothing more.
 
 ## Write the kind
 
@@ -84,16 +81,17 @@ look. A Source hears a kind in the same way ([Start a run for each alert](start-
 
 ## Put the kind in a package
 
-A kind in a package of its own uses the same interface. Its package has a peer dependency on `@jr2/hooks` `^1`, and its
-`jr2.config.ts` and its workflow modules import it as they import a local file. `jr2 up` bundles the kind into the
-[Assembly](../reference/glossary.md#assembly). jr2 finds no kind in a folder, and loads none while the Instance runs.
+A kind in a package of its own uses the same interface. Its package has a peer dependency on `@jr2/orchestrator` and
+states `api: 1`, and its `jr2.config.ts` and its workflow modules import it as they import a local file. `jr2 up`
+bundles the kind into the [Assembly](../reference/glossary.md#assembly). jr2 finds no kind in a folder, and loads none
+while the Instance runs.
 
 ## Rules
 
 - `defineHookKind()` refuses an `id` of another form:
   `a Hook kind's id is lowercase letters, digits and "-", and starts with a letter: <id>`
 - `defineHookKind()` refuses an `api` that it does not know:
-  `Hook kind <id> states api <api>; this @jr2/hooks knows api 1 only`
+  `Hook kind <id> states api <api>; this @jr2/orchestrator/hooks knows api 1 only`
 - `defineHookKind()` refuses an event key with no zod schema: `Hook kind <id>: the event key <key> has no zod schema`
 - `defineHookKind()` refuses a `verify` that is not one of the three:
   `Hook kind <id>: verify is one of mac, ed25519 or token`
@@ -124,7 +122,7 @@ A kind in a package of its own uses the same interface. Its package has a peer d
 - [Callers and Hooks](../concepts/callers-and-hooks.md)
 - [Answer a Gate from a forge](answer-a-gate-from-a-forge.md) and
   [Start a run for each alert](start-a-run-for-each-alert.md)
-- Reference: [`@jr2/hooks`](../reference/hooks.md), [`HookKind`](../reference/hooks.md#type-hookkind),
+- Reference: [`@jr2/orchestrator/hooks`](../reference/hooks.md), [`HookKind`](../reference/hooks.md#type-hookkind),
   [`Signed`](../reference/hooks.md#type-signed), [`Delivery`](../reference/hooks.md#type-delivery) and the
   [`hooks`](../reference/config.md#hooks) field of `jr2.config.ts`
 - [ADR-0078](../reference/decisions/0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md): a

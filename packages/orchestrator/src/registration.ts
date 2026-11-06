@@ -436,11 +436,23 @@ export function agentAddress(instanceId: string): string {
   return `agent/${instanceId}`;
 }
 
+/** What the run host hears of the table: a surface that opens, and one that closes. A Gate's
+ * `openedAt` is recorded here (ADR-0011). */
+export type RegistrationWatch = {
+  opened?: (reg: Registration) => void;
+  closed?: (reg: Registration) => void;
+};
+
 export class RegistrationTable {
   private readonly byAddress = new Map<string, Registration>();
   /** The same registrations by run, so a run's are read without a scan of every run's: the run host
    * reads them on every microstep of the run (`cause.ts`). */
   private readonly ofRun = new Map<string, Set<Registration>>();
+  private readonly watch: RegistrationWatch;
+
+  constructor(watch: RegistrationWatch = {}) {
+    this.watch = watch;
+  }
 
   /** Register a live surface; returns its disposer (actors call it from their stop cleanup). */
   register(reg: Registration): () => void {
@@ -453,6 +465,8 @@ export class RegistrationTable {
     const ofRun = this.ofRun.get(reg.runId) ?? new Set<Registration>();
     ofRun.add(reg);
     this.ofRun.set(reg.runId, ofRun);
+    this.watch.opened?.(reg);
+    let disposed = false;
     return () => {
       // Dispose only our own entry — a re-registration under the same address must not be
       // clobbered by a stale disposer running late (dev reload, restore races).
@@ -460,6 +474,8 @@ export class RegistrationTable {
       const runRegs = this.ofRun.get(reg.runId);
       runRegs?.delete(reg);
       if (runRegs?.size === 0) this.ofRun.delete(reg.runId);
+      if (!disposed) this.watch.closed?.(reg);
+      disposed = true;
     };
   }
 

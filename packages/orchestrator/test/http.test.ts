@@ -77,7 +77,7 @@ test("POST /workflows/:name/runs starts a run, then it shows in /runs and /runs/
   const { runId, instanceId } = (await start.json()) as { runId: string; instanceId: string };
   assert.ok(runId && instanceId);
 
-  const list = (await (await app.request("/runs")).json()) as Array<{ runId: string }>;
+  const { runs: list } = (await (await app.request("/runs")).json()) as { runs: Array<{ runId: string }> };
   assert.ok(list.some((r) => r.runId === runId));
 
   const status = await app.request(`/runs/${runId}`);

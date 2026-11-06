@@ -172,6 +172,11 @@
               "source": "page"
             },
             {
+              "slug": "guides/read-a-conversation",
+              "title": "Read a conversation",
+              "source": "page"
+            },
+            {
               "slug": "guides/look-inside-a-sandbox",
               "title": "Look inside a Sandbox",
               "source": "page"
@@ -355,7 +360,7 @@
         },
         {
           "slug": "reference/hooks",
-          "title": "@jr2/hooks",
+          "title": "Hook kinds",
           "source": "generated"
         },
         {

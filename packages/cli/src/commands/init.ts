@@ -195,9 +195,8 @@ export default defineConfig({
 // injects its runtime at POD time and never builds a stage on top of this file. It also satisfies
 // the floor by construction — a glibc base with git — so the `preflight` init step that proves it
 // at the pod's first provision passes without the author ever meeting it.
-const IMAGE_DOCKERFILE = `# A Sandbox Image (ADR-0037): the tools your agents can reach, and the shell you get when you
-# \`kubectl exec\` into a running Workspace. This file is yours — jr2 never rewrites it and reads
-# nothing out of it.
+const IMAGE_DOCKERFILE = `# A Sandbox Image (ADR-0037): the tools your agents can reach, and the shell you get with
+# \`jr2 workspace shell\`. This file is yours — jr2 never rewrites it and reads nothing out of it.
 #
 # The build context is THIS directory (\`images/default/\`), so \`COPY\` paths are relative to it and
 # nothing outside it can invalidate the image's content hash.

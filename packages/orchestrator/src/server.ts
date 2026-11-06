@@ -25,6 +25,8 @@
 //   JR2_INSTANCE_EFFECTOR  the Instance Effector's address, `host:port` (ADR-0068). Default,
 //                      deployed: its Service; host-booted: none. A host-booted fixture names its
 //                      own, which speaks the same signed wire (the e2e tier's `mac` Hook check).
+//   JR2_STATE_VOLUME    the size of the state volume claim that `jr2 up` applied (ADR-0065): the
+//                      space guard measures against it. Absent: `runs.volume`, or `5Gi`.
 //   JR2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
 //                      Sandboxes are driven in it, and the Custodians' route home is Service DNS.
 //
@@ -272,6 +274,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     assembly: resolved,
     port,
     hostname: env.HOST ?? "0.0.0.0",
+    ...(env.JR2_STATE_VOLUME ? { stateVolume: env.JR2_STATE_VOLUME } : {}),
     instanceToken,
     publishToken,
     ...(digests ? { callerDigests: digests.current } : {}),

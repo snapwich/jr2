@@ -518,6 +518,7 @@ describe("toward the Orchestrator (the control socket and the fetch listener)", 
       ["/agents/run%2Fcoder/events", "POST"],
       ["/agents/run%2Fcoder/deliveries/d-1", "GET"],
       ["/agents/run%2Fcoder/notices", "POST"],
+      ["/agents/run%2Fcoder/conversation", "POST"],
     ] as const) {
       const r = await loopbackRequest(custodian.ports.fetch, path, {
         method,
@@ -553,6 +554,7 @@ describe("two tokens, each on its own routes (ADR-0076, C3)", () => {
     ["/agents/ws-1%2Fbody%2Fcoder/surface", "GET", undefined],
     ["/agents/ws-1%2Fbody%2Freviewer/deliveries/d-1", "GET", undefined],
     ["/agents/ws-1%2Fbody%2Freviewer/notices", "POST", '{"heard":["n-1"]}'],
+    ["/agents/ws-1%2Fbody%2Freviewer/conversation", "POST", '{"entries":[]}'],
   ] as const;
 
   test("the public fetch Stand-in is REFUSED on every agent route, before any swap", async () => {

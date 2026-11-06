@@ -84,7 +84,7 @@ const REPO_PATH =
   /\b(?:packages|features|docs|scripts|templates|test|src|poc)\/(?:[\w./*-]*[\w*])?|\b[\w-]+(?:\.[\w-]+)*\.(?:ts|md|go|sh)\b/g;
 const COMMIT_ID = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/g;
 /** Words that a commit id's pattern matches and that are not commits: the name of a signature
- * algorithm, which a Hook kind's TSDoc names (`@jr2/hooks`). */
+ * algorithm, which a Hook kind's TSDoc names (`@jr2/orchestrator/hooks`). */
 const NOT_COMMITS = new Set(["ed25519"]);
 
 /** An error for each repo path or commit id in the prose of `doc`: its summary and each tag that

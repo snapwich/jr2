@@ -207,13 +207,25 @@ test("read: GET /runs lists only the Caller's Workflows, and a run of another is
   const { app, host } = await mkApp([reader.entry]);
   const gated = await host.start("gated");
   const quiet = await host.start("quiet");
-  const list = (await (await app.request("/runs", get(reader.value))).json()) as Array<{ runId: string }>;
+  const { runs: list } = (await (await app.request("/runs", get(reader.value))).json()) as {
+    runs: Array<{ runId: string }>;
+  };
   assert.deepEqual(
     list.map((r) => r.runId),
     [gated.runId],
   );
-  const full = (await (await app.request("/runs", get(INSTANCE))).json()) as unknown[];
+  const { runs: full } = (await (await app.request("/runs", get(INSTANCE))).json()) as { runs: unknown[] };
   assert.equal(full.length, 2, "the Instance token's list is every run");
+  // The history too: an ended run of another Workflow is left out of the Caller's list.
+  await host.cancel(quiet.runId);
+  await host.cancel(gated.runId);
+  const ended = (await (await app.request("/runs?status=ended", get(reader.value))).json()) as {
+    runs: Array<{ runId: string; status: string }>;
+  };
+  assert.deepEqual(
+    ended.runs.map((r) => [r.runId, r.status]),
+    [[gated.runId, "cancelled"]],
+  );
 
   assert.equal((await app.request(`/runs/${gated.runId}`, get(reader.value))).status, 200);
   const other = await app.request(`/runs/${quiet.runId}`, get(reader.value));

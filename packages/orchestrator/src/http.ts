@@ -67,10 +67,13 @@ import {
   type DispatchedBy,
 } from "./registration.ts";
 import type { RepoStatus } from "./repos.ts";
+import { parseRunListQuery } from "./run-list.ts";
+import { CONVERSATION_SWEPT, type ConversationEntry, type ConversationStore } from "./conversations.ts";
 import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
 import {
   callerHasScope,
   callerMay,
+  callerMayAnswer,
   callerMayAny,
   instanceCaller,
   isInstancePrincipal,
@@ -87,6 +90,7 @@ import type { Scope } from "./config.ts";
 import { callerRecord } from "./callers.ts";
 import { STEERING_TEXT_MAX } from "./steer.ts";
 import {
+  GateRefused,
   observe,
   StandingRefused,
   SteeringRefused,
@@ -185,7 +189,7 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     path: "/hooks/:name",
     band: "instanceOnly",
     summary:
-      "A Hook's log, newest first: each delivery of the last week, with what the door did with it. `?limit=` (default 50, at most 1000).",
+      "A Hook's log, newest first: each delivery that jr2 keeps (`runs.retain`, 30 days by default), with what the door did with it. `?limit=` (default 50, at most 1000).",
     response: "{ hook, declared, lines: HookLogLine[] }",
     stream: false,
     adrs: ["0011", "0065"],
@@ -397,8 +401,10 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     path: "/runs",
     band: "guarded",
     scope: "read",
-    summary: "The live runs of the Workflows that the Caller may read, with their full status.",
-    response: "RunStatus[]",
+    summary:
+      "A page of the runs of the Workflows that the Caller may read, newest first: live runs by default; " +
+      "?status=live|ended|all|<list> ?workflow ?since ?cursor ?limit.",
+    response: "{ runs: RunSummary[], next? }",
     stream: false,
     adrs: ["0009", "0014", "0078"],
   },
@@ -424,11 +430,22 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
   },
   {
     method: "GET",
+    path: "/gates",
+    band: "guarded",
+    scope: "answer",
+    summary:
+      "The Gate inbox: every open Gate of every live run that the Caller may answer, oldest first, never a run's context; ?workflow.",
+    response: "{ gates: GateInboxEntry[] }",
+    stream: false,
+    adrs: ["0011", "0014", "0078"],
+  },
+  {
+    method: "GET",
     path: "/runs/:runId",
     band: "guarded",
     scope: ["read", "answer"],
     summary:
-      "One run's status, live or settled, with its open Gates. `read` opens the status, and `answer` opens the Gates: with `answer` alone the answer is the run's observation and its Gates, and never its context.",
+      "One run's status, live or settled, with its open Gates. `read` opens the status, and `answer` opens the Gates that the Caller may answer: with `answer` alone the answer is the run's observation and those Gates, and never its context.",
     response:
       "RunStatus & { gates: GateView[] }; RunStatus with `read` alone; RunObservation & { gates: GateView[] } with `answer` alone",
     stream: false,
@@ -439,7 +456,8 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     path: "/runs/:runId/gates/:gate/events",
     band: "guarded",
     scope: "answer",
-    summary: "Deliver an event to an open Gate of a run.",
+    summary:
+      "Deliver an event to an open Gate of a run. A Caller whose `answer` names single Gates of the Workflow is refused 403 for another Gate.",
     body: "{ type, ...payload }, checked against the Gate's schema for that event",
     response: "{ ok: true }; 409 { error, acceptsNow } when the run does not take it now",
     stream: false,
@@ -455,6 +473,39 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
       "SSE: status, emit, retry, admission, pick, placing, placed, child-error, looked, hook-refused, pool, effect, gone",
     stream: true,
     adrs: ["0011", "0022", "0023", "0064", "0067", "0078"],
+  },
+  {
+    method: "GET",
+    path: "/runs/:runId/conversations",
+    band: "guarded",
+    scope: "read",
+    summary:
+      "A run's kept conversations, the first first: one row for each conversation of each Agent, Menu-only Agents too, with its Agent slot.",
+    response: 'Array<{ agent, slot?, instanceId, open, bytes, cut, swept?: "no space" }>',
+    stream: false,
+    adrs: ["0023", "0065"],
+  },
+  {
+    method: "GET",
+    path: "/runs/:runId/conversations/:instanceId",
+    band: "guarded",
+    scope: "read",
+    summary:
+      "The entries of one kept conversation after a sequence number (`?after=<seq>`, `?limit=`, 1000 by default). The Instance ID is URL-encoded.",
+    response: "Array<{ id, seq, at, agent, kind, text }>",
+    stream: false,
+    adrs: ["0023"],
+  },
+  {
+    method: "GET",
+    path: "/runs/:runId/conversations/:instanceId/events",
+    band: "guarded",
+    scope: "read",
+    summary:
+      "Follow one kept conversation: its entries after `?after=<seq>`, then each new one, until the conversation is not open.",
+    response: "SSE: entry, end",
+    stream: true,
+    adrs: ["0023"],
   },
   {
     method: "POST",
@@ -530,6 +581,18 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     response: "{ heard: number }",
     stream: false,
     adrs: ["0062", "0076"],
+  },
+  {
+    method: "POST",
+    path: "/agents/:instanceId/conversation",
+    band: "authenticated",
+    summary:
+      "Keep a batch of a conversation's entries. Only the control token of the pod that the run's admission ledger names, for the ledger's slot; never the Instance token. An entry kept already adds nothing.",
+    body: "{ entries: Array<{ id, seq, at, kind, text }> }, at most 4 MiB",
+    response:
+      "{ kept, cut }; 409 while the run's ledger does not name the conversation yet (send again); 404 for a run that is not known",
+    stream: false,
+    adrs: ["0023", "0076"],
   },
   {
     method: "POST",
@@ -783,6 +846,28 @@ function closer(resolve: () => void) {
 /** How often an otherwise-silent feed writes a ping. */
 const PING_MS = 15_000;
 
+/** How many entries one read of a kept conversation gives when the query names no `limit`, and the
+ * most it can name (ADR-0023). */
+const CONVERSATION_PAGE_DEFAULT = 1_000;
+const CONVERSATION_PAGE_MAX = 5_000;
+/** The largest batch of entries the Harness may send (ADR-0023): it sends less than 1 MiB. */
+const CONVERSATION_BATCH_MAX = 4 * 1024 * 1024;
+/** How long a followed conversation that is not open stays followed for a late batch. */
+const FOLLOW_GRACE_MS = 5_000;
+
+/** A batch of a conversation's entries, as the Harness sends it (ADR-0023). */
+const conversationBatch = z.object({
+  entries: z.array(
+    z.object({
+      id: z.string().min(1).max(200),
+      seq: z.number().int().min(0),
+      at: z.string().max(64),
+      kind: z.string().min(1).max(200),
+      text: z.string(),
+    }),
+  ),
+});
+
 /**
  * Keep a quiet feed alive.
  *
@@ -907,6 +992,9 @@ function subscriber(stream: SseStream): Subscriber {
 export type CreateAppOptions = {
   /** Ping interval for the SSE feeds. Tests shorten it; nothing in production sets it. */
   pingMs?: number;
+  /** How long a followed conversation that is not open waits for a late batch before its feed
+   * ends (ADR-0023). Tests shorten it. */
+  followGraceMs?: number;
   /**
    * Whether this instance has a data plane at all (ADR-0051, ADR-0069): the process is deployed in
    * a cluster, so it wires its kube client whatever the current Assembly composes. `false` is an
@@ -961,6 +1049,10 @@ export type CreateAppOptions = {
    * the in-process tests that build an app straight over a host: `POST` then answers 503, as with
    * no current Assembly, and `GET` answers no line. */
   hooks?: HookDoor;
+  /** The kept conversations (ADR-0023): `POST /agents/:iid/conversation` writes them, and the
+   * `/runs/:runId/conversations` routes read them. Absent for the in-process tests that build an
+   * app straight over a host: the write answers 404, and a run lists no conversation. */
+  conversations?: ConversationStore;
 };
 
 /**
@@ -972,6 +1064,7 @@ export type CreateAppOptions = {
  */
 export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOptions = {}): Hono<JR2Env> {
   const pingMs = opts.pingMs ?? PING_MS;
+  const followGraceMs = opts.followGraceMs ?? FOLLOW_GRACE_MS;
   const app = new Hono<JR2Env>();
 
   /** Authenticate, or refuse. There is no anonymous principal (ADR-0013) — an open surface would
@@ -1040,6 +1133,22 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       c.set("principal", { kind: "caller", caller });
       return next();
     };
+
+  /** The 403 for a Caller that may not answer the Gate named `name` (its invoke id) of `workflow`,
+   * or undefined when it may. It names the scope, the Workflow and the Gate (ADR-0078). */
+  const mayAnswer = (c: Context<JR2Env>, workflow: string, name: string): Response | undefined => {
+    const caller = callerOf(c);
+    if (callerMayAnswer(caller, workflow, name)) return undefined;
+    return c.json(
+      {
+        error: `${callerLabel(caller)} needs the "answer" scope for Gate "${name}" of Workflow "${workflow}" (ADR-0078)`,
+        scope: "answer",
+        workflow,
+        gate: name,
+      },
+      403,
+    );
+  };
 
   /** The 403 for a Caller without `scope` on `workflow`, or undefined when it has it. It names the
    * scope and the Workflow that the request needed (ADR-0078). */
@@ -1574,11 +1683,29 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     });
   });
 
-  // The live runs of the Workflows that the Caller may read (ADR-0078): a run of another Workflow is
-  // left out, not refused, so one Caller's list says nothing of another's runs.
-  app.get("/runs", guarded("read"), (c) => {
-    const caller = callerOf(c);
-    return c.json(host.list().filter((s) => callerMay(caller, "read", s.workflow)));
+  // The run listing (ADR-0009): live runs by default, the history with `status`, newest start
+  // first, a page at a time. Of the Workflows that the Caller may read (ADR-0078): a run of another
+  // Workflow is left out, not refused, so one Caller's list says nothing of another's runs.
+  app.get("/runs", guarded("read"), async (c) => {
+    const query = parseRunListQuery(
+      {
+        status: c.req.query("status"),
+        workflow: c.req.query("workflow"),
+        since: c.req.query("since"),
+        cursor: c.req.query("cursor"),
+        limit: c.req.query("limit"),
+      },
+      Date.now(),
+    );
+    if ("error" in query) return c.json({ error: query.error }, 400);
+    const page = await host.history(query, callerOf(c).may.read ?? []);
+    // A run whose kept conversations the space guard deleted says so (ADR-0065).
+    const swept = opts.conversations?.sweptRuns(page.runs.map((r) => r.runId)) ?? new Set<string>();
+    if (swept.size === 0) return c.json(page);
+    return c.json({
+      ...page,
+      runs: page.runs.map((r) => (swept.has(r.runId) ? { ...r, swept: CONVERSATION_SWEPT } : r)),
+    });
   });
 
   // The Repos as the cluster currently reports them (ADR-0048/0051) — what `jr2 status` renders,
@@ -1626,6 +1753,16 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     });
   });
 
+  // The Gate inbox (ADR-0011): the open Gates of every live run that the Caller may answer, oldest
+  // first, with each Gate's run, Workflow and the time it opened. A Gate the Caller may not answer is
+  // left out, not refused, so one Caller's inbox says nothing of another's Gates (ADR-0078). It never
+  // gives a run's context (ADR-0014): a person who answers a Gate reads its `meta`.
+  app.get("/gates", guarded("answer"), (c) => {
+    const caller = callerOf(c);
+    const workflow = c.req.query("workflow") || undefined;
+    return c.json({ gates: host.gateInbox((w, name) => callerMayAnswer(caller, w, name), workflow) });
+  });
+
   // Read-through (ADR-0009): a completed run's final status lives in the store after the registry
   // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404. The status
   // carries the run's OPEN GATES (ADR-0011) — the discovery listing external callers act on
@@ -1636,15 +1773,20 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // the Gate's `meta`, which the author wrote for that person.
   app.get("/runs/:runId", guarded(["read", "answer"]), async (c) => {
     const runId = c.req.param("runId");
-    const status = await host.read(runId);
-    if (!status) return c.json({ error: `no run "${runId}"` }, 404);
+    const found = await host.read(runId);
+    if (!found) return c.json({ error: `no run "${runId}"` }, 404);
+    // A run whose kept conversations the space guard deleted says so (ADR-0065).
+    const status = opts.conversations?.sweptRuns([runId]).has(runId) ? { ...found, swept: CONVERSATION_SWEPT } : found;
     const caller = callerOf(c);
     const read = callerMay(caller, "read", status.workflow);
     const answer = callerMay(caller, "answer", status.workflow);
     if (!read && !answer) return mayFor(c, "read", status.workflow)!;
     if (!answer) return c.json(status);
-    if (!read) return c.json({ ...observe(status), gates: host.gates(runId) });
-    return c.json({ ...status, gates: host.gates(runId) });
+    // Only the Gates that the Caller may answer (ADR-0078): a scope that names one Gate of the
+    // Workflow does not show the others.
+    const gates = host.gates(runId, (name) => callerMayAnswer(caller, status.workflow, name));
+    if (!read) return c.json({ ...observe(status), gates });
+    return c.json({ ...status, gates });
   });
 
   // Gates delivery (ADR-0011): validate the body against the gate's named schema and deliver into
@@ -1657,23 +1799,30 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // "the Agent approves its own PR" (ADR-0013, ADR-0076). A run that is not live has no open Gate,
   // and the delivery below answers it 404.
   app.post("/runs/:runId/gates/:gate/events", guarded("answer"), async (c) => {
-    const live = host.status(c.req.param("runId"));
+    const runId = c.req.param("runId");
+    const gate = c.req.param("gate");
+    // The body first: no `await` comes between the scope check and the delivery below, so a Gate
+    // that opens while the body is in flight is checked too (ADR-0078).
+    const body = await readJson(c.req.text());
+    const caller = callerOf(c);
+    const live = host.status(runId);
     if (live) {
       const refused = mayFor(c, "answer", live.workflow);
       if (refused) return refused;
     }
-    const body = await readJson(c.req.text());
     try {
-      host.sendToGate(c.req.param("runId"), c.req.param("gate"), body, callerRecord(callerOf(c)));
+      // The Gate's name, its invoke id, is what a scope that names single Gates names (ADR-0078).
+      // The delivery checks it against the registration that it delivers to.
+      const opens = live ? (name: string) => callerMayAnswer(caller, live.workflow, name) : undefined;
+      host.sendToGate(runId, gate, body, callerRecord(caller), undefined, opens);
       return c.json({ ok: true });
     } catch (err) {
+      if (err instanceof GateRefused) return mayAnswer(c, live!.workflow, err.gate)!;
       if (err instanceof UnknownAddressError) return c.json({ error: errMessage(err) }, 404);
       if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
       // The run would not take it from this Gate now (ADR-0013): never `{ ok: true }`. The body
       // names what the Gate takes now, as `GET /runs/:id` lists it.
       if (err instanceof NotTakenError) {
-        const runId = c.req.param("runId");
-        const gate = c.req.param("gate");
         const acceptsNow = host.gates(runId).find((g) => g.gate === gate)?.acceptsNow ?? [];
         return c.json({ error: errMessage(err), acceptsNow }, 409);
       }
@@ -1709,7 +1858,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
 
   // SSE: a live run streams its status deltas + author `emit`s (current status replayed on attach,
   // then live until the terminal transition or client abort). A run that has already settled streams
-  // its final status once and closes (so `jr2 logs -f` works on a finished run). Unknown run → 404.
+  // its final status once and closes (so `jr2 watch` works on a finished run). Unknown run → 404.
   app.get("/runs/:runId/events", guarded("read"), async (c) => {
     const runId = c.req.param("runId");
     const live = host.status(runId);
@@ -1833,6 +1982,154 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     }
   });
 
+  // ---- The kept conversations (ADR-0023) ----------------------------------------------------------
+  // What the Harness sent of each conversation while its Turns ran, for as long as the run is kept
+  // (ADR-0065). `read` opens all three, as it opens the run's status (ADR-0014). A conversation is
+  // open while a Turn of it is registered on that live run, and the host is not going away.
+  const conversationOpen = (runId: string, instanceId: string): boolean =>
+    !host.stopping && host.agentRun(instanceId) === runId;
+
+  /** The run, read and in the Caller's scope, or the answer that refuses it. An Instance ID that is
+   * not of the run is refused before the store is read: the scope is the run's Workflow. */
+  const conversationsRun = async (
+    c: Context<JR2Env>,
+    runId: string,
+    instanceId?: string,
+  ): Promise<Response | undefined> => {
+    if (instanceId !== undefined && !instanceId.startsWith(`${runId}/`)) {
+      return c.json({ error: `run "${runId}" keeps no conversation "${instanceId}"` }, 404);
+    }
+    const known = await host.read(runId);
+    if (!known) return c.json({ error: `no run "${runId}"` }, 404);
+    return mayFor(c, "read", known.workflow);
+  };
+
+  app.get("/runs/:runId/conversations", guarded("read"), async (c) => {
+    const runId = c.req.param("runId");
+    const refused = await conversationsRun(c, runId);
+    if (refused) return refused;
+    const kept = opts.conversations?.list(runId) ?? [];
+    // Each conversation's Agent slot, from the run's admission ledger: the address `jr2 logs` and
+    // `jr2 steer` take (ADR-0002, ADR-0009). Absent for a row that the ledger does not name.
+    const slots = await Promise.all(kept.map(({ instanceId }) => host.conversationPlace(instanceId)));
+    return c.json(
+      kept.map(({ agent, instanceId, bytes, cut, swept }, i) => ({
+        agent,
+        ...(slots[i]?.slot !== undefined ? { slot: slots[i].slot } : {}),
+        instanceId,
+        open: conversationOpen(runId, instanceId),
+        bytes,
+        cut,
+        ...(swept !== undefined ? { swept } : {}),
+      })),
+    );
+  });
+
+  /** `?after=<seq>` (-1, the default, is from the first entry) and `?limit=`, or the 400. */
+  const entryQuery = (c: Context<JR2Env>): { after: number; limit: number } | { error: string } => {
+    const after = c.req.query("after");
+    const limit = c.req.query("limit");
+    const a = after === undefined ? -1 : Number(after);
+    const l = limit === undefined ? CONVERSATION_PAGE_DEFAULT : Number(limit);
+    if (!Number.isInteger(a) || a < -1)
+      return { error: `after is a sequence number (an integer of -1 or more), not "${after}"` };
+    if (!Number.isInteger(l) || l < 1 || l > CONVERSATION_PAGE_MAX) {
+      return { error: `limit is an integer from 1 to ${CONVERSATION_PAGE_MAX}, not "${limit}"` };
+    }
+    return { after: a, limit: l };
+  };
+
+  app.get("/runs/:runId/conversations/:instanceId", guarded("read"), async (c) => {
+    const runId = c.req.param("runId");
+    const instanceId = c.req.param("instanceId");
+    const refused = await conversationsRun(c, runId, instanceId);
+    if (refused) return refused;
+    const query = entryQuery(c);
+    if ("error" in query) return c.json({ error: query.error }, 400);
+    const store = opts.conversations;
+    if (!store?.conversation(runId, instanceId)) {
+      return c.json({ error: `run "${runId}" keeps no conversation "${instanceId}"` }, 404);
+    }
+    return c.json(store.entries(instanceId, query.after, query.limit));
+  });
+
+  // Follow one conversation: what is kept after `after`, then each new entry as it is kept. It ends
+  // when the conversation is not open (its Turn is not registered, or its run ended) and no entry
+  // came for a short time, so a batch that the Harness sends at its Turn's end is still read; and
+  // when the conversation is cut or swept.
+  app.get("/runs/:runId/conversations/:instanceId/events", guarded("read"), async (c) => {
+    const runId = c.req.param("runId");
+    const instanceId = c.req.param("instanceId");
+    const refused = await conversationsRun(c, runId, instanceId);
+    if (refused) return refused;
+    const query = entryQuery(c);
+    if ("error" in query) return c.json({ error: query.error }, 400);
+    const store = opts.conversations;
+    const known = store?.conversation(runId, instanceId);
+    // A conversation that is open and has no entry kept yet is followed too.
+    if (!store || (!known && !conversationOpen(runId, instanceId))) {
+      return c.json({ error: `run "${runId}" keeps no conversation "${instanceId}"` }, 404);
+    }
+    return streamSSE(c, async (stream) => {
+      await new Promise<void>((resolve) => {
+        const exit = closer(resolve);
+        const sub = subscriber(stream);
+        let last = query.after;
+        let quietSince = Date.now();
+        const send = (entries: ConversationEntry[]) => {
+          for (const entry of entries) {
+            if (entry.seq <= last) continue;
+            last = entry.seq;
+            quietSince = Date.now();
+            void sub.send(`event: entry\ndata: ${JSON.stringify(entry)}\n\n`);
+          }
+        };
+        // Subscribe before the replay, so an entry kept between the two is not lost; `last` drops
+        // what both give.
+        const held: ConversationEntry[] = [];
+        let replaying = true;
+        exit.onExit(
+          store.follow(instanceId, (entries) => {
+            if (replaying) held.push(...entries);
+            else send(entries);
+          }),
+        );
+        for (;;) {
+          const page = store.entries(instanceId, last, CONVERSATION_PAGE_MAX);
+          send(page);
+          if (page.length < CONVERSATION_PAGE_MAX) break;
+        }
+        replaying = false;
+        send(held);
+        let ending = false;
+        const end = () => {
+          if (ending) return;
+          ending = true;
+          const now = store.conversation(runId, instanceId);
+          void sub
+            .send(
+              `event: end\ndata: ${JSON.stringify({ cut: now?.cut ?? false, ...(now?.swept ? { swept: now.swept } : {}) })}\n\n`,
+            )
+            .then(exit.done);
+        };
+        const check = () => {
+          if (stream.aborted || stream.closed) return exit.done();
+          // The Orchestrator is going away: the server waits for this request, so end it now.
+          if (host.stopping) return end();
+          const now = store.conversation(runId, instanceId);
+          if (now?.cut || now?.swept) return end();
+          if (!conversationOpen(runId, instanceId) && Date.now() - quietSince >= followGraceMs) end();
+        };
+        const timer = setInterval(check, Math.min(followGraceMs, 1_000));
+        exit.onExit(() => clearInterval(timer));
+        exit.onExit(host.onClose(check));
+        exit.onExit(pinger(stream, sub, exit.done, pingMs));
+        stream.onAbort(exit.done);
+        check();
+      });
+    });
+  });
+
   // ---- The Agent's surface (`/agents/:iid/*` — ADR-0013) --------------------------------------
   // Served to ONE caller: the Agent's Harness, through the Custodian in its pod. The Harness renders
   // `surface` as the Menu and turns a pick into an `events` POST. The Orchestrator therefore keeps
@@ -1909,6 +2206,56 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       return c.json({ error: "an acknowledgment names the notices heard: { heard: string[] }" }, 400);
     }
     return c.json({ heard: host.noticesHeard(c.req.param("instanceId"), heard as string[]) });
+  });
+
+  // A batch of a conversation's entries (ADR-0023), from the Harness that runs it, through its
+  // Custodian. Only the control token of the pod that the run's admission ledger names, for the
+  // ledger's slot: the ledger and not the live registration, because the ledger outlives the Turn
+  // and the run, and the last batch of a Turn often comes after its sweep. The Instance token does
+  // not open it: a holder of it can speak as an Agent, but it cannot write an Agent's kept
+  // conversation. A batch that is sent again adds nothing (the store keeps each `seq` once).
+  app.post("/agents/:instanceId/conversation", authenticated, async (c) => {
+    const instanceId = c.req.param("instanceId");
+    const store = opts.conversations;
+    if (!store) return c.json({ error: "this Orchestrator keeps no conversation" }, 404);
+    const principal = principalOf(c);
+    if (auth && principal.kind !== "agent") {
+      return c.json(
+        { error: `only the Harness of the conversation's pod writes it: this token cannot (ADR-0023)` },
+        403,
+      );
+    }
+    const text = await c.req.text();
+    if (Buffer.byteLength(text) > CONVERSATION_BATCH_MAX) {
+      return c.json({ error: `a batch is at most ${CONVERSATION_BATCH_MAX} bytes: send fewer entries` }, 413);
+    }
+    const parsed = conversationBatch.safeParse(await readJson(Promise.resolve(text)));
+    if (!parsed.success) {
+      return c.json(
+        {
+          error: `a batch is { entries: Array<{ id, seq, at, kind, text }> }: ${parsed.error.issues[0]?.message ?? "no entries"}`,
+        },
+        400,
+      );
+    }
+    const place = await host.conversationPlace(instanceId);
+    if (!place) return c.json({ error: `no run for instance "${instanceId}"` }, 404);
+    if (place.agent === undefined) {
+      // A live run whose ledger does not name the conversation yet: the batch came before the
+      // admission's save. The Harness sends it again.
+      if (place.live) return c.json({ error: `the run does not name instance "${instanceId}" yet — send again` }, 409);
+      return c.json({ error: `run "${place.runId}" has no conversation "${instanceId}"` }, 404);
+    }
+    if (
+      principal.kind === "agent" &&
+      (place.sandbox === undefined ||
+        place.sandbox !== principal.sandbox ||
+        place.slot === undefined ||
+        place.slot !== principal.slot)
+    ) {
+      return c.json({ error: `this token cannot write the conversation of instance "${instanceId}"` }, 403);
+    }
+    return c.json(store.append(place.runId, instanceId, place.agent, parsed.data.entries));
   });
 
   // The Agent's pick, delivered into the state that invoked it. The receipt describes itself

@@ -71,3 +71,45 @@ Feature: The CLI contract
       When I ask for the version as JSON
       Then the command exits 0
       And the version report's orchestrator is the CLI's own version
+
+  Rule: jr2 completion prints a script, and the script's lookups answer from the command table and the deployment
+    ADR-0009. `jr2 completion bash|zsh|fish` is a value verb: the script on stdout. On each TAB the
+    script asks `jr2 completion __complete <words>`, which answers verbs, sub-verbs, flags and their
+    values from the command table, and live run ids, Workflow names and a run's Agent slots from the
+    Orchestrator.
+
+    Scenario Outline: each shell gets its script
+      When I ask for the <shell> completion script
+      Then the command exits 0
+      And stdout holds "<line>"
+
+      Examples:
+        | shell | line                                     |
+        | bash  | complete -o default -F _jr2_complete jr2 |
+        | zsh   | compdef _jr2 jr2                         |
+        | fish  | complete -c jr2 -f -a '(__jr2_complete)' |
+
+    Scenario: a shell that jr2 has no script for is a usage error
+      When I ask for the powershell completion script
+      Then the command exits 2
+
+    Scenario: verbs, sub-verbs and flag values complete from the command table
+      Given a fresh instance
+      When I complete the words "wat"
+      Then the completions are exactly "watch"
+      When I complete the words "workspace "
+      Then the completions are exactly "ls, shell, forward, rm"
+      When I complete the words "runs --status en"
+      Then the completions are exactly "ended"
+
+    Scenario: run ids, Workflow names and Agent slots complete from the Orchestrator
+      Given a fresh instance
+      And the instance also has the "review" workflow
+      And the orchestrator is serving
+      And I start the "review" workflow against the stub harness
+      When I complete the words "watch "
+      Then the completions are exactly the run's id
+      When I complete the words "run "
+      Then the completions include "ping" and "review"
+      When I complete the words "logs <run> "
+      Then the completions are exactly "root/coder"

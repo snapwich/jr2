@@ -4,7 +4,7 @@
 // -tier steps; only the cluster-facing claims live here.
 //
 // The Sandbox is found by its `jr2.dev/run` LABEL, never by reconstructing its name: that label is
-// the run↔workspace link ADR-0012 promises (what `jr2 ls` will group by), so looking it up this way
+// the run↔workspace link ADR-0012 promises (what `jr2 workspace ls` groups by), so looking it up this way
 // asserts the promise instead of trusting the naming function.
 //
 // NOTHING HERE PLAYS THE AGENT (ADR-0013), and since ADR-0038 the reason has inverted. The pod
@@ -65,7 +65,7 @@ type SandboxCR = {
 };
 
 /** Run kubectl in the scenario's namespace (the isolation unit — ADR-0010/0019). */
-async function kubectl(world: E2EWorld, args: string[]): Promise<string> {
+export async function kubectl(world: E2EWorld, args: string[]): Promise<string> {
   assert.ok(world.namespace, "a @kind scenario has its namespace set in setupKind");
   const { stdout } = await exec("kubectl", ["--namespace", world.namespace, ...args], {
     maxBuffer: 8 * 1024 * 1024,
@@ -130,7 +130,7 @@ async function harnessAuth(world: E2EWorld, placement: string): Promise<Record<s
 }
 
 /** Scale the in-cluster orchestrator (deployed by `jr2 up`) — the @kind restart/stop lever. */
-async function scaleOrchestrator(world: E2EWorld, replicas: 0 | 1): Promise<void> {
+export async function scaleOrchestrator(world: E2EWorld, replicas: 0 | 1): Promise<void> {
   await kubectl(world, ["scale", "deployment/jr2-orchestrator", `--replicas=${replicas}`]);
   if (replicas === 0) {
     await kubectl(world, ["wait", "--for=delete", "pod", "-l", "app=jr2-orchestrator", "--timeout=120s"]).catch(
@@ -149,7 +149,7 @@ async function sandboxesFor(world: E2EWorld): Promise<SandboxCR[]> {
 }
 
 /** Poll the cluster until this run's Sandbox reports `phase: Ready` (a real pod, really pulling). */
-async function waitForReadySandbox(world: E2EWorld): Promise<SandboxCR> {
+export async function waitForReadySandbox(world: E2EWorld): Promise<SandboxCR> {
   for (let i = 0; i < 120; i++) {
     const ready = (await sandboxesFor(world)).find((s) => s.status?.phase === "Ready");
     if (ready) return ready;
@@ -400,7 +400,7 @@ When(
 
 /** The secret Stand-ins of the run's Sandbox: the control one and the model key's, as its
  * credentials Secret (`<sandbox>-token`) holds them. */
-async function podStandIns(world: E2EWorld): Promise<string[]> {
+export async function podStandIns(world: E2EWorld): Promise<string[]> {
   const sandbox = (await waitForReadySandbox(world)).metadata.name;
   const keys = ["control-standin", "standin-JR2_PROVIDER_API_KEY"];
   const out: string[] = [];
@@ -3266,13 +3266,23 @@ Then(
   },
 );
 
-/** The run's feed as `jr2 logs` replays it (ADR-0009): what an operator reads after the run. */
+/** What an operator reads after the run (ADR-0009): the run's feed as `jr2 watch --json` replays it,
+ * and its kept conversations as `jr2 logs` prints them. */
+async function operatorReads(world: E2EWorld): Promise<{ feed: string; conversations: string }> {
+  const feed = await world.runCli(["watch", world.runId!, "--json"]);
+  assert.equal(feed.code, 0, `jr2 watch failed: ${feed.stderr}`);
+  const conversations = await world.runCli(["logs", world.runId!]);
+  assert.equal(conversations.code, 0, `jr2 logs failed: ${conversations.stderr}`);
+  return { feed: feed.stdout + feed.stderr, conversations: conversations.stdout + conversations.stderr };
+}
+
 Then("the run's feed carries no form of the echo token", async function (this: E2EWorld): Promise<void> {
   assert.ok(this.echoToken);
-  const feed = await this.runCli(["logs", this.runId!]);
-  assert.equal(feed.code, 0, `jr2 logs failed: ${feed.stderr}`);
-  const leak = leakOf(feed.stdout + feed.stderr, this.echoToken);
+  const { feed, conversations } = await operatorReads(this);
+  const leak = leakOf(feed, this.echoToken);
   assert.equal(leak, undefined, `the echo token reached the feed: ${leak}`);
+  const kept = leakOf(conversations, this.echoToken);
+  assert.equal(kept, undefined, `the echo token reached a kept conversation: ${kept}`);
 });
 
 /** The Agent's half of the scrubbing proof: the tool result the MODEL read on the next request carries the named
@@ -3551,8 +3561,9 @@ Then(
     assert.match(output.tail ?? "", /env=\[secret:echo-token\]\nfile=\[secret:echo-token\]\n/);
     assert.ok(this.echoToken);
     assert.equal(leakOf(JSON.stringify(output), this.echoToken), undefined, "no form of the token came back");
-    const feed = await this.runCli(["logs", this.runId!]);
-    assert.equal(leakOf(feed.stdout + feed.stderr, this.echoToken), undefined, "the feed holds no form of it");
+    const { feed, conversations } = await operatorReads(this);
+    assert.equal(leakOf(feed, this.echoToken), undefined, "the feed holds no form of it");
+    assert.equal(leakOf(conversations, this.echoToken), undefined, "no kept conversation holds a form of it");
   },
 );
 
@@ -3604,8 +3615,9 @@ Then(
     assert.notEqual(output.code, 0, JSON.stringify(output));
     assert.match(output.tail ?? "", /Permission denied/, JSON.stringify(output));
     assert.equal(leakOf(JSON.stringify(output), key), undefined, "the answer holds no form of the key");
-    const feed = await this.runCli(["logs", this.runId!]);
-    assert.equal(leakOf(feed.stdout + feed.stderr, key), undefined, "the feed holds no form of it");
+    const { feed, conversations } = await operatorReads(this);
+    assert.equal(leakOf(feed, key), undefined, "the feed holds no form of it");
+    assert.equal(leakOf(conversations, key), undefined, "no kept conversation holds a form of it");
   },
 );
 

@@ -2,7 +2,7 @@
 // Deliveries go to `POST /hooks/<name>` as the services send them: the alert service with a shared
 // token (`token`), Discord signed with a key pair that the scenario makes (`ed25519`). The runs are
 // read black-box (`GET /runs`, `GET /runs/:id`); the count of runs started is read from the store
-// file at the end, because a run that ended is no longer in `GET /runs`.
+// file at the end, because it counts each row by its key, and no route lists the keys.
 
 import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
@@ -55,9 +55,9 @@ const stateOf = (w: E2EWorld): Pools => {
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
 async function liveRuns(world: E2EWorld): Promise<Run[]> {
-  const r = await world.api<Run[]>("GET", "/runs");
+  const r = await world.api<{ runs: Run[] }>("GET", "/runs");
   assert.equal(r.status, 200);
-  return r.body;
+  return r.body.runs;
 }
 const ofWorkflow = (runs: Run[], workflow: string) => runs.filter((r) => r.workflow === workflow);
 
@@ -164,7 +164,7 @@ Given(
     const text = await readFile(config, "utf8");
     const declared =
       'import { secret } from "@jr2/orchestrator";\n' +
-      'import { discord } from "@jr2/hooks/discord";\n' +
+      'import { discord } from "@jr2/orchestrator/hooks/discord";\n' +
       'import { alerts } from "./workflows/_alerts.ts";\n' +
       text.replace(
         "export default defineConfig({",
@@ -416,7 +416,7 @@ Then(
 Then(
   "the store holds exactly {int} {string} runs, one for each key",
   async function (this: E2EWorld, n: number, workflow: string): Promise<void> {
-    // The store file: an ended run is not in `GET /runs`, and no verb lists it.
+    // The store file: it holds the key of each run, which no route lists.
     await sleep(200);
     const db = new DatabaseSync(join(this.dir, ".jr2", "state.db"), { readOnly: true });
     try {

@@ -18,6 +18,8 @@ export type StoredSnapshot = {
   status: string;
   snapshot: unknown;
   reason?: string;
+  /** When the run started (ADR-0009): the row's `started_at`. */
+  startedAt?: string;
 };
 
 type ChildEntry = { snapshot?: { input?: unknown; [k: string]: unknown }; [k: string]: unknown };

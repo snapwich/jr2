@@ -9,7 +9,7 @@
 // records who acted, not what that credential could do then.
 
 import { createRemoteJWKSet, customFetch, decodeJwt, jwtVerify, type JWTPayload } from "jose";
-import { SCOPES, type JwtIssuer, type ScopeGrant, type Scopes } from "./config.ts";
+import { SCOPES, type AnswerGrant, type GateGrant, type JwtIssuer, type Scopes } from "./config.ts";
 import type { Caller, CallerAnswer, CallerAuthenticator } from "./tokens.ts";
 
 // ---- What a run records ------------------------------------------------------------------------
@@ -212,18 +212,34 @@ function valuesOf(claim: unknown): string[] {
 }
 
 /** The scopes of each grant, joined: a scope that one gives for every Workflow is for every
- * Workflow, and lists join. */
+ * Workflow, and lists join. A JWT whose groups give one team's Gate and another team's Gate of one
+ * Workflow may answer both. */
 export function joinScopes(grants: readonly Scopes[]): Scopes {
-  const out: Scopes = {};
+  const out: Record<string, AnswerGrant> = {};
   for (const scope of SCOPES) {
-    let joined: ScopeGrant | undefined;
+    let joined: AnswerGrant | undefined;
     for (const may of grants) {
-      const grant = may[scope];
+      const grant: AnswerGrant | undefined = may[scope];
       if (grant === undefined) continue;
       if (grant === "all" || joined === "all") joined = "all";
-      else joined = [...new Set([...(joined ?? []), ...grant])];
+      else joined = joinItems(joined ?? [], grant);
     }
     if (joined !== undefined) out[scope] = joined;
+  }
+  return out as Scopes;
+}
+
+/** Two lists of one scope, joined: each Workflow name once, and each `answer` item that names Gates
+ * once (ADR-0078). An item that names Gates stays beside a bare name of its Workflow, which opens
+ * them anyway. */
+function joinItems(a: readonly (string | GateGrant)[], b: readonly (string | GateGrant)[]): (string | GateGrant)[] {
+  const seen = new Set<string>();
+  const out: (string | GateGrant)[] = [];
+  for (const item of [...a, ...b]) {
+    const key = typeof item === "string" ? item : JSON.stringify([item.workflow, [...item.gates].sort()]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
   }
   return out;
 }

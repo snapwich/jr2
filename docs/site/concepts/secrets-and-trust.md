@@ -264,6 +264,11 @@ The Harness writes each Agent's conversation to its container log. The log has t
 thinking, its tool calls and the answers to its picks. It does not write the results of the Working tools or of the MCP
 tools. Each person who can read the pod logs of the namespace can read these conversations.
 
+The Orchestrator also keeps each conversation, with the same cut, for `runs.retain` (30 days by default). Thus the kept
+copy has the same residual as the log: an answer to a pick can carry a held value that an upstream wrote into a
+`command` output, or a secret in a form that the scrub does not catch. A Caller with `read` on the Workflow can read the
+kept copy with `GET /runs/:runId/conversations`.
+
 ## Rules
 
 - A model key goes in the `secrets` list. `jr2 up` refuses a known model key in `harness.env`, or in a Secret or a

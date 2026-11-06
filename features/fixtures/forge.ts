@@ -6,10 +6,10 @@
 // workflow "forge".
 
 import { z } from "zod";
-import type {} from "@jr2/hooks/discord";
-import type {} from "@jr2/hooks/github";
-import type {} from "@jr2/hooks/gitlab";
-import type {} from "@jr2/hooks/slack";
+import type {} from "@jr2/orchestrator/hooks/discord";
+import type {} from "@jr2/orchestrator/hooks/github";
+import type {} from "@jr2/orchestrator/hooks/gitlab";
+import type {} from "@jr2/orchestrator/hooks/slack";
 import { defineEvent, gate, jr2Setup } from "@jr2/orchestrator/internal";
 
 const approve = defineEvent({

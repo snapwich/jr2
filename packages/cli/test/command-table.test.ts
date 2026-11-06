@@ -61,10 +61,13 @@ function flagsRead(source: string): Set<string> {
   return read;
 }
 
-test("every verb file reads each flag its entry declares, and no other", async () => {
-  for (const command of COMMANDS) {
-    const read = flagsRead(await sourceOf(command.verb));
-    assert.deepEqual([...read].sort(), command.flags.map((f) => f.name).sort(), `${command.verb}.ts`);
+test("every verb file reads each flag its entries declare, and no other", async () => {
+  // A verb with sub-verbs (`workspace ls`, `workspace shell`) reads, in its one file, each flag that
+  // one of its entries declares.
+  for (const verb of new Set(COMMANDS.map((c) => c.verb))) {
+    const read = flagsRead(await sourceOf(verb));
+    const declared = new Set(COMMANDS.filter((c) => c.verb === verb).flatMap((c) => c.flags.map((f) => f.name)));
+    assert.deepEqual([...read].sort(), [...declared].sort(), `${verb}.ts`);
   }
 });
 
@@ -162,7 +165,7 @@ test("the help names every entry, and the shared options with the verbs that tak
   assert.ok(namespace, "-n is a global option");
   assert.match(
     help.replace(/\s+/g, " "),
-    /\(version, up, down, run, runs, status, logs, send, steer, whoami, hooks, caller token, caller rotate\)/,
+    /\(version, up, down, run, runs, workflows, gates, status, watch, logs, send, steer, whoami, hooks, caller token, caller rotate, workspace ls, workspace shell, workspace forward, workspace rm\)/,
     "-n is taken by up and down too",
   );
   assert.match(help, /exit codes: 0 ok, 1 runtime error, 2 usage/);
@@ -171,10 +174,17 @@ test("the help names every entry, and the shared options with the verbs that tak
 
 test("the output section's verb lists are computed: each entry is named once, send as activity", () => {
   const help = renderHelp().replace(/\s+/g, " ");
-  assert.match(help, /result verbs \(kit push, run, runs, status <runId>, logs, steer <runId>, whoami, hooks\)/);
-  assert.match(help, /report verbs \(version, bare status\)/);
-  assert.match(help, /activity verbs \(init, check, up, down, gc, send, steer <runId> <agent> <text>, caller rotate\)/);
-  assert.match(help, /value verbs \(caller token\)/);
+  assert.match(help, /result verbs \(kit push, run, runs, gates, status <runId>, steer <runId>, whoami, hooks\)/);
+  assert.match(help, /report verbs \(version, workflows, bare status, watch, logs, workspace ls\)/);
+  assert.match(
+    help,
+    /print a table or lines on stdout, or their JSON with --json \(watch: one JSON line for each status; logs has no --json\)/,
+  );
+  assert.match(
+    help,
+    /activity verbs \(init, check, up, down, gc, send, steer <runId> <agent> <text>, caller rotate, workspace shell, workspace rm\)/,
+  );
+  assert.match(help, /value verbs \(caller token, workspace forward, completion\)/);
 });
 
 test("every line of the help, and of each entry's, fits the width", () => {

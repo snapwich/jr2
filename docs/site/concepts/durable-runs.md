@@ -5,7 +5,8 @@ description: How a run survives a restart of the Orchestrator, what ends it, and
 
 A run is durable. The [Orchestrator](../reference/glossary.md#orchestrator) saves each run after each transition of its
 [Machine](../reference/glossary.md#machine). When the Orchestrator starts again, it continues each run that did not end,
-from the state that it saved. A run that ended stays readable for one week.
+from the state that it saved. A run that ended stays readable for [`runs.retain`](../reference/config.md#runs), 30 days
+by default.
 
 ## Why runs are durable
 
@@ -76,7 +77,7 @@ A run that the Orchestrator does not continue gets one of these results:
 
 | Result    | When                                                                                                        | What stays                                         |
 | --------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `lost`    | No Workflow has the name of the run's file, or the row holds no snapshot.                                   | The row and the reason, for one week.              |
+| `lost`    | No Workflow has the name of the run's file, or the row holds no snapshot.                                   | The row and the reason, for `runs.retain`.         |
 | `drifted` | The Orchestrator cannot read the Assembly of the run, or the Machine of the Workflow has a different shape. | The row and the snapshot.                          |
 | `failed`  | The restore of the run stopped with an error.                                                               | The run stays live. The next start tries it again. |
 
@@ -110,8 +111,9 @@ Orchestrator cannot read the Assembly that the run holds:
 
 The Orchestrator keeps a drifted run, and you can read it. [`jr2 status`](../reference/cli.md#status) shows its status,
 `drifted`, with the reason. The reason names the Workflow and the two digests, or the Assembly and why it cannot load.
-[`jr2 runs`](../reference/cli.md#runs) does not show it, because `jr2 runs` shows only the runs that run now. jr2 cannot
-move a drifted run to a new Machine. Thus, before you change the Kit version, let the runs end, or cancel them.
+By default, [`jr2 runs`](../reference/cli.md#runs) shows only the live runs, so it does not show a drifted run.
+`jr2 runs --status drifted`, `--status ended` or `--status all` shows it with its reason. jr2 cannot move a drifted run
+to a new Machine. Thus, before you change the Kit version, let the runs end, or cancel them.
 
 ## CANCEL and stop
 
@@ -135,18 +137,40 @@ The operator removes them after the same idle timeout. A run that a Machine fail
 
 `jr2 status` shows a cancelled run with the status `cancelled` and the state that it was in.
 
-## One week of history
+## History
 
-jr2 keeps the row of a run that ended for 7 days after its last write. This is true for each status that is not live:
-`done`, `failed`, `error`, `cancelled`, `lost` and `drifted`. The Orchestrator deletes the older rows when it starts,
-and one time each hour after that. A live run stays, whatever its age. A run that waits at a Gate for a month is still
-there.
+jr2 keeps the row of a run that ended for 30 days after its last write. `runs.retain` in `jr2.config.ts` changes this
+time, for example `runs: { retain: "90d" }`. It is a number and `m`, `h`, `d` or `w`, and it is at least `1h`. This is
+true for each status that is not live: `done`, `failed`, `error`, `cancelled`, `lost` and `drifted`. The Orchestrator
+deletes the older rows when it starts, and one time each hour after that. A live run stays, whatever its age. A run that
+waits at a Gate for a month is still there.
 
-You cannot change the 7 days. jr2 is not the record of the results of a run. A Machine sends its results where they
-belong, such as a pull request. `jr2 status` on a run that ended is for debugging. After the 7 days, `jr2 status` says
-that the run does not exist, and a prefix of its id no longer finds it.
+`jr2 runs --status ended` lists the runs that ended, newest first. `--workflow` and `--since` make the list shorter. jr2
+is not the record of the results of a run. A Machine sends its results where they belong, such as a pull request.
+`jr2 status` on a run that ended is for debugging. After `runs.retain`, `jr2 status` says that the run does not exist,
+and a prefix of its id no longer finds it.
 
-The week of a drifted run starts at the restart or the publish that refused it, not at its last transition.
+The time of a drifted run starts at the restart or the publish that refused it, not at its last transition.
+
+The same time applies to the [Conversations](../reference/glossary.md#conversation) of a run and to the log of each
+[Hook](../reference/glossary.md#hook). The Orchestrator keeps each conversation of an Agent while the run is kept, and
+deletes it with the row of the run. Thus `jr2 logs` reads the conversations of a run that ended, also after its
+[Sandbox](../reference/glossary.md#sandbox) is gone. [Read a conversation](../guides/read-a-conversation.md) gives the
+commands.
+
+### The state volume
+
+The Orchestrator keeps the rows of the runs, the conversations, the Assemblies and the
+[Charts](../reference/glossary.md#chart) on its state volume. A new volume claim is `5Gi` by default, and `jr2 up` keeps
+the size of a claim that exists. `runs.volume` in `jr2.config.ts` sets its size, such as `runs: { volume: "20Gi" }`.
+`jr2 up` makes the claim larger when its StorageClass allows expansion, and refuses otherwise. It never makes a claim
+smaller, because Kubernetes cannot.
+
+A space guard keeps the volume from becoming full. When the volume is more than 80% full, the Orchestrator deletes the
+conversations of the runs that ended, the oldest run first, until the volume is less than 80% full. The rows of the runs
+stay, and each one shows that its conversations went for space. The guard never deletes a conversation of a live run.
+When the volume is more than 95% full and no ended run has a conversation left, the Orchestrator keeps no more entries
+of the open conversations. One conversation also has a limit of 8 MiB, after which the Orchestrator keeps no more of it.
 
 [`jr2 down`](../reference/cli.md#down) deletes the namespace of the Instance, and the store with it. The live runs go
 too.
@@ -160,7 +184,9 @@ too.
 - The Orchestrator never continues a drifted run, and never moves it to a new Machine.
 - The Orchestrator never continues a cancelled run.
 - `CANCEL` is the only run event that `jr2 send` sends without `--gate`. `--keep` goes only with `CANCEL`.
-- jr2 keeps a run that ended for 7 days. The hourly sweep never deletes a live run.
+- jr2 keeps a run that ended for `runs.retain`, 30 days by default. The hourly sweep never deletes a live run.
+- jr2 keeps the conversations of a run for as long as it keeps the run, unless the space guard deletes them first. The
+  space guard never deletes a conversation of a live run.
 
 [Cancel a run](../guides/cancel-a-run.md) and [Watch a run](../guides/watch-a-run.md) give the commands and their
 output.
@@ -168,6 +194,7 @@ output.
 ## Read next
 
 - [Watch a run](../guides/watch-a-run.md)
+- [Read a conversation](../guides/read-a-conversation.md)
 - [Cancel a run](../guides/cancel-a-run.md)
 - [Iterate on a Machine on kind](../guides/iterate-on-a-machine-on-kind.md)
 - [Effects](effects.md), [Workspaces](workspaces.md) and [Converge](converge.md)
@@ -181,7 +208,7 @@ output.
 - [ADR-0025](../reference/decisions/0025-cancel-ends-a-run-stop-parks-it.md): `CANCEL` ends a run, and a stop parks it
 - [ADR-0030](../reference/decisions/0030-a-snapshot-names-the-machine-it-was-written-under.md): a snapshot names the
   Machine that wrote it
-- [ADR-0065](../reference/decisions/0065-a-persist-survives-a-crash-and-history-is-a-week.md): a save survives a crash,
-  and jr2 keeps a week of history
+- [ADR-0065](../reference/decisions/0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md): a save
+  survives a crash, and jr2 keeps history for `runs.retain`
 - [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): a
   run holds the Assembly that it started under

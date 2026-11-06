@@ -16,9 +16,12 @@
 // A frame is one JSON object on one line. Bytes travel as base64. From the Harness:
 //
 //	{"op":"spawn","id":ID,"argv":[...],"env":{NAME:VALUE},"cwd":PATH,"stdin":BOOL}
+//	{"op":"spawn",...,"tty":{"rows":N,"cols":N}}  on a pseudo-terminal (below)
 //	{"op":"stdin","id":ID,"data":B64}
 //	{"op":"stdin-end","id":ID}
 //	{"op":"signal","id":ID,"signal":"SIGTERM"}     to the process group of spawn ID
+//	{"op":"resize","id":ID,"rows":N,"cols":N}      the terminal size of a spawn with a tty
+//	{"op":"pause","id":ID}  {"op":"resume","id":ID}  stop and start reading the output of spawn ID
 //	{"op":"read","id":ID,"path":ABS}
 //	{"op":"write","id":ID,"path":ABS,"data":B64}   makes the missing folders, then the file
 //	{"op":"stat","id":ID,"path":ABS}               follows links
@@ -42,10 +45,22 @@
 // GraceAfterExit after its last output: a background process that keeps the pipes open does not
 // hold the call. Then the spawner closes its ends of the pipes.
 //
-// `stdin`, `stdin-end` and `signal` have no answer when they succeed; a signal to a group that has
-// ended does nothing. A frame that is not JSON, or has no string ID, ends the spawner (exit 2): the
-// Harness and the spawner no longer agree on the channel. A frame with an ID and an unknown op or
-// wrong fields answers `error` with code EINVAL.
+// A spawn with `tty` gets a pseudo-terminal that the spawner opens (/dev/ptmx), as its stdin, stdout
+// and stderr and its controlling terminal, in a session of its own: the shell of a person (`jr2
+// workspace shell`, ADR-0076), in the one domain like each other process that the spawner starts.
+// Its output comes as `out` frames on `stdout`, and `stdin` frames go to the terminal; `stdin-end`
+// closes nothing that the process reads. The terminal ends with the spawn: when the spawner sends
+// `exit`, it closes the terminal, and the kernel hangs up the session.
+//
+// `pause` stops the reads of a spawn's output until `resume`. Its pipes or its terminal fill, and then
+// its writes block, as a process's writes to a slow terminal do. The Harness pauses a person's shell
+// while the socket to the person is full, so the shell's output does not collect in the Harness's
+// memory (workspace-shell.ts). While a spawn is paused, the grace after its exit does not count.
+//
+// `stdin`, `stdin-end`, `signal`, `resize`, `pause` and `resume` have no answer when they succeed;
+// a signal to a group that has ended does nothing. A frame that is not JSON, or has no string ID,
+// ends the spawner (exit 2): the Harness and the spawner no longer agree on the channel. A frame
+// with an ID and an unknown op or wrong fields answers `error` with code EINVAL.
 //
 // When the channel ends, the spawner ends. The processes that it started run on, each in its own
 // process group.
@@ -67,6 +82,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 // GraceAfterExit is how long a spawn's pipes may stay quiet after its process ended before the
@@ -103,6 +119,15 @@ type inFrame struct {
 	Data   *string           `json:"data"`
 	Signal string            `json:"signal"`
 	Path   string            `json:"path"`
+	Tty    *ttySize          `json:"tty"`
+	Rows   int               `json:"rows"`
+	Cols   int               `json:"cols"`
+}
+
+// ttySize is the size of a spawn's pseudo-terminal, in characters.
+type ttySize struct {
+	Rows int `json:"rows"`
+	Cols int `json:"cols"`
 }
 
 // Main is `effector spawner`. It returns the exit code: 0 when the channel ended, 1 when the
@@ -177,6 +202,14 @@ type proc struct {
 	pgid   int
 	stdin  *stdinQueue
 	exited bool
+	// tty is the fd of the terminal's master side, for `resize`, or -1: no tty, or it is closed.
+	// Read and changed under spawner.mu.
+	tty int
+	// paused is true from `pause` to `resume`: readOutput does not read the output. Under spawner.mu.
+	paused bool
+	// ctl is the write end of a pipe that wakes readOutput at each `pause` and `resume`, or -1: not
+	// open yet, or closed. Under spawner.mu.
+	ctl int
 }
 
 // Serve runs the channel until it ends. It is Main without the checks of the files, for a test.
@@ -290,6 +323,28 @@ func (s *spawner) handle(f *inFrame) {
 		if p := s.proc(id); p != nil && p.stdin != nil {
 			p.stdin.end()
 		}
+	case "resize":
+		if f.Rows <= 0 || f.Cols <= 0 || f.Rows > 0xffff || f.Cols > 0xffff {
+			s.fail(id, "EINVAL", fmt.Sprintf("resize: %dx%d is no terminal size", f.Rows, f.Cols))
+			return
+		}
+		s.mu.Lock()
+		if p := s.procs[id]; p != nil && p.tty >= 0 {
+			// Under the lock, so the fd is not closed (and its number used again) during the call.
+			_ = setWinsize(p.tty, f.Rows, f.Cols)
+		}
+		s.mu.Unlock()
+	case "pause", "resume":
+		s.mu.Lock()
+		if p := s.procs[id]; p != nil {
+			p.paused = f.Op == "pause"
+			if p.ctl >= 0 {
+				// Under the lock, so the fd is not closed (and its number used again) during the call.
+				// A full pipe holds wakes already, and readOutput reads `paused` at each wake.
+				_, _ = syscall.Write(p.ctl, []byte{1})
+			}
+		}
+		s.mu.Unlock()
 	case "signal":
 		sig, ok := signalNumbers[f.Signal]
 		if !ok {
@@ -343,6 +398,10 @@ func (s *spawner) spawn(id string, f *inFrame) {
 		s.fail(id, "EINVAL", fmt.Sprintf("spawn: cwd %q is not absolute", f.Cwd))
 		return
 	}
+	if f.Tty != nil && (f.Tty.Rows <= 0 || f.Tty.Cols <= 0 || f.Tty.Rows > 0xffff || f.Tty.Cols > 0xffff) {
+		s.fail(id, "EINVAL", fmt.Sprintf("spawn: %dx%d is no terminal size", f.Tty.Rows, f.Tty.Cols))
+		return
+	}
 	s.mu.Lock()
 	if _, ok := s.procs[id]; ok {
 		s.mu.Unlock()
@@ -350,7 +409,7 @@ func (s *spawner) spawn(id string, f *inFrame) {
 		return
 	}
 	// Held from here, so a second spawn with this id is refused while this one starts.
-	p := &proc{}
+	p := &proc{tty: -1, ctl: -1}
 	s.procs[id] = p
 	s.mu.Unlock()
 	if err := s.start(id, p, f); err != nil {
@@ -372,6 +431,9 @@ func (s *spawner) start(id string, p *proc, f *inFrame) error {
 	path, err := lookPath(f.Argv[0], f.Env["PATH"], f.Cwd)
 	if err != nil {
 		return err
+	}
+	if f.Tty != nil {
+		return s.startTty(id, p, f, path, env)
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
@@ -414,6 +476,106 @@ func (s *spawner) start(id string, p *proc, f *inFrame) error {
 	return nil
 }
 
+// startTty starts a spawn with `tty`: on a new pseudo-terminal, as the leader of a new session
+// whose controlling terminal it is. The process group is the session's first; a job that the shell
+// starts has a group of its own, and the kernel signals it from the terminal (Ctrl-C) or its hang-up.
+func (s *spawner) startTty(id string, p *proc, f *inFrame, path string, env []string) error {
+	master, slave, err := openPty()
+	if err != nil {
+		return err
+	}
+	// Fd once, here: it puts the file in blocking mode, and readOutput sets it back.
+	mfd := int(master.Fd())
+	if err := setWinsize(mfd, f.Tty.Rows, f.Tty.Cols); err != nil {
+		closeAll(master, slave)
+		return err
+	}
+	// A dup for the writes, so `stdin-end` closes it and not the terminal that the output comes on.
+	wfd, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(mfd), syscall.F_DUPFD_CLOEXEC, 0)
+	if errno != 0 {
+		closeAll(master, slave)
+		return &os.SyscallError{Syscall: "fcntl", Err: errno}
+	}
+	writer := &ttyWriter{fd: int(wfd)}
+	cmd := &exec.Cmd{Path: path, Args: f.Argv, Env: env, Dir: f.Cwd, Stdin: slave, Stdout: slave, Stderr: slave,
+		SysProcAttr: &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}}
+	if err := cmd.Start(); err != nil {
+		closeAll(master, slave)
+		_ = writer.Close()
+		return err
+	}
+	// Only the child holds the terminal's slave side now: the master reads EIO when it closes it.
+	_ = slave.Close()
+	pid := cmd.Process.Pid
+	s.mu.Lock()
+	p.pgid = pid
+	p.tty = mfd
+	p.stdin = newStdinQueue(writer)
+	s.mu.Unlock()
+	s.send(map[string]any{"id": id, "op": "started", "pid": pid})
+	go s.relay(id, p, cmd, master, nil)
+	return nil
+}
+
+// openPty opens a new pseudo-terminal: its master side and its slave side, each close-on-exec.
+func openPty() (master, slave *os.File, err error) {
+	master, err = os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	fd := master.Fd()
+	var unlock int32
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCSPTLCK, uintptr(unsafe.Pointer(&unlock)))
+	if errno != 0 {
+		_ = master.Close()
+		return nil, nil, &os.SyscallError{Syscall: "ioctl(TIOCSPTLCK)", Err: errno}
+	}
+	var n uint32
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGPTN, uintptr(unsafe.Pointer(&n))); errno != 0 {
+		_ = master.Close()
+		return nil, nil, &os.SyscallError{Syscall: "ioctl(TIOCGPTN)", Err: errno}
+	}
+	slave, err = os.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		_ = master.Close()
+		return nil, nil, err
+	}
+	return master, slave, nil
+}
+
+// setWinsize sets a terminal's size; the kernel sends SIGWINCH to its foreground group.
+func setWinsize(fd, rows, cols int) error {
+	ws := struct{ row, col, x, y uint16 }{uint16(rows), uint16(cols), 0, 0}
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws)))
+	if errno != 0 {
+		return &os.SyscallError{Syscall: "ioctl(TIOCSWINSZ)", Err: errno}
+	}
+	return nil
+}
+
+// ttyWriter writes to a terminal's master side. readOutput puts the master in non-blocking mode,
+// and a dup shares that mode, so a full terminal answers EAGAIN: the write waits and tries again.
+type ttyWriter struct{ fd int }
+
+func (w *ttyWriter) Write(b []byte) (int, error) {
+	done := 0
+	for done < len(b) {
+		n, err := syscall.Write(w.fd, b[done:])
+		if n > 0 {
+			done += n
+		}
+		switch {
+		case err == syscall.EAGAIN || err == syscall.EINTR:
+			time.Sleep(5 * time.Millisecond)
+		case err != nil:
+			return done, err
+		}
+	}
+	return done, nil
+}
+
+func (w *ttyWriter) Close() error { return syscall.Close(w.fd) }
+
 func closeAll(files ...*os.File) {
 	for _, f := range files {
 		if f != nil {
@@ -435,6 +597,14 @@ func (s *spawner) relay(id string, p *proc, cmd *exec.Cmd, outR, errR *os.File) 
 	if wakeErr != nil {
 		wake = [2]int{-1, -1}
 	}
+	// ctl wakes the loop at each `pause` and `resume`.
+	var ctl [2]int
+	if err := syscall.Pipe2(ctl[:], syscall.O_CLOEXEC|syscall.O_NONBLOCK); err != nil {
+		ctl = [2]int{-1, -1}
+	}
+	s.mu.Lock()
+	p.ctl = ctl[1]
+	s.mu.Unlock()
 	go func() {
 		state, _ := cmd.Process.Wait()
 		// Write the wake first: the loop closes the pipe after it receives the state.
@@ -443,10 +613,20 @@ func (s *spawner) relay(id string, p *proc, cmd *exec.Cmd, outR, errR *os.File) 
 		}
 		done <- state
 	}()
-	state := s.readOutput(id, p, outR, errR, wake[0], done)
+	state := s.readOutput(id, p, outR, errR, wake[0], ctl[0], done)
 	if wake[0] >= 0 {
 		_ = syscall.Close(wake[0])
 		_ = syscall.Close(wake[1])
+	}
+	// A terminal's fd and the ctl pipe are closed below: no `resize` or `pause` may use their
+	// numbers from here.
+	s.mu.Lock()
+	p.tty = -1
+	p.ctl = -1
+	s.mu.Unlock()
+	if ctl[0] >= 0 {
+		_ = syscall.Close(ctl[0])
+		_ = syscall.Close(ctl[1])
 	}
 	closeAll(outR, errR)
 	if p.stdin != nil {
@@ -475,28 +655,27 @@ func (s *spawner) relay(id string, p *proc, cmd *exec.Cmd, outR, errR *os.File) 
 }
 
 // readOutput reads a spawn's two pipes in one loop and sends each chunk, until both pipes end or
-// the process has ended and the pipes stayed quiet for GraceAfterExit. It returns the process's
+// the process has ended and the pipes stayed quiet for GraceAfterExit. A spawn with a tty has one:
+// the terminal's master side as outR, and errR nil; it ends with EIO when no process holds the
+// terminal. It returns the process's
 // state, which comes on done. wake is a pipe that becomes readable when the state is on done, or
-// -1: then the loop looks at done every 10 ms.
+// -1: then the loop looks at done every 10 ms. ctl is a pipe that becomes readable at each `pause`
+// and `resume`, or -1: then the loop looks at `paused` every 10 ms. While the spawn is paused, its
+// output fds are out of the epoll set, and the grace after the exit does not count.
 func (s *spawner) readOutput(
-	id string, p *proc, outR, errR *os.File, wake int, done <-chan *os.ProcessState,
+	id string, p *proc, outR, errR *os.File, wake, ctl int, done <-chan *os.ProcessState,
 ) *os.ProcessState {
 	// Fd puts the file in blocking mode; set it back, so that a read after a spurious wake-up
 	// cannot hold the loop.
-	outFd, errFd := int(outR.Fd()), int(errR.Fd())
-	streams := map[int]string{outFd: "stdout", errFd: "stderr"}
-	ep, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
-	if err == nil {
+	outFd, errFd := int(outR.Fd()), -1
+	streams := map[int]string{outFd: "stdout"}
+	if errR != nil {
+		errFd = int(errR.Fd())
+		streams[errFd] = "stderr"
+	}
+	ep, err := pollFds(outFd, errFd, wake, ctl)
+	if ep >= 0 {
 		defer func() { _ = syscall.Close(ep) }()
-		for _, fd := range []int{outFd, errFd, wake} {
-			if fd < 0 || err != nil {
-				continue
-			}
-			if err = syscall.SetNonblock(fd, true); err == nil {
-				err = syscall.EpollCtl(ep, syscall.EPOLL_CTL_ADD, fd,
-					&syscall.EpollEvent{Events: syscall.EPOLLIN, Fd: int32(fd)})
-			}
-		}
 	}
 	if err != nil {
 		// The spawner cannot read the pipes: end the process, and say why on its stderr.
@@ -513,8 +692,21 @@ func (s *spawner) readOutput(
 		deadline = time.Now().Add(GraceAfterExit)
 	}
 	buf := make([]byte, 64<<10)
-	events := make([]syscall.EpollEvent, 3)
+	events := make([]syscall.EpollEvent, 4)
+	// watched says whether the output fds are in the epoll set: not while the spawn is paused.
+	watched := true
 	for len(streams) > 0 {
+		s.mu.Lock()
+		paused := p.paused
+		s.mu.Unlock()
+		if paused == watched {
+			watched = !paused
+			watchStreams(ep, streams, watched)
+			if watched && ended {
+				// The grace counts again from the resume.
+				deadline = time.Now().Add(GraceAfterExit)
+			}
+		}
 		timeout := -1
 		if !ended && wake < 0 {
 			select {
@@ -524,14 +716,14 @@ func (s *spawner) readOutput(
 				timeout = 10
 			}
 		}
-		if ended {
-			rem := time.Until(deadline)
-			if rem <= 0 {
-				break
+		if paused {
+			if ctl < 0 || (!ended && wake < 0) {
+				timeout = 10
 			}
-			timeout = int(rem / time.Millisecond)
-			if timeout == 0 {
-				timeout = 1
+		} else if ended {
+			var over bool
+			if timeout, over = graceLeft(deadline); over {
+				break
 			}
 		}
 		n, err := syscall.EpollWait(ep, events, timeout)
@@ -545,35 +737,103 @@ func (s *spawner) readOutput(
 		for _, ev := range events[:n] {
 			ready[int(ev.Fd)] = true
 		}
-		// A fixed order when both pipes are ready in one wait: stdout first.
-		for _, fd := range []int{outFd, errFd} {
-			stream, open := streams[fd]
-			if !ready[fd] || !open {
-				continue
-			}
-			r, err := syscall.Read(fd, buf)
-			switch {
-			case r > 0:
-				s.sendOut(id, stream, buf[:r])
-				if ended {
-					// The grace counts from the end of the last send: a slow channel is not a quiet pipe.
-					deadline = time.Now().Add(GraceAfterExit)
-				}
-			case err == syscall.EAGAIN || err == syscall.EINTR:
-			default:
-				_ = syscall.EpollCtl(ep, syscall.EPOLL_CTL_DEL, fd, nil)
-				delete(streams, fd)
-			}
+		if s.readReady(id, ep, streams, ready, buf, outFd, errFd) && ended {
+			// The grace counts from the end of the last send: a slow channel is not a quiet pipe.
+			deadline = time.Now().Add(GraceAfterExit)
 		}
 		if wake >= 0 && ready[wake] {
 			_ = syscall.EpollCtl(ep, syscall.EPOLL_CTL_DEL, wake, nil)
 			end(<-done)
+		}
+		if ctl >= 0 && ready[ctl] {
+			drain(ctl, buf)
 		}
 	}
 	if !ended {
 		state = <-done
 	}
 	return state
+}
+
+// pollFds makes an epoll set that watches each fd that is not -1 for input, each in non-blocking
+// mode. It gives -1 when it cannot make the set, and the set with the error when it cannot add an
+// fd: the caller closes a set that is not -1.
+func pollFds(fds ...int) (int, error) {
+	ep, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
+	if err != nil {
+		return -1, err
+	}
+	for _, fd := range fds {
+		if fd < 0 {
+			continue
+		}
+		if err = syscall.SetNonblock(fd, true); err != nil {
+			return ep, err
+		}
+		err = syscall.EpollCtl(ep, syscall.EPOLL_CTL_ADD, fd, &syscall.EpollEvent{Events: syscall.EPOLLIN, Fd: int32(fd)})
+		if err != nil {
+			return ep, err
+		}
+	}
+	return ep, nil
+}
+
+// graceLeft gives the epoll timeout in milliseconds until the grace deadline, at least 1, and
+// says whether the deadline is past.
+func graceLeft(deadline time.Time) (int, bool) {
+	rem := time.Until(deadline)
+	if rem <= 0 {
+		return 0, true
+	}
+	return max(int(rem/time.Millisecond), 1), false
+}
+
+// watchStreams adds the output fds to the epoll set, or takes them out of it.
+func watchStreams(ep int, streams map[int]string, watched bool) {
+	for fd := range streams {
+		if watched {
+			_ = syscall.EpollCtl(ep, syscall.EPOLL_CTL_ADD, fd,
+				&syscall.EpollEvent{Events: syscall.EPOLLIN, Fd: int32(fd)})
+		} else {
+			_ = syscall.EpollCtl(ep, syscall.EPOLL_CTL_DEL, fd, nil)
+		}
+	}
+}
+
+// readReady reads each ready output fd once and sends what it read, stdout first when both are
+// ready in one wait. An fd that ends or fails leaves the epoll set and streams. It says whether it
+// sent a chunk.
+func (s *spawner) readReady(
+	id string, ep int, streams map[int]string, ready map[int]bool, buf []byte, outFd, errFd int,
+) bool {
+	sent := false
+	for _, fd := range []int{outFd, errFd} {
+		stream, open := streams[fd]
+		if !ready[fd] || !open {
+			continue
+		}
+		r, err := syscall.Read(fd, buf)
+		switch {
+		case r > 0:
+			s.sendOut(id, stream, buf[:r])
+			sent = true
+		case err == syscall.EAGAIN || err == syscall.EINTR:
+		default:
+			_ = syscall.EpollCtl(ep, syscall.EPOLL_CTL_DEL, fd, nil)
+			delete(streams, fd)
+		}
+	}
+	return sent
+}
+
+// drain reads a wake pipe until it is empty. The wakes say only "look at paused again", which the
+// next turn of the read loop does.
+func drain(fd int, buf []byte) {
+	for {
+		if r, _ := syscall.Read(fd, buf); r <= 0 {
+			return
+		}
+	}
 }
 
 // stdinQueue writes a child's stdin in order, without holding the channel: a child that does not
@@ -585,7 +845,7 @@ type stdinQueue struct {
 	ending bool
 }
 
-func newStdinQueue(w *os.File) *stdinQueue {
+func newStdinQueue(w io.WriteCloser) *stdinQueue {
 	q := &stdinQueue{}
 	q.cond = sync.NewCond(&q.mu)
 	go func() {

@@ -1,39 +1,20 @@
-// `jr2 runs` lists the Workflows a run can start beside the live runs (ADR-0070): each with its
-// origin, a Chart wrapper's Charts indented under it, `unrunnable` with its reason. The result on
-// stdout stays the live runs; the listing is activity on stderr, or the result with `--workflows`.
+// `jr2 runs` (ADR-0009): the runs as JSON on stdout, the live ones by default. The Workflows that a
+// run can start are `jr2 workflows` (workflows.test.ts).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { main } from "../src/cli.ts";
-import { JR2Client, type WorkflowListing } from "../src/client.ts";
-import { markListed, renderWorkflows } from "../src/commands/runs.ts";
 import type { Io } from "../src/output.ts";
 
-const LISTING: WorkflowListing[] = [
-  { name: "ping", origin: "machine" },
-  {
-    name: "charted",
-    origin: "machine",
-    wrapper: {
-      body: "body",
-      oneShot: true,
-      charts: [
-        { name: "sample", origin: "file" },
-        { name: "loop", origin: "runtime" },
-        { name: "old", origin: "runtime", unrunnable: 'states.draft.invoke.src: "coder" is not lent' },
-      ],
-    },
-  },
-  { name: "planner", origin: "machine", wrapper: { body: "body", oneShot: false, charts: [] } },
-];
+/** One live run as `GET /runs` summarizes it. */
+const R1 = { runId: "r1", workflow: "ping", status: "active", startedAt: "2026-11-05T10:00:00.000Z", openGates: 0 };
 
-/** A fake Orchestrator: `GET /workflows` answers `listing`, `GET /runs` one live run. */
-function fakeFetch(listing: unknown, seen: string[] = []): Io["fetch"] {
+/** A fake Orchestrator: `GET /runs` answers one live run. */
+function fakeFetch(seen: string[] = []): Io["fetch"] {
   return async (url) => {
     const path = new URL(url).pathname;
     seen.push(path);
-    if (path === "/workflows") return Response.json(listing);
-    if (path === "/runs") return Response.json([{ runId: "r1", workflow: "ping", status: "active", value: "x" }]);
+    if (path === "/runs") return Response.json({ runs: [R1] });
     return new Response(JSON.stringify({ error: "nope" }), { status: 404 });
   };
 }
@@ -51,115 +32,77 @@ function mkIo(fetch: Io["fetch"]): { io: Io; out: () => string; err: () => strin
   return { io, out: () => out.join(""), err: () => err.join("") };
 }
 
-test("each Workflow prints with its origin, and a Chart wrapper's Charts indent under it", () => {
-  assert.deepEqual(renderWorkflows(LISTING).split("\n"), [
-    "workflows:",
-    "  ping (machine)",
-    '  charted (machine, Chart wrapper: body "body", one-shot)',
-    "    charted/sample (chart file)",
-    "    charted/loop (chart)",
-    '    charted/old (chart) unrunnable: states.draft.invoke.src: "coder" is not lent',
-    '  planner (machine, Chart wrapper: body "body")',
-  ]);
-});
-
-test("a Chart the listing also gives at the top level prints once, under its wrapper", () => {
-  const listing: WorkflowListing[] = [
-    ...LISTING,
-    { name: "charted/loop", origin: "runtime" },
-    { name: "gone/orphan", origin: "runtime", unrunnable: 'no Workflow "gone"' },
-  ];
-  const lines = renderWorkflows(listing).split("\n");
-  assert.equal(lines.filter((l) => l.includes("charted/loop")).length, 1);
-  assert.ok(lines.includes('  gone/orphan (chart) unrunnable: no Workflow "gone"'), "an orphan prints at the top");
-});
-
-test("an empty listing says none is registered", () => {
-  assert.match(renderWorkflows([]), /none registered/);
-});
-
-test("`jr2 runs` keeps the live runs as the result and lists the Workflows on stderr", async () => {
-  const { io, out, err } = mkIo(fakeFetch(LISTING));
+test("`jr2 runs` prints the live runs as the result, and reads no Workflow listing", async () => {
+  const seen: string[] = [];
+  const { io, out, err } = mkIo(fakeFetch(seen));
   assert.equal(await main(["runs"], io), 0);
-  const list = JSON.parse(out()) as Array<{ runId: string }>;
   assert.deepEqual(
-    list.map((r) => r.runId),
+    (JSON.parse(out()) as Array<{ runId: string }>).map((r) => r.runId),
     ["r1"],
   );
-  assert.match(err(), /^ {4}charted\/loop \(chart\)$/m);
+  assert.deepEqual(seen, ["/runs"]);
+  assert.doesNotMatch(err(), /workflows/);
 });
 
-test("`jr2 runs --workflows` prints the listing as the result", async () => {
-  const { io, out } = mkIo(fakeFetch(LISTING));
-  assert.equal(await main(["runs", "--workflows"], io), 0);
-  assert.deepEqual(JSON.parse(out()), LISTING);
+// The filters go to `GET /runs` as its query, and the verb reads every page (ADR-0009).
+
+test("`jr2 runs --status --workflow --since` sends the query, and reads each page to the end", async () => {
+  const seen: string[] = [];
+  const r2 = { ...R1, runId: "r2", status: "done", endedAt: "2026-11-05T11:00:00.000Z" };
+  const fetch: Io["fetch"] = async (url) => {
+    const u = new URL(url);
+    if (u.pathname === "/workflows") return Response.json([]);
+    seen.push(u.search);
+    return Response.json(u.searchParams.get("cursor") === "c1" ? { runs: [r2] } : { runs: [R1], next: "c1" });
+  };
+  const { io, out } = mkIo(fetch);
+  assert.equal(await main(["runs", "--status", "all", "--workflow", "ping", "--since", "7d"], io), 0);
+  assert.deepEqual(
+    (JSON.parse(out()) as Array<{ runId: string }>).map((r) => r.runId),
+    ["r1", "r2"],
+  );
+  assert.deepEqual(seen, ["?status=all&workflow=ping&since=7d", "?status=all&workflow=ping&since=7d&cursor=c1"]);
 });
 
-test("a listing that cannot be read is one line, and the runs still print", async () => {
-  const failing: Io["fetch"] = async (url) =>
-    new URL(url).pathname === "/runs" ? Response.json([]) : new Response("{}", { status: 500 });
-  const { io, out, err } = mkIo(failing);
+test("`jr2 runs` with no filter asks for the live runs, with no query", async () => {
+  const seen: string[] = [];
+  const fetch: Io["fetch"] = async (url) => {
+    const u = new URL(url);
+    if (u.pathname === "/runs") seen.push(u.search);
+    return Response.json(u.pathname === "/runs" ? { runs: [] } : []);
+  };
+  const { io } = mkIo(fetch);
   assert.equal(await main(["runs"], io), 0);
-  assert.deepEqual(JSON.parse(out()), []);
-  assert.match(err(), /^workflows: unknown — HTTP 500$/m);
+  assert.deepEqual(seen, [""]);
 });
 
-test("an answer that is no listing reads as unknown, never as none registered", async () => {
-  const { io, out, err } = mkIo(fakeFetch({ error: "a proxy page" }));
-  assert.equal(await main(["runs"], io), 0);
-  assert.equal(JSON.parse(out()).length, 1, "the runs still print");
-  assert.match(err(), /^workflows: unknown — GET \/workflows: the answer is not a listing$/m);
-  assert.doesNotMatch(err(), /none registered/);
+test("a refused query fails the verb with the Orchestrator's words", async () => {
+  const fetch: Io["fetch"] = async (url) =>
+    new URL(url).pathname === "/runs"
+      ? Response.json({ error: 'status "parked" is not one jr2 lists' }, { status: 400 })
+      : Response.json([]);
+  const { io, err } = mkIo(fetch);
+  assert.notEqual(await main(["runs", "--status", "parked"], io), 0);
+  assert.match(err(), /status "parked" is not one jr2 lists/);
 });
 
-test("an Orchestrator older than ADR-0070 answers bare names; each reads as a Machine", async () => {
-  const client = new JR2Client("http://test", fakeFetch(["ping", "loop"]));
-  assert.deepEqual(await client.workflows(), [
-    { name: "ping", origin: "machine" },
-    { name: "loop", origin: "machine" },
-  ]);
-});
+// A dispatched run (ADR-0071) carries `dispatchedBy` in `jr2 runs`, as the Orchestrator sends it.
 
-test("the usage says no verb puts or deletes a runtime Chart", async () => {
-  const { io, err } = mkIo(fakeFetch(LISTING));
-  assert.equal(await main(["runs", "--help"], io), 0);
-  assert.match(err(), /PUT or DELETE \/workflows\/<wrapper>\/charts\/<name>/);
-  assert.match(err(), /an MCP or curl/);
-});
-
-test("`jr2 --help` names the Workflow listing and `--workflows` under `runs`", async () => {
-  const { io, err } = mkIo(fakeFetch(LISTING));
-  await main(["--help"], io);
-  assert.match(err(), /^ {2}runs \[--workflows\] /m);
-  assert.match(err(), /--workflows\s+prints\s+that\s+listing\s+as\s+the\s+result/);
-});
-
-// A dispatched run (ADR-0071) carries `dispatchedBy` after its id in `jr2 runs`, as it is sent.
-
-test("`jr2 runs` puts a dispatched run's `dispatchedBy` after its id, and a plain run has none", async () => {
+test("`jr2 runs` prints a dispatched run's `dispatchedBy` as sent, and a plain run has none", async () => {
   const by = { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 };
   const fetch: Io["fetch"] = async (url) => {
     const path = new URL(url).pathname;
     if (path === "/workflows") return Response.json([]);
-    return Response.json([
-      { runId: "r1", workflow: "review", status: "active", value: "x", dispatchedBy: by },
-      { runId: "r2", workflow: "ping", status: "active", value: "x" },
-    ]);
+    return Response.json({
+      runs: [
+        { ...R1, workflow: "review", dispatchedBy: by },
+        { ...R1, runId: "r2" },
+      ],
+    });
   };
   const { io, out } = mkIo(fetch);
   assert.equal(await main(["runs"], io), 0);
   const [dispatched, plain] = JSON.parse(out()) as Array<Record<string, unknown>>;
-  assert.deepEqual(Object.keys(dispatched!).slice(0, 2), ["runId", "dispatchedBy"]);
   assert.deepEqual(dispatched!.dispatchedBy, by);
   assert.equal("dispatchedBy" in plain!, false);
-});
-
-test("a dispatched run in `placing` keeps both marks after its id", () => {
-  const by = { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 };
-  const run = { runId: "r", workflow: "w", instanceId: "i", status: "active", value: "placing", context: {} };
-  assert.deepEqual(Object.keys(markListed({ ...run, dispatchedBy: by })).slice(0, 3), [
-    "runId",
-    "dispatchedBy",
-    "placing",
-  ]);
 });

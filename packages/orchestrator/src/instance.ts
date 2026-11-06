@@ -14,7 +14,7 @@
 //   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007),
 //      each inside the Assembly its snapshot names (ADR-0069). With no current Assembly the live
 //      rows wait, untouched, and the first publish restores them. Then sweep finished runs older
-//      than a week and collect every Assembly no live row holds, and again every hour (ADR-0065,
+//      than `runs.retain` and collect every Assembly no live row holds, and again every hour (ADR-0065,
 //      ADR-0069);
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
@@ -26,7 +26,16 @@
 
 import { mkdir, readdir, stat } from "node:fs/promises";
 import type { JR2Config } from "./config.ts";
-import { loadConfig } from "./config.ts";
+import { loadConfig, retainMs, STATE_VOLUME_DEFAULT } from "./config.ts";
+import { statSync } from "node:fs";
+import {
+  bytesUnder,
+  ConversationStore,
+  deleteOrphanConversations,
+  fileSystemBytes,
+  guardSpace,
+  quantityBytes,
+} from "./conversations.ts";
 import {
   assemblyDoor,
   heldAssemblies,
@@ -81,6 +90,9 @@ export type InstanceOptions = {
    * its published Assemblies). Nothing else in it is read: the Workflows are the current
    * Assembly's (ADR-0069). */
   dir: string;
+  /** The size of the state volume claim, as `jr2 up` applied it (`JR2_STATE_VOLUME`, ADR-0065): the
+   * space guard measures against it. Absent (host-booted), the config's `runs.volume` or `5Gi`. */
+  stateVolume?: string;
   /** Which Assembly to load (ADR-0069). Default: `resolveAssembly(dir)`. The entrypoint resolves
    * it first, because it reads the config from the same root before it builds the ports. */
   assembly?: ResolvedAssembly;
@@ -119,6 +131,9 @@ export type InstanceOptions = {
   hostname?: string;
   /** Override the durable store. Default: sqlite at `<dir>/.jr2/state.db`. */
   store?: SnapshotStore;
+  /** Override the kept conversations (ADR-0023). Default: sqlite at `<dir>/.jr2/conversations.db`,
+   * or in memory when `store` is supplied. The space guard watches only the default file. */
+  conversations?: ConversationStore;
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
   /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller — wired
@@ -236,13 +251,11 @@ export type RunningInstance = {
   close: () => Promise<void>;
 };
 
-/**
- * How long a finished run's row lives, and how often the sweep looks (ADR-0065). Fixed, not config,
- * like the Sandbox idle timeout: jr2 is not the record of a run's results, and `jr2 status` on an
- * old run is a debugging act. A week is the time a human has to read it.
- */
-const RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+/** How often the sweep looks (ADR-0065). How long an ended run's row lives is `runs.retain` of the
+ * current config (`retainMs`), read at each sweep, so a publish changes it. */
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
+/** How often the space guard looks at the state volume between two sweeps (ADR-0065). */
+const GUARD_EVERY_MS = 60 * 1000;
 
 /** Boot an instance folder into a running orchestrator (discover → restore → serve). */
 export async function startInstance(opts: InstanceOptions): Promise<RunningInstance> {
@@ -255,6 +268,14 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     store = new SqliteSnapshotStore(join(opts.dir, ".jr2", "state.db"));
   }
   await store.init();
+
+  // The kept conversations (ADR-0023): a second SQLite file beside `state.db` on the state volume.
+  // A test that supplies its store keeps them in memory, and no guard measures a volume for it.
+  const stateDir = join(opts.dir, ".jr2");
+  const onVolume = !opts.conversations && !opts.store;
+  const conversations =
+    opts.conversations ?? new ConversationStore(onVolume ? join(stateDir, "conversations.db") : ":memory:");
+  conversations.init();
 
   // Resolved BEFORE the host, and the signing key with it: the host derives every Harness bearer
   // from the key (ADR-0058) — admission, stream, abort, echo. The key is loaded from (or minted
@@ -517,7 +538,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   const waiting = current ? [] : (await store.live()).map((row) => row.runId);
 
   // Right after restore, not before: restore reads live rows only, and a row it marks `lost` or
-  // `drifted` here is written now, so its week starts now (ADR-0065). After the rows, the
+  // `drifted` here is written now, so its `runs.retain` starts now (ADR-0065). After the rows, the
   // Assemblies: restore decided which rows stay live, and so which Assemblies stay held (ADR-0069).
   // A sweep deletes finished rows only, so it never takes a waiting run; and with the restore
   // deferred, every live row is a root, and so is the pointer's target, so the boot collection
@@ -525,11 +546,72 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // A sweep is housekeeping, never a reason to stay up — nor to fail a boot that has already
   // resumed runs: a failed sweep or collection, at boot or on the hour, is logged, and the next
   // hour tries again. The timer holds no process alive.
+  // With no current Assembly, no `runs.retain` is bound, so the rows are not swept: in the Kit bump
+  // window every boot has no current Assembly, and a sweep at the default would delete the history
+  // that a longer `runs.retain` keeps. The first sweep after the publish uses the published value.
+  // The collection still runs. The cutoff is never before the epoch, so a very long `runs.retain`
+  // keeps every row and does not fail the sweep.
+  // The space guard (ADR-0065). It measures the files on the volume against the smaller of the
+  // claim and what `statfs` says, because a hostPath class such as kind's reports the node's disk.
+  // The claim is `runs.volume`, or the default when the config sets none. The files other than the
+  // two databases (the Assemblies, the Charts) are measured at each sweep, and the databases at each
+  // look, so the guard can look every minute and walk the volume only every hour.
+  const dbFiles = ["state.db", "state.db-wal", "conversations.db", "conversations.db-wal"].map((f) =>
+    join(stateDir, f),
+  );
+  const dbBytes = (): number =>
+    dbFiles.reduce((sum, path) => {
+      try {
+        return sum + statSync(path).size;
+      } catch {
+        return sum;
+      }
+    }, 0);
+  let otherBytes = 0;
+  const measureOthers = () => {
+    otherBytes = Math.max(0, bytesUnder(stateDir) - dbBytes());
+  };
+  let guarding = false;
+  const guard = async (): Promise<void> => {
+    if (guarding) return;
+    guarding = true;
+    try {
+      await guardSpace({
+        conversations,
+        used: () => otherBytes + dbBytes(),
+        capacity: () =>
+          Math.min(
+            fileSystemBytes(stateDir),
+            quantityBytes(opts.stateVolume ?? currentConfig?.runs?.volume ?? STATE_VOLUME_DEFAULT) ??
+              Number.POSITIVE_INFINITY,
+          ),
+        isLive: (runId) => host.runIsLive(runId),
+        onSwept: (runId) =>
+          console.log(
+            `space guard: the state volume is more than 80% full — deleted the kept conversations of run ${runId} (ADR-0065)`,
+          ),
+      });
+    } catch (err) {
+      console.error(`space guard failed: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      guarding = false;
+    }
+  };
+  // A run's kept conversations go with its row (ADR-0065), and then the space guard looks.
   const sweep = async (): Promise<string[]> => {
-    await store
-      .sweep(new Date(Date.now() - RETAIN_MS))
-      .catch((err) => console.error(`sweep failed: ${err instanceof Error ? err.message : err}`));
-    return door.collect();
+    if (current) {
+      await store
+        .sweep(new Date(Math.max(0, Date.now() - retainMs(currentConfig?.runs))))
+        .then((swept) => conversations.deleteRuns(swept))
+        .then(() => deleteOrphanConversations(conversations, store))
+        .catch((err) => console.error(`sweep failed: ${err instanceof Error ? err.message : err}`));
+    }
+    const collected = await door.collect();
+    if (onVolume) {
+      measureOthers();
+      await guard();
+    }
+    return collected;
   };
   const collected = await sweep();
   const onCollect =
@@ -545,6 +627,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       .catch((err) => console.error(`collection announce failed: ${err instanceof Error ? err.message : err}`));
   }, SWEEP_EVERY_MS);
   sweeper.unref();
+  // The guard looks every minute too: a conversation can grow fast between two sweeps.
+  const guarder = onVolume ? setInterval(() => void guard(), GUARD_EVERY_MS) : undefined;
+  guarder?.unref();
 
   // 4. Serve, authenticated (ADR-0013) — the tokens and key resolved above.
   // The named Callers (ADR-0078): the names and scopes of the current config, joined per request with
@@ -589,6 +674,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // after boot must show as present the next time anyone asks (ADR-0048/0051).
   const app = createApp(host, auth, {
     charts,
+    conversations,
     dataPlane: opts.dataPlane,
     repos: opts.repos,
     fetchRepo: opts.fetchRepo,
@@ -644,9 +730,11 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       // From that call on, `/agents/*` answers 503 until the listener closes: the Turns are parked
       // for the next boot's restore, not over, so no Harness may read a 404 here (ADR-0026).
       clearInterval(sweeper);
+      if (guarder) clearInterval(guarder);
       await host.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await store.close();
+      conversations.close();
     },
   };
 }

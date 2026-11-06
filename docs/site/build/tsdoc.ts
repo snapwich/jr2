@@ -10,17 +10,17 @@ import { code, type BuildError } from "./markdown.ts";
 
 export type Program = { program: ts.Program; checker: ts.TypeChecker; repo: string };
 
-/** The entry points of `@jr2/hooks` that its Reference page shows, in its order. `door` is not one:
+/** The entry points of `@jr2/orchestrator/hooks` that its Reference page shows, in its order. `door` is not one:
  * the door of the Orchestrator reads it, and a kind does not (ADR-0078). */
 export const HOOKS_MODULES = ["index", "github", "gitlab", "slack", "discord", "webhook"] as const;
 
 /** The program every Reference generator reads: the kit's `internal` root (which holds the
- * Authoring surface and the rest), `@jr2/machines`, and the entry points of `@jr2/hooks`. */
+ * Authoring surface and the rest), `@jr2/machines`, and the entry points of `@jr2/orchestrator/hooks`. */
 export function createProgram(repo: string): Program {
   const roots = [
     "packages/orchestrator/src/internal.ts",
     "packages/machines/src/index.ts",
-    ...HOOKS_MODULES.map((m) => `packages/hooks/src/${m}.ts`),
+    ...HOOKS_MODULES.map((m) => `packages/orchestrator/src/hook-kinds/${m}.ts`),
   ].map((p) => join(repo, p));
   const program = ts.createProgram(roots, {
     target: ts.ScriptTarget.ES2022,

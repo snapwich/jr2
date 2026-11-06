@@ -18,8 +18,10 @@ export type PrinterSource = {
   subscribe(listener: (event: EngineEvent) => void): () => void;
 };
 
-/** Where the lines go — `process.stdout` (the pod log) unless a test collects them. */
-export type PrinterOut = { write(chunk: string): void };
+/** Where the lines go — `process.stdout` (the pod log) unless a test collects them. `keep`, when
+ * present, gets each body of a conversation line as well: the kept conversation (`keep.ts`,
+ * ADR-0023), one entry per body, with the same cut as the print. */
+export type PrinterOut = { write(chunk: string): void; keep?(body: string): void };
 
 /** The name a tool prints under (ADR-0023). A Menu tool surfaces to the model as `mcp__jr2__<name>`
  * (ADR-0013), and the log shows the bare name. An MCP tool, `mcp__<server>__<tool>`, prints as
@@ -137,6 +139,7 @@ export function renderThinkingLevel(model: Model<Api>, asked: string, ran: RanAt
  * Harness hosts the Menu-only Agents of every run. */
 export function printLines(out: PrinterOut, agentName: string, instanceId: string, bodies: string[]): void {
   for (const body of bodies) {
+    out.keep?.(body);
     for (const line of body.split("\n")) out.write(`[${agentName}] [${instanceId}] ${line}\n`);
   }
 }

@@ -1,6 +1,6 @@
 import { defineConfig, secret } from "@jr2/orchestrator";
-import { github } from "@jr2/hooks/github";
-import { gitlab } from "@jr2/hooks/gitlab";
+import { github } from "@jr2/orchestrator/hooks/github";
+import { gitlab } from "@jr2/orchestrator/hooks/gitlab";
 
 export default defineConfig({
   // Each Hook's secret is an entry of the list. jr2 up places GH_HOOK in the Instance Effector, and

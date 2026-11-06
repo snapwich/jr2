@@ -8,7 +8,7 @@ import { JR2Client, type RunFeedEvent } from "../src/client.ts";
 import { childErrorActivity } from "../src/commands/run.ts";
 import { mkHarness } from "./_fixtures.ts";
 
-test("workflows() and list() report registered + live runs", async () => {
+test("workflows() and runs() report registered + live runs", async () => {
   const { client } = await mkHarness();
   // Each a Machine (ADR-0070): the listing names its origin, whichever shape the server answers.
   const listing = await client.workflows();
@@ -16,10 +16,10 @@ test("workflows() and list() report registered + live runs", async () => {
   assert.ok(listing.every((w) => w.origin === "machine"));
 
   const { runId } = await client.start("loop");
-  const list = await client.list();
+  const { runs: list } = await client.runs();
   assert.ok(
     list.some((r) => r.runId === runId && r.workflow === "loop"),
-    "a freshly started run shows in list()",
+    "a freshly started run shows in runs()",
   );
 });
 
@@ -123,7 +123,12 @@ test("send() carries CANCEL, and surfaces the host's refusal of anything else", 
   await assert.rejects(() => client.send(runId, { type: "STEER" }), /accepts: CANCEL/);
 
   await client.send(runId, { type: "CANCEL" });
-  assert.ok(!(await client.list()).some((r) => r.runId === runId), "CANCEL abandons the run — it is no longer live");
+  assert.ok(
+    !(await client.runs()).runs.some((r) => r.runId === runId),
+    "CANCEL abandons the run — it is no longer live",
+  );
+  const [ended] = (await client.runs({ status: "ended" })).runs;
+  assert.deepEqual([ended?.runId, ended?.status], [runId, "cancelled"], "the history lists it, cancelled");
 });
 
 test("candidates() returns the ids sharing a prefix, live and settled", async () => {
@@ -182,7 +187,7 @@ test("events() carries a child's error below an Agent's state, which the Agent's
   assert.equal(childErrorActivity(failed), "child-error: `lint` failed below coder's pick `go` — lint crashed");
 });
 
-test("read() and list() carry `dispatchedBy` for a dispatched run, as the Orchestrator records it (ADR-0071)", async () => {
+test("read() and runs() carry `dispatchedBy` for a dispatched run, as the Orchestrator records it (ADR-0071)", async () => {
   const { client, host } = await mkHarness();
   const by = { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 };
   const { runId } = await host.start("loop", {}, { dispatchedBy: by });
@@ -190,7 +195,7 @@ test("read() and list() carry `dispatchedBy` for a dispatched run, as the Orches
   const read = await client.read(runId);
   assert.deepEqual(read?.dispatchedBy, by);
   assert.equal(read?.output, undefined, "a live run has no output");
-  const listed = (await client.list()).find((r) => r.runId === runId);
+  const listed = (await client.runs()).runs.find((r) => r.runId === runId);
   assert.equal(listed?.dispatchedBy?.slot, "review");
   // `start()` sends no `jr2-dispatched-by` header: a run `jr2 run` starts is nobody's dispatch.
   const { runId: plain } = await client.start("loop");

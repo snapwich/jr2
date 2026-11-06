@@ -275,6 +275,8 @@ export class E2EWorld {
   /** The named Caller tokens this scenario made (ADR-0078), by name: the values, which the fixture
    * gives the server only as digests, in a file the server reads (`JR2_CALLER_DIGESTS`). */
   readonly callerTokens = new Map<string, string>();
+  /** The scopes of each named Caller token this scenario declared, for the config's one `callers` line. */
+  readonly callerScopes = new Map<string, Record<string, unknown>>();
   /** Extra env for the host-booted orchestrator: an instance option of a scenario, such as the
    * address of the Instance Effector that a `mac` Hook's check goes to (`JR2_INSTANCE_EFFECTOR`). */
   readonly serverEnv: Record<string, string> = {};
@@ -526,8 +528,23 @@ export class E2EWorld {
    * a step must invoke it the way a user does. */
   async runCli(
     args: string[],
-    opts: { namespaced?: boolean; as?: string; env?: Record<string, string> } = {},
+    opts: { namespaced?: boolean; as?: string; env?: Record<string, string>; input?: string } = {},
   ): Promise<CliResult> {
+    const started = this.startCli(args, opts);
+    if (opts.input !== undefined) started.child.stdin?.end(opts.input);
+    const code = await new Promise<number>((resolve) => {
+      started.child.on("close", (c) => resolve(c ?? 0));
+    });
+    this.last = { ...started.output(), code };
+    return this.last;
+  }
+
+  /** `jr2 …` started and not waited for: a verb that runs until it is stopped (`jr2 workspace
+   * forward`). The step reads its output so far and ends it. `runCli` is this, waited for. */
+  startCli(
+    args: string[],
+    opts: { namespaced?: boolean; as?: string; env?: Record<string, string>; input?: string } = {},
+  ): { child: ChildProcess; output: () => { stdout: string; stderr: string } } {
     const base = this.sealedEnv();
     // `as`: the named Caller token whose value the binary sends (ADR-0078), with the address as the
     // `--url` flag, the way a CI job outside the cluster attaches.
@@ -551,11 +568,7 @@ export class E2EWorld {
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    const code = await new Promise<number>((resolve) => {
-      child.on("close", (c) => resolve(c ?? 0));
-    });
-    this.last = { stdout, stderr, code };
-    return this.last;
+    return { child, output: () => ({ stdout, stderr }) };
   }
 
   /**
@@ -589,15 +602,16 @@ export class E2EWorld {
   /**
    * Declare a named Caller token in the instance's `jr2.config.ts` and make its value (ADR-0078),
    * as `jr2 up` does: the value stays here, and the server gets its sha-256 alone, in the file it
-   * reads. Before serving: the config rides the Assembly the fixture publishes.
+   * reads. Before serving: the config rides the Assembly the fixture publishes. A scenario can
+   * declare more than one: the one `callers` line names each token declared so far.
    */
   async declareCallerToken(name: string, may: Record<string, unknown>): Promise<void> {
     const config = join(this.dir, "jr2.config.ts");
-    const text = await readFile(config, "utf8");
-    const declared = text.replace(
-      "export default defineConfig({",
-      `export default defineConfig({\n  callers: { tokens: { ${JSON.stringify(name)}: { may: ${JSON.stringify(may)} } } },`,
-    );
+    this.callerScopes.set(name, may);
+    const tokens = Object.fromEntries([...this.callerScopes].map(([n, m]) => [n, { may: m }]));
+    const line = `  callers: { tokens: ${JSON.stringify(tokens)} },`;
+    const text = (await readFile(config, "utf8")).replace(/\n {2}callers: \{ tokens: .*\},$/m, "");
+    const declared = text.replace("export default defineConfig({", `export default defineConfig({\n${line}`);
     assert.notEqual(declared, text, "the scaffolded config has a defineConfig call to declare the token in");
     await writeFile(config, declared);
     const value = mintCallerToken();

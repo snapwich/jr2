@@ -836,9 +836,9 @@ test("a dispatch with a target sits in the Instance Effector beside the http Eff
 // A Hook in the Instance Effector (ADR-0068, ADR-0078): a `mac` Hook's secret is placed there as an
 // Effect's is, and a kind's `posts` hosts join its fence with no secret.
 test("a mac Hook places its secret in the Instance Effector, and a kind's posts join the fence with no secret", async () => {
-  const { github } = await import("@jr2/hooks/github");
-  const { slack } = await import("@jr2/hooks/slack");
-  const { gitlab } = await import("@jr2/hooks/gitlab");
+  const { github } = await import("../src/hook-kinds/github.ts");
+  const { slack } = await import("../src/hook-kinds/slack.ts");
+  const { gitlab } = await import("../src/hook-kinds/gitlab.ts");
   const config: JR2Config = {
     secrets: [
       { name: "GH_HOOK", value: VALUE },
@@ -869,7 +869,7 @@ test("a mac Hook places its secret in the Instance Effector, and a kind's posts 
 });
 
 test("a token Hook's secret from the user's Secret is a key there; one the list does not hold is refused", async () => {
-  const { gitlab } = await import("@jr2/hooks/gitlab");
+  const { gitlab } = await import("../src/hook-kinds/gitlab.ts");
   const config: JR2Config = {
     secrets: [{ name: "GL_HOOK", valueFrom: { secretKeyRef: { name: "forge", key: "token" } } }],
     hooks: { lab: gitlab({ secret: secret("GL_HOOK") }) },
@@ -884,7 +884,7 @@ test("a token Hook's secret from the user's Secret is a key there; one the list 
 });
 
 test("a mac Hook that names a secret the list does not hold is refused with the line to add; a short one is refused", async () => {
-  const { github } = await import("@jr2/hooks/github");
+  const { github } = await import("../src/hook-kinds/github.ts");
   const missing: JR2Config = { hooks: { forge: github({ secret: secret("GH_HOOK") }) } };
   assert.throws(() => refuseEffectSecrets(missing, walk({})), /hooks\.forge names secret\("GH_HOOK"\).*add it/);
   const short: JR2Config = { ...missing, secrets: [{ name: "GH_HOOK", value: "short" }] };

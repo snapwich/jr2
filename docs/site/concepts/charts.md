@@ -107,8 +107,8 @@ wrapper only. It comes from one of two places:
 - A **runtime Chart**: `PUT /workflows/<wrapper>/charts/<name>`, with the Instance token. The Orchestrator keeps it on
   its volume. `DELETE` on the same path removes it.
 
-[`jr2 runs`](../reference/cli.md#runs) lists each named Chart under its wrapper. When a publish removes a part that a
-runtime Chart uses, the Chart stays, and it is unrunnable until a publish gives the part back.
+[`jr2 workflows`](../reference/cli.md#workflows) lists each named Chart under its wrapper. When a publish removes a part
+that a runtime Chart uses, the Chart stays, and it is unrunnable until a publish gives the part back.
 
 ## A run keeps its Chart
 

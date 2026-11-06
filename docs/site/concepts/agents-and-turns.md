@@ -12,10 +12,10 @@ what a state sets for one Turn, and how a Turn ends.
 
 ## Why the work is in Turns
 
-A long conversation in which a model decides all the work is difficult to review and difficult to control. In jr2, each
-state of the Machine asks the Agent for one thing. The Agent does that thing, then picks an event. The Machine decides
-where the run goes next. Thus the Agent does one thing at a time, and the [Console](../reference/glossary.md#console)
-shows the state of each Turn.
+A long [Conversation](../reference/glossary.md#conversation) in which a model decides all the work is difficult to
+review and difficult to control. In jr2, each state of the Machine asks the Agent for one thing. The Agent does that
+thing, then picks an event. The Machine decides where the run goes next. Thus the Agent does one thing at a time, and
+the [Console](../reference/glossary.md#console) shows the state of each Turn.
 
 A model cannot correctly control some parts of a Turn, so jr2 controls them. jr2 sets where the Agent works and how its
 Turn ends. It also decides what to do when a Turn does not end. You do not write that code, so you cannot forget it.
@@ -194,6 +194,16 @@ continue that conversation again. The next Turn with `continue: true` starts a n
 full task again, because jr2 cannot write that prompt for you. A Harness restart is the only exception: the restarted
 Harness keeps the conversation, so the next Turn continues it.
 
+### The record of a conversation
+
+The Harness prints each conversation to its pod log. It also sends each entry to the
+[Orchestrator](../reference/glossary.md#orchestrator) during the Turn: each prompt, the text and the thinking of the
+model, each call and the answer of each pick. The Orchestrator keeps these entries for as long as it keeps the run, so
+you can read the conversation after the Sandbox is gone. The record holds no result of a Working tool or of an MCP tool,
+because such a result is the text that the Agent read, which can hold a secret. The record is for a person to read. The
+model never reads it, and a Turn never continues from it. `jr2 logs` and the bottom drawer of the Console show it. See
+[Read a conversation](../guides/read-a-conversation.md).
+
 ## The Briefing
 
 The Briefing is the text that jr2 itself gives the model. It tells facts that a correct Agent needs and cannot find for
@@ -316,6 +326,7 @@ the model in `models`. A model with no context window gets no Compaction.
 ## Read next
 
 - [Set an Agent's access and Dials](../guides/set-an-agents-access-and-dials.md)
+- [Read a conversation](../guides/read-a-conversation.md)
 - [Give an Agent MCP tools](../guides/give-an-agent-mcp-tools.md) and
   [Write a tool as an MCP server](../guides/write-a-tool-as-an-mcp-server.md)
 - [The Menu](the-menu.md), [Workspaces](workspaces.md) and [Architecture](architecture.md)
@@ -326,6 +337,8 @@ the model in `models`. A model with no context window gets no Compaction.
   [`harness.provider`](../reference/config.md#harness-provider)
 - [ADR-0018](../reference/decisions/0018-instance-agents-are-definitions-jr2-assembles-the-harness.md): an Agent is a
   definition, and a Turn can set its Dials
+- [ADR-0023](../reference/decisions/0023-the-harness-prints-the-conversation.md): the Harness prints the conversation,
+  and the Orchestrator keeps it
 - [ADR-0028](../reference/decisions/0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md): what an
   Agent can do to the Workspace is a part of its definition
 - [ADR-0057](../reference/decisions/0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md): a Turn is its
