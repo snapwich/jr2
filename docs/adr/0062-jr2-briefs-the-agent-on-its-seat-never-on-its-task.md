@@ -30,6 +30,15 @@ whose processes are gone, with no way to know why.
   workflow prompts you again when something is." The last sentence is safe because the wake asks a model that stopped
   with nothing allowed when a pick opens ([ADR-0016](0016-agent-turn-mechanics-are-internal.md)). A line that says a
   Turn ends with exactly one pick would be false for a pick that keeps the Turn open.
+- **An Agent with MCP tools is told that they are not picks.** Its standing part has one more statement: "Your tools
+  named `mcp__<server>__<tool>`, where `<server>` is not `jr2`, act on outside services, not on the workflow. A call to
+  one is not a pick, and it does not end your Turn." Both tool families share the `mcp__` prefix: the Menu's own tools
+  are `mcp__jr2__<event>`, so the statement names `jr2` as the exception. A model that read a call of a service as its
+  pick would stop with the workflow's work not done. The statement names no server and no tool, so it is byte-stable; an
+  Agent with no MCP tools does not get it. A `"none"` Agent with MCP tools is not told that it acts only by picking from
+  its Menu, because its MCP tools act too. The `@model` claim `mcp-then-pick` measures it
+  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md),
+  [ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)).
 - **The Turn part is written once per Submission, and restated when its Allowed picks change.** When something other
   than the Agent's own pick changes them inside the Turn, the Harness appends the Allowed picks again at the next step
   boundary, in a `<jr2-turn>` block of their own: "The workflow's state changed since you last read the Allowed picks.

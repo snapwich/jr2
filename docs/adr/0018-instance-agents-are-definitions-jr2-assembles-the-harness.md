@@ -7,9 +7,9 @@ hands: the [ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-
 Submission — forget it and the Agent is silently mute, the same footgun class ADR-0016 removed from workflows), the
 ADR-0004/0012 sandbox geography (working tools execute in the Harness container against `/work`), the dependency pin
 that must match the Orchestrator's wire, and the image contracts the operator imposes (numeric uid, `:8080` = Ready, git
-present). The only content a user genuinely owns is the persona: model + instructions (+ someday tools/skills).
-GLOSSARY.md already promised the split — an Agent is a definition jr2 maps into the Harness, and the Instance folder
-holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of the things it can).
+present). The only content a user genuinely owns is the Agent's definition: model + instructions, and the MCP servers it
+uses. GLOSSARY.md already promised the split — an Agent is a definition jr2 maps into the Harness, and the Instance
+folder holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of the things it can).
 
 ## Decision
 
@@ -53,6 +53,12 @@ holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of 
   Stand-in. `harness.provider.apiKey` is one implicitly: the held secret `JR2_PROVIDER_API_KEY`, bound to `baseUrl`'s
   host, so it leaves the `jr2-harness-env` Secret and `baseUrl` must be `https://` when a key is set. A known model key
   in `harness.env`, or in an `envFrom` Secret, is refused.
+- **MCP is the one extension contract for tools.** Beyond its Working tools and its Menu, an Agent gets tools only from
+  the MCP servers that its definition names (`mcp`), and jr2 has no tool API of its own
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). The
+  definition names a server by the name that the `mcp` block of `jr2.config.ts` gives it, never by its url or its
+  secret: as `harness` declares reach for models, the `mcp` block declares reach for tools, and the definition makes the
+  choice.
 - **A catalog provider can be moved to a gateway, and stays a catalog provider.** `harness.catalog.<id>.baseUrl`
   replaces the base URL of every model of one pi catalog provider — a LiteLLM gateway in front of Bedrock, for
   `anthropic/…`. The catalog keeps its limits, cost and thinking levels; only the endpoint moves. It is reach, not a
@@ -99,11 +105,13 @@ Definitions keep converge-time safety; overrides pay the later check for the fle
 
 ## Consequences
 
-- The definition contract is data-only: what an Agent may do to the Workspace is part of it (`access`, ADR-0028); custom
-  tools/skills/subagents have no seat yet. When someone needs them, the contract grows deliberately — there is no eject
-  hatch to a foreign harness project (ADR-0027 deleted it).
+- The definition contract is data-only: what an Agent may do to the Workspace is part of it (`access`, ADR-0028), and so
+  are the MCP servers it uses (ADR-0079); an author's own tool is an MCP server. Skills and subagents have no seat yet.
+  When someone needs them, the contract grows deliberately — there is no eject hatch to a foreign harness project
+  (ADR-0027 deleted it).
 - Because definitions are plain data, stock ones compose with no API: a Machine carries `agent(coder)`, and a consumer
-  retunes it with `customize(machine, { agents: { coder: { model: "…" } } })` (ADR-0049, ADR-0009).
+  retunes it with `customize(machine, { agents: { coder: { model: "…" } } })` (ADR-0049, ADR-0009), or rebinds its
+  servers with `{ mcp: [...] }` in the same place.
 - An invalid definition fails at admission, loudly, naming the slot: a model no registry resolves, a malformed field. A
   Machine with no Agent slots is valid — a `workspace()` body parking a Sandbox (ADR-0012) invokes none. Readiness is
   binding `:8080`, with no boot build ahead of it (ADR-0027).

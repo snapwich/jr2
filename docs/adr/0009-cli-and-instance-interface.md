@@ -63,6 +63,10 @@ export default defineConfig({
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): the credentials the Agents use — an
   Anthropic key, read from `process.env`/`.env`, held by the Custodian and never by the Harness (ADR-0059) — and the
   ones an Effect names, which only its Effector holds. Where each goes is read, never declared.
+- **`mcp` is the Instance's MCP servers**
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)): each
+  by a name that the author chooses, remote (`url`, an optional `secret`) or stdio (`command`, `args`), with a
+  `timeout`. An Agent and an `mcp` Effect name a server by that name.
 - **`callers`, `hooks` and `cors`** are the Instance's reach for Callers
   ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)): the named Caller tokens
   and the JWT issuers with their scopes, the Hooks with their credentials and the Hook kinds that the config imports,
@@ -83,8 +87,10 @@ export default defineConfig({
 The kit publishes to npm under `@jr2/*`; stock Agent definitions ship in **`@jr2/agents`** (coder, reviewer, …), and a
 package may ship whole Machines with their Agents and image inside (ADR-0049). Because a definition is plain data
 (ADR-0018), composition needs no API: a Machine carries `agent(coder)`, a workflows file exports a packaged Machine
-as-is or through `customize(machine, { agents: { coder: { model: "…" } } })`. Adding tools/skills waits on the
-definition contract growing that seat (ADR-0018).
+as-is or through `customize(machine, { agents: { coder: { model: "…" } } })`. An Agent's tools beyond its own come from
+the MCP servers that it names, and the same `customize()` rebinds them
+([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). Adding
+skills waits on the definition contract growing that seat (ADR-0018).
 
 ## Orchestrator HTTP API (hono, run-addressed-by-id)
 

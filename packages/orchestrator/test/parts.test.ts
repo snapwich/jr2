@@ -146,6 +146,7 @@ const NOTHING = {
   composesSandbox: false,
   openBodies: [],
   models: [],
+  mcpAgents: [],
 };
 
 test("no Agents anywhere is an empty answer — a workflow may invoke none, and compose no Sandbox", () => {
@@ -286,7 +287,8 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
     // Instance Harness (ADR-0031).
     openBodies: [],
     models: ["anthropic/claude-haiku", "anthropic/claude-x", "vllm/qwen"],
-    instanceHarness: { models: ["anthropic/claude-haiku"] },
+    instanceHarness: { models: ["anthropic/claude-haiku"], servers: [] },
+    mcpAgents: [],
   });
 });
 
@@ -717,7 +719,7 @@ test("the walk carries each Open body, its allowed models, and the Instance Harn
     [{ slot: "body", path: [], lends: { agents: ["coder"] } }],
   );
   assert.deepEqual(carried.models, ["anthropic/claude-sonnet-4-6", "openai/gpt-5"], "every model a key is placed for");
-  assert.deepEqual(carried.instanceHarness, { models: ["anthropic/claude-sonnet-4-6", "openai/gpt-5"] });
+  assert.deepEqual(carried.instanceHarness, { models: ["anthropic/claude-sonnet-4-6", "openai/gpt-5"], servers: [] });
   assert.deepEqual(carried.openAgents, [], "an Open body reports nothing Open");
   assert.deepEqual(carried.openSlots, []);
 
@@ -794,7 +796,7 @@ test("a lent Agent's Turn runs where its own access says, so the allowed models 
     initial: "a",
     states: { a: { invoke: { src: "body", input: {} } } },
   });
-  assert.deepEqual(partsOf([noneLent]).instanceHarness, { models: ["prov/B", "prov/C"] });
+  assert.deepEqual(partsOf([noneLent]).instanceHarness, { models: ["prov/B", "prov/C"], servers: [] });
 });
 
 test("a dispatch is carried as plain data: the Workflow, the wait, the placement, the target's origin, its token, the slot schema (ADR-0071)", () => {

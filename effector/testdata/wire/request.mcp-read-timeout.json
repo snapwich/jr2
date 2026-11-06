@@ -1,0 +1,6 @@
+{
+  "kind": "mcp",
+  "mcp": { "server": "notes", "read": { "uri": "file:///release/notes.md" } },
+  "timeoutMs": 90000,
+  "maxBody": 1024
+}

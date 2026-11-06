@@ -8,7 +8,16 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { definitionFault, frameFault, loadHarnessSpec, resolveDefinition, type AgentDefinition } from "../src/spec.ts";
+import {
+  definitionFault,
+  frameFault,
+  loadHarnessSpec,
+  mcpAdmissionFault,
+  mcpServersFor,
+  resolveDefinition,
+  type AgentDefinition,
+  type HarnessSpec,
+} from "../src/spec.ts";
 
 const coder: AgentDefinition = { instructions: "be the coder", model: "anthropic/claude-x" };
 
@@ -130,4 +139,115 @@ test("loadHarnessSpec: the catalog round-trips, and an entry that is not an http
     () => loadHarnessSpec({ JR2_HARNESS_JSON: JSON.stringify({ catalog: { anthropic: { baseUrl: "http://x" } } }) }),
     /catalog\.anthropic needs \{ baseUrl: "https:\/\/…" \}/,
   );
+});
+
+// MCP (ADR-0079): the definition names servers and allowlists; the mounted spec holds each server's
+// transport, its secret's NAME and its timeout. The Harness joins them per conversation.
+test("definitionFault: an mcp list is { server, tools? } entries, each server once", () => {
+  assert.equal(
+    definitionFault("coder", { ...coder, mcp: [{ server: "slack", tools: ["post"] }, { server: "notes" }] }),
+    undefined,
+  );
+  assert.equal(definitionFault("coder", { ...coder, mcp: [{ server: "slack", tools: "*" }] }), undefined);
+  assert.match(definitionFault("coder", { ...coder, mcp: { slack: ["post"] } }) ?? "", /`mcp` is not a list/);
+  assert.match(
+    definitionFault("coder", { ...coder, mcp: [{ server: "slack", tools: "post" }] }) ?? "",
+    /mcp\[0\] is not/,
+  );
+  assert.match(definitionFault("coder", { ...coder, mcp: [{ tools: "*" }] }) ?? "", /mcp\[0\] is not/);
+  assert.match(
+    definitionFault("coder", { ...coder, mcp: [{ server: "a", tools: "*" }, { server: "a" }] }) ?? "",
+    /names the server "a" twice/,
+  );
+});
+
+test("loadHarnessSpec reads the mcp servers, and refuses one it cannot run", () => {
+  const mcp = {
+    slack: { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeoutMs: 60_000 },
+    notes: { command: "notes-mcp", args: ["--root", "/work"], timeoutMs: 90_000 },
+  };
+  assert.deepEqual(loadHarnessSpec({ JR2_HARNESS_JSON: JSON.stringify({ mcp }) }).mcp, mcp);
+  for (const bad of [{ url: "https://x" }, { command: "x", timeoutMs: 1 }, { url: 3, timeoutMs: 1 }, "x"]) {
+    assert.throws(
+      () => loadHarnessSpec({ JR2_HARNESS_JSON: JSON.stringify({ mcp: { a: bad } }) }),
+      /JR2_HARNESS_JSON's mcp\.a needs \{ url, secret\?, timeoutMs \} or \{ command, args, timeoutMs \}/,
+    );
+  }
+});
+
+test("mcpServersFor joins the definition's list to the Instance's servers, in the definition's order", () => {
+  const spec: HarnessSpec = {
+    mcp: {
+      slack: { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeoutMs: 60_000 },
+      open: { url: "http://mcp.lan/mcp", timeoutMs: 5_000 },
+      notes: { command: "notes-mcp", args: [], timeoutMs: 90_000 },
+    },
+  };
+  const def = {
+    mcp: [{ server: "notes" }, { server: "slack", tools: ["post"] }, { server: "open", tools: "*" as const }],
+  };
+  assert.deepEqual(mcpServersFor(def, spec), {
+    servers: [
+      { name: "notes", transport: { kind: "stdio", command: "notes-mcp", args: [] }, tools: "*", timeoutMs: 90_000 },
+      {
+        name: "slack",
+        transport: { kind: "http", url: "https://mcp.slack.example/mcp" },
+        secret: "SLACK_TOKEN",
+        tools: ["post"],
+        timeoutMs: 60_000,
+      },
+      { name: "open", transport: { kind: "http", url: "http://mcp.lan/mcp" }, tools: "*", timeoutMs: 5_000 },
+    ],
+  });
+  assert.deepEqual(mcpServersFor({}, spec), { servers: [] });
+  const missing = mcpServersFor({ mcp: [{ server: "jira", tools: "*" }] }, spec);
+  assert.ok("fault" in missing);
+  assert.match(
+    missing.fault,
+    /^the definition names the MCP server "jira", which this Instance does not declare — it declares "slack", "open", "notes"/,
+  );
+  // An inherited key is no server.
+  const inherited = mcpServersFor({ mcp: [{ server: "constructor", tools: "*" }] }, spec);
+  assert.ok("fault" in inherited && /"constructor", which this Instance does not declare/.test(inherited.fault));
+  // A remote server with no list, or an empty one, is no grant: the second fence of ADR-0079's rule.
+  for (const entry of [{ server: "slack" }, { server: "slack", tools: [] }]) {
+    const none = mcpServersFor({ mcp: [entry] }, spec);
+    assert.ok("fault" in none, JSON.stringify(entry));
+    assert.match(none.fault, /names the remote MCP server "slack" with no tools — a remote server takes a list/);
+  }
+  // A stdio server takes no list: the Harness does not widen a list that `jr2 up` did not see.
+  const listed = mcpServersFor({ mcp: [{ server: "notes", tools: ["read"] }] }, spec);
+  assert.ok("fault" in listed && /gives the stdio MCP server "notes" a tools list/.test(listed.fault));
+});
+
+test("mcpAdmissionFault: a stdio server is admitted only where the Harness has a domain (ADR-0079)", () => {
+  const spec: HarnessSpec = {
+    mcp: {
+      slack: { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeoutMs: 60_000 },
+      notes: { command: "notes-mcp", args: [], timeoutMs: 90_000 },
+    },
+  };
+  const remote = { mcp: [{ server: "slack", tools: ["post"] }] };
+  const stdio = { mcp: [{ server: "slack", tools: ["post"] }, { server: "notes" }] };
+  assert.equal(mcpAdmissionFault(remote, spec, false), undefined);
+  assert.equal(mcpAdmissionFault(remote, spec, true), undefined);
+  assert.equal(mcpAdmissionFault(stdio, spec, true), undefined);
+  assert.equal(
+    mcpAdmissionFault(stdio, spec, false),
+    'the definition names the stdio MCP server "notes", and this Harness has no domain to start it in: ' +
+      "a Menu-only Agent gets remote servers only (ADR-0079)",
+  );
+  // mcpServersFor's fault comes first, with or without a domain.
+  assert.match(
+    mcpAdmissionFault({ mcp: [{ server: "jira", tools: "*" }] }, spec, false)!,
+    /"jira", which this Instance/,
+  );
+});
+
+test("definitionFault: a tool listed twice for one server is refused (ADR-0079)", () => {
+  assert.equal(
+    definitionFault("coder", { ...coder, mcp: [{ server: "slack", tools: ["post", "read", "post"] }] }),
+    'agent "coder": mcp lists the tool "post" of the server "slack" twice — list each tool once (ADR-0079)',
+  );
+  assert.equal(definitionFault("coder", { ...coder, mcp: [{ server: "slack", tools: ["post", "read"] }] }), undefined);
 });

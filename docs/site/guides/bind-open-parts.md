@@ -98,7 +98,9 @@ others. A Machine that names its slots, such as `repos: { app: open }`, takes on
 
 `agents` takes the fields of the definition of an Agent, by slot. Each field goes over the field that the author wrote.
 Thus `{ model }` changes only the model, and the coder keeps the instructions of `task`. You can also change other
-fields, such as `thinkingLevel` or `instructions`.
+fields, such as `thinkingLevel` or `instructions`. `{ mcp }` replaces the whole list of the MCP servers of the Agent.
+`jr2 up` refuses a server name that the `mcp` block of `jr2.config.ts` does not declare, and prints the line with `mcp`
+(see [Give an Agent MCP tools](give-an-agent-mcp-tools.md#bind-the-servers-of-a-packaged-machine)).
 [`AgentDefinition`](../reference/authoring-surface/type-agentdefinition.md) gives the fields.
 
 ## Bind the parts of a Machine that you compose
@@ -125,11 +127,14 @@ When `task` is a child of your Machine, give it `branch` in its input. Only the 
 
 ## Bind the Open parts of an Effect
 
-A packaged Machine can leave the url of an `http` [Effect](../reference/glossary.md#effect), the argv of a `command`, or
-the name of a secret Open. Bind them with `effects`, by the slot of the Effect:
-`customize(machine, { effects: { notify: { url } } })`. One object binds all the Open parts of one Effect. You bind each
-part one time, to a value. No run chooses it. [`EffectBinding`](../reference/authoring-surface/type-effectbinding.md)
-gives the values, and [Run a command or call a URL with an Effect](run-a-command-or-call-a-url.md) shows an Effect.
+A packaged Machine can leave the url of an `http` [Effect](../reference/glossary.md#effect), the argv of a `command`,
+the name of a secret, or the server and the tool of an `mcp` Effect Open. Bind them with `effects`, by the slot of the
+Effect: `customize(machine, { effects: { notify: { url } } })`, or
+`customize(machine, { effects: { post: { server: "slack-acme", tool: "post_message" } } })`. One object binds all the
+Open parts of one Effect. You bind each part one time, to a value. No run chooses it.
+[`EffectBinding`](../reference/authoring-surface/type-effectbinding.md) gives the values, and
+[Run a command or call a URL with an Effect](run-a-command-or-call-a-url.md) shows an Effect. A bound server is a name
+of the `mcp` block. Its secret comes from that block, so an `mcp` Effect has no Open secret.
 
 ## Bind the look of a Gate
 
@@ -143,8 +148,8 @@ still answer the Gate with `jr2 send`. [Answer a Gate from a forge](answer-a-gat
 - `jr2 up` refuses a registered Machine that leaves a part Open. It changes nothing in the cluster:
   `refusing: workflow "<name>" leaves <part> open — bind it where the Machine is registered: export const machine = customize(<import>, <binding>)  (<adr>)`.
   `<part>` is one of `its Repo Slots`, `Repo Slot "<slot>"`, `Agent "<slot>"`, or `the <parts> of Effect "<slot>"`,
-  where `<parts>` is such as `url` or `url and secret`. For a child Machine, `(on the Machine composed as "<slot>")`
-  comes after `open`.
+  where `<parts>` is such as `url`, `url and secret`, `server` or `server and tool`. For a child Machine,
+  `(on the Machine composed as "<slot>")` comes after `open`.
 - `jr2 up` refuses an Open part on a Machine that a state writes in its `invoke.src`, because no `customize()` gets to
   it. Put that Machine under `actors`:
   `refusing: workflow "<name>" leaves <part> open on a Machine invoked inline — no customize() reaches an actor without a slot key; declare that Machine under setup({ actors }) and bind it there  (ADR-0049, <adr>)`
@@ -170,6 +175,9 @@ still answer the Gate with `jr2 send`. [Answer a Gate from a forge](answer-a-gat
 - `customize()` refuses `open` or a function as the value of an Effect's part:
   ``customize(): the <kind> Effect "<slot>"'s <part> is bound once, to a value — not `open` again: no run chooses an Effect's <part> (ADR-0054)``.
   For a function, the text says `a function of the run` in place of `` `open` again ``.
+- `jr2 up` refuses an Agent that names an MCP server that the `mcp` block does not declare:
+  `refusing: workflow "<name>": Agent "<slot>" names the MCP server "<server>", which the mcp block declares "<names>" — bind the Agent to a declared server where the Machine is registered: export const machine = customize(<import>, { agents: { <slot>: { mcp: [<entries>] } } }); or declare it in jr2.config.ts: mcp: { "<server>": { url: "https://<host>/mcp", secret: "<SECRET>" } } (ADR-0079)`.
+  For a child Machine, the line names the child, and `customize()` goes through `actors`.
 - An Agent does not start a [Turn](../reference/glossary.md#turn) while its model is Open:
   ``agent "<slot>" has an Open model — nobody bound it; bind it where the Machine is registered (`customize(<machine>, { agents: { <slot>: { model: "<provider>/<model>" } } })`), because a packaged Machine cannot pick a model on your behalf (ADR-0054)``.
   `jr2 up` refuses this case first.

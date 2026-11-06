@@ -204,7 +204,11 @@ type PartBinding<P> = P extends "url"
       ? { secret: string }
       : P extends "target"
         ? { target: { url: string; token: NamedSecret } }
-        : never;
+        : P extends "server"
+          ? { server: string }
+          : P extends "tool"
+            ? { tool: string }
+            : never;
 
 /** A union of object types as their intersection: one binding object with every key. */
 type Intersected<U> = (U extends unknown ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
@@ -619,6 +623,12 @@ function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBindi
             `secret that holds its Instance token: ${effectBindingShape("target")} (ADR-0071)`,
         );
       }
+    }
+    if ((part === "server" || part === "tool") && (typeof value !== "string" || value === "")) {
+      throw new Error(
+        `customize(): the mcp Effect "${name}"'s ${part} is bound to a name, a string: ` +
+          `${effectBindingShape(part)} (ADR-0054, ADR-0079)`,
+      );
     }
     if (part === "secret" && typeof value !== "string") {
       throw new Error(

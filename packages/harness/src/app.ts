@@ -30,12 +30,14 @@ import {
   conversationDirs,
   engineSeat,
   freeDir,
+  mcpToolsSeat,
   readRecord,
   recorderAt,
   startRecord,
   type ConversationRecorder,
   type RecordFault,
   type EngineSeat,
+  type McpToolsSeat,
   type RecordedConversation,
 } from "./record.ts";
 import {
@@ -77,12 +79,17 @@ export type ConversationSeat = {
   /** Where the engine keeps its part of the conversation, and the record it continues from when
    * that part is unreadable (ADR-0031). */
   engineSeat: EngineSeat;
+  /** Where the conversation's MCP tools are kept, fixed at its first Turn (ADR-0079). */
+  mcpTools: McpToolsSeat;
 };
 
 export type HarnessAppDeps = {
   /** Build the turn executor for one conversation — `turn.ts`'s `runSubmissionFor` in
    * production (`main.ts` composes it), a stub in wire tests. */
   runSubmissionFor: (seat: ConversationSeat) => RunSubmission;
+  /** A conversation this Harness no longer holds (the live set freed it): what it alone held ends,
+   * as its stdio MCP servers do (ADR-0079). Omitted, nothing ends. */
+  conversationFreed?: (agentName: string, instanceId: string) => void;
   /** Reject an admission the turn could not run — the reason, or undefined to accept. Takes the
    * RESOLVED definition (this Submission's dials already layered on), because since ADR-0049 the
    * definition and the dials arrive together and a turn runs the resolution of both: an
@@ -211,6 +218,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
       instanceId,
       appendMessage: (message) => created.appendMessage(message),
       engineSeat: engineSeat(dir, () => created.historyView().messages, recordFault),
+      mcpTools: mcpToolsSeat(dir, recordFault),
     });
     created = recorded
       ? Conversation.rebuilt(recorded, run, recorder, { sweepWaitMs: deps.sweepWaitMs })
@@ -435,6 +443,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     for (const [k, conversation] of conversations) {
       if (held.has(k) || conversation.busy) continue;
       conversations.delete(k);
+      deps.conversationFreed?.(conversation.agentName, conversation.instanceId);
       if (root !== undefined) freeDir(conversationDir(root, conversation.agentName, conversation.instanceId));
       freed++;
     }

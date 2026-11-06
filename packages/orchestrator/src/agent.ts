@@ -58,6 +58,44 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
  * tells what each value gives. */
 export type WorkspaceAccess = "write" | "read" | "none";
 
+// One entry of an Agent's `mcp` list (ADR-0079): a server of the config's `mcp` block, by its name,
+// and the allowlist. An object, so that `resources` can join `tools` later. The TYPE cannot say
+// which servers take a list: that is the config's (remote or stdio), so `jr2 up` says it.
+/**
+ * One MCP server that an Agent uses, and the tools that it may call there.
+ *
+ * - `server` is a name of the `mcp` block of `jr2.config.ts`. `jr2 up` refuses a name that the
+ *   block does not declare, and prints the `customize()` line that binds the Agent to one it does.
+ * - `tools` is the allowlist. A remote server needs it: a list of tool names, or `"*"` for every
+ *   tool. The Harness offers and runs only those tools. When Workspace code in the Agent's Sandbox
+ *   can spend the server's secret, `jr2 up` takes only `"*"`, because a list would then not be a
+ *   limit. A stdio server takes no `tools`: the Agent gets every tool of the server.
+ *
+ * The model reads each tool as `mcp__<server>__<tool>`. A tool name in the list must keep that name
+ * within `[A-Za-z0-9_-]` and 128 characters.
+ *
+ * @example
+ * ```ts
+ * import { agent } from "@jr2/orchestrator";
+ *
+ * export const triage = agent({
+ *   model: "anthropic/claude-haiku-5-5",
+ *   instructions: "You read the ticket and post a summary to the channel.",
+ *   workspace: "none",
+ *   mcp: [{ server: "slack-acme", tools: ["post_message", "read_channel"] }],
+ * });
+ * ```
+ *
+ * @see docs/reference/decisions/0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md
+ */
+export type AgentMcpServer = {
+  /** A server name of the `mcp` block of `jr2.config.ts`. */
+  server: string;
+  /** The allowlist: tool names of the server, or `"*"` for every tool. Required for a remote
+   * server; absent for a stdio server. */
+  tools?: readonly string[] | "*";
+};
+
 // The plain-data Agent definition (ADR-0018): IDENTITY plus one default. A Turn's Frame — what it
 // is about and where it works — is not here and cannot be (ADR-0057): a Worktree exists only
 // once a run has cut it, so no definition written before the run could name one.
@@ -130,6 +168,13 @@ export type AgentDefinition = {
    * - `"none"`: no Working tools. The Agent only reads its prompt and picks from its Menu. Its Turn
    *   runs on the Instance Harness, not in a Sandbox, so it needs no `workspace()` around it. */
   workspace?: WorkspaceAccess;
+  // Reach for tools (ADR-0079): names only. The url and the secret are the Instance's, in the
+  // config's `mcp` block, so a packaged Machine ships no credential and a composer rebinds the list.
+  /** The MCP servers whose tools the Agent gets, each with its allowlist: see
+   * {@link AgentMcpServer}. The tools join the Agent's tools, after its Working tools and before
+   * its Menu. A call to one is not a pick, and the Turn goes on after it. Default: none. A composer
+   * replaces the whole list with `customize(machine, { agents: { <slot>: { mcp: [...] } } })`. */
+  mcp?: readonly AgentMcpServer[];
   // Read by the Orchestrator alone (ADR-0002): the admission strips it, and the model never reads it.
   /** May a Caller send this Agent a Steering message? Default: `true`. With `false`,
    * `POST /runs/:runId/steering` and `jr2 steer` refuse it, and `GET /runs/:runId/agents` says

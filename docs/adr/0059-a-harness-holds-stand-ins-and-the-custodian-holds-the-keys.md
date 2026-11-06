@@ -50,7 +50,7 @@ decision generalizes that container. It holds every credential the Harness in it
     each Sandbox, whatever the count of its Agents.
   - The **fetch Stand-in** is public, `jr2-held-JR2_SANDBOX_TOKEN`. `jr2-upload-pack` holds it as a constant. The
     Custodian puts the fetch token in its place on the fetch route alone, and refuses it on every agent route.
-- **The Harness reads its Menu itself.** There is no MCP. For each Submission, `menu.ts` reads
+- **The Harness reads its Menu itself.** No MCP carries the Menu. For each Submission, `menu.ts` reads
   `GET /agents/<iid>/surface` and delivers a pick with `POST /agents/<iid>/events`, both to the Custodian's control
   socket, `/run/jr2/custodian/control.sock`, with the control Stand-in as the bearer and the slot it states for the
   conversation (ADR-0076). `menu-tools.ts` gives pi each accepted event as a tool. The tool names stay
@@ -124,7 +124,10 @@ decision generalizes that container. It holds every credential the Harness in it
     `paths` gives 403. It is checked after Envoy removes dot segments and reads `\` as `/` and `..;` as `..`, and the
     upstream gets that path. So IIS and Tomcat cannot read a different path. A credential header sent twice gives 400.
   - The swap: in each header the secret names, the Stand-in alone, or one auth scheme and the Stand-in
-    (`Bearer <Stand-in>`), becomes the value. Nothing else is rewritten.
+    (`Bearer <Stand-in>`), becomes the value. Nothing else is rewritten. The Stand-in chooses the secret: when several
+    secrets are bound to one target and one header, the header gets the value of the secret whose Stand-in it carries.
+    So two MCP servers of one service, with two tokens, can be in one pod
+    ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)).
   - Every credential header that is not the product of a swap is removed. A request with no swap gets 403 and never
     leaves the pod: `jr2 custodian: <target> needs the stand-in of <NAME> in <headers>`.
   - Envoy opens its own TLS to the target, verifies the chain against `upstream.crt` and the name against the target's
@@ -203,23 +206,25 @@ decision generalizes that container. It holds every credential the Harness in it
   and `harness.catalog` (a catalog provider id → `{ baseUrl }`). The list serves both sides
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). `harness.provider.apiKey` is an entry
   too, implicitly: `JR2_PROVIDER_API_KEY`, bound to its `baseUrl`'s host. `loadConfig` checks the shape in both worlds.
-- **Naming is placement: a pod gets the held secrets something in it names.** Placement is read, never declared
-  (`secretPlacementsOf`), and an entry's `hosts`, `headers` and `paths` are its binding — where the Custodian may put
-  the value — never its placement:
+- **Naming is placement: a pod gets the held secrets something in it names, and a Custodian holds what its pod's Agents
+  name.** Placement is read, never declared (`secretPlacementsOf`), and an entry's `hosts`, `headers` and `paths` are
+  its binding — where the Custodian may put the value — never its placement:
 
-  | Pod                   | The held secrets its Custodian holds                                                       |
-  | --------------------- | ------------------------------------------------------------------------------------------ |
-  | A Workspace's Sandbox | the names its `workspace()` lists under `secrets: [...]`, and the model keys of its Agents |
-  | The Instance Harness  | the model keys of the `"none"` Agents it hosts, and nothing else                           |
+  | Pod                   | The held secrets its Custodian holds                                                                                                 |
+  | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+  | A Workspace's Sandbox | the names its `workspace()` lists under `secrets: [...]`, the model keys of its Agents, and the secrets of the MCP servers they name |
+  | The Instance Harness  | the model keys of the `"none"` Agents it hosts, and the secrets of the MCP servers they name                                         |
 
   A model key is claimed by the PROVIDER: an Agent names its model, and jr2 knows which keys that provider reads
   (`MODEL_KEYS`; the custom provider's id for `JR2_PROVIDER_API_KEY`). An Agent's Turns run in the Workspace below which
   it is declared, down to the next `workspace()`, unless it is `"none"`, whose Turns run at the Instance Harness
-  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)). A `"none"` Agent cannot execute code, so the
-  Instance Harness loses nothing by holding only model keys. Listing a model key under a `workspace()`'s `secrets` is
-  allowed, and `jr2 up` reports it as redundant. A name a `workspace()` lists that the list does not hold is refused,
-  with the line to add. An entry nothing names — no `workspace()`, no provider, no Effect — goes nowhere, and `jr2 up`
-  warns. `jr2 up` reports per pod:
+  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)). An MCP server's secret is claimed by the Agent
+  that names the server in its `mcp` list (ADR-0079), and held in the pod where that Agent's Turns run. The rule is the
+  same for every pod: a `"none"` Agent cannot execute code, so the Instance Harness holds only what its Agents name, and
+  only the Harness process spends it. Listing a model key under a `workspace()`'s `secrets` is allowed, and `jr2 up`
+  reports it as redundant. A name a `workspace()` lists that the list does not hold is refused, with the line to add. An
+  entry nothing names — no `workspace()`, no provider, no Effect, no MCP server that an Agent or an Effect names — goes
+  nowhere, and `jr2 up` warns. `jr2 up` reports per pod:
   `Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`.
 
   `jr2 up` alone checks the claimed entries (`heldSecretsOf`), host-side, because `.env` values are absent in-cluster.
@@ -231,14 +236,14 @@ decision generalizes that container. It holds every credential the Harness in it
   | R2  | A held-secret name that is `JR2_*` or a proxy or trust variable.                                                                                                                                                                                                                                                                                                                                    |
   | R3  | One name held twice, or held and set by `harness.env`.                                                                                                                                                                                                                                                                                                                                              |
   | R4  | Not exactly one of `value`/`valueFrom`; an empty value; a byte outside `0x20`–`0x7E`; leading or trailing space.                                                                                                                                                                                                                                                                                    |
-  | R5  | A claimed entry with no `hosts` where no default exists; a wildcard, userinfo, a non-`https` scheme, a bare-host path, a bad port; two secrets on one host in one header.                                                                                                                                                                                                                           |
-  | R6  | A `headers` entry that is not a lowercase token, or that frames or routes the request; a duplicate.                                                                                                                                                                                                                                                                                                 |
-  | R7  | `provider.apiKey` with a non-`https` `baseUrl`; a non-`https` catalog `baseUrl`.                                                                                                                                                                                                                                                                                                                    |
+  | R5  | A claimed entry with no `hosts` where no default exists; a wildcard, userinfo, a non-`https` scheme, a bare-host path, a bad port.                                                                                                                                                                                                                                                                  |
+  | R6  | A `headers` entry that is not a lowercase token, or that frames or routes the request; a duplicate; explicit `headers` on an MCP server's secret that leave out `authorization`, where the Harness sends its Stand-in.                                                                                                                                                                              |
+  | R7  | `provider.apiKey` with a non-`https` `baseUrl`; a non-`https` catalog `baseUrl`; an MCP server with a `secret` and a non-`https` `url`.                                                                                                                                                                                                                                                             |
   | R8  | A catalog key that is not a known provider, or that is the custom provider's id.                                                                                                                                                                                                                                                                                                                    |
-  | R9  | Explicit `hosts` on a known model key that leave out where a carried Agent's provider sends its calls.                                                                                                                                                                                                                                                                                              |
+  | R9  | Explicit `hosts` on a known model key that leave out where a carried Agent's provider sends its calls, or on an MCP server's secret that leave out the host of the `url` of a server that names it.                                                                                                                                                                                                 |
   | R10 | A `secretKeyRef` whose Secret or key does not exist.                                                                                                                                                                                                                                                                                                                                                |
   | R11 | While a secret is held: `harness.env` sets a proxy or trust variable.                                                                                                                                                                                                                                                                                                                               |
-  | R12 | A `paths` entry that does not start with `/`, or holds `..`, `;`, `\`, `%2e`, `%2f` or `%5c`.                                                                                                                                                                                                                                                                                                       |
+  | R12 | A `paths` entry that does not start with `/`, or holds `..`, `;`, `\`, `%2e`, `%2f` or `%5c`; explicit `paths` on an MCP server's secret that do not cover the path of the server's `url`.                                                                                                                                                                                                          |
   | R13 | A held value that also reaches the Harness: its Secret loaded by `harness.envFrom`, its key read by a `harness.env` `secretKeyRef`, or its literal set by `harness.env`. A kit Secret (`jr2-instance`, `jr2-held-*`, `jr2-instance-effector`, `jr2-effector-*`, `<sandbox>-effector`, `jr2-git-*`, and each pod's credentials, `jr2-instance-harness-token` and `<sandbox>-token`) named by either. |
   | R14 | A held secret's name that is also a key of a Secret that `harness.envFrom` names. The message names the Secret, the key and the held secret.                                                                                                                                                                                                                                                        |
 
@@ -249,10 +254,11 @@ decision generalizes that container. It holds every credential the Harness in it
   Each message names the config path, never a value, and says what to write instead. A SigV4 or ADC credential in
   `harness.env` is warned about, not refused. A known model key with no `hosts` is bound to the host its provider's
   calls go to: the host of `harness.catalog.<id>.baseUrl` when set, else pi's catalog host. The key and the calls then
-  read one config and cannot drift. `MODEL_KEYS` is pi's data at the pin, written as plain data by `just model-keys` (a
-  script in `@jr2/harness`) at each pi bump, so the Orchestrator has no pi dependency. A test in `@jr2/harness` checks
-  the table against pi, and checks that the file is the script's exact text. So a pi bump that moves a provider, or a
-  hand edit of the file, fails the default gate until the recipe runs.
+  read one config and cannot drift. An MCP server's secret with no `hosts` is bound to the host of the `url` of each
+  server that names it, in the header `authorization`, in the same way. `MODEL_KEYS` is pi's data at the pin, written as
+  plain data by `just model-keys` (a script in `@jr2/harness`) at each pi bump, so the Orchestrator has no pi
+  dependency. A test in `@jr2/harness` checks the table against pi, and checks that the file is the script's exact text.
+  So a pi bump that moves a provider, or a hand edit of the file, fails the default gate until the recipe runs.
 
 - **A catalog provider can move to a gateway.** pi has no env var for a catalog provider's base URL. It hands the
   provider the model it is given. So `resolveModel` returns a copy of the catalog model with `baseUrl` replaced, for
@@ -382,7 +388,7 @@ decision generalizes that container. It holds every credential the Harness in it
   provider's key variable is not set at all. The call then has no key (a catalog provider) or sends the custom
   provider's placeholder `unused`, and it fails. This holds in a Workspace and in the Instance Harness alike. The fix is
   a definition that names the provider; in a Workspace, the key under the `workspace()`'s `secrets` also works. The
-  Instance Harness has no such list: its pod holds only the model keys of the `"none"` Agents it hosts.
+  Instance Harness has no such list: its pod holds only what the `"none"` Agents it hosts name.
 - **TLS-only bindings.** A key for a plain-HTTP endpoint is refused (R7). A LAN `llama-server --api-key` needs TLS and
   its CA in `caBundle`, or no key.
 - **No proxy chaining.** The Custodian cannot forward to a corporate proxy. R11 says so rather than fail silently.

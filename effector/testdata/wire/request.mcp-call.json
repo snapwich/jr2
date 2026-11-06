@@ -1,0 +1,8 @@
+{
+  "kind": "mcp",
+  "mcp": {
+    "server": "slack-acme",
+    "call": { "tool": "post_message", "arguments": { "channel": "#releases", "text": "v1 is out", "draft": null } }
+  },
+  "maxBody": 65536
+}

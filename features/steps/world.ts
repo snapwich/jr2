@@ -40,6 +40,7 @@ import {
 } from "@jr2/orchestrator/internal";
 import type { Browser, Page } from "playwright";
 import { startFakeProvider, type FakeProvider } from "./fake-provider.ts";
+import { LOOKUP_TOOL, orderLookupTool, startFakeMcp, type FakeMcp } from "./fake-mcp.ts";
 import { suiteOf, takeProfileLock } from "../lib/model-lock.ts";
 import type { InstalledKit } from "./dist-kit.ts";
 
@@ -230,6 +231,16 @@ export class E2EWorld {
   /** This scenario's Effect secret (ADR-0068): the kind instance's `echo-token`, which only the
    * Instance Effector holds. The steps look for every form of it in what came back. */
   echoToken?: string;
+  /** @kind and @model: the fake remote MCP server this scenario's pods reach (ADR-0079), on the
+   * host. See `fake-mcp.ts`. */
+  mcp?: FakeMcp;
+  /** @kind: the values of the two secrets of the fake MCP server, `MCP_A_KEY` and `MCP_B_KEY`, by
+   * name. The config binds each to the server's host in `authorization`, and two servers of the
+   * `mcp` block, `lookup-a` and `lookup-b`, name one each (ADR-0079, ADR-0059). */
+  mcpKeys?: Record<string, string>;
+  /** @model: the payment status of each order the `mcp-then-pick` claim's fake server knows, by
+   * order id: each trial's driver adds its own before it starts the run. */
+  readonly mcpOrders = new Map<string, string>();
   /** @kind: the `forge`, `chat` and `lab` Hooks' secrets, per scenario (`setupKind`). */
   ghHook?: string;
   chatSigning?: string;
@@ -327,6 +338,21 @@ export class E2EWorld {
     this.extraEnv.JR2_CHAT_SIGNING = this.chatSigning;
     this.glHook = `gl-${randomBytes(12).toString("hex")}`;
     this.extraEnv.JR2_GL_HOOK = this.glHook;
+    // The fake remote MCP server (ADR-0079): HTTPS under the tier's CA, on another port of the
+    // address the pods reach the scripted model at, with a leaf of its own. It takes two keys, one
+    // for each server of the `mcp` block that names it, so the Custodian must choose each value by
+    // the Stand-in a request carries (ADR-0059): both keys are bound to one host in one header.
+    const keyA = `mcp-a-${randomBytes(12).toString("hex")}`;
+    const keyB = `mcp-b-${randomBytes(12).toString("hex")}`;
+    this.mcpKeys = { MCP_A_KEY: keyA, MCP_B_KEY: keyB };
+    this.mcp = await startFakeMcp({
+      tools: [LOOKUP_TOOL],
+      tls: issueLeaf(await fakeProviderCa(), address),
+      tokens: [keyA, keyB],
+    });
+    this.extraEnv.JR2_FAKE_MCP_URL = `https://${address}:${this.mcp.port}${this.mcp.path}`;
+    this.extraEnv.JR2_MCP_A_KEY = keyA;
+    this.extraEnv.JR2_MCP_B_KEY = keyB;
   }
 
   /**
@@ -361,6 +387,11 @@ export class E2EWorld {
     await rename(tmp, join(MODEL_DIR, "model-endpoint.json"));
     const key = process.env.JR2_MODEL_API_KEY;
     if (key) this.extraEnv.JR2_MODEL_API_KEY = key;
+    // The `mcp-then-pick` claim's fake MCP server (ADR-0079): every converge lists its tools from
+    // the check pod, so it is served for every scenario. This tier has no CA of its own, so it is
+    // plain HTTP with no secret.
+    this.mcp = await startFakeMcp({ tools: [orderLookupTool(this.mcpOrders)] });
+    this.extraEnv.JR2_FAKE_MCP_URL = `http://${await kindHostAddress()}:${this.mcp.port}${this.mcp.path}`;
   }
 
   /**
@@ -396,6 +427,8 @@ export class E2EWorld {
     this.stub = undefined;
     await this.provider?.close();
     this.provider = undefined;
+    await this.mcp?.close();
+    this.mcp = undefined;
     if (this.namespace) {
       await execKubectl(["delete", "namespace", this.namespace, "--ignore-not-found", "--wait=false"]).catch(() => {});
     }

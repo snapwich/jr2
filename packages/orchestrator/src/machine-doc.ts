@@ -61,7 +61,19 @@ export type EffectDoc =
   /** A dispatch (ADR-0071): the Workflow it starts a run of, whether it waits, and the other
    * Orchestrator's origin (`<open>` while a package leaves it Open); no target is this Orchestrator.
    * The token's secret is named on the parts, never here: the target is what a reader routes on. */
-  | { kind: "dispatch"; workflow: string; wait: boolean; target?: string; timeoutMs: number };
+  | { kind: "dispatch"; workflow: string; wait: boolean; target?: string; timeoutMs: number }
+  /** An mcp Effect (ADR-0079): what it asks of which server, by the server's name in the `mcp`
+   * block (`<open>` while a package leaves it Open), and the author's timeout, when it set one. */
+  | {
+      kind: "mcp";
+      op: "call" | "read" | "prompt";
+      server: string;
+      tool?: string;
+      uri?: string;
+      prompt?: string;
+      timeoutMs?: number;
+      idempotent: boolean;
+    };
 
 /** One state of the Machine; `states` nests in document order. */
 export type MachineStateDoc = {
@@ -420,6 +432,19 @@ function effectDoc(parts: EffectParts): EffectDoc {
       wait,
       ...(target === undefined ? {} : { target: target === open ? "<open>" : target.url }),
       timeoutMs,
+    };
+  }
+  if (parts.kind === "mcp") {
+    const { op, server, tool, uri, prompt, timeoutMs, idempotent } = parts;
+    return {
+      kind: "mcp",
+      op,
+      server: server === open ? "<open>" : server,
+      ...(tool !== undefined ? { tool: tool === open ? "<open>" : tool } : {}),
+      ...(uri !== undefined ? { uri } : {}),
+      ...(prompt !== undefined ? { prompt } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      idempotent,
     };
   }
   const { argv, timeoutMs, secrets, pin } = parts;

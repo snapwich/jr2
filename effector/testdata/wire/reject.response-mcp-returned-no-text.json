@@ -1,0 +1,6 @@
+{
+  "effect": "5e2a7c41-8d3b-4f9e-a1c6-2b7d9e0f3a58",
+  "replica": { "name": "jr2-instance-effector-7d9f8-abcde", "address": "10.244.0.17:8082" },
+  "state": "settled",
+  "output": { "outcome": "returned", "isError": true }
+}

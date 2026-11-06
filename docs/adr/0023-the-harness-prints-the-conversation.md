@@ -34,11 +34,14 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   invisible to every other jr2 process there.
 - **Reasoning prints, and so does each pick's answer; a Working tool's result does not.** Prompts, assistant text,
   thinking, tool calls with truncated inputs, and the answer to each Menu pick. The file contents, command output, and
-  API responses a Working tool returns never print. This is one cut serving two purposes, which is why it is a boundary
-  and not an unfinished implementation: a Working tool's results are whatever the Agent happened to read, which is where
-  a leaked secret lands, and they are also most of the bytes. A pick's answer is one bounded text per pick, and the
-  bullet below states what it can still carry. Every user message the model reads prints as a prompt — the Frame's
-  prompt with its Turn part, a nudge, and a Turn part the Harness restated at a step boundary
+  API responses a Working tool returns never print, and neither does the result of an MCP tool
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)), for
+  the same reasons. An MCP call prints as `<server>/<tool>`, so it never prints as a pick does. This is one cut serving
+  two purposes, which is why it is a boundary and not an unfinished implementation: a Working tool's results are
+  whatever the Agent happened to read, which is where a leaked secret lands, and they are also most of the bytes. A
+  pick's answer is one bounded text per pick, and the bullet below states what it can still carry. Every user message
+  the model reads prints as a prompt — the Frame's prompt with its Turn part, a nudge, and a Turn part the Harness
+  restated at a step boundary
   ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)), which prints once as
   `[<agent>] [<iid>] [prompt] <jr2-turn>` where the model read it.
 - **A pick's answer prints after its call, as the model received it.** A Menu call's result is jr2's own text: the

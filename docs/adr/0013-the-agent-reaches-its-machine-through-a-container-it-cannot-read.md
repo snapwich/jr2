@@ -47,10 +47,10 @@ is needed either (ADR-0006).
   So the Agent's sole control-plane peer is a container it can reach but whose credential it cannot read. That is what
   makes ADR-0006's "the Agent never steers the workflow" **enforced** rather than advertised.
 
-- **The Harness presents the Menu to its model itself.** There is no MCP server and no MCP client. `menu.ts` turns each
-  accepted event into a Menu item, with the event's JSON Schema as its parameters, and turns a pick into one
-  `POST …/events` — and, for an outstanding pick, the polls of its delivery, inside the same tool call. The engine runs
-  one model answer's calls in the model's order
+- **The Harness presents the Menu to its model itself.** No MCP server serves the Menu, and no MCP client reads it.
+  `menu.ts` turns each accepted event into a Menu item, with the event's JSON Schema as its parameters, and turns a pick
+  into one `POST …/events` — and, for an outstanding pick, the polls of its delivery, inside the same tool call. The
+  engine runs one model answer's calls in the model's order
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)), and only the first pick of a model
   answer runs. It imports nothing from pi: `menu-tools.ts` gives each item to pi as a tool. A harness that only speaks
   MCP would get a second presenter over the same `menu.ts`, not a second Menu. The receipt comes back as prose
@@ -154,7 +154,9 @@ is needed either (ADR-0006).
 - **The operator needs no change.** ADR-0001 made sidecars generic container fragments the operator schedules without
   understanding; the Custodian is exactly that. `kubeSandbox` composes it (plus the token Secret, written right after
   the CR with the CR as its owner from birth, so Kubernetes reaps it with the Sandbox and no path leaks it — ADR-0001).
-- **Nothing in jr2 speaks MCP.** The Orchestrator, the Harness and the CLI carry no MCP dependency.
+- **The control plane speaks no MCP.** The Orchestrator and the CLI carry no MCP dependency, and no MCP carries the
+  Menu. The Harness and the Instance Effector speak MCP only as clients of an author's servers
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)).
 - **One container holds the Sandbox's tokens and every model key.** A fault in the Custodian's engine is a fault in the
   one container that holds both. ADR-0059 records the trade.
 - **The `@kind` e2e tier owns the pod → Orchestrator leg** — the pod's Harness actually calls its tool through the

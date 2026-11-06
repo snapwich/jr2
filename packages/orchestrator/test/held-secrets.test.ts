@@ -274,7 +274,7 @@ test("R4: exactly one source, a present value, and one a header can carry", () =
   assert.match(refusal(held({ value: "a\rb" })), /outside printable ASCII/);
 });
 
-test("R5: hosts must be given where no default exists, exact, TLS, and one header per host per secret", () => {
+test("R5: hosts must be given where no default exists, exact, and TLS", () => {
   // No hosts on a claimed name with no default: R5 refuses — `hosts` is the binding, and a pod
   // claims the name. A name no pod claims is not normalized at all, `hosts` or none.
   assert.match(refusal(held({ hosts: undefined })), /hosts is absent.*no single default host/);
@@ -293,14 +293,22 @@ test("R5: hosts must be given where no default exists, exact, TLS, and one heade
   ] as const) {
     assert.match(refusal(held({ hosts: [entry] })), why, entry);
   }
-  assert.match(
-    refusal({
-      secrets: [
-        { name: "A_KEY", value: SECRET, hosts: ["gw.example.com"], headers: ["authorization", "x-api-key"] },
-        { name: "B_KEY", value: SECRET, hosts: ["https://gw.example.com/other"], headers: ["x-api-key"] },
-      ],
-    }),
-    /B_KEY and A_KEY are both bound to gw\.example\.com:443 in header x-api-key/,
+});
+
+test("jr2 up accepts two secrets on one host in one header in one pod (ADR-0059, ADR-0079)", () => {
+  // Two Slack workspaces in one pod: each server's token rides `Authorization: Bearer` to one host.
+  const { manifest } = rules({
+    secrets: [
+      { name: "A_KEY", value: SECRET, hosts: ["gw.example.com"], headers: ["authorization", "x-api-key"] },
+      { name: "B_KEY", value: `${SECRET}-2`, hosts: ["https://gw.example.com/other"], headers: ["x-api-key"] },
+    ],
+  });
+  assert.deepEqual(
+    manifest.secrets.map((s) => [s.name, s.hosts.map((h) => `${h.host}:${h.port}`), s.headers]),
+    [
+      ["A_KEY", ["gw.example.com:443"], ["authorization", "x-api-key"]],
+      ["B_KEY", ["gw.example.com:443"], ["x-api-key"]],
+    ],
   );
 });
 
@@ -478,4 +486,89 @@ test("a held secret's Stand-in is secret, its own pod's, a valid header value, a
   assert.notEqual(a, standIn("ANTHROPIC_API_KEY"), "not the public form");
   // Over many pods, none carries the OAuth mark pi reads (a signature that would is signed again).
   for (let i = 0; i < 2000; i++) assert.ok(!heldStandIn(key, `ws-${i}`, "ANTHROPIC_API_KEY").includes("sk-ant-oat"));
+});
+
+// An MCP server's secret (ADR-0079): bound to the host of the url of each server that names it, in
+// `authorization` alone, when the entry names no `hosts`; R7 wants an https url for a server with a
+// secret; R9 refuses explicit `hosts` that leave out a naming server's host.
+test("an MCP server's secret with no hosts is bound to its url's host, in authorization; explicit hosts keep theirs", () => {
+  const mcp: JR2Config["mcp"] = {
+    a: { url: "https://mcp.a.example/mcp", secret: "A_TOKEN" },
+    b: { url: "https://mcp.b.example:8443/mcp", secret: "A_TOKEN" },
+  };
+  const { manifest } = rules({ secrets: [{ name: "A_TOKEN", value: SECRET }], mcp });
+  assert.deepEqual(manifest.secrets[0]?.hosts, [
+    { host: "mcp.a.example", port: 443, leaf: leafStem("mcp.a.example", 443) },
+    { host: "mcp.b.example", port: 8443, leaf: leafStem("mcp.b.example", 8443) },
+  ]);
+  assert.deepEqual(manifest.secrets[0]?.headers, ["authorization"]);
+  // `headers` written keep theirs when they hold `authorization`; `hosts` written that hold the url's
+  // host keep theirs too; `paths` written that cover the url's path keep theirs.
+  const own = rules({
+    secrets: [
+      {
+        name: "A_TOKEN",
+        value: SECRET,
+        hosts: ["mcp.a.example", "mcp.b.example:8443"],
+        headers: ["authorization", "x-token"],
+        paths: ["/mcp"],
+      },
+    ],
+    mcp,
+  });
+  assert.deepEqual(own.manifest.secrets[0]?.headers, ["authorization", "x-token"]);
+  assert.deepEqual(own.manifest.secrets[0]?.paths, ["/mcp"]);
+  // `headers` that leave out `authorization`, where the Harness sends the Stand-in, are refused.
+  assert.throws(
+    () =>
+      rules({
+        secrets: [
+          { name: "A_TOKEN", value: SECRET, hosts: ["mcp.a.example", "mcp.b.example:8443"], headers: ["x-token"] },
+        ],
+        mcp,
+      }),
+    {
+      message:
+        'secrets[0].headers leaves out "authorization", where the Harness sends the Stand-in of A_TOKEN to ' +
+        "mcp.a.url — each call of that server would arrive with no credential. Add it, or drop headers to take " +
+        "that default (ADR-0059, ADR-0079)",
+    },
+  );
+  // `paths` that do not cover the url's path, by the Custodian's prefix rule, are refused.
+  for (const paths of [["/other"], ["/mc"], ["/mcp/v2"]]) {
+    assert.throws(
+      () => rules({ secrets: [{ name: "A_TOKEN", value: SECRET, paths }], mcp }),
+      {
+        message:
+          "secrets[0].paths does not cover /mcp, the path of mcp.a.url, whose secret A_TOKEN is — each call of that " +
+          'server would be refused with 403. Add "/mcp", or drop paths (ADR-0059, ADR-0079)',
+      },
+      paths.join(),
+    );
+  }
+  for (const paths of [["/"], ["/mcp"], ["/other", "/m/", "/mcp"]]) {
+    assert.doesNotThrow(() => rules({ secrets: [{ name: "A_TOKEN", value: SECRET, paths }], mcp }), paths.join());
+  }
+  // A server that is not named does not bind: nothing claims its secret.
+  assert.deepEqual(
+    heldSecretsOf({ secrets: [{ name: "A_TOKEN", value: SECRET }], mcp }, new Set()).manifest.secrets,
+    [],
+  );
+});
+
+test("R7 and R9 for an MCP server: an https url with a secret, and hosts that hold the url's host", () => {
+  assert.match(
+    refusal({
+      secrets: [{ name: "A_TOKEN", value: SECRET }],
+      mcp: { "a-b": { url: "http://mcp.a.example/mcp", secret: "A_TOKEN" } },
+    }),
+    /^mcp\.a-b\.url must be an https:\/\/ URL — the server has a secret, A_TOKEN, .*process\.env\.A_B_URL/,
+  );
+  assert.match(
+    refusal({
+      secrets: [{ name: "A_TOKEN", value: SECRET, hosts: ["gw.example.com"] }],
+      mcp: { a: { url: "https://mcp.a.example/mcp", secret: "A_TOKEN" } },
+    }),
+    /secrets\[0\]\.hosts leaves out mcp\.a\.example, the host of mcp\.a\.url, whose secret A_TOKEN is/,
+  );
 });

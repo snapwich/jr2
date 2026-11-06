@@ -208,10 +208,10 @@ page that uses a term links to the page that owns it, and does not explain the t
 | Concept                           | The terms that it owns                                                                                              |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `concepts/machines-and-workflows` | Machine, Workflow, the door (the run input), Vocabulary, Emit                                                       |
-| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, `continue`, Briefing, Working tools, Runaway, Compaction, Steering message               |
+| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, `continue`, Briefing, Working tools, MCP tools, Runaway, Compaction, Steering message    |
 | `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                      |
 | `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a Hook; Gate slot, look, `reply`                      |
-| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, dispatched by, at-most-once, `fromPick`                              |
+| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, `mcp`, dispatched by, at-most-once, `fromPick`                       |
 | `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, cut, Size, Placing, Lease, Continuity, Sandbox Image, User Container |
 | `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                            |
 | `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                     |
@@ -243,10 +243,12 @@ The first link in `## Read next` is the Concept in this table. A Guide can link 
 | Guides                                                                                   | The Concept                       |
 | ---------------------------------------------------------------------------------------- | --------------------------------- |
 | `start-a-run`, `write-a-workflow`                                                        | `concepts/machines-and-workflows` |
-| `set-an-agents-access-and-dials`                                                         | `concepts/agents-and-turns`       |
+| `set-an-agents-access-and-dials`, `give-an-agent-mcp-tools`                              | `concepts/agents-and-turns`       |
+| `write-a-tool-as-an-mcp-server`                                                          | `concepts/agents-and-turns`       |
 | `answer-a-gate`, `answer-a-gate-from-a-forge`                                            | `concepts/gates`                  |
 | `steer-an-agent`                                                                         | `concepts/agents-and-turns`       |
 | `run-a-command-or-call-a-url`, `push-and-sign-a-branch`, `start-a-run-from-a-run`        | `concepts/effects`                |
+| `call-an-mcp-tool-from-a-machine`                                                        | `concepts/effects`                |
 | `look-inside-a-sandbox`, `add-tools-to-the-sandbox`, `size-a-workspace`                  | `concepts/workspaces`             |
 | `cut-a-worktree`                                                                         | `concepts/workspaces`             |
 | `bind-open-parts`, `publish-a-machine-as-an-npm-package`                                 | `concepts/composition`            |

@@ -116,9 +116,11 @@ To isolate two sets of Workflows, use two Instances. Each Instance has its own n
 ## The Harness
 
 The Harness is jr2's own server for the Turns of Agents. It speaks to the model provider. It gives the model the Agent's
-Menu and its Working tools. It executes each Working tool that the model calls, and sends each pick through the
-Custodian. Each program that a Working tool starts runs confined with Landlock. The Harness holds no Agents of its own.
-Each Turn brings the Agent's definition with it. [Agents and Turns](agents-and-turns.md) tells what happens in a Turn.
+Working tools, its [MCP tools](../reference/glossary.md#mcp-tools) and its Menu. It executes each Working tool that the
+model calls, and sends each pick through the Custodian. It is the MCP client of the Agent: it calls each MCP tool on its
+server, a remote one through the Custodian, or a stdio one that it starts. Each program that a Working tool starts runs
+confined with Landlock, and so does each stdio MCP server. The Harness holds no Agents of its own. Each Turn brings the
+Agent's definition with it. [Agents and Turns](agents-and-turns.md) tells what happens in a Turn.
 
 The Harness has two placements:
 
@@ -128,8 +130,8 @@ The Harness has two placements:
   Harness serves all the Agents of the Sandbox.
 - **As the Instance Harness.** The Instance Harness is one StatefulSet for each Instance, `jr2-instance-harness`. Each
   Turn of a Menu-only Agent (`workspace: "none"`) runs here. Its pod has a Harness and a Custodian, and no Worktree. It
-  keeps each conversation on its volume while a run can continue it. `jr2 up` converges it when a Machine of the
-  Instance has a Menu-only Agent.
+  runs no program of an Agent, so its Agents can use only remote MCP servers. It keeps each conversation on its volume
+  while a run can continue it. `jr2 up` converges it when a Machine of the Instance has a Menu-only Agent.
 
 A Harness answers only the Orchestrator. The Orchestrator sends a bearer token on each call, and the Harness accepts no
 call without it, except its health check. `jr2 up` also converges NetworkPolicies that let only the Orchestrator's pods
@@ -147,8 +149,8 @@ Harness. The Agent executes no code in it. It does two things:
   forwards. It refuses all other routes. The Harness sends the first four on a Unix socket in `/run/jr2`. A confined
   program cannot make a socket there, and the Custodian refuses a request on it that does not have the control Stand-in.
   The fetch asks go to port `8081` on loopback.
-- It holds the [Held secrets](../reference/glossary.md#held-secret) of its pod, such as a model API key. It puts the
-  value into the requests that go to the hosts of each Held secret.
+- It holds the [Held secrets](../reference/glossary.md#held-secret) of its pod, such as a model API key or the token of
+  an MCP server. It puts the value into the requests that go to the hosts of each Held secret.
 
 The Custodian runs Envoy, from a [Pinned image](../reference/glossary.md#pinned-image). The Orchestrator writes its
 config for a Sandbox, and `jr2 up` writes it for the Instance Harness. [Secrets and trust](secrets-and-trust.md) tells
@@ -156,8 +158,8 @@ how the Custodian holds a credential.
 
 ## The Effector
 
-The Effector runs each `http` and `push` Effect, each `command` that names an Effect secret, and each `dispatch` that
-names a target. Thus a credential that an Effect uses stays out of the Harness container. The Effector is jr2's own
+The Effector runs each `http`, `mcp` and `push` Effect, each `command` that names an Effect secret, and each `dispatch`
+that names a target. Thus a credential that an Effect uses stays out of the Harness container. The Effector is jr2's own
 program, and it runs in a container in which the Agent executes nothing. [Effects](effects.md) tells which Effect runs
 where. It has two placements:
 
@@ -165,10 +167,11 @@ where. It has two placements:
   `push`, an `http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is the
   Sandbox Image, unless the `workspace()` names a different image.
 - **The Instance Effector** is one pod for each Instance, `jr2-instance-effector`. It runs each `http` Effect that reads
-  no Worktree file, and each `dispatch` that starts a run on a different Orchestrator. It holds the Caller token for
-  that Orchestrator as an Effect secret. It also serves the [Hooks](../reference/glossary.md#hook): it holds the secret
-  of each Hook that checks a signature with a shared secret (`mac`) and checks the signature, and it sends the follow-up
-  of a kind that posts one, such as the reply to a Slack click. It runs in the `jr2-harness` Kit image.
+  no Worktree file, each `mcp` Effect, and each `dispatch` that starts a run on a different Orchestrator. It holds the
+  token of each MCP server that an `mcp` Effect calls, and the Caller token for that Orchestrator, as Effect secrets. It
+  also serves the [Hooks](../reference/glossary.md#hook): it holds the secret of each Hook that checks a signature with
+  a shared secret (`mac`) and checks the signature, and it sends the follow-up of a kind that posts one, such as the
+  reply to a Slack click. It runs in the `jr2-harness` Kit image.
 
 A Sandbox Effector exists only when a Machine of the Instance puts an Effect there. The Instance Effector exists only
 when a Machine puts an Effect there or a Hook needs it. A `command` that names no Effect secret does not use an

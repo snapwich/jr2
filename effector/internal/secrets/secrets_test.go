@@ -166,3 +166,32 @@ func write(t *testing.T, dir, name, content string) {
 		t.Fatal(err)
 	}
 }
+
+// The MCP servers its mcp Effects name (ADR-0079): each one a server name, an http(s) url with no
+// userinfo, a secret name when it has one, and a timeout.
+func TestConfigReadsItsMcpServers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "effector.json")
+	write(t, dir, "effector.json", `{"version":1,"placement":"instance","targets":[],`+
+		`"mcp":{"slack-acme":{"url":"https://mcp.slack.example/mcp","secret":"SLACK_TOKEN","timeoutMs":60000}}}`)
+	c, err := ReadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Mcp["slack-acme"]; got.URL != "https://mcp.slack.example/mcp" || got.Secret != "SLACK_TOKEN" ||
+		got.TimeoutMs != 60000 {
+		t.Fatalf("got %+v", got)
+	}
+	for _, bad := range []string{
+		`{"Slack_Acme":{"url":"https://mcp.slack.example/mcp","timeoutMs":1}}`,
+		`{"a":{"url":"ftp://mcp.slack.example/mcp","timeoutMs":1}}`,
+		`{"a":{"url":"https://u:p@mcp.slack.example/mcp","timeoutMs":1}}`,
+		`{"a":{"url":"https://mcp.slack.example/mcp","timeoutMs":0}}`,
+		`{"a":{"url":"https://mcp.slack.example/mcp","secret":"../x","timeoutMs":1}}`,
+	} {
+		write(t, dir, "effector.json", `{"version":1,"placement":"instance","targets":[],"mcp":`+bad+`}`)
+		if _, err := ReadConfig(path); err == nil {
+			t.Fatalf("%s is accepted", bad)
+		}
+	}
+}

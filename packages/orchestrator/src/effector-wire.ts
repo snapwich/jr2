@@ -229,8 +229,43 @@ export const DispatchStartShape = z
   );
 export type DispatchStartRequest = z.infer<typeof DispatchStartShape>;
 
-/** Every start: the http kinds, a push, a credentialed command, a dispatch. */
-export const StartRequestShape = z.union([HttpStartShape, PushStartShape, CommandStartShape, DispatchStartShape]);
+/** An MCP server's name (ADR-0079), as the `mcp` block of `jr2.config.ts` keys it. The Go side's
+ * `mcpServer` is the same rule. */
+export const MCP_SERVER = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * An `mcp` start (ADR-0067, ADR-0079), which only the Instance Effector serves: the server by its
+ * name — the Effector reads its url and the name of its secret from `effector.json`, so neither is
+ * on the wire — and one request: `call` a tool with its arguments, `read` a resource, or get a
+ * `prompt` with its arguments. `timeoutMs` is the author's; absent, the server's `timeout` from
+ * `effector.json` applies. `maxBody` bounds the answer's `text` and its `structured` value.
+ */
+export const McpStartShape = z.strictObject({
+  kind: z.literal("mcp"),
+  mcp: z
+    .strictObject({
+      server: z.string().regex(MCP_SERVER),
+      call: z.strictObject({ tool: z.string().min(1), arguments: z.record(z.string(), z.unknown()) }).optional(),
+      read: z.strictObject({ uri: z.string().min(1) }).optional(),
+      prompt: z.strictObject({ name: z.string().min(1), arguments: z.record(z.string(), z.string()) }).optional(),
+    })
+    .refine(
+      (m) => [m.call, m.read, m.prompt].filter((x) => x !== undefined).length === 1,
+      "an mcp start carries exactly one of call, read, prompt",
+    ),
+  timeoutMs: z.number().int().positive().optional(),
+  maxBody: z.number().int().positive(),
+});
+export type McpStartRequest = z.infer<typeof McpStartShape>;
+
+/** Every start: the http kinds, a push, a credentialed command, a dispatch, an mcp request. */
+export const StartRequestShape = z.union([
+  HttpStartShape,
+  PushStartShape,
+  CommandStartShape,
+  DispatchStartShape,
+  McpStartShape,
+]);
 export type StartRequest = z.infer<typeof StartRequestShape>;
 
 /** The most bytes of a start's body the Effector reads (its `maxRequestBody`). A longer body
@@ -404,6 +439,85 @@ export const DispatchOutputShape = z.discriminatedUnion("outcome", [
 ]);
 export type DispatchWireOutput = z.infer<typeof DispatchOutputShape>;
 
+/**
+ * An `mcp` Effect's output on the wire (ADR-0067, ADR-0079): `returned`, with `isError` for a call
+ * alone; or a reason for `refused`, `unreachable`, `input-required` and `unknown`.
+ */
+export const McpOutputShape = z.union([
+  z.strictObject({
+    outcome: z.literal("returned"),
+    isError: z.boolean().optional(),
+    text: z.string(),
+    structured: z.unknown().optional(),
+    truncated: z.boolean().optional(),
+  }),
+  z.strictObject({
+    outcome: z.enum(["refused", "unreachable", "input-required", "unknown"]),
+    reason: z.string(),
+  }),
+]);
+
+/** The outcomes that an `mcp` Effect gives besides `returned`. Each one has a `reason` in words. */
+type McpNotReturned =
+  | { outcome: "refused"; reason: string }
+  | { outcome: "unreachable"; reason: string }
+  | { outcome: "input-required"; reason: string }
+  | { outcome: "unknown"; reason: string }
+  | LaterOutcome;
+
+/**
+ * The output of an `mcp.call` Effect: what the `onDone` of its state gets as `event.output`. Every
+ * outcome is output. Route on `outcome`:
+ *
+ * - `returned`: the server answered the call. `isError` is the tool's own `isError`: the tool ran
+ *   and says that it failed. `text` joins the text of the result's content; a part that is not text
+ *   is one line that names its type. `structured` is the result's `structuredContent`, when it has
+ *   one. `text` and `structured` each have the byte bound of the Effect's `maxBody`: past it, jr2
+ *   cuts `text`, drops `structured`, and sets `truncated`.
+ * - `refused`: the request did not run. The server answered an HTTP 3xx or 4xx status (a 401 or a
+ *   403 included) at any step, the handshake too; it refused the handshake; or it answered the
+ *   request with the JSON-RPC error `-32700`, `-32600`, `-32601` or `-32602`: a request that it
+ *   could not read, an unknown method, an unknown tool, or bad arguments; or it answered a read with
+ *   `-32002`: the resource does not exist. It is also the Effector's
+ *   own refusal, with nothing sent: the server or its secret is not in its `effector.json`.
+ * - `unreachable`: nothing of the request was sent: the name did not resolve, or the connection,
+ *   TLS or the handshake failed otherwise (a 5xx, the timeout, an answer that is not MCP's, a
+ *   revision of MCP that jr2 does not speak).
+ * - `input-required`: the server asked for input, which jr2 does not give. After the error
+ *   `-32042`, the tool did not run. After an `elicitation/create` request, which comes while the
+ *   tool runs, the tool may have begun. jr2 does not send the request again: a Machine that
+ *   invokes the Effect again after a Gate can run a part of the tool two times.
+ * - `unknown`: the request was sent and no answer came (the timeout, a reset, a stream that ended
+ *   first), or the server answered with a 5xx or another JSON-RPC error. The tool may have acted.
+ *   jr2 does not send it again unless it is marked `idempotent`.
+ *
+ * jr2 replaces each value of an Effect secret that the Effector holds with `[secret:<name>]`, in
+ * every string of the output. The union is open ({@link LaterOutcome}): give the rest a last arm
+ * with no guard.
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/reference/decisions/0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md
+ */
+export type McpCallOutput =
+  | { outcome: "returned"; isError: boolean; text: string; structured?: unknown; truncated?: boolean }
+  | McpNotReturned;
+
+/**
+ * The output of an `mcp.read` or an `mcp.prompt` Effect. Its outcomes are those of
+ * {@link McpCallOutput}, with no `isError`. For a read, `text` joins the text of the resource's
+ * contents, and `structured` is the `contents` list: a blob is given only as its `mimeType` and its
+ * size. For a prompt, `text` joins the text of the prompt's messages, and `structured` is the
+ * `messages` list. Past the bound, `structured` is dropped and `truncated` is set.
+ *
+ * @see docs/concepts/effects.md
+ */
+export type McpReadOutput =
+  | { outcome: "returned"; text: string; structured?: unknown; truncated?: boolean }
+  | McpNotReturned;
+
+/** The output of any `mcp` Effect: a call's, a read's or a prompt's. */
+export type McpOutput = McpCallOutput | McpReadOutput;
+
 /** The replica that holds an Effect, and where to poll it. */
 export const ReplicaShape = z.strictObject({ name: z.string(), address: z.string() });
 export type Replica = z.infer<typeof ReplicaShape>;
@@ -419,7 +533,9 @@ export const EffectStateShape = z.strictObject({
   /** The run a dispatch started, once the door answered and while its wait runs: the Orchestrator
    * writes it to the ledger's intent row, so the caller names its callee during the wait (ADR-0071). */
   run: z.string().optional(),
-  output: z.union([HttpOutputShape, PushOutputShape, CommandOutputShape, DispatchOutputShape]).optional(),
+  output: z
+    .union([HttpOutputShape, PushOutputShape, CommandOutputShape, DispatchOutputShape, McpOutputShape])
+    .optional(),
 });
 export type EffectState = z.infer<typeof EffectStateShape>;
 

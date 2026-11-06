@@ -39,7 +39,7 @@ import { randomUUID } from "node:crypto";
 import type { ActorLogic, AnyActorRef, EventObject, Snapshot } from "xstate";
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
-import type { HttpMethod, HttpOutput, TextPart, WireAuth } from "./effector-wire.ts";
+import type { HttpMethod, HttpOutput, McpOutput, TextPart, WireAuth } from "./effector-wire.ts";
 import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
 import { bindOpenSecretIn, type EffectorPortFactory, type OpenSecretIn } from "./http-effect.ts";
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
@@ -240,6 +240,51 @@ export type DispatchParts = {
   readonly openSecret: boolean;
 };
 
+/** What an `mcp` Effect asks of its server (ADR-0079): call a tool, read a resource, or get a
+ * prompt. */
+export type McpOp = "call" | "read" | "prompt";
+
+/**
+ * An `mcp` Effect's plain data (ADR-0067, ADR-0079): what `jr2 up` and the Machine doc read — the
+ * operation, the server by its name in the `mcp` block of `jr2.config.ts`, the tool (a call), the
+ * resource's uri (a read) or the prompt's name (a prompt), the input's keys, the author's timeout,
+ * the bound on the output, and whether a restore may send it again. The server's url and secret
+ * are the config's, never a part: `jr2 up` reads them from there, and the Instance Effector holds
+ * them in its `effector.json` and its secrets.
+ */
+export type McpParts = {
+  readonly kind: "mcp";
+  readonly op: McpOp;
+  readonly server: string;
+  /** `mcp.call`'s tool. */
+  readonly tool?: string;
+  /** `mcp.read`'s resource uri. */
+  readonly uri?: string;
+  /** `mcp.prompt`'s prompt name. */
+  readonly prompt?: string;
+  /** The keys of the input schema: what a pick param may fill (ADR-0067's load walk reads them). */
+  readonly inputKeys: readonly string[];
+  /** The author's timeout, in milliseconds. Absent: the server's `timeout` in `jr2.config.ts`. */
+  readonly timeoutMs?: number;
+  /** The most bytes of `text`, and of `structured` as JSON, in the output. */
+  readonly maxBody: number;
+  /** Marked by the author: a restore that cannot find the Effect sends it again. The server's
+   * `idempotentHint` is not read (ADR-0079). */
+  readonly idempotent: boolean;
+  /** Always empty: an `mcp` Effect names no secret of its own. Its server's secret is placed in
+   * the Instance Effector by `jr2 up`, from the config (ADR-0079). */
+  readonly secrets: readonly string[];
+  /** Never: the server, not a `secret(open)`, is what a package leaves Open (ADR-0054). */
+  readonly openSecret?: never;
+};
+
+/** An `mcp` Effect whose server or tool a package left Open (ADR-0054, ADR-0079): the sentinel in
+ * that place, until the composer binds it with `customize()`. */
+export type OpenMcpParts = Omit<McpParts, "server" | "tool"> & {
+  readonly server: string | typeof open;
+  readonly tool?: string | typeof open;
+};
+
 /**
  * An Effect whose url or argv a package left Open (ADR-0054): the same parts with the sentinel in
  * that one place. The kind, the placement, the timeout and the secrets the other parts name are
@@ -264,10 +309,12 @@ export type EffectParts =
   | OpenCommandParts
   | OpenHttpParts
   | DispatchParts
-  | OpenDispatchParts;
+  | OpenDispatchParts
+  | McpParts
+  | OpenMcpParts;
 
 /** The kinds, as their parts name them. */
-export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "push", "dispatch"]);
+export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "push", "dispatch", "mcp"]);
 
 /**
  * Where an Effect runs, derived from its kind and what it names, never authored (ADR-0067,
@@ -275,7 +322,8 @@ export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "pu
  * `http` Effect with no Worktree file in the Instance Effector; an `http` whose body is a Worktree
  * file, a `push` and a `command` that names a secret in the Sandbox Effector of its Workspace; a
  * `dispatch` with no target in the Orchestrator's own process, and one with a target (an Open one
- * included: it has one once bound) in the Instance Effector (ADR-0071).
+ * included: it has one once bound) in the Instance Effector (ADR-0071); an `mcp` Effect in the
+ * Instance Effector, which calls remote servers only (ADR-0079).
  */
 export type Placement = "harness" | "instance" | "sandbox" | "orchestrator";
 export function placementOf(parts: EffectParts): Placement {
@@ -286,6 +334,8 @@ export function placementOf(parts: EffectParts): Placement {
       return parts.file ? "sandbox" : "instance";
     case "push":
       return "sandbox";
+    case "mcp":
+      return "instance";
     case "command":
       return (parts.secrets?.length ?? 0) > 0 || parts.openSecret ? "sandbox" : "harness";
   }
@@ -338,7 +388,7 @@ export function inputShapeOf(parts: EffectParts): InputShape | undefined {
   if (parts.kind === "dispatch") {
     return parts.inputKeys === undefined ? undefined : { required: [...parts.inputKeys], optional: [] };
   }
-  if (parts.kind === "push") return { required: [...parts.inputKeys], optional: [] };
+  if (parts.kind === "push" || parts.kind === "mcp") return { required: [...parts.inputKeys], optional: [] };
   if (parts.kind === "http") {
     return { required: [...parts.inputKeys], optional: parts.file ? ["worktree"] : [] };
   }
@@ -492,7 +542,7 @@ export type EffectRow =
   | { state: "intent"; kind: "command"; slot: string; endpoint: string; placement: string; at: string }
   /** An http Effect's intent names its placement and no replica (ADR-0068): a restore asks every
    * replica. `idempotent` is the author's mark, which the restore rule reads. */
-  | { state: "intent"; kind: "http"; slot: string; placement: "instance"; idempotent: boolean; at: string }
+  | { state: "intent"; kind: "http" | "mcp"; slot: string; placement: "instance"; idempotent: boolean; at: string }
   /** An Effect of the Sandbox Effector (ADR-0067): its Sandbox, and — for a push or a credentialed
    * command — the commit it runs against, written once the start's answer names it. A restore
    * re-attaches by id, or sends a push or a credentialed command again with only that commit, and
@@ -590,6 +640,9 @@ const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   // settled marker carries both whole. The row keeps the outcome, the run id, its status and the
   // door's HTTP status (ADR-0071).
   dispatch: ["output", "report"],
+  // An mcp answer's text and its structured value: the feed's settled marker carries both whole.
+  // The row keeps the outcome, `isError` and `truncated` (ADR-0079).
+  mcp: ["text", "structured"],
 };
 
 /** A kind's tail for one output. The NEWEST push of its Repo Slot whose sync did not finish (`busy`,
@@ -702,7 +755,7 @@ export type EffectMarker = {
   effect: string;
   stage: "started" | "output" | "settled" | "aborted";
   text?: string;
-  output?: CommandOutput | WorktreeOutput | HttpOutput | DispatchOutput;
+  output?: CommandOutput | WorktreeOutput | HttpOutput | DispatchOutput | McpOutput;
 };
 
 // --- The port -----------------------------------------------------------------------------------

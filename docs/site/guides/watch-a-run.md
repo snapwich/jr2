@@ -298,16 +298,17 @@ Each line of a conversation starts with the name of the Agent in brackets, then 
 [Instance ID](../reference/glossary.md#instance-id) of the conversation in brackets. The Instance ID starts with the run
 id. The first line of each message then has a label in brackets. The next lines of the same message have no label:
 
-| Line                                        | What it shows                                                                                                                                                                    |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[<agent>] [<iid>] [prompt] <text>`         | A message that the model reads: the prompt of the Turn, or a message that jr2 adds to the Turn.                                                                                  |
-| `[<agent>] [<iid>] [thinking] <text>`       | The thinking of the model.                                                                                                                                                       |
-| `[<agent>] [<iid>] [text] <text>`           | The text of the model.                                                                                                                                                           |
-| `[<agent>] [<iid>] [<call>] <input>`        | A call of a [Working tool](../reference/glossary.md#working-tools), or a pick from the Menu. `<input>` is a path for read, write and edit, the command for `bash`, or else JSON. |
-| `[<agent>] [<iid>] [<pick> answer] <text>`  | The answer that the model got for a pick from its Menu.                                                                                                                          |
-| `[<agent>] [<iid>] [<pick> error] <text>`   | An answer to a pick that the model reads as an error, such as a refusal.                                                                                                         |
-| `[<agent>] [<iid>] [compacted] <text>`      | The Harness made the context of the conversation smaller: `context <before> → ~<after> tokens (window <window>)`.                                                                |
-| `[<agent>] [<iid>] [thinking level] <text>` | The model has no thinking level of the name that the Turn asked for, and the line names the level that the model ran at. The Harness prints it one time for each Turn.           |
+| Line                                          | What it shows                                                                                                                                                                    |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[<agent>] [<iid>] [prompt] <text>`           | A message that the model reads: the prompt of the Turn, or a message that jr2 adds to the Turn.                                                                                  |
+| `[<agent>] [<iid>] [thinking] <text>`         | The thinking of the model.                                                                                                                                                       |
+| `[<agent>] [<iid>] [text] <text>`             | The text of the model.                                                                                                                                                           |
+| `[<agent>] [<iid>] [<call>] <input>`          | A call of a [Working tool](../reference/glossary.md#working-tools), or a pick from the Menu. `<input>` is a path for read, write and edit, the command for `bash`, or else JSON. |
+| `[<agent>] [<iid>] [<server>/<tool>] <input>` | A call of an [MCP tool](../reference/glossary.md#mcp-tools): the server's name in `jr2.config.ts`, then the tool. `<input>` is JSON. A pick never prints with a `/`.             |
+| `[<agent>] [<iid>] [<pick> answer] <text>`    | The answer that the model got for a pick from its Menu.                                                                                                                          |
+| `[<agent>] [<iid>] [<pick> error] <text>`     | An answer to a pick that the model reads as an error, such as a refusal.                                                                                                         |
+| `[<agent>] [<iid>] [compacted] <text>`        | The Harness made the context of the conversation smaller: `context <before> → ~<after> tokens (window <window>)`.                                                                |
+| `[<agent>] [<iid>] [thinking level] <text>`   | The model has no thinking level of the name that the Turn asked for, and the line names the level that the model ran at. The Harness prints it one time for each Turn.           |
 
 The log of a Sandbox also tells the story of its run, in lines that start with `[run]`. `[run] [status] <state>` gives
 the state of the run, then the state of each Machine that it invokes, separated by `·`, such as
@@ -316,8 +317,8 @@ A Turn that runs in a different Harness shows only as `[<agent>] [admitted] <pro
 `[<agent>] [pick] <pick> <input>`. `<input>` is the JSON of the input of the pick, and it is absent for a pick with no
 input. The lines of the story of the run have no Instance ID.
 
-The Harness does not print the result of a Working tool. For example, it does not print the text of a file that the
-Agent read, or the output of a command that the Agent ran.
+The Harness does not print the result of a Working tool or of an MCP tool. For example, it does not print the text of a
+file that the Agent read, or the output of a command that the Agent ran.
 
 The Harness cuts an input that is longer than 2000 characters at its end, and marks the cut with `…`. It cuts a long
 answer to a pick in its middle, and marks the cut with `… [<n> characters cut] …`. The model reads the full text. The

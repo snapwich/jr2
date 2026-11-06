@@ -2,15 +2,17 @@
 
 An Effect is work a Machine does outside itself. A Machine already runs Agents and Gates as actors (ADR-0049); work such
 as running the tests had no place of its own, so an author either asked an Agent to do it (and trusted its word) or
-wrote a raw xstate promise that a restart ran again. jr2 builds four kinds: `command`, run a program in the Workspace;
+wrote a raw xstate promise that a restart ran again. jr2 builds five kinds: `command`, run a program in the Workspace;
 `http`, call a URL — with a JSON or text body, or a Worktree file as its body; `push`, push a Worktree's branch to its
-Repo Slot's Binding; and `dispatch`, start a run of a registered Workflow, on this Orchestrator or another's
-([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). A fifth, `worktree()`, is a kit Effect on the
-`command` machinery that cuts a Worktree ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)).
-An Effect that holds a secret runs in an Effector
-([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A `command` whose env names a secret —
-the credentialed `command` — runs there too, its child confined (below). A `dispatch` with no target runs in the
-Orchestrator's own process, the one Effect that does: it starts the run through the run host and holds no secret.
+Repo Slot's Binding; `dispatch`, start a run of a registered Workflow, on this Orchestrator or another's
+([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)); and `mcp`, call a tool of an MCP server, or read its
+resource or get its prompt
+([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). Beside
+them, `worktree()` is a kit Effect on the `command` machinery that cuts a Worktree
+([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). An Effect that holds a secret runs in an
+Effector ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A `command` whose env names a
+secret — the credentialed `command` — runs there too, its child confined (below). A `dispatch` with no target runs in
+the Orchestrator's own process, the one Effect that does: it starts the run through the run host and holds no secret.
 
 ## Decision
 
@@ -19,18 +21,20 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   exits, its input persists with the snapshot, a `src` typo is a compile error, and `.provide()` is the unit-test seam.
   The slot carries its parts as plain data — kind, placement, timeout; a `command`'s argv and the secrets its env names;
   an `http` Effect's method, fixed host, the names of the secrets it names and whether its body is a Worktree file; a
-  `push`'s `pin`, `sign`, `squash`, `force` and `slot`; a cut's `expect` — which `jr2 up` prints and the Machine doc
-  carries, read without running anything. A packaged Machine may leave an `http` url (whatever its body) or a
-  `command`'s argv Open (`open` in its place), and the name of one secret its auth, a header or a command's env names
-  (`secret(open)`; never in a url), for the composer to bind once with
-  `customize(machine, { effects: { <slot>: { url } | { argv } | { secret } } })` — one object with both keys for an
-  Effect with two Open parts ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md));
-  the slot then carries the Effect built again with the bound parts, and an Effect still Open runs nothing: its state's
-  `onError`. An Effect written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the slot
-  form in the message: xstate gives it a generated key that moves when a state is renamed, so the ledger, the report and
-  the Machine doc would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not reach it. The
-  same rule holds for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`, and every Effect kind is one
-  (the brand `isEffect` reads).
+  `push`'s `pin`, `sign`, `squash`, `force` and `slot`; an `mcp` Effect's operation, server and tool; a cut's `expect` —
+  which `jr2 up` prints and the Machine doc carries, read without running anything. A packaged Machine may leave an
+  `http` url (whatever its body), a `command`'s argv, or an `mcp` Effect's server or tool Open (`open` in its place),
+  and the name of one secret its auth, a header or a command's env names (`secret(open)`; never in a url), for the
+  composer to bind once with
+  `customize(machine, { effects: { <slot>: { url } | { argv } | { secret } | { server } | { tool } } })` — one object
+  with both keys for an Effect with two Open parts
+  ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); the slot then carries the
+  Effect built again with the bound parts, and an Effect still Open runs nothing: its state's `onError`. An Effect
+  written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the slot form in the message:
+  xstate gives it a generated key that moves when a state is renamed, so the ledger, the report and the Machine doc
+  would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not reach it. The same rule holds
+  for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`, and every Effect kind is one (the brand
+  `isEffect` reads).
 - **Between a pick and its work: `fromPick`, `paramsOf`, `answer`.** All optional; a plain mapper is legal.
   `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
   `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security
@@ -79,9 +83,10 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   `http` whose body is a Worktree file, are placed in that Sandbox Effector — the command runs there with its child
   confined (below). A `dispatch` with no target runs in the Orchestrator's own process, the fourth Placement,
   `orchestrator`, and the one Effect that has it; with a target it runs in the Instance Effector
-  ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). There is no `placement:` key and no kind per
-  placement: naming a secret places a command, the body places an `http`, and the target places a `dispatch` — one name
-  per thing, so there is no `upload` kind beside it (ADR-0068).
+  ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). An `mcp` Effect runs in the Instance Effector,
+  because in v1 it calls a remote server only. There is no `placement:` key and no kind per placement: naming a secret
+  places a command, the body places an `http`, and the target places a `dispatch` — one name per thing, so there is no
+  `upload` kind beside it (ADR-0068).
 - **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a confined child of
   the Harness process ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)): the
   Agent's user, the Sandbox Image's tools, the same confined env and Stand-ins as the Agent's `bash` (ADR-0059), and no
@@ -100,17 +105,18 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
 - **Every outcome is output**: `exited | timeout | killed | unknown` for a `command` (`killed` with the signal that
   ended it; a stopped credentialed command's is `exited` with the stop's signal, D1);
   `response | unreachable | refused | unknown` for an `http` Effect; `pushed | rejected | diverged | unknown` for a
-  `push`. A command not found is `exited` 127, and a bad Worktree adds no outcome: a `command` settles `exited` 127 with
-  the reason in its tail, and an `http` file body settles `refused`. Every union here is open: `worktree()`, `push`,
-  `command` and `http` each hold a stand-in member, so that no author can write an exhaustive check and a later outcome
-  is no break. A start over the bytes an Effector reads (ADR-0068) is sent nowhere and settles as its kind's own outcome
-  — an `http` `refused`, a `push` `rejected` at stage `start` (nothing pushed), a credentialed `command` `exited` 127
-  with the reason in its tail, the Effector's own form for a command that could not start — since an Agent's param (a
-  squash message, an argv part) can reach the bound; a path segment that is `.`, `..` or empty, and a file body's path
-  that is a symlink, leaves the Worktree, is absolute, is a FIFO or has more than one link, are `refused` with nothing
-  sent — an Agent's param can cause each. `onError` is only a jr2 or config defect: no Workspace, a `command` with no
-  `worktree` under Repo Slots, an argv slot with no value, an input that misses the definition's schema, no Effector to
-  send to, an Open part nobody bound.
+  `push`; `returned | refused | unreachable | input-required | unknown` for an `mcp` Effect. A command not found is
+  `exited` 127, and a bad Worktree adds no outcome: a `command` settles `exited` 127 with the reason in its tail, and an
+  `http` file body settles `refused`. Every union here is open: `worktree()`, `push`, `command` and `http` each hold a
+  stand-in member, so that no author can write an exhaustive check and a later outcome is no break; the `mcp` union
+  holds one too. A start over the bytes an Effector reads (ADR-0068) is sent nowhere and settles as its kind's own
+  outcome — an `http` `refused`, a `push` `rejected` at stage `start` (nothing pushed), a credentialed `command`
+  `exited` 127 with the reason in its tail, the Effector's own form for a command that could not start — since an
+  Agent's param (a squash message, an argv part) can reach the bound; a path segment that is `.`, `..` or empty, and a
+  file body's path that is a symlink, leaves the Worktree, is absolute, is a FIFO or has more than one link, are
+  `refused` with nothing sent — an Agent's param can cause each. `onError` is only a jr2 or config defect: no Workspace,
+  a `command` with no `worktree` under Repo Slots, an argv slot with no value, an input that misses the definition's
+  schema, no Effector to send to, an Open part nobody bound.
 - **An `http` Effect is a definition plus one function.**
   `http({ method, url, headers?, auth?, input?, request?, body?, timeout?, maxBody?, idempotent? })`. The url's scheme
   and host are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template,
@@ -134,6 +140,40 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   refused when the Machine loads ("write one of them", as for `auth` beside an `authorization` header). With neither it
   is `application/octet-stream`. A later body form (a multipart file and fields) is one more body on `http`, never a
   kind.
+- **An `mcp` Effect has the shape of `http`, with a server and a tool in place of a url.**
+  `mcp.call(server, tool, { input?, timeout?, maxBody?, idempotent? })`,
+  `mcp.read(server, uri, { timeout?, maxBody?, idempotent? })` and
+  `mcp.prompt(server, name, { input?, timeout?, maxBody?, idempotent? })`
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)).
+  `server` is a name of the `mcp` block of `jr2.config.ts`, so the server's url and its secret are the config's and
+  never a param; the secret is the Effect's Effect secret, placed in the Instance Effector (ADR-0068). `server` can be
+  Open for each of the three; `tool` for `mcp.call`; a read's `uri` and a prompt's `name` are the author's. `jr2 up`
+  refuses an `mcp` Effect whose server the `mcp` block does not declare, or whose server is a stdio server, and prints
+  the `mcp` block entry that declares a remote server, and the `customize()` line for an Open server. `input` is the
+  schema of the tool's arguments (a prompt's arguments are strings), and the invoke's input is the arguments, which
+  `fromPick` fills from a pick's params: an Agent's param reaches the arguments only. An Effect's `timeout` replaces its
+  server's `timeout` for that Effect; with none, the server's applies (60 seconds by default). The outcomes:
+  `returned { isError, text, structured?, truncated? }` — the server answered the call, `isError` being the tool's own,
+  `structured` its `structuredContent`, typed `unknown`, and `truncated` set when the Effector cut `text` or dropped
+  `structured` at the bound (ADR-0068), and a reason keeps at most 1 KiB of a server's error message; `refused` — the
+  request did not run: the server answered a 3xx or a 4xx status (a 401 or a 403 included) at any step, the handshake
+  too, refused the handshake, or answered the request with the JSON-RPC error `-32700`, `-32600`, `-32601` or `-32602`
+  (a request it could not read, an unknown method, an unknown tool, bad arguments), or answered a read with `-32002`
+  (the resource does not exist); or the Effector sent nothing because the server or its secret is not in its
+  `effector.json`, the second fence behind the `jr2 up` refusal; `unreachable` — nothing of the request was sent: the
+  name did not resolve, or the connection, TLS or the handshake failed otherwise (a 5xx, the timeout, an answer that is
+  not MCP's, a handshake that names an MCP revision the client does not speak); `input-required` — the server asked for
+  input, which jr2 does not give, so the Machine routes it: the error `-32042` (URL elicitation required), after which
+  the tool did not run, or an `elicitation/create` request, which the client declared no capability for and which comes
+  while the tool runs, so the tool may have begun; jr2 does not send the request again, and a Machine that invokes the
+  Effect again after a Gate can run a part of the tool two times; `unknown` — the request was sent and no answer came
+  (the timeout, a reset, a stream that ended first and that the server did not give again from its last event id), or
+  the server answered with a 5xx or with another JSON-RPC error, after which the tool may have acted. `idempotent` is
+  the author's mark alone; the server's `idempotentHint` is ignored. `mcp.read` and `mcp.prompt` settle the same
+  outcomes, and their `returned` is `{ text, structured?, truncated? }`: for a read, `text` joins the text of the
+  resource's contents and `structured` is the `contents` list, with a blob given only as its `mimeType` and size; for a
+  prompt, `text` joins the text of the prompt's messages and `structured` is the `messages` list. An `output:` schema
+  for `structured` is Later.
 - **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`.** Naming a
   secret is what places it: it runs in the Sandbox Effector of the Workspace whose body invokes it, with no `placement:`
   key — and so does an env that names `secret(open)`, whose name the composer binds (ADR-0054). Its child runs as the
@@ -321,26 +361,26 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   with only that commit — never the Agent's tip now — because its run is a function of the commit and its credential,
   what the intent row records; with no commit recorded it settles `unknown`. A credentialed command follows the push's
   rule: its intent row names its Sandbox and, once the first answer names it, the pinned commit, and one the Effector
-  lost is sent again with only that commit, since its run is a function of (commit, argv, secrets). An `http` intent row
-  names its placement — the Instance Effector, or the Sandbox of a file-body `http` — and no replica: the Effect asks
-  every replica of that Effector for its id and follows the one that holds it; when none does, it is sent again only
-  when the author marked it `idempotent`, and any other settles `unknown`. Retry is the author's choice — a route back
-  into the state, or `idempotent` for a call that carries its own idempotency key or only reads. No row is dropped: each
-  settled or aborted row keeps the Effect's id, kind and outcome for the run's life, the record of what the run's
-  Effects did. A settled row's output tail is dropped once the save that carries its transition is on disk; the full
-  stream is on the feed. An `http` response's body and headers are its tail: the row keeps the outcome, the status, the
-  content type and the size, and the settled line on the feed carries the whole response. A `push` row keeps its Repo
-  Slot, its branch, its published commit, its source, its `squashed` and its sync's answer whole — every later push of
-  its Workspace and (slot, branch) sends them as one of its pairs, and the newest push's sync, when it did not finish,
-  runs again — and drops git's words; it drops its bundle once its sync answered `synced`, `already` or `skipped`, and
-  keeps it while the sync is `busy` or `not-synced` only as long as it is the newest push of its (slot, branch) that
-  published, because the sync that runs again moves the branch from it and only the newest push's sync runs again. Once
-  a newer push of that key published, the older row's bundle goes at the next save: one bundle per (slot, branch) at
-  most. A cut's `ready` row keeps its Repo Slot, its path and its branch whole, because a later Effect reads them. So an
-  Effect in a loop grows the ledger by one short row per pass, never by its tails. One exception, bounded by one pick:
-  while a pick is outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action may read it
-  after a restore; a loop below the Agent's state then grows the hold by one tail per pass. The hold drops its chain
-  when the pick is answered.
+  lost is sent again with only that commit, since its run is a function of (commit, argv, secrets). An `http` or `mcp`
+  intent row names its placement — the Instance Effector, or the Sandbox of a file-body `http` — and no replica: the
+  Effect asks every replica of that Effector for its id and follows the one that holds it; when none does, it is sent
+  again only when the author marked it `idempotent`, and any other settles `unknown`. Retry is the author's choice — a
+  route back into the state, or `idempotent` for a call that carries its own idempotency key or only reads. No row is
+  dropped: each settled or aborted row keeps the Effect's id, kind and outcome for the run's life, the record of what
+  the run's Effects did. A settled row's output tail is dropped once the save that carries its transition is on disk;
+  the full stream is on the feed. An `http` response's body and headers are its tail: the row keeps the outcome, the
+  status, the content type and the size, and the settled line on the feed carries the whole response. A `push` row keeps
+  its Repo Slot, its branch, its published commit, its source, its `squashed` and its sync's answer whole — every later
+  push of its Workspace and (slot, branch) sends them as one of its pairs, and the newest push's sync, when it did not
+  finish, runs again — and drops git's words; it drops its bundle once its sync answered `synced`, `already` or
+  `skipped`, and keeps it while the sync is `busy` or `not-synced` only as long as it is the newest push of its (slot,
+  branch) that published, because the sync that runs again moves the branch from it and only the newest push's sync runs
+  again. Once a newer push of that key published, the older row's bundle goes at the next save: one bundle per (slot,
+  branch) at most. A cut's `ready` row keeps its Repo Slot, its path and its branch whole, because a later Effect reads
+  them. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One exception, bounded by
+  one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action
+  may read it after a restore; a loop below the Agent's state then grows the hold by one tail per pass. The hold drops
+  its chain when the pick is answered.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start

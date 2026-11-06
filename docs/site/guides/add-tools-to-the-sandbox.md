@@ -14,12 +14,13 @@ shell that you get with `kubectl exec`. Thus a program that is in the image is a
 
 Use this table to choose:
 
-| You want                                       | Do this                                                                                                        |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| The same tools for each Workspace              | Change `images/default/Dockerfile`.                                                                            |
-| Different tools for the Workspaces of one file | Put a docker context beside the workflow module, and name it in the `image` option.                            |
-| An image that you build and push yourself      | Write its registry ref in the `image` option.                                                                  |
-| A service that runs beside the Agent           | Name its image in the `user` option. It runs in the [User Container](../reference/glossary.md#user-container). |
+| You want                                       | Do this                                                                                                                                   |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| The same tools for each Workspace              | Change `images/default/Dockerfile`.                                                                                                       |
+| Different tools for the Workspaces of one file | Put a docker context beside the workflow module, and name it in the `image` option.                                                       |
+| An image that you build and push yourself      | Write its registry ref in the `image` option.                                                                                             |
+| A service that runs beside the Agent           | Name its image in the `user` option. It runs in the [User Container](../reference/glossary.md#user-container).                            |
+| A tool that the model calls by name            | Put an MCP server in the image, and declare it in `jr2.config.ts`. See [Write a tool as an MCP server](write-a-tool-as-an-mcp-server.md). |
 
 ## Add a tool to the default image
 

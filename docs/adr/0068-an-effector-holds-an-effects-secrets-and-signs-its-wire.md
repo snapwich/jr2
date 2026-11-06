@@ -10,7 +10,7 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 ## Decision
 
 - **What an Effector is for.** It holds the secrets that the Orchestrator must not hold, and it makes every call that
-  jr2 makes to the outside for a Machine or a Hook: every `http` Effect runs in an Effector
+  jr2 makes to the outside for a Machine or a Hook: every `http` and `mcp` Effect runs in an Effector
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), and the
   Orchestrator's one call out of the Instance is the fetch of a JWT issuer's public keys (and of its discovery document,
   which names where the keys are), which spends no secret
@@ -57,25 +57,26 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   (`the remote could not be reached: ssh: …`), with both in the detail: git's own words for an ssh failure name no
   cause.
 
-- **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file, and `dispatch` toward another
-  Orchestrator ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), the other Orchestrator's Caller token
-  being an Effect secret it holds. It also serves the Hook door (below). A Sandbox Effector — the binary with
-  `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs an `http` whose body is a Worktree file,
-  `push` and a credentialed `command` (ADR-0067); the Instance Effector refuses the last two, and a file body, as a
-  defect, and a Sandbox Effector refuses a `dispatch`. Under Repo Slots each of the three needs a cut's settled row in
-  the run's ledger, because a path alone does not name the target of a credential: the Orchestrator reads the row before
-  it starts the Effect, and with no row it sends nothing and settles the kind's own outcome
-  ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). Its env names where its mount holds the
-  rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only), `JR2_EFFECTOR_GIT` (the push credentials: one
-  directory per `git.credentials` entry the Sandbox's pushes spend, the entry's own Secret as the operator projects it —
-  `entry.json`, what the entry is; `identity` and `known_hosts` for an ssh key; `password` for a token; `sign.identity`
-  or `sign.private.asc` for the signing key; see the Sandbox Effector's objects below), `JR2_EFFECTOR_SCRATCH` (its own
-  writable scratch). What jr2 guarantees is stated per kind: for `push` and a file body, git never takes config or hooks
-  from the Agent's repository and no program the Agent's files name runs — the clean-repository procedure of ADR-0067
-  and the opener below. jr2's own programs (`git`, `ssh`, `ssh-keygen`, `gpg`, `gpg-agent`) run by an absolute path
-  found in one fixed PATH, `/usr/local/bin:/usr/bin:/bin`, never by the PATH the image set: an image that puts a
-  directory of its own first does not choose which `git` runs. For a credentialed `command` the Agent's files are the
-  author's choice to run, and the claims are the next bullet's.
+- **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file, `mcp`
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)), and
+  `dispatch` toward another Orchestrator ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), the other
+  Orchestrator's Caller token being an Effect secret it holds. It also serves the Hook door (below). A Sandbox Effector
+  — the binary with `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs an `http` whose body is a
+  Worktree file, `push` and a credentialed `command` (ADR-0067); the Instance Effector refuses the last two, and a file
+  body, as a defect, and a Sandbox Effector refuses a `dispatch` and an `mcp` Effect. Under Repo Slots each of the three
+  needs a cut's settled row in the run's ledger, because a path alone does not name the target of a credential: the
+  Orchestrator reads the row before it starts the Effect, and with no row it sends nothing and settles the kind's own
+  outcome ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). Its env names where its mount
+  holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only), `JR2_EFFECTOR_GIT` (the push credentials:
+  one directory per `git.credentials` entry the Sandbox's pushes spend, the entry's own Secret as the operator projects
+  it — `entry.json`, what the entry is; `identity` and `known_hosts` for an ssh key; `password` for a token;
+  `sign.identity` or `sign.private.asc` for the signing key; see the Sandbox Effector's objects below),
+  `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2 guarantees is stated per kind: for `push` and a file body,
+  git never takes config or hooks from the Agent's repository and no program the Agent's files name runs — the
+  clean-repository procedure of ADR-0067 and the opener below. jr2's own programs (`git`, `ssh`, `ssh-keygen`, `gpg`,
+  `gpg-agent`) run by an absolute path found in one fixed PATH, `/usr/local/bin:/usr/bin:/bin`, never by the PATH the
+  image set: an image that puts a directory of its own first does not choose which `git` runs. For a credentialed
+  `command` the Agent's files are the author's choice to run, and the claims are the next bullet's.
 - **The Instance Effector serves the Hook door with two operations, and the Orchestrator never holds a Hook's secret.**
   A Hook with a `mac` verifier
   ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)) names its secret as an
@@ -324,9 +325,23 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   ``Its answer: the output of `<slot>`: <the output's JSON>.``, already scrubbed. An `answer` action shapes it instead
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
 
+- **The `mcp` kind.** The Effector holds a small MCP client of its own: Go, the standard library only, Streamable HTTP,
+  protocol `2025-11-25`
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). Each
+  Effect is one session: the handshake, one request (`tools/call`, `resources/read` or `prompts/get`), and a DELETE of
+  the session, so a replica keeps no session between Effects and the replica rules of `http` hold unchanged. The start
+  names the server and nothing else of it: the server's url, the name of its secret and its `timeout` are in
+  `effector.json`, which `jr2 up` writes from the `mcp` block, and the secret goes as `Authorization: Bearer <value>`.
+  The client declares no capability, so a server that asks for input gets none: the Effect settles `input-required`. An
+  answer is read as JSON, or as an event stream until the message that answers the request. A result's `text` and its
+  `structured` are each bounded to the start's `maxBody`, 64 KiB by default as for an `http` body; past it the Effector
+  cuts the text (a `structured` past the bound is dropped, not cut into JSON that does not parse) and sets `truncated`.
+  Every string of the output is scrubbed, as an `http` body is. A redirect is not followed. The outcomes and their
+  meaning are ADR-0067's.
 - **The host is fixed, in the Effector.** The Effector's config (`effector.json`, written by `jr2 up` from the Effects'
   plain data) lists each scheme, host and port an Effect placed there names, with the secrets that Effect names — the
-  host its definition fixes, or for a url the package left Open, the one the composer's `customize()` bound
+  host its definition fixes, the host of an `mcp` Effect's server url in `jr2.config.ts`, or for a url the package left
+  Open, the one the composer's `customize()` bound
   ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); `jr2 up` refuses a Machine
   whose Open url nothing bound, so no fence entry is ever a guess. Each Hook adds the hosts that its kind declares for a
   follow-up (the `slack` kind: `https://hooks.slack.com`), with no secret (above). A request to another target, or with
@@ -336,18 +351,20 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 - **One list of secrets; placement is read, never declared, and naming is placement on both sides.** The top-level
   `secrets` list replaces `harness.heldSecrets`; its entry is ADR-0059's
   (`{ name, value | valueFrom.secretKeyRef, hosts?, headers?, paths? }`). A pod gets the secrets something in it names:
-  a Workspace's pod the Held secrets its `workspace()` lists under `secrets: [...]` and the model keys its Agents'
-  providers read; the Instance Harness the model keys of its `"none"` Agents only; an Effector what its Effects name
-  with `secret("name")` (an `http` Effect: the Instance Effector; an `http` whose body is a Worktree file: the Sandbox
-  Effector of the Workspace whose body invokes it; a credentialed command: that Sandbox Effector), and the name a
-  composer binds to an Effect's `secret(open)` with `customize()` (ADR-0054) is placed the same way, in that Effect's
-  Effector alone, once bound — `jr2 up` refuses an Open secret nothing bound. A Hook with a `mac` verifier places its
-  secret in the Instance Effector the same way. `hosts`, `headers` and `paths` are a Held secret's binding, never its
-  placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the held manifest, the Custodian
-  config and the held values' Secret of each Harness pod come from it. Both is both, and `jr2 up` reports it per pod. An
-  entry nothing names goes nowhere, and `jr2 up` warns: `secrets[i] (<name>) is named by nothing; goes nowhere`. There
-  is no `placement:` key: naming is the placement. `jr2 up` prints one line per secret with its placements, and one per
-  pod with what it holds (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
+  a Workspace's pod the Held secrets its `workspace()` lists under `secrets: [...]`, the model keys its Agents'
+  providers read and the secrets of the MCP servers its Agents name; the Instance Harness the model keys and the MCP
+  server secrets of its `"none"` Agents only; an Effector what its Effects name with `secret("name")` (an `http` Effect:
+  the Instance Effector; an `mcp` Effect, which names its server's secret through the server: the Instance Effector; an
+  `http` whose body is a Worktree file: the Sandbox Effector of the Workspace whose body invokes it; a credentialed
+  command: that Sandbox Effector), and the name a composer binds to an Effect's `secret(open)` with `customize()`
+  (ADR-0054) is placed the same way, in that Effect's Effector alone, once bound — `jr2 up` refuses an Open secret
+  nothing bound. A Hook with a `mac` verifier places its secret in the Instance Effector the same way. `hosts`,
+  `headers` and `paths` are a Held secret's binding, never its placement (ADR-0059). One derivation
+  (`secretPlacementsOf`) places both kinds, and the held manifest, the Custodian config and the held values' Secret of
+  each Harness pod come from it. Both is both, and `jr2 up` reports it per pod. An entry nothing names goes nowhere, and
+  `jr2 up` warns: `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no `placement:` key: naming is the
+  placement. `jr2 up` prints one line per secret with its placements, and one per pod with what it holds
+  (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
   `the Instance Effector: holds jira`,
   `Workspace of workflow "coding": Sandbox Effector (image the Sandbox Image) holds aws; pushes Repo Slot "app" with git.credentials "*"`
   — for a slot the run or a `customize()` binds, `with the git.credentials entry its url matches at provision`). Right
@@ -379,12 +396,13 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   - A **NetworkPolicy** of `jr2-sandbox-ingress`'s form ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)):
     ingress from this Instance's Orchestrator only. Egress stays open: the pod calls the hosts its Effects name, and
     holds no Custodian.
-  - The **Secret**: each literal Effect secret placed there, `effector.json` (the targets), and the placement's key,
-    `effectorKey(signing key, "instance")`, which `jr2 up` derives from the kept signing key. "Nothing stored" means
-    nothing stored by the Orchestrator: the Kubernetes Secret is the store, as for every credential. The secrets are
-    files under `/run/jr2/secrets`, mode 0400; the kubelet makes them readable by the pod's `fsGroup`, and the pod has
-    one container. `harness.env` and `harness.envFrom` may not name this Secret, nor a Workspace's `jr2-effector-<pod>`,
-    a Sandbox's `<sandbox>-effector`, or a `git.credentials` entry's `jr2-git-*` (ADR-0059's R13).
+  - The **Secret**: each literal Effect secret placed there, `effector.json` (the targets, and the MCP servers that its
+    `mcp` Effects name), and the placement's key, `effectorKey(signing key, "instance")`, which `jr2 up` derives from
+    the kept signing key. "Nothing stored" means nothing stored by the Orchestrator: the Kubernetes Secret is the store,
+    as for every credential. The secrets are files under `/run/jr2/secrets`, mode 0400; the kubelet makes them readable
+    by the pod's `fsGroup`, and the pod has one container. `harness.env` and `harness.envFrom` may not name this Secret,
+    nor a Workspace's `jr2-effector-<pod>`, a Sandbox's `<sandbox>-effector`, or a `git.credentials` entry's `jr2-git-*`
+    (ADR-0059's R13).
 - **A Workspace's Sandbox Effector's objects** (ADR-0059). `jr2 up` reads, for each `workspace()`, the Effects placed
   there below it, down to the next `workspace()` — every `push`, `http` whose body is a Worktree file and credentialed
   `command`, from their plain data, statically — and writes two objects for a Workspace with one, none for one without.

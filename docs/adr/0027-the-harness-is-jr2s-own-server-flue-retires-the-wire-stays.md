@@ -57,8 +57,8 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). The model sent
   `bash` with `git add … && git commit …` and the pick `publish` in one model answer. In 3 of 10 trials, `publish`
   pushed before the commit existed. A `write` and a `bash` test run in one model answer had the same race. The rule is
-  for all tools, the Working tools and the Menu. The cost is that independent reads of one model answer do not run at
-  the same time. Four facts follow:
+  for all tools: the Working tools, the MCP tools and the Menu. The cost is that independent reads of one model answer
+  do not run at the same time. Four facts follow:
   - Only the first pick of a model answer runs
     ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). The model wrote a later one before it
     read the first one's answer. The seam states two more facts, so that the Turn can find the first pick by itself. The

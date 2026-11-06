@@ -48,6 +48,34 @@ export type AgentDefinition = {
   /** What the Agent may DO to the Workspace (ADR-0028): `"read"` withholds write/edit from the
    * Working tools; `"none"` withholds them all — the Menu-only Agent. Default `"write"`. */
   workspace?: "write" | "read" | "none";
+  /** The MCP servers whose tools the Agent holds (ADR-0079), by the config's names, each with its
+   * allowlist. The transport and the secret of each are the Instance's: {@link HarnessSpec}'s `mcp`.
+   * `jr2 up` checked every rule (a declared name, a list only where jr2 can keep it); the Harness
+   * checks the shape, and that each name is one it was given ({@link mcpServersFor}). */
+  mcp?: AgentMcpEntry[];
+};
+
+/** One entry of an Agent's `mcp` list (mirrors `@jr2/orchestrator`'s `AgentMcpServer`). */
+export type AgentMcpEntry = { server: string; tools?: string[] | "*" };
+
+/** One MCP server of the Instance, as `jr2 up` publishes it (ADR-0079): a remote server's url and
+ * the NAME of its Held secret — the Harness holds that name's Stand-in, and the Custodian the value
+ * (ADR-0059) — or a stdio server's program, which the Harness starts through the spawner. The
+ * config's `timeout`, resolved to milliseconds. */
+export type McpServerSpec =
+  | { url: string; secret?: string; timeoutMs: number }
+  | { command: string; args: string[]; timeoutMs: number };
+
+/** One server an Agent holds, resolved for its conversation: the transport, the Stand-in's name, the
+ * allowlist (`"*"` for a stdio server, which takes no list), and the call timeout. */
+export type AgentMcpServerSpec = {
+  /** The config's name: the `<server>` of `mcp__<server>__<tool>`. */
+  name: string;
+  transport: { kind: "http"; url: string } | { kind: "stdio"; command: string; args: string[] };
+  /** The Held secret's name: its Stand-in is `/run/jr2/standins/<secret>`. Absent: no credential. */
+  secret?: string;
+  tools: readonly string[] | "*";
+  timeoutMs: number;
 };
 
 /** Token limits for one model — properties of the MODEL, not the endpoint. */
@@ -81,6 +109,9 @@ export type HarnessSpec = {
   provider?: ProviderSpec;
   /** Catalog provider id → its gateway (`anthropic` → LiteLLM, ADR-0059). */
   catalog?: Record<string, CatalogReachSpec>;
+  /** The Instance's MCP servers, by the config's name (ADR-0079). An Agent's definition names the
+   * ones it holds. */
+  mcp?: Record<string, McpServerSpec>;
 };
 
 /** What this Turn is ABOUT and WHERE it works — the Frame (ADR-0057). Neither identity nor a
@@ -120,6 +151,8 @@ export type ResolvedDefinition = {
   cwd: string;
   workspace: "write" | "read" | "none";
   thinkingLevel?: ThinkingLevel;
+  /** The definition's MCP servers (ADR-0079), as it names them: a Turn does not change them. */
+  mcp?: AgentMcpEntry[];
 };
 
 /**
@@ -151,6 +184,106 @@ export function definitionFault(agentName: string, definition: unknown): string 
   }
   if (workspace !== undefined && !WORKSPACE_ACCESS.includes(workspace as string)) {
     return `${named}: workspace "${String(workspace)}" is not one of ${WORKSPACE_ACCESS.join("|")} (ADR-0028)`;
+  }
+  const mcp = (definition as Record<string, unknown>).mcp;
+  if (mcp !== undefined) {
+    const shape = `each entry is { server, tools? }, where tools is a list of tool names or "*" (ADR-0079)`;
+    if (!Array.isArray(mcp)) return `${named}: the definition's \`mcp\` is not a list — ${shape}`;
+    const seen = new Set<string>();
+    for (const [i, entry] of mcp.entries()) {
+      const { server, tools } = (entry ?? {}) as Record<string, unknown>;
+      const listed =
+        tools === undefined || tools === "*" || (Array.isArray(tools) && tools.every((t) => typeof t === "string"));
+      if (typeof entry !== "object" || entry === null || typeof server !== "string" || !listed) {
+        return `${named}: mcp[${i}] is not { server, tools? } — ${shape}`;
+      }
+      if (seen.has(server)) return `${named}: mcp names the server "${server}" twice (ADR-0079)`;
+      seen.add(server);
+      if (Array.isArray(tools)) {
+        const twice = tools.find((t, j) => tools.indexOf(t) !== j);
+        if (twice !== undefined) {
+          return `${named}: mcp lists the tool "${String(twice)}" of the server "${server}" twice — list each tool once (ADR-0079)`;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The MCP servers this definition holds, resolved against the Instance's servers (ADR-0079), or the
+ * fault: a name that `spec.mcp` does not hold, a remote server with no list, or a stdio server with one. `jr2 up` refused that already; the fault is the
+ * second fence, for a definition `jr2 up` never walked. Order: the definition's.
+ */
+export function mcpServersFor(
+  definition: Pick<AgentDefinition, "mcp">,
+  spec: HarnessSpec,
+): { servers: AgentMcpServerSpec[] } | { fault: string } {
+  const servers: AgentMcpServerSpec[] = [];
+  for (const entry of definition.mcp ?? []) {
+    const server = spec.mcp !== undefined && Object.hasOwn(spec.mcp, entry.server) ? spec.mcp[entry.server] : undefined;
+    if (server === undefined) {
+      const known = Object.keys(spec.mcp ?? {});
+      return {
+        fault:
+          `the definition names the MCP server "${entry.server}", which this Instance does not ` +
+          `declare — it declares ${known.length ? known.map((n) => `"${n}"`).join(", ") : "none"}; run \`jr2 up\` (ADR-0079)`,
+      };
+    }
+    if ("command" in server) {
+      // A stdio server takes no list (ADR-0079): a list would read as a limit, and guard nothing.
+      if (entry.tools !== undefined) {
+        return {
+          fault:
+            `the definition gives the stdio MCP server "${entry.server}" a tools list — a stdio server takes no ` +
+            "list, and the Agent gets every tool of it (ADR-0079)",
+        };
+      }
+      servers.push({
+        name: entry.server,
+        transport: { kind: "stdio", command: server.command, args: [...server.args] },
+        tools: "*",
+        timeoutMs: server.timeoutMs,
+      });
+    } else {
+      // A remote server takes a list or "*" (ADR-0079): no list is not the widest grant.
+      if (entry.tools === undefined || (Array.isArray(entry.tools) && entry.tools.length === 0)) {
+        return {
+          fault:
+            `the definition names the remote MCP server "${entry.server}" with no tools — a ` +
+            'remote server takes a list of tool names, or "*" (ADR-0079)',
+        };
+      }
+      servers.push({
+        name: entry.server,
+        transport: { kind: "http", url: server.url },
+        ...(server.secret !== undefined ? { secret: server.secret } : {}),
+        tools: entry.tools,
+        timeoutMs: server.timeoutMs,
+      });
+    }
+  }
+  return { servers };
+}
+
+/**
+ * The MCP half of the admission check (ADR-0079), or undefined: the definition's servers are the
+ * Instance's ({@link mcpServersFor}), and it names a stdio server only where this Harness has a
+ * domain to start it in. The Instance Harness has none: a Menu-only Agent gets remote servers only.
+ */
+export function mcpAdmissionFault(
+  definition: Pick<AgentDefinition, "mcp">,
+  spec: HarnessSpec,
+  hasDomain: boolean,
+): string | undefined {
+  const servers = mcpServersFor(definition, spec);
+  if ("fault" in servers) return servers.fault;
+  const stdio = servers.servers.find((server) => server.transport.kind === "stdio");
+  if (stdio !== undefined && !hasDomain) {
+    return (
+      `the definition names the stdio MCP server "${stdio.name}", and this Harness has no domain to start it in: ` +
+      "a Menu-only Agent gets remote servers only (ADR-0079)"
+    );
   }
   return undefined;
 }
@@ -193,6 +326,7 @@ export function resolveDefinition(
     cwd: turn?.cwd ?? "/work",
     workspace: definition.workspace ?? "write",
     ...(thinkingLevel ? { thinkingLevel } : {}),
+    ...(definition.mcp !== undefined ? { mcp: definition.mcp } : {}),
   };
 }
 
@@ -225,6 +359,17 @@ export function loadHarnessSpec(env: Record<string, string | undefined>): Harnes
     if (typeof reach?.baseUrl !== "string" || !/^https:\/\//.test(reach.baseUrl)) {
       throw new Error(
         `JR2_HARNESS_JSON's catalog.${id} needs { baseUrl: "https://…" } — got ${JSON.stringify(reach)} (ADR-0059)`,
+      );
+    }
+  }
+  for (const [name, server] of Object.entries(spec.mcp ?? {})) {
+    const s = server as Record<string, unknown>;
+    const remote = typeof s?.url === "string" && (s.secret === undefined || typeof s.secret === "string");
+    const stdio = typeof s?.command === "string" && Array.isArray(s.args) && s.args.every((a) => typeof a === "string");
+    if ((!remote && !stdio) || typeof s.timeoutMs !== "number" || !(s.timeoutMs > 0)) {
+      throw new Error(
+        `JR2_HARNESS_JSON's mcp.${name} needs { url, secret?, timeoutMs } or { command, args, timeoutMs } — got ` +
+          `${JSON.stringify(server)} (ADR-0079)`,
       );
     }
   }

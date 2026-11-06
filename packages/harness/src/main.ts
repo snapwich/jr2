@@ -39,7 +39,8 @@ import { Execs } from "./exec.ts";
 import { seatFacts, standingBriefing } from "./briefing.ts";
 import { clearShm, clearShmInDomain, podMemoryGuard } from "./memory-guard.ts";
 import { admissionFault, modelsFor } from "./provider.ts";
-import { loadHarnessSpec } from "./spec.ts";
+import { McpHost } from "./mcp.ts";
+import { loadHarnessSpec, mcpAdmissionFault } from "./spec.ts";
 import {
   conditionPathAndHome,
   defaultGitIdentity,
@@ -229,9 +230,28 @@ guard.start();
 // every conversation sends the same bytes. Unknown where this is not a Sandbox, and then unsaid.
 const standing = standingBriefing(seatFacts(process.env));
 
+// The MCP servers of the Instance (ADR-0079): a remote server's one connection for this pod, and the
+// stdio servers of each conversation, which start in the domain. The Instance Harness has no domain,
+// so it starts no stdio server, and its admission refuses a definition that names one.
+const mcpHost = new McpHost({ servers: harness.mcp ?? {}, standIns, ...(children ? { children } : {}) });
+const conversationKey = (agentName: string, instanceId: string) =>
+  `${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
 const harnessWire = harnessServer({
   runSubmissionFor: (seat) =>
-    runSubmissionFor({ models, menu, guard, standing, ...(children ? { children } : {}), ...seat }),
+    runSubmissionFor({
+      models,
+      menu,
+      guard,
+      standing,
+      ...(children ? { children } : {}),
+      mcp: {
+        conversation: mcpHost.conversation(conversationKey(seat.agentName, seat.instanceId), seat.mcpTools),
+        servers: harness,
+      },
+      ...seat,
+    }),
+  // A conversation that the live set freed ends its stdio MCP servers (ADR-0079).
+  conversationFreed: (agentName, instanceId) => void mcpHost.end(conversationKey(agentName, instanceId)),
   // A guard kill lands on the running conversations' streams and on `GET /memory-kills`, under one
   // id, for the Orchestrator's notice (ADR-0062).
   memoryKills: (listener) => guard.onKill(listener),
@@ -249,7 +269,8 @@ const harnessWire = harnessServer({
         execs: new Execs({ children }),
       }
     : {}),
-  checkAdmission: (resolved) => admissionFault(models, resolved),
+  checkAdmission: (resolved) =>
+    admissionFault(models, resolved) ?? mcpAdmissionFault(resolved, harness, children !== undefined),
   frameExists: (path) => existsSync(path),
   // Set on the Instance Harness StatefulSet alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code

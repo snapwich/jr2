@@ -66,11 +66,12 @@ loudly narrated, safe to re-run:
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep
   the node out with `sandbox.nodeSelector` or a taint, ADR-0052, or enable Landlock); a run after the fix converges
   ([ADR-0077](0077-jr2-requires-landlock-on-every-sandbox-node.md)).
-- **Provider preflight**: `up` checks each provider that a carried model names. It checks from inside the cluster, with
-  one trivial tool-call completion. An endpoint that the pods cannot reach, a wrong or missing key, or a vLLM without
-  `--enable-auto-tool-choice` then fails at converge time, not as `agent.fault` in a run. Reachability is the user's
-  concern (`localhost` never works from a pod; a LAN address does on kind). The check must take the path that the
-  Harness takes. If it does not, a pass means nothing.
+- **Provider preflight**: `up` checks each provider that a carried model names, and the tool list of each remote MCP
+  server that an Agent names (below). It checks from inside the cluster, with one trivial tool-call completion for a
+  model. An endpoint that the pods cannot reach, a wrong or missing key, or a vLLM without `--enable-auto-tool-choice`
+  then fails at converge time, not as `agent.fault` in a run. Reachability is the user's concern (`localhost` never
+  works from a pod; a LAN address does on kind). The check must take the path that the Harness takes. If it does not, a
+  pass means nothing.
   - **One path for every provider.** `up` checks the custom provider (`harness.provider`, ADR-0018) and a provider of
     pi's catalog (for example `anthropic/…`) in the same way. A key of either is a held secret, and only a Custodian can
     use it ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). So no key enters a pod
@@ -106,8 +107,8 @@ loudly narrated, safe to re-run:
       model runs where the Instance Harness runs.
     - The held set: a pod that holds a secret sends its HTTPS through its Custodian, and a tunnel carries a host that no
       secret is bound to. A pod that holds no secret sends its HTTPS direct. So the check pod holds the held set of the
-      first pod of its class, and the keys that the other pods of the class hold. A class that holds nothing gets a
-      check pod that holds nothing.
+      first pod of its class, and the keys and the MCP server secrets that the other pods of the class hold. A class
+      that holds nothing gets a check pod that holds nothing.
 
     When no pod of the class holds a key of the provider, the check pod holds none. Then pi refuses the call
     (`not configured`), and the converge fails. A signing credential in `harness.env` reaches the check pod, as it
@@ -115,6 +116,16 @@ loudly narrated, safe to re-run:
     knows, and for which jr2 knows no key name, is checked with no held key, as a Turn runs it. The check pod has the
     priority class of the Sandbox tier, as the Harness pods have (ADR-0060).
 
+  - **MCP servers.** The check pod also checks each remote MCP server that an Agent of its class names
+    ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). It
+    reads the server's `tools/list` through its Custodian, with the Stand-in of the server's secret, as a Turn reads it.
+    An allowlisted tool name that the list does not have fails the converge, and the result names the server and the
+    tool. A server that refuses the request (a 401 or a 403: a wrong or expired token) fails the converge, as a model
+    key that the provider refuses does. A server that does not answer is a warning: the first Turn of a conversation
+    fails with a named error when the server does not answer then. A stdio server is not checked: it runs as Workspace
+    code in the Sandbox, and the check pod runs none. Each server has 60 s for its whole listing, after the models. Two
+    literals set it, `PREFLIGHT_MCP_BUDGET_SECONDS` in `preflight-line.ts` and `CHECK_MCP_SECONDS` in `up.ts`, and a
+    test holds them equal. The pod writes the list, and `up` compares it with the allowlists.
   - **The request.** The check's request shares these with a Turn's: the model, its api, its endpoint and key, the
     completion limit (what pi-ai sends for a Turn), the retries, no forced tool, and the level of a definition with no
     `thinkingLevel` (`off`: no `reasoning` is sent). It does not share these: it has no system prompt, one tool, no
@@ -195,12 +206,12 @@ loudly narrated, safe to re-run:
 
     It never deletes the objects of another Instance.
 
-  - **Skipping it.** `jr2 up --skip-provider-preflight` runs no check pod. A check can fail when the model works, for
-    example when a model loads for longer than the check waits. That fault must not stop every converge until jr2 is
-    fixed. The skip is never silent: `up` writes one warning line, which names each model that it did not check. `up`
-    still deletes the leftovers of earlier runs, because their Secrets can hold a key. The flag has no config key,
-    because no flag of `up` has one (CI gives `--yes` as a flag). A model that does not work then fails in a run, as
-    `agent.fault`.
+  - **Skipping it.** `jr2 up --skip-provider-preflight` runs no check pod, so it checks no model and no MCP server's
+    tool list. A check can fail when the model works, for example when a model loads for longer than the check waits.
+    That fault must not stop every converge until jr2 is fixed. The skip is never silent: `up` writes one warning line,
+    which names each model and each MCP server that it did not check. `up` still deletes the leftovers of earlier runs,
+    because their Secrets can hold a key. The flag has no config key, because no flag of `up` has one (CI gives `--yes`
+    as a flag). A model that does not work then fails in a run, as `agent.fault`.
   - **A limit.** The check pod has labels of its own. It does not get the labels of a Harness pod: the Instance Harness
     Service selects its pods by label, and would send Turns to the check pod. So a NetworkPolicy that selects Harness
     pods by label does not select the check pod. When such a policy closes the egress of the Harness pods, the check can

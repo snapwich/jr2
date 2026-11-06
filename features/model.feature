@@ -225,6 +225,26 @@ Feature: a real model drives the kit
       And every trial finished
       And the cell "advised/off" is written to the scorecard
 
+  Rule: an Agent that calls an MCP tool goes on to its pick
+    ADR-0079/0062. An Agent's MCP tools act on outside services, not on the workflow. The Briefing's
+    standing part says that a call of one is not a pick and does not end the Turn. The
+    `mcp-then-pick` clerk is a Menu-only Agent with one MCP tool, `lookup_order`, of a fake server
+    that the step serves on the host. The prompt names an order, and only the order system knows its
+    payment status, which the step sets for each trial, paid or declined at random. The measure is
+    the order of the clerk's calls in its printed conversation: `orders/lookup_order`, then a pick,
+    with no ask between. A trial whose model never called the tool, or picked before it, or stopped
+    after it and was asked again, is a miss. The first measured run (2026-11-05, the home-lab Qwen)
+    read 10 of 10, none void, so the floor is 9, as for the other claims that read 10 of 10. It is
+    never lowered (ADR-0066).
+
+    Scenario: the clerk calls its MCP tool, then picks
+      Given the model instance is serving
+      When I run the "mcp-then-pick" workflow 10 times with thinking off
+      Then the MCP call came before the pick in at least 9 trials
+      And no Sandbox was provisioned in any trial
+      And every trial finished
+      And the cell "mcp-then-pick/off" is written to the scorecard
+
   Rule: a notice changes what the next Turn does
     ADR-0061/0062. The Harness's guard kills the Agent's processes at the memory limit and not the
     Harness; the next Turn in that Workspace is told so, once. The `noticed` workflow's first Turn

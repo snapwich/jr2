@@ -36,15 +36,17 @@ recover, finish — are exercised only one scripted tool call at a time.
   Agent acts on the answer, after a chain of replies and after a Harness restart cut the pick
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md), ADR-0031); and after a signed push the
   Agent continues on its branch, so its next push publishes
-  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)). A claim qualifies
-  when an ADR states what a correct Agent does differently for it and a step can observe the difference from outside the
-  pod. **The run** is one `workspace()` workflow through to `done` on a real task: a ticket the seed Repo carries as a
-  failing test, a planner's pick, a coder that edits in the Worktree, runs the test, commits on the run's branch and
-  names the commit — a guard refuses a `submit` that names none — and a reviewer in the same Sandbox, read-only
-  ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)), that runs the test itself and
-  approves or rejects, bounded. Approval parks at a Gate, and the witness is the pod (parking is retention, ADR-0012):
-  the branch is ahead of `main`, its head is the named commit, the tree is clean, and the test passes when the suite
-  runs it there. Nothing is pushed — the Agent holds no credential and the push is the caller's (ADR-0005,
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)); and an Agent with an
+  MCP tool calls it and then makes its pick, because a call of a service is not a pick
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). A
+  claim qualifies when an ADR states what a correct Agent does differently for it and a step can observe the difference
+  from outside the pod. **The run** is one `workspace()` workflow through to `done` on a real task: a ticket the seed
+  Repo carries as a failing test, a planner's pick, a coder that edits in the Worktree, runs the test, commits on the
+  run's branch and names the commit — a guard refuses a `submit` that names none — and a reviewer in the same Sandbox,
+  read-only ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)), that runs the test
+  itself and approves or rejects, bounded. Approval parks at a Gate, and the witness is the pod (parking is retention,
+  ADR-0012): the branch is ahead of `main`, its head is the named commit, the tree is clean, and the test passes when
+  the suite runs it there. Nothing is pushed — the Agent holds no credential and the push is the caller's (ADR-0005,
   [ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)), as `task` says — and
   the seed's `app.git` accepts none. The run asserts the pick ledger's shape and a time bound — never the diff, the
   commit message, or the Turn count, which are the model's.
@@ -102,11 +104,12 @@ recover, finish — are exercised only one scripted tool call at a time.
   `<key>` is the profile's `key`. An endpoint that answers with a status other than 2xx prints
   `skipped: the model endpoint at <url> answered HTTP <code> (profile <name>) — the @model tier did not run`. The
   trigger is a change to any text or tool the model reads or is offered: the Briefing, the Menu's rendering and the
-  refusal, the frame of a Steering message, the nudge, the Working tools and their descriptions, Compaction's summary,
-  the admit body's notices, the pi pin, a provider adapter, or an authoring surface that changes a Frame. An agent
-  reviewing a feature or refactor that touched one of these runs the tier and reports the scorecard's floors and drift,
-  or the skip, in its handoff. CLAUDE.md states the rule. One scenario runs alone by its title, which is the scenario
-  filter: `cucumber-js --profile model --name "a Gate's answer during a command is followed"`.
+  refusal, the frame of a Steering message, the nudge, the Working tools and their descriptions, how the Harness gives
+  an Agent its MCP tools and their results, Compaction's summary, the admit body's notices, the pi pin, a provider
+  adapter, or an authoring surface that changes a Frame. An agent reviewing a feature or refactor that touched one of
+  these runs the tier and reports the scorecard's floors and drift, or the skip, in its handoff. CLAUDE.md states the
+  rule. One scenario runs alone by its title, which is the scenario filter:
+  `cucumber-js --profile model --name "a Gate's answer during a command is followed"`.
 - **A third pi canary.** Conformance and `@kind` drive the turn loop against a script; this tier drives it against a
   model that can misread. Run all three before bumping the pin.
 
@@ -329,6 +332,13 @@ recover, finish — are exercised only one scripted tool call at a time.
   the Allowed picks, as the Turn's instruction. The B arm moved the disclaimer to a closing line after the text
   (ADR-0062) and read 20 of 20, none void. Both claims' cells are baselines. The prompts and the floors did not change
   between the runs.
+- The MCP claim of
+  [ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md) —
+  `mcp-then-pick` — is Menu-only. The Agent has one MCP tool, from a fake server that the step serves, and a prompt
+  whose task needs the tool's answer and then a pick. The measure is the order of the Agent's calls in its printed
+  conversation: the MCP call (`<server>/<tool>`), then the pick. A trial whose model never called the tool is a miss,
+  and one that stopped after the tool with no pick is a miss. Its first measured run (2026-11-05) read 10 of 10, none
+  void, so its floor is 9 of 10, and its cell is a baseline.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but

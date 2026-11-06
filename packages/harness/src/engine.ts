@@ -62,7 +62,7 @@ export type EngineMessage = Message | CompactionSummaryMessage;
 export type EngineToolResult = { content: (TextContent | ImageContent)[] };
 
 /**
- * A tool in the shape the engine runs: a Working tool or a Menu item. The declaration (`name`,
+ * A tool in the shape the engine runs: a Working tool, an MCP tool or a Menu item. The declaration (`name`,
  * `description`, `parameters`) is what the model reads. `execute` gets the call's id (pi's
  * argument order; no jr2 tool reads it) and the validated arguments, and throws on failure: the
  * engine makes the throw the error result that the model reads. `prepareArguments` shapes the raw

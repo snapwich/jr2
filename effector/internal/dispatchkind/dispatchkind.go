@@ -116,7 +116,7 @@ func (r *Runner) Run(ctx context.Context, req *wire.StartRequest) wire.Output {
 		out.Report[i] = s.String(line)
 	}
 	if out.Result != nil {
-		out.Result = scrubJSON(s, out.Result)
+		out.Result = s.JSON(out.Result)
 	}
 	return out
 }
@@ -561,49 +561,6 @@ func (r *Runner) client() *http.Client {
 		// host the target did not fix.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-}
-
-// scrubJSON scrubs every string of a JSON value, each object key included, and writes it again.
-// A match is replaced inside the decoded string, so the replacement can never break the JSON.
-func scrubJSON(s *scrub.Scrubber, raw json.RawMessage) json.RawMessage {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		// Not JSON (it came from a decode, so this is not reached): it leaves as a scrubbed string.
-		out, _ := wire.Encode(s.String(string(raw)))
-		return out
-	}
-	out, err := wire.Encode(scrubValue(s, v))
-	if err != nil {
-		out, _ = wire.Encode(s.String(string(raw)))
-	}
-	return out
-}
-
-func scrubValue(s *scrub.Scrubber, v any) any {
-	switch x := v.(type) {
-	case string:
-		return s.String(x)
-	case []any:
-		for i := range x {
-			x[i] = scrubValue(s, x[i])
-		}
-		return x
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, val := range x {
-			key := s.String(k)
-			if prev, ok := out[key]; ok {
-				// Two keys that scrub to one keep both values.
-				out[key] = []any{prev, scrubValue(s, val)}
-				continue
-			}
-			out[key] = scrubValue(s, val)
-		}
-		return out
-	}
-	return v
 }
 
 // why is an error in words, without Go's request line.

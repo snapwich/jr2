@@ -362,6 +362,68 @@ export type SecretEntry = {
   paths?: readonly string[];
 };
 
+// One MCP server of the Instance (ADR-0079), by the author's name. A url and a secret are facts of
+// the Instance, never of an Agent's definition, so a packaged Machine names a server and the
+// Instance declares it. The name is the author's: two servers of one service with two secrets are
+// two names.
+/**
+ * A remote MCP server, which the Harness reaches over Streamable HTTP. An Agent that names it in its
+ * `mcp` list gets the tools that its `tools` allowlist names.
+ *
+ * A server with a `secret` needs an `https://` url, because the Custodian puts the value on TLS
+ * only: `mcp.<name>.url must be an https:// URL`. A server with no secret can use `http://`. The
+ * Harness sends `Authorization: Bearer <Stand-in>`, and the Custodian of each pod whose Agents name
+ * the server puts the value in its place. A `secret` that the `secrets` list does not hold is
+ * refused when the config loads: `<file> at mcp.<name>.secret: "<NAME>" is not an entry of secrets`.
+ * Past `timeout`, the Harness cancels the call, and the model reads jr2's text.
+ *
+ * @example
+ * ```ts
+ * import { defineConfig } from "@jr2/orchestrator";
+ *
+ * export default defineConfig({
+ *   secrets: [{ name: "SLACK_ACME_TOKEN", value: process.env.SLACK_ACME_TOKEN }],
+ *   mcp: { "slack-acme": { url: "https://mcp.slack.example/mcp", secret: "SLACK_ACME_TOKEN" } },
+ * });
+ * ```
+ */
+export type McpRemoteServer = {
+  /** Its Streamable HTTP endpoint: `https://` when it has a `secret`. */
+  url: string;
+  /** A name of the `secrets` list: its bearer token. With no `hosts`, that entry is bound to the
+   * url's host, in `authorization`. Default: none. */
+  secret?: string;
+  /** How long one call can run, such as `"90s"`. Default `"60s"`. */
+  timeout?: `${number}s` | `${number}m` | `${number}h`;
+};
+
+/**
+ * A stdio MCP server: a program of the Sandbox Image that the Harness starts for each Agent
+ * conversation, through jr2's spawner, inside the Agent's confinement. It is Workspace code: its env
+ * holds only the Stand-ins that the `workspace()` grants, so it has no `secret` of its own. A
+ * `"none"` Agent cannot name one, because its Turns run on the Instance Harness, where no Workspace
+ * code runs.
+ *
+ * @example
+ * ```ts
+ * import { defineConfig } from "@jr2/orchestrator";
+ *
+ * export default defineConfig({ mcp: { notes: { command: "notes-mcp", args: ["--root", "/work"] } } });
+ * ```
+ */
+export type McpStdioServer = {
+  /** A program of the Sandbox Image. */
+  command: string;
+  /** Its arguments. */
+  args?: readonly string[];
+  /** How long one call can run, such as `"90s"`. Default `"60s"`. */
+  timeout?: `${number}s` | `${number}m` | `${number}h`;
+};
+
+/** One MCP server of the Instance: a {@link McpRemoteServer} (`url`) or a {@link McpStdioServer}
+ * (`command`). */
+export type McpServer = McpRemoteServer | McpStdioServer;
+
 // The agent-runtime section (ADR-0018): what the stock Harness image consumes alongside the Agent
 // definition each Turn hands it (ADR-0049). Moved out of `sandbox` deliberately — `sandbox` is pod
 // transport (it still CARRIES this env to the Harness container), but model concerns are Harness
@@ -610,7 +672,7 @@ export type JwtIssuer = {
  * Every field is optional, and an Instance can run with no `jr2.config.ts`. Write the file as
  * `export default defineConfig({ … })`. When the config loads, a file with no default export is
  * refused: `` <file> has no default export (use `export default defineConfig({…})`) ``. The load also
- * checks the shape of `git.credentials`, `secrets`, `harness.catalog` and `priorityClasses`. It
+ * checks the shape of `git.credentials`, `secrets`, `harness.catalog`, `priorityClasses` and `mcp`. It
  * checks that `sandbox` is an object, and checks its `resources`. Each refusal names the field.
  * `jr2 up` checks the rest.
  *
@@ -686,6 +748,14 @@ export type JR2Config = {
    * `-`, at most 40 characters, starts with a letter and ends with a letter or digit. When the config
    * loads, a bad entry is refused: `<file> at hooks.<name>: <problem>`. Default: none. */
   hooks?: Readonly<Record<string, Hook>>;
+  // Reach for tools (ADR-0079): a name of the author's, so an Agent's definition and an Effect name
+  // a server without its url or its secret.
+  /** The MCP servers, by a name of yours: `[a-z][a-z0-9-]*`, not `jr2`. A remote server has a
+   * `url` (`https://` with a secret), a `secret` (a name of the `secrets` list; with no `hosts`, it
+   * is bound to the url's host) and a `timeout` (default `"60s"`). A stdio server has a `command`
+   * of the Sandbox Image, its `args` and a `timeout`. An Agent names a server in its `mcp` list.
+   * Default: none. See {@link McpServer}. */
+  mcp?: Readonly<Record<string, McpServer>>;
   // Deployment-varying — resolve from env (ADR-0019).
   /** The image registry prefix to which `jr2 up` pushes the images that it builds, such as
    * `registry.example.com/team`. It changes between deployments, so read it from `process.env`
@@ -785,6 +855,7 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   if (mod.default.callers !== undefined) checkCallers(mod.default.callers, file);
   if (mod.default.cors !== undefined) checkCors(mod.default.cors, file);
   if (mod.default.hooks !== undefined) checkHooks(mod.default.hooks, file);
+  if (mod.default.mcp !== undefined) checkMcp(mod.default.mcp, mod.default.secrets ?? [], file);
   return mod.default;
 }
 
@@ -917,6 +988,84 @@ function isOrigin(text: string): boolean {
     return (url.protocol === "http:" || url.protocol === "https:") && url.origin === text;
   } catch {
     return false;
+  }
+}
+
+/** An MCP server's name (ADR-0079): the `<server>` of `mcp__<server>__<tool>`. It has no `_`, so
+ * the prefix of a tool name is never ambiguous. */
+export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]*$/;
+
+/** The default `timeout` of one MCP call (ADR-0079). */
+export const MCP_DEFAULT_TIMEOUT_MS = 60_000;
+
+/** One MCP server's `timeout` in milliseconds, or undefined when it is not a duration of 1 ms or
+ * more (a shorter one rounds to 0 ms, which no Harness can wait). */
+export function mcpTimeoutMs(timeout: string | undefined): number | undefined {
+  if (timeout === undefined) return MCP_DEFAULT_TIMEOUT_MS;
+  const m = /^(\d+(?:\.\d+)?)(s|m|h)$/.exec(timeout);
+  const n = m ? Number(m[1]) : NaN;
+  if (!(n > 0)) return undefined;
+  const ms = Math.round(m![2] === "h" ? n * 3_600_000 : m![2] === "m" ? n * 60_000 : n * 1000);
+  return ms >= 1 ? ms : undefined;
+}
+
+/** Is this MCP server a stdio one (`command`), not a remote one (`url`)? */
+export function isStdioServer(server: McpServer): server is McpStdioServer {
+  return "command" in server;
+}
+
+const McpTimeoutShape = z
+  .string()
+  .refine((t) => mcpTimeoutMs(t) !== undefined, 'a timeout is a positive duration, such as "90s", "5m" or "1h"');
+const McpServerShape = z.union([
+  z.object({ url: z.string(), secret: z.string().min(1).optional(), timeout: McpTimeoutShape.optional() }).strict(),
+  z
+    .object({
+      command: z.string().min(1),
+      args: z.array(z.string()).optional(),
+      timeout: McpTimeoutShape.optional(),
+    })
+    .strict(),
+]);
+
+const MCP_HINT =
+  "an entry is <name>: { url, secret?, timeout? } for a remote server, or <name>: { command, args?, timeout? } for a stdio server (ADR-0079)";
+
+/** `mcp`'s SHAPE (ADR-0079), the `checkGit` style: a bad entry names its path. The url is not
+ * checked here: in-cluster it reads `.env`, which is absent, so `jr2 up` checks it host-side. */
+function checkMcp(mcp: unknown, secrets: readonly SecretEntry[], where: string): void {
+  if (typeof mcp !== "object" || mcp === null || Array.isArray(mcp)) {
+    throw new Error(`${where} at mcp: expected an object keyed by server name — ${MCP_HINT}`);
+  }
+  for (const [name, server] of Object.entries(mcp)) {
+    if (name === "jr2") {
+      throw new Error(
+        `${where} at mcp.jr2: the server name jr2 is reserved — the Menu's tools are named mcp__jr2__<event>; ` +
+          "give the server another name (ADR-0079)",
+      );
+    }
+    if (!MCP_SERVER_NAME.test(name)) {
+      throw new Error(
+        `${where} at mcp.${name}: a server name is lowercase letters, digits and -, and starts with a letter ` +
+          "([a-z][a-z0-9-]*) — it is the <server> of the tool names mcp__<server>__<tool> (ADR-0079)",
+      );
+    }
+    const parsed = McpServerShape.safeParse(server);
+    if (!parsed.success) {
+      // A union's issue says only "invalid input": name the branch the entry meant.
+      const meant = typeof server === "object" && server !== null && "command" in server ? 1 : 0;
+      const issues = parsed.error.issues[0];
+      const inner = issues?.code === "invalid_union" ? (issues.errors[meant]?.[0] ?? issues.errors[0]?.[0]) : issues;
+      const at = ["", ...(inner?.path ?? [])].map(String).join(".");
+      throw new Error(`${where} at mcp.${name}${at}: ${inner?.message ?? "invalid"} — ${MCP_HINT}`);
+    }
+    const secret = (server as { secret?: string }).secret;
+    if (secret !== undefined && !secrets.some((s) => s.name === secret)) {
+      throw new Error(
+        `${where} at mcp.${name}.secret: "${secret}" is not an entry of secrets — add it: ` +
+          `secrets: [{ name: "${secret}", value: process.env.${secret} }] (ADR-0079)`,
+      );
+    }
   }
 }
 

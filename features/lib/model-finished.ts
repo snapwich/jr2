@@ -43,4 +43,7 @@ export const FINISHED: Record<string, (s: RunEnd) => boolean> = {
   "chart-refusal": finalIn("admitted", "refused"),
   "steer-follow": finalIn("held", "published"),
   "peer-not-order": finalIn("published", "discarded"),
+  // A clerk that shipped an order it should have held also finished: the claim measures the order
+  // of its calls, not the pick.
+  "mcp-then-pick": finalIn("shipped", "held"),
 };

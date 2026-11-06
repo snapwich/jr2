@@ -10,6 +10,8 @@
 //   <root>/<agent>/<instance id>/record/messages.jsonl    the history view's messages
 //   <root>/<agent>/<instance id>/record/over.jsonl        one { submissionId } per run that ended
 //                                                          because its Turn was over (ADR-0024)
+//   <root>/<agent>/<instance id>/record/mcp-tools.json    the MCP tools the conversation offers,
+//                                                          written once at its first Turn (ADR-0079)
 //   <root>/<agent>/<instance id>/engine/<engine>/         the engine part (for pi: engine/pi/transcript.jsonl)
 //
 // Append-only JSONL, written synchronously: the Conversation's appends are synchronous, and a line
@@ -26,6 +28,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmdirSync,
   rmSync,
   truncateSync,
@@ -68,6 +71,57 @@ export type EngineSeat = {
  * what is on disk — whatever was cut settles `failed`, `harness_restarted` (ADR-0031).
  */
 export type RecordFault = (err: unknown, path: string) => never;
+
+/** One MCP tool as the conversation offers it (ADR-0079): its name in the tools block, the server and
+ * the server's own name for it, and the declaration the model reads, as the server gave it. */
+export type RecordedMcpTool = {
+  /** `mcp__<server>__<tool>`. */
+  name: string;
+  server: string;
+  tool: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+};
+
+/**
+ * The MCP tools of one conversation (ADR-0079), kept in its record: read at the first Turn, written
+ * once, and offered the same to the conversation's end, across a park and a Harness restart. The
+ * tools lead the provider's prefix cache, so they never change in a conversation (ADR-0029).
+ */
+export type McpToolsSeat = {
+  /** The tools that the conversation offers, or undefined before its first Turn wrote them. */
+  read(): RecordedMcpTool[] | undefined;
+  write(tools: RecordedMcpTool[]): void;
+};
+
+/** The MCP tools seat over a conversation directory, or over none: memory only. The file is written
+ * whole, to a temporary name and then renamed, so a restart reads all of it or none of it. */
+export function mcpToolsSeat(dir: string | undefined, fault: RecordFault): McpToolsSeat {
+  let held: RecordedMcpTool[] | undefined;
+  const path = dir === undefined ? undefined : join(dir, "record", "mcp-tools.json");
+  return {
+    read() {
+      if (held !== undefined || path === undefined) return held;
+      try {
+        held = (JSON.parse(readFileSync(path, "utf8")) as { tools: RecordedMcpTool[] }).tools;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+      return held;
+    },
+    write(tools) {
+      held = tools;
+      if (path === undefined) return;
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(`${path}.tmp`, `${JSON.stringify({ tools })}\n`);
+        renameSync(`${path}.tmp`, path);
+      } catch (err) {
+        fault(err, path);
+      }
+    },
+  };
+}
 
 /** A conversation as its record rebuilds it. */
 export type RecordedConversation = {

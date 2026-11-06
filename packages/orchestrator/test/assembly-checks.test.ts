@@ -14,6 +14,9 @@ import {
   assemblyRefusals,
   dispatchRefusals,
   doorRefusals,
+  mcpRefusals,
+  mcpToolName,
+  mcpUrlRefusals,
   placementWalkOf,
   type LoadedWorkflow,
 } from "../src/assembly-checks.ts";
@@ -22,7 +25,10 @@ import { secret } from "../src/http-effect.ts";
 import { open } from "../src/open.ts";
 import { partsOf } from "../src/parts.ts";
 import { chartedSrc, machineOf } from "./_assembly.ts";
-import { agent } from "../src/harness-client.ts";
+import { agent, command } from "../src/harness-client.ts";
+import type { AgentMcpServer } from "../src/agent.ts";
+import type { JR2Config } from "../src/config.ts";
+import { customize } from "../src/customize.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
 
@@ -60,7 +66,7 @@ test('the placement walk\'s Instance Harness holds the models of an Open body th
   // minted "none" Agent may name that model: the door and `jr2 up` place its key from one walk.
   const machine = await machineOf(chartedSrc());
   const walk = placementWalkOf([{ name: "charted", machine }]);
-  assert.deepEqual(walk.instanceHarness, { models: ["stub/model"] });
+  assert.deepEqual(walk.instanceHarness, { models: ["stub/model"], servers: [] });
   assert.deepEqual(walk.instanceHarness, partsOf([machine]).instanceHarness);
 });
 
@@ -268,4 +274,160 @@ test("a zod `input` on a Machine that plain setup() made is refused, naming jr2S
   assert.equal(doorRefusals([{ name: "lost", machine: lost.provide({}) }]).length, 1);
   // The door's walk holds the same line.
   assert.deepEqual(await assemblyRefusals({ config: undefined, workflows }), lines);
+});
+
+// --- An Agent's `mcp` list against the config's `mcp` block (ADR-0079) ------------------------------
+
+const MCP_CONFIG: JR2Config = {
+  secrets: [{ name: "SLACK_TOKEN" }],
+  mcp: {
+    slack: { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN" },
+    notes: { command: "notes-mcp" },
+  },
+};
+
+/** A Workflow whose `coder` (in a Workspace) and `triage` ("none") name what they are given. */
+function mcpWorkflow(
+  coder: AgentMcpServer[],
+  triage: AgentMcpServer[] = [],
+  opts: { grants?: string[]; command?: string } = {},
+): LoadedWorkflow {
+  const body = jr2Setup({
+    events: [],
+    actors: {
+      coder: agent({ model: "vllm/qwen", instructions: "i", mcp: coder }),
+      triage: agent({ model: "vllm/qwen", instructions: "i", workspace: "none", mcp: triage }),
+      ...(opts.command ? { deploy: command(["deploy"], { env: { T: secret(opts.command) } }) } : {}),
+    },
+  }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
+    id: "body",
+    initial: "working",
+    states: {
+      working: { invoke: { id: "coder", src: "coder", input: { prompt: "go", cwd: "/work" } } },
+      other: { invoke: { id: "triage", src: "triage", input: { prompt: "go" } } },
+    },
+  });
+  const ws = workspace(body, {
+    repos: { app: "https://example.test/app.git" },
+    ...(opts.grants ? { secrets: opts.grants } : {}),
+  });
+  const machine = jr2Setup({ events: [], actors: { ws } }).createMachine({
+    id: "top",
+    initial: "a",
+    states: { a: { invoke: { src: "ws" } } },
+  });
+  return { name: "ticket", machine };
+}
+
+test("an Agent that names a server the mcp block does not declare is refused with its customize() line (ADR-0079)", () => {
+  const lines = mcpRefusals([mcpWorkflow([{ server: "slak", tools: ["post"] }, { server: "notes" }])], MCP_CONFIG);
+  assert.deepEqual(lines, [
+    'workflow "ticket": Agent "coder" (on the Machine composed as "ws") names the MCP server "slak", which the mcp ' +
+      'block declares "slack", "notes" — bind the Agent to a declared server where the Machine is registered: ' +
+      'export const machine = customize(<import>, { actors: { ws: { agents: { coder: { mcp: [{ server: "<server>", ' +
+      'tools: ["post"] }, { server: "notes" }] } } } } }); or declare it in jr2.config.ts: mcp: { "slak": { url: ' +
+      '"https://<host>/mcp", secret: "<SECRET>" } } (ADR-0079)',
+  ]);
+  // The door runs it too, with no config: nothing is declared.
+  assert.match(mcpRefusals([mcpWorkflow([{ server: "slack", tools: "*" }])], undefined)[0]!, /declares no server/);
+});
+
+test('the allowlist rules: a remote server needs a list or "*", a stdio server takes none and no "none" Agent', () => {
+  const lines = mcpRefusals(
+    [
+      mcpWorkflow(
+        [{ server: "slack" }, { server: "notes", tools: ["read"] }],
+        [{ server: "notes" }, { server: "slack", tools: [] }],
+      ),
+    ],
+    MCP_CONFIG,
+  );
+  assert.equal(lines.length, 4, lines.join("\n"));
+  assert.match(lines[0]!, /Agent "coder" .* names the remote MCP server "slack" with no tools — .*tools: "\*"/);
+  assert.match(
+    lines[1]!,
+    /Agent "coder" .* gives a tools list for the stdio MCP server "notes" — .*Write \{ server: "notes" \}/,
+  );
+  assert.match(lines[2]!, /Agent "triage" .* has workspace: "none" and names the stdio MCP server "notes"/);
+  assert.match(lines[3]!, /Agent "triage" .* gives MCP server "slack" an empty tools list/);
+  // A "none" Agent keeps its list on a remote server: no Workspace code runs where its Turns run.
+  assert.deepEqual(mcpRefusals([mcpWorkflow([], [{ server: "slack", tools: ["post"] }])], MCP_CONFIG), []);
+});
+
+test("an allowlisted tool whose model name breaks [A-Za-z0-9_-]{1,128} is refused", () => {
+  const long = "t".repeat(128 - "mcp__slack__".length + 1);
+  const lines = mcpRefusals(
+    [mcpWorkflow([{ server: "slack", tools: ["post message", long, "ok_tool-1"] }])],
+    MCP_CONFIG,
+  );
+  assert.equal(lines.length, 2, lines.join("\n"));
+  assert.match(
+    lines[0]!,
+    /lists the tool "post message" of MCP server "slack": the model would read it as "mcp__slack__post message"/,
+  );
+  assert.match(lines[1]!, /at most 128 characters/);
+  assert.equal(mcpToolName("slack", "t".repeat(116)).length, 128);
+  assert.deepEqual(mcpRefusals([mcpWorkflow([{ server: "slack", tools: ["t".repeat(116)] }])], MCP_CONFIG), []);
+});
+
+test("a tool listed twice for one server is refused, once (ADR-0079)", () => {
+  const lines = mcpRefusals([mcpWorkflow([{ server: "slack", tools: ["post", "read", "post", "post"] }])], MCP_CONFIG);
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(lines[0]!, /lists the tool "post" of MCP server "slack" twice/);
+});
+
+test('a list on a server whose secret Workspace code can spend is refused; "*" is taken (ADR-0079, ADR-0028)', () => {
+  const granted = mcpRefusals(
+    [mcpWorkflow([{ server: "slack", tools: ["post"] }], [], { grants: ["SLACK_TOKEN"] })],
+    MCP_CONFIG,
+  );
+  assert.equal(granted.length, 1, granted.join("\n"));
+  assert.match(
+    granted[0]!,
+    /Agent "coder" .* gives a tools list for MCP server "slack", and Workspace code in its Sandbox can spend that server's secret, SLACK_TOKEN: its workspace\(\) lists it under secrets\. .*write \{ server: "slack", tools: "\*" \}/,
+  );
+  const byCommand = mcpRefusals(
+    [mcpWorkflow([{ server: "slack", tools: ["post"] }], [], { command: "SLACK_TOKEN" })],
+    MCP_CONFIG,
+  );
+  assert.match(byCommand[0] ?? "", /the command Effect "deploy" names it/);
+  assert.deepEqual(
+    mcpRefusals([mcpWorkflow([{ server: "slack", tools: "*" }], [], { grants: ["SLACK_TOKEN"] })], MCP_CONFIG),
+    [],
+  );
+});
+
+test("the urls of the mcp block, host-side: http(s), no userinfo, https with a secret (ADR-0079)", () => {
+  const lines = mcpUrlRefusals({
+    secrets: [{ name: "T" }],
+    mcp: {
+      empty: { url: "" },
+      ftp: { url: "ftp://x.example" },
+      user: { url: "https://u:p@x.example/mcp" },
+      plain: { url: "http://x.example/mcp", secret: "T" },
+      open: { url: "http://x.example/mcp" },
+      ok: { url: "https://x.example/mcp", secret: "T" },
+      notes: { command: "notes-mcp" },
+    },
+  });
+  assert.equal(lines.length, 4, lines.join("\n"));
+  assert.match(lines[0]!, /^mcp\.empty\.url "" is not an http:\/\/ or https:\/\/ URL — .*process\.env\.EMPTY_URL/);
+  assert.match(lines[1]!, /^mcp\.ftp\.url/);
+  assert.match(lines[2]!, /^mcp\.user\.url carries userinfo/);
+  assert.match(lines[3]!, /^mcp\.plain\.url must be an https:\/\/ URL/);
+});
+
+test("the door refuses the same mcp lines as jr2 up (ADR-0069, ADR-0079)", async () => {
+  const lines = await assemblyRefusals({ config: MCP_CONFIG, workflows: [mcpWorkflow([{ server: "slack" }])] });
+  assert.deepEqual(lines, mcpRefusals([mcpWorkflow([{ server: "slack" }])], MCP_CONFIG));
+});
+
+test("customize() replaces an Agent's mcp list (ADR-0054, ADR-0079)", () => {
+  const { machine } = mcpWorkflow([{ server: "slak", tools: ["post"] }]);
+  const bound = customize(machine, {
+    actors: { ws: { agents: { coder: { mcp: [{ server: "slack", tools: "*" }] } } } },
+  });
+  assert.deepEqual(mcpRefusals([{ name: "ticket", machine: bound }], MCP_CONFIG), []);
+  assert.deepEqual(partsOf([bound]).mcpAgents.find((a) => a.slot === "coder")?.mcp, [{ server: "slack", tools: "*" }]);
 });

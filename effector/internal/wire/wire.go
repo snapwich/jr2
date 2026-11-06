@@ -17,14 +17,16 @@ import (
 	"strings"
 )
 
-// The kinds an Effector runs. The Instance Effector runs `http` with no Worktree file and a
-// `dispatch` to another Orchestrator (ADR-0071); the Sandbox Effector runs `push`, `command` and an
-// `http` whose body is a Worktree file (ADR-0067, one kind, whose body decides the placement).
+// The kinds an Effector runs. The Instance Effector runs `http` with no Worktree file, a
+// `dispatch` to another Orchestrator (ADR-0071) and an `mcp` request to a remote MCP server
+// (ADR-0079); the Sandbox Effector runs `push`, `command` and an `http` whose body is a Worktree
+// file (ADR-0067, one kind, whose body decides the placement).
 const (
 	KindHTTP     = "http"
 	KindPush     = "push"
 	KindCommand  = "command"
 	KindDispatch = "dispatch"
+	KindMcp      = "mcp"
 )
 
 // Outcomes of an http Effect. Every outcome is output (ADR-0067).
@@ -48,6 +50,10 @@ const (
 	// OutcomeAbsent answers a key-only ask when no run has the key: nothing was started. The TS
 	// driver makes it the invoke's error, the slot's schema refusal; a Machine never reads it.
 	OutcomeAbsent = "absent"
+	// An mcp Effect's outcomes besides `refused`, `unreachable` and `unknown` (ADR-0079): the
+	// server answered, or it asked for input, which jr2 does not give.
+	OutcomeReturned      = "returned"
+	OutcomeInputRequired = "input-required"
 )
 
 // ErrStopped is the cause a credentialed command's run is cancelled with when the Orchestrator
@@ -195,6 +201,32 @@ type DispatchedBy struct {
 	Instance string `json:"instance"`
 }
 
+// McpCall is an mcp start's `tools/call`: the tool, and its arguments, a JSON object.
+type McpCall struct {
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// McpRead is an mcp start's `resources/read`.
+type McpRead struct {
+	URI string `json:"uri"`
+}
+
+// McpPrompt is an mcp start's `prompts/get`: the prompt, and its arguments, each a string.
+type McpPrompt struct {
+	Name      string            `json:"name"`
+	Arguments map[string]string `json:"arguments"`
+}
+
+// McpSpec is an mcp start's part (ADR-0079): the server by its name — the Effector reads its url
+// and the name of its secret from effector.json — and exactly one request.
+type McpSpec struct {
+	Server string     `json:"server"`
+	Call   *McpCall   `json:"call,omitempty"`
+	Read   *McpRead   `json:"read,omitempty"`
+	Prompt *McpPrompt `json:"prompt,omitempty"`
+}
+
 // StartRequest is the body of `POST /effects/<id>`. A `dispatch` (ADR-0071) is flat, as the TS
 // shape is: it shares `url` (the target's origin) and `auth` (the bearer) with http, and adds
 // `workflow`, `input` (the run's body, whole), `dispatchedBy` and `wait`. `keyOnly` in place of
@@ -209,6 +241,7 @@ type StartRequest struct {
 	Body         *Body           `json:"body,omitempty"`
 	Push         *PushSpec       `json:"push,omitempty"`
 	Command      *CommandSpec    `json:"command,omitempty"`
+	Mcp          *McpSpec        `json:"mcp,omitempty"`
 	Workflow     string          `json:"workflow,omitempty"`
 	Input        json.RawMessage `json:"input,omitempty"`
 	KeyOnly      bool            `json:"keyOnly,omitempty"`
@@ -217,8 +250,10 @@ type StartRequest struct {
 	// sends it as the `jr2-on-behalf-of` header; the door records it and does not check it.
 	OnBehalfOf string `json:"onBehalfOf,omitempty"`
 	// Wait is a pointer so that `false`, which the TS shape requires, survives a round trip.
-	Wait      *bool `json:"wait,omitempty"`
-	TimeoutMs int64 `json:"timeoutMs"`
+	Wait *bool `json:"wait,omitempty"`
+	// TimeoutMs bounds the Effect. An mcp start may leave it out (0): the server's timeout in
+	// effector.json applies (ADR-0079).
+	TimeoutMs int64 `json:"timeoutMs,omitempty"`
 	MaxBody   int   `json:"maxBody,omitempty"`
 }
 
@@ -295,6 +330,15 @@ type CommandResult struct {
 	Dirty bool `json:"dirty,omitempty"`
 }
 
+// McpResult is an mcp Effect's `returned` (ADR-0079): `isError` for a call alone, the text, the
+// structured value when there is one, and whether the Effector cut either.
+type McpResult struct {
+	IsError    *bool           `json:"isError,omitempty"`
+	Text       string          `json:"text"`
+	Structured json.RawMessage `json:"structured,omitempty"`
+	Truncated  bool            `json:"truncated,omitempty"`
+}
+
 // Output is an Effect's outcome. Every outcome is output (ADR-0067). `response` carries a
 // Response; a push's outcomes a PushResult; a command's a CommandResult; a dispatch's (ADR-0071)
 // Run, Status and Result (the callee Machine's output, raw JSON), or a refusal's HTTPStatus and
@@ -313,11 +357,18 @@ type Output struct {
 	Result     json.RawMessage
 	HTTPStatus int
 	Report     []string
+	// Mcp is an mcp Effect's `returned` (ADR-0079).
+	Mcp *McpResult
 }
 
 type responseJSON struct {
 	Outcome string `json:"outcome"`
 	Response
+}
+
+type returnedJSON struct {
+	Outcome string `json:"outcome"`
+	McpResult
 }
 
 type reasonJSON struct {
@@ -439,6 +490,11 @@ func (o Output) MarshalJSON() ([]byte, error) {
 		return json.Marshal(settledJSON{Outcome: o.Outcome, Run: o.Run, Status: o.Status, Output: o.Result})
 	case OutcomeAbsent:
 		return json.Marshal(absentJSON{Outcome: o.Outcome})
+	case OutcomeReturned:
+		if o.Mcp == nil {
+			return nil, errors.New("wire: a returned outcome without its result")
+		}
+		return json.Marshal(returnedJSON{Outcome: o.Outcome, McpResult: *o.Mcp})
 	case OutcomeRefused:
 		if o.Report != nil {
 			return json.Marshal(reportJSON{Outcome: o.Outcome, Status: o.HTTPStatus, Report: o.Report})
@@ -477,7 +533,20 @@ func (o *Output) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		*o = Output{Outcome: r.Outcome, Reason: r.Reason}
-	case OutcomeUnreachable, OutcomeUnknown:
+	case OutcomeReturned:
+		var r returnedJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return err
+		}
+		if _, ok := fields["text"]; !ok {
+			return errors.New("wire: a returned outcome with no text")
+		}
+		*o = Output{Outcome: OutcomeReturned, Mcp: &r.McpResult}
+	case OutcomeUnreachable, OutcomeUnknown, OutcomeInputRequired:
 		var r reasonJSON
 		if err := strict(raw, &r); err != nil {
 			return err
@@ -638,6 +707,12 @@ func ValidSecretName(name string) bool {
 // What the Agent can cause (a path segment, a host the url names) is not checked here: that is
 // output, never a refused request (ADR-0068).
 func (r *StartRequest) Validate() error {
+	if r.Kind == KindMcp {
+		return r.validateMcp()
+	}
+	if r.Mcp != nil {
+		return fmt.Errorf("a %s start carries an mcp part", r.Kind)
+	}
 	if r.TimeoutMs <= 0 {
 		return errors.New("timeoutMs is not positive")
 	}
@@ -735,6 +810,61 @@ func (r *StartRequest) validateDispatchTarget() error {
 		return errors.New("a dispatch's auth is a bearer, the target's token")
 	}
 	return r.Auth.validate()
+}
+
+// McpServerName is an MCP server's name (ADR-0079), as the `mcp` block of jr2.config.ts keys it.
+// effector-wire.ts's MCP_SERVER is the same rule.
+var McpServerName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// validateMcp checks an mcp start (ADR-0079): its mcp part alone, beside a timeout (0: the
+// server's) and maxBody; a server name; exactly one request, whose arguments are an object.
+func (r *StartRequest) validateMcp() error {
+	if r.Push != nil || r.Command != nil || r.dispatchSet() || r.Method != "" || r.URL != nil || r.Path != nil ||
+		r.Headers != nil || r.Auth != nil || r.Body != nil {
+		return errors.New("an mcp start carries its mcp part, a timeout and maxBody alone")
+	}
+	if r.TimeoutMs < 0 {
+		return errors.New("timeoutMs is negative")
+	}
+	if r.MaxBody <= 0 {
+		return errors.New("maxBody is not positive")
+	}
+	m := r.Mcp
+	if m == nil {
+		return errors.New("an mcp start carries no mcp part")
+	}
+	if !McpServerName.MatchString(m.Server) {
+		return fmt.Errorf("mcp.server %q is not a server name", m.Server)
+	}
+	set := 0
+	if m.Call != nil {
+		set++
+		if m.Call.Tool == "" {
+			return errors.New("mcp.call.tool is empty")
+		}
+		if trimmed := bytes.TrimSpace(m.Call.Arguments); len(trimmed) == 0 || trimmed[0] != '{' {
+			return errors.New("mcp.call.arguments is not a JSON object")
+		}
+	}
+	if m.Read != nil {
+		set++
+		if m.Read.URI == "" {
+			return errors.New("mcp.read.uri is empty")
+		}
+	}
+	if m.Prompt != nil {
+		set++
+		if m.Prompt.Name == "" {
+			return errors.New("mcp.prompt.name is empty")
+		}
+		if m.Prompt.Arguments == nil {
+			return errors.New("mcp.prompt.arguments is not an object")
+		}
+	}
+	if set != 1 {
+		return errors.New("an mcp start carries exactly one of call, read, prompt")
+	}
+	return nil
 }
 
 var gitRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)

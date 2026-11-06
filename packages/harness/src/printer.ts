@@ -21,9 +21,13 @@ export type PrinterSource = {
 /** Where the lines go — `process.stdout` (the pod log) unless a test collects them. */
 export type PrinterOut = { write(chunk: string): void };
 
-/** Menu tools surface to the model as `mcp__jr2__<name>` (ADR-0013); the log shows the bare name. */
-function bareToolName(toolName: string): string {
-  return toolName.replace(/^mcp__[^_]*__/, "");
+/** The name a tool prints under (ADR-0023). A Menu tool surfaces to the model as `mcp__jr2__<name>`
+ * (ADR-0013), and the log shows the bare name. An MCP tool, `mcp__<server>__<tool>`, prints as
+ * `<server>/<tool>` (ADR-0079), so a call of a service never prints as a pick. */
+export function printedToolName(toolName: string): string {
+  if (toolName.startsWith(MENU_TOOL_PREFIX)) return toolName.slice(MENU_TOOL_PREFIX.length);
+  const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/s.exec(toolName);
+  return mcp ? `${mcp[1]}/${mcp[2]}` : toolName;
 }
 
 /**
@@ -53,7 +57,7 @@ export function boundAnswer(text: string): string {
 /** A path for Write/Edit/Read (whole — a path is already short), the command for Bash, else JSON. */
 export function renderToolInput(toolName: string, input: unknown): string {
   const arg = (input ?? {}) as Record<string, unknown>;
-  const bare = bareToolName(toolName);
+  const bare = printedToolName(toolName);
   const path = arg.file_path ?? arg.path;
   if (/^(write|edit|read)$/i.test(bare) && typeof path === "string") return path;
   if (/^bash$/i.test(bare)) return bound(String(arg.command ?? ""));
@@ -75,12 +79,13 @@ export function renderMessage(message: EngineMessage): string[] {
     return (message as AssistantMessage).content.map((block) => {
       if (block.type === "text") return `[text] ${block.text}`;
       if (block.type === "thinking") return `[thinking] ${block.thinking}`;
-      return `[${bareToolName(block.name)}] ${renderToolInput(block.name, block.arguments)}`;
+      return `[${printedToolName(block.name)}] ${renderToolInput(block.name, block.arguments)}`;
     });
   }
   if (role === "toolResult") {
     const result = message as ToolResultMessage;
-    // A Working tool's result is output, never printed (ADR-0023's boundary).
+    // A Working tool's result is output, never printed (ADR-0023's boundary), and an MCP tool's is
+    // the same (ADR-0079).
     if (!result.toolName.startsWith(MENU_TOOL_PREFIX)) return [];
     // A Menu pick's answer is jr2's own text, the one the model read back from the call: its
     // receipt, its outstanding answer with the post-push paragraph, a refusal. Printed as the model
@@ -90,7 +95,7 @@ export function renderMessage(message: EngineMessage): string[] {
     // Effect's output prints with any Held value an upstream echoed into it (ADR-0023 states the
     // residual; ADR-0059). What the model reads does not change; only the log keeps it too.
     const text = result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-    return [`[${bareToolName(result.toolName)} ${result.isError ? "error" : "answer"}] ${boundAnswer(text)}`];
+    return [`[${printedToolName(result.toolName)} ${result.isError ? "error" : "answer"}] ${boundAnswer(text)}`];
   }
   return []; // anything custom: never printed.
 }

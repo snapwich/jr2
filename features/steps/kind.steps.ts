@@ -200,7 +200,7 @@ async function wsStatus(world: E2EWorld): Promise<WsStatus> {
  * `phase: Ready` is NOT enough: attach happens post-Ready (ADR-0004), so anything that inspects the
  * worktree has to wait for the wrapper, not just the pod.
  */
-async function waitForAttached(world: E2EWorld): Promise<WsStatus> {
+export async function waitForAttached(world: E2EWorld): Promise<WsStatus> {
   let last: WsStatus | undefined;
   for (let i = 0; i < 120; i++) {
     last = await wsStatus(world);
@@ -3186,7 +3186,7 @@ function formsOf(value: string): string[] {
  * is decoded, and each result is searched the same way — twice deep, for the echo's base64 of the
  * `Basic <base64(user:password)>` header.
  */
-function leakOf(seen: string, value: string, depth = 0): string | undefined {
+export function leakOf(seen: string, value: string, depth = 0): string | undefined {
   const direct = formsOf(value).find((form) => seen.includes(form));
   if (direct !== undefined) return `a form of it (${direct.length} chars)`;
   if (depth > 2) return undefined;

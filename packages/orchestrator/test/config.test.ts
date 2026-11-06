@@ -27,6 +27,7 @@ import {
   isSshUrl,
   loadConfig,
   matchCredential,
+  mcpTimeoutMs,
 } from "../src/config.ts";
 
 test("KIT_VERSION is the package's own version — npm version == image tag, one release train", () => {
@@ -335,4 +336,49 @@ test("loadConfig takes hooks that a kind made, and refuses a bad name, a value n
     loadConfig(await write(`{ a: gitlab({ secret: { secret: "GL" } }), b: other({ secret: { secret: "X" } }) }`)),
     /at hooks: two different Hook kinds have the id gitlab/,
   );
+});
+
+// The `mcp` block (ADR-0079): checked at load, as `cors` is, so a bad entry names its path. The url
+// is `jr2 up`'s, host-side: in-cluster it reads `.env`, which is absent.
+async function loadMcp(mcp: unknown, secrets: unknown[] = [{ name: "SLACK_TOKEN" }]) {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-config-mcp-"));
+  await writeFile(join(dir, "jr2.config.ts"), `export default ${JSON.stringify({ secrets, mcp })};\n`);
+  return await loadConfig(dir);
+}
+
+test("loadConfig takes a remote and a stdio MCP server, an empty url included (in-cluster .env)", async () => {
+  const config = await loadMcp({
+    "slack-acme": { url: "https://mcp.slack.example/mcp", secret: "SLACK_TOKEN", timeout: "90s" },
+    notes: { command: "notes-mcp", args: ["--root", "/work"] },
+    open: { url: "" },
+  });
+  assert.deepEqual(Object.keys(config?.mcp ?? {}), ["slack-acme", "notes", "open"]);
+});
+
+test("loadConfig refuses the reserved name jr2, a bad name, a bad shape, an unknown secret and a bad timeout", async () => {
+  await assert.rejects(loadMcp({ jr2: { url: "https://x.example" } }), /at mcp\.jr2: the server name jr2 is reserved/);
+  for (const name of ["Slack", "slack_acme", "1slack", "slack.acme"]) {
+    await assert.rejects(loadMcp({ [name]: { url: "https://x.example" } }), /a server name is lowercase/, name);
+  }
+  await assert.rejects(loadMcp({ a: { url: "https://x.example", command: "x" } }), /at mcp\.a/);
+  await assert.rejects(loadMcp({ a: { command: "x", args: "--y" } }), /at mcp\.a\.args: .*stdio server/);
+  await assert.rejects(loadMcp({ a: { url: "https://x.example", tools: ["x"] } }), /at mcp\.a: .*remote server/);
+  await assert.rejects(
+    loadMcp({ a: { url: "https://x.example", secret: "NOPE" } }),
+    /at mcp\.a\.secret: "NOPE" is not an entry of secrets — add it: secrets: \[\{ name: "NOPE"/,
+  );
+  for (const timeout of ["60", "0s", "-1m", "1d"]) {
+    await assert.rejects(loadMcp({ a: { url: "https://x.example", timeout } }), /a timeout is a positive duration/);
+  }
+  await assert.rejects(loadMcp([]), /at mcp: expected an object keyed by server name/);
+});
+
+test("an MCP server's timeout resolves to milliseconds, 60 s by default", () => {
+  assert.equal(mcpTimeoutMs(undefined), 60_000);
+  assert.equal(mcpTimeoutMs("90s"), 90_000);
+  assert.equal(mcpTimeoutMs("2m"), 120_000);
+  assert.equal(mcpTimeoutMs("1h"), 3_600_000);
+  assert.equal(mcpTimeoutMs("0s"), undefined);
+  assert.equal(mcpTimeoutMs("0.0004s"), undefined, "rounds to 0 ms, which the Harness refuses");
+  assert.equal(mcpTimeoutMs("0.001s"), 1);
 });

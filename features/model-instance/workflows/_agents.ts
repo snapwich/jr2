@@ -60,3 +60,16 @@ what the repository holds.
 - Say what to change and how to verify it, in a few sentences.
 - End every turn by calling exactly one of the tools your Menu offers (mcp__jr2__<name>).`,
 } satisfies AgentDefinition;
+
+/** A Menu-only seat with one MCP tool (ADR-0079, ADR-0031): the shop's order system, the server
+ * `orders` of the `mcp` block, which the tier serves on the host (`features/steps/fake-mcp.ts`). */
+export const clerk = {
+  model: MODEL,
+  description: "The @model tier's order clerk: reads the shop's order system and picks from its Menu.",
+  workspace: "none",
+  instructions: `You handle orders for a small online shop. You have no files and no shell.
+
+- Answer from the order system, not from a guess.
+- End every turn by calling exactly one of the tools your Menu offers (mcp__jr2__<name>).`,
+  mcp: [{ server: "orders", tools: ["lookup_order"] }],
+} satisfies AgentDefinition;

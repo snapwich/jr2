@@ -34,12 +34,15 @@ each place that names it, and to no other place:
 <<< @/examples/concepts/secrets-and-trust/jr2.config.ts
 
 - A pod claims a Held secret when its [`workspace()`](../reference/authoring-surface/workspace.md) lists the name under
-  `secrets`. A pod also claims the key of each provider that an Agent in that pod uses.
+  `secrets`. A pod also claims the key of each provider that an Agent in that pod uses, and the `secret` of each MCP
+  server that an Agent in that pod names.
 - The [Instance Harness](../reference/glossary.md#instance-harness) claims only the model keys of the Menu-only Agents
-  that it hosts.
-- An Effect claims an Effect secret when it names it with [`secret()`](../reference/authoring-surface/secret.md).
+  that it hosts, and the secrets of the MCP servers that they name.
+- An Effect claims an Effect secret when it names it with [`secret()`](../reference/authoring-surface/secret.md). An
+  `mcp` Effect claims the `secret` of its server for the
+  [Instance Effector](../reference/glossary.md#instance-effector).
 - A [Hook](../reference/glossary.md#hook) that checks a signature with a shared secret (`mac`) claims that secret for
-  the [Instance Effector](../reference/glossary.md#instance-effector), as an Effect does.
+  the Instance Effector, as an Effect does.
 - One entry can be a Held secret and an Effect secret at the same time. The placement is a fact of each place that names
   it, not of the entry.
 - An entry that nothing names goes nowhere, and [`jr2 up`](../reference/cli.md#up) warns about it.
@@ -66,13 +69,17 @@ these things:
 2. It replaces the Stand-in with the value, in the headers that the entry names.
 3. It opens its own TLS connection to the host, and verifies the certificate of the host.
 
-The Custodian sends the traffic to each other host with no change. It refuses a loopback, link-local or unspecified
-address. A request to a bound host that has no Stand-in in its headers does not leave the pod.
+Two Held secrets can go to one host in one header, such as the tokens of two MCP servers of one service. The Custodian
+chooses the value by the Stand-in that the header holds. The Custodian sends the traffic to each other host with no
+change. It refuses a loopback, link-local or unspecified address. A request to a bound host that has no Stand-in in its
+headers does not leave the pod.
 
 These fields of an entry bind a Held secret. They do not place it:
 
 - [`hosts`](../reference/config.md#secrets-hosts): the hosts that the value can go to. A known model key with one
-  default host, such as `ANTHROPIC_API_KEY`, can leave it out. It then goes only to the host of its provider.
+  default host, such as `ANTHROPIC_API_KEY`, can leave it out. It then goes only to the host of its provider. The
+  `secret` of an MCP server can leave it out too. It then goes only to the host of the server's URL, in the header
+  `authorization`.
 - [`headers`](../reference/config.md#secrets-headers): the headers in which the Custodian replaces the Stand-in.
 - [`paths`](../reference/config.md#secrets-paths): the path prefixes that the value can go to.
 
@@ -113,9 +120,9 @@ The Instance Harness has a token of its own for the Menu. It runs no program of 
 The Harness runs the [Turns](../reference/glossary.md#turn) of each Agent of the Sandbox. The Harness process itself
 runs only jr2's code. Each other process in the Harness container runs confined with Landlock: each command of the
 Agent's shell, and so the tests, the builds, git and its hooks; the search tools; the I/O of the read, write and edit
-tools; jr2's own git; and each `command` Effect that names no Effect secret. Code that one Agent writes in `/work` can
-run in a program of a different Agent, for example when a reviewer runs the tests of a coder. Thus jr2 confines each
-such program, and not only the programs of one Agent.
+tools; jr2's own git; each stdio MCP server; and each `command` Effect that names no Effect secret. Code that one Agent
+writes in `/work` can run in a program of a different Agent, for example when a reviewer runs the tests of a coder. Thus
+jr2 confines each such program, and not only the programs of one Agent.
 
 All these programs are in one Landlock domain. They can see, signal and trace each other, as the programs of one user on
 a computer can. Thus a later shell command can find and stop a server that an earlier command started. When the process
@@ -254,8 +261,8 @@ when you close the tab. [Open the Console](../guides/open-the-console.md) tells 
 or an ingress. The names of the states and the types of the Emits are open.
 
 The Harness writes each Agent's conversation to its container log. The log has the prompts, the model's text and
-thinking, its tool calls and the answers to its picks. It does not write the results of the Working tools. Each person
-who can read the pod logs of the namespace can read these conversations.
+thinking, its tool calls and the answers to its picks. It does not write the results of the Working tools or of the MCP
+tools. Each person who can read the pod logs of the namespace can read these conversations.
 
 ## Rules
 
@@ -268,7 +275,10 @@ who can read the pod logs of the namespace can read these conversations.
 - A file that the Harness process reads, such as the one that `AWS_CONFIG_FILE` or `GOOGLE_APPLICATION_CREDENTIALS`
   names in `harness.env`, cannot be in `/work`, `/tmp`, `/dev/shm` or `/home/jr2`: `jr2 up` refuses it. In another
   folder, `jr2 up` gives a warning: make sure that the user of the Sandbox cannot write the file.
-- A Held secret must name its `hosts`, unless it is a known model key with one default host.
+- A Held secret must name its `hosts`, unless it is a known model key with one default host, or the `secret` of an MCP
+  server.
+- An MCP server with a `secret` has an `https://` URL. When an entry sets `hosts`, `headers` or `paths`, they must let
+  the Stand-in through to the URL of each server that names the entry.
 - A name that a `workspace()` lists must be in the `secrets` list. A name that an Effect gives to `secret()` must be in
   it too.
 - An Effect secret has 8 characters or more.
@@ -294,6 +304,7 @@ who can read the pod logs of the namespace can read these conversations.
 - [Use a hosted provider or a gateway](../guides/use-a-hosted-provider.md)
 - [Give the cluster git credentials](../guides/give-the-cluster-git-credentials.md)
 - [Run a command or call a URL with an Effect](../guides/run-a-command-or-call-a-url.md)
+- [Give an Agent MCP tools](../guides/give-an-agent-mcp-tools.md)
 - [Open the Console](../guides/open-the-console.md)
 - [Callers and Hooks](callers-and-hooks.md), [Architecture](architecture.md) and [Effects](effects.md)
 - The [`secrets`](../reference/config.md#secrets), [`git`](../reference/config.md#git) and
@@ -307,5 +318,6 @@ who can read the pod logs of the namespace can read these conversations.
   [ADR-0058](../reference/decisions/0058-a-harness-answers-the-orchestrator-alone.md),
   [ADR-0059](../reference/decisions/0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md),
   [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md),
-  [ADR-0076](../reference/decisions/0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md) and
-  [ADR-0077](../reference/decisions/0077-jr2-requires-landlock-on-every-sandbox-node.md)
+  [ADR-0076](../reference/decisions/0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md),
+  [ADR-0077](../reference/decisions/0077-jr2-requires-landlock-on-every-sandbox-node.md) and
+  [ADR-0079](../reference/decisions/0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)

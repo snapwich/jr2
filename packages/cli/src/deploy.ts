@@ -3,7 +3,7 @@
 // namespace are constants (namespace is the identity); every object carries the instance label so
 // ownership is derivable from the cluster — there is no local target state.
 
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -72,6 +72,9 @@ import {
   type GitCloneSecret,
   type GitPushManifest,
   type HarnessConfig,
+  type JR2Config,
+  isStdioServer,
+  mcpTimeoutMs,
   type HeldManifest,
   markHarnessEnv,
   type PriorityClasses,
@@ -172,6 +175,12 @@ export function hookDigestsObject(
 
 /** The HMAC over the held-secret inputs, on the Instance Harness's pod template (ADR-0059). */
 export const ANNOTATION_HELD_DIGEST = "jr2.dev/held-digest";
+
+/** The digest of the `jr2-harness` ConfigMap's text (`harnessConfigJson`), on the Instance
+ * Harness's pod template: the Harness reads the text once, at start, so an edit to the custom
+ * provider, a gateway or an MCP server (ADR-0079) rolls the pod. The text holds no value, so the
+ * digest is not keyed. */
+export const ANNOTATION_HARNESS_CONFIG_DIGEST = "jr2.dev/harness-config-digest";
 
 /** The Instance Harness pod's `fsGroup` — a Sandbox pod's default work group (ADR-0005), for the
  * same reason: a group every container is granted, which the Custodian's values are readable by. */
@@ -445,6 +454,8 @@ export function instanceObjects(opts: {
    * key must never share a Secret with it, and no model key rides it either (ADR-0059). */
   harnessEnvData: Record<string, string>;
   harness?: HarnessConfig;
+  /** The config's `mcp` block (ADR-0079), for the `jr2-harness` ConfigMap. */
+  mcp?: JR2Config["mcp"];
   /** Held secrets (ADR-0059): the Custodian's objects. The `jr2-held` ConfigMap is applied always —
    * every Harness pod runs a Custodian — and the rest only while a secret is held. */
   held: HeldObjects;
@@ -533,7 +544,7 @@ export function instanceObjects(opts: {
       kind: "ConfigMap",
       metadata: meta(HARNESS_CONFIGMAP),
       data: {
-        [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness),
+        [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness, opts.mcp),
       },
     },
     {
@@ -1055,7 +1066,8 @@ export function instanceHarnessObjects(opts: {
    * Agent cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
   custodianImage: string;
   /** What this converge placed in the Instance Harness (ADR-0059): its own manifest — the model
-   * keys its `"none"` Agents' providers read, and nothing else. */
+   * keys its `"none"` Agents' providers read and the secrets of the remote MCP servers they name
+   * (ADR-0079), and nothing else. */
   held: HeldManifest;
   /** Its Custodian's two files, rendered from `held` — applied here, with the pod they are for
    * (`INSTANCE_CUSTODIAN_CONFIGMAP`, ADR-0059). */
@@ -1068,6 +1080,9 @@ export function instanceHarnessObjects(opts: {
    * Stand-ins, applied here as {@link INSTANCE_HARNESS_CREDENTIALS} with the pod they are for. */
   credentials: Record<string, string>;
   harness?: HarnessConfig;
+  /** The config's `mcp` block (ADR-0079): with `harness`, the text of the `jr2-harness` ConfigMap,
+   * whose digest is on the pod template. */
+  mcp?: JR2Config["mcp"];
   /** The instance ships a private-CA bundle (ADR-0020). */
   caBundle?: boolean;
   /** The digest of this placement's Harness bearer (ADR-0058; `harnessTokenDigest(key,
@@ -1209,7 +1224,16 @@ export function instanceHarnessObjects(opts: {
             // start (ADR-0059, the ADR-0037 stance). A move costs a drain, not the conversations
             // (the volume keeps them), yet no autoscaler may choose one (ADR-0060) — a drain still
             // can.
-            annotations: { [ANNOTATION_HELD_DIGEST]: opts.heldDigest, ...NO_DISRUPT_ANNOTATIONS },
+            // The same for the `jr2-harness` text, which the Harness reads once at start: a server
+            // added to `mcp`, or a url, an argv or a timeout changed, reaches the pod (ADR-0079).
+            annotations: {
+              [ANNOTATION_HELD_DIGEST]: opts.heldDigest,
+              [ANNOTATION_HARNESS_CONFIG_DIGEST]: createHash("sha256")
+                .update(harnessConfigJson(opts.harness, opts.mcp))
+                .digest("base64url")
+                .slice(0, 32),
+              ...NO_DISRUPT_ANNOTATIONS,
+            },
           },
           spec: {
             // The drain (ADR-0031): on SIGTERM the Harness stops admitting and finishes the Turns
@@ -1271,9 +1295,10 @@ export function instanceHarnessObjects(opts: {
 }
 
 /** What the Instance can REACH (ADR-0018), as the `jr2-harness` ConfigMap carries it to every
- * Harness container: the custom provider without its key and the catalog gateways. The check pod
- * carries the same text in its own ConfigMap (ADR-0019). */
-export function harnessConfigJson(harness: HarnessConfig | undefined): string {
+ * Harness container: the custom provider without its key, the catalog gateways, and the MCP servers
+ * (ADR-0079) — a remote one's url and the NAME of its secret, never a value. The check pod carries
+ * the same text in its own ConfigMap (ADR-0019). */
+export function harnessConfigJson(harness: HarnessConfig | undefined, mcp?: JR2Config["mcp"]): string {
   return JSON.stringify(
     {
       // apiKey is deliberately dropped: it is a held secret (ADR-0059) — the Custodian holds
@@ -1292,11 +1317,34 @@ export function harnessConfigJson(harness: HarnessConfig | undefined): string {
         : undefined,
       // Where pi's catalog providers send their calls (ADR-0059): endpoints, not keys.
       catalog: harness?.catalog,
+      // The MCP servers (ADR-0079), by the config's name: the Harness joins each Agent's `mcp` list
+      // to them. In-cluster the config has no `.env`, so the url rides from here, as baseUrl does.
+      mcp: mcp === undefined ? undefined : mcpSpecOf(mcp),
     },
     null,
     2,
   );
 }
+
+/** The `mcp` block as the Harness reads it (`McpServerSpec` in `@jr2/harness`): the timeout in
+ * milliseconds, and a stdio server's `args` always a list. */
+function mcpSpecOf(mcp: NonNullable<JR2Config["mcp"]>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(mcp).map(([name, server]) => {
+      const timeoutMs = mcpTimeoutMs(server.timeout);
+      return [
+        name,
+        isStdioServer(server)
+          ? { command: server.command, args: [...(server.args ?? [])], timeoutMs }
+          : { url: server.url, ...(server.secret !== undefined ? { secret: server.secret } : {}), timeoutMs },
+      ];
+    }),
+  );
+}
+
+/** The argv word of `provider-preflight.ts` before the MCP servers to list (`PREFLIGHT_MCP_ARG` in
+ * `@jr2/harness`'s `preflight-line.ts`, which a test holds this to). */
+export const PREFLIGHT_MCP_ARG = "--mcp";
 
 /** The provider preflight's objects (ADR-0019): a check pod and its own copies of what it reads,
  * each named `jr2-provider-preflight-<run>-<n>` or that name and a suffix, unique to one `jr2 up`. */
@@ -1375,6 +1423,11 @@ export function checkPodObjects(opts: {
   harnessEnvData: Record<string, string>;
   /** The `<provider>/<model>` specifiers to check, in order. */
   models: readonly string[];
+  /** The remote MCP servers whose tools to list, by the config's name, in order (ADR-0079). */
+  servers?: readonly string[];
+  /** The config's `mcp` block: the check pod's harness config carries it, as the Harness pods'
+   * does, so the check reads each server's url and secret name where a Turn reads them. */
+  mcp?: JR2Config["mcp"];
   /** The node predicate of the Harness pods this check pod stands for. */
   placement?: SandboxPlacement;
   priorityClassName: string;
@@ -1437,6 +1490,7 @@ export function checkPodObjects(opts: {
             "/opt/jr2/bin/node",
             "/opt/jr2/src/provider-preflight.ts",
             ...opts.models,
+            ...(opts.servers?.length ? [PREFLIGHT_MCP_ARG, ...opts.servers] : []),
           ],
           // The Harness container's env, in its order (`instanceHarnessObjects`): no credential. And
           // the check pod's own Stand-ins (ADR-0019): it runs no Workspace code, so it may hold them
@@ -1490,7 +1544,7 @@ export function checkPodObjects(opts: {
         [CUSTODIAN_BOOTSTRAP_KEY]: opts.custodian.bootstrap,
         [CUSTODIAN_SCRIPT_KEY]: opts.custodian.script,
         [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
-        [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness),
+        [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness, opts.mcp),
       },
     },
     { apiVersion: "v1", kind: "ConfigMap", metadata: meta(`${o}-ca`), data: opts.trust },
@@ -1605,7 +1659,13 @@ export function instanceEffectorObjects(opts: {
         : [],
     ),
   ];
-  const config = { version: 1, placement: opts.plan.placement, targets: opts.plan.targets };
+  // The servers its `mcp` Effects call (ADR-0079): each one's url, its secret's name, its timeout.
+  const config = {
+    version: 1,
+    placement: opts.plan.placement,
+    targets: opts.plan.targets,
+    ...(Object.keys(opts.plan.mcp).length ? { mcp: opts.plan.mcp } : {}),
+  };
 
   const container = {
     name: "effector",
@@ -1745,7 +1805,14 @@ export type ValueDigest = (secret: string, key: string) => string | undefined;
  * annotation reveals nothing about a value. */
 export function effectorDigest(signingKey: Buffer, plan: EffectorPlan, key: string, valueDigest: ValueDigest): string {
   const mac = createHmac("sha256", signingKey);
-  mac.update(JSON.stringify({ secrets: plan.secrets, targets: plan.targets, longest: plan.longestTimeoutMs }));
+  mac.update(
+    JSON.stringify({
+      secrets: plan.secrets,
+      targets: plan.targets,
+      longest: plan.longestTimeoutMs,
+      ...(Object.keys(plan.mcp).length ? { mcp: plan.mcp } : {}),
+    }),
+  );
   for (const name of Object.keys(plan.values).sort()) mac.update(`${name}=${plan.values[name]}`);
   for (const s of plan.secrets) {
     if (s.source.kind === "secret") mac.update(`${s.name}<-${valueDigest(s.source.secret, s.source.key) ?? ""}`);

@@ -438,6 +438,10 @@ func hostOf(req *wire.StartRequest) string {
 	if req.Kind == wire.KindPush || req.Kind == wire.KindCommand {
 		return "-"
 	}
+	// An mcp start names its server, never its url (ADR-0079): the log names the server.
+	if req.Kind == wire.KindMcp && req.Mcp != nil {
+		return "mcp:" + req.Mcp.Server
+	}
 	if len(req.URL) == 0 || req.URL[0].Text == nil {
 		return "?"
 	}

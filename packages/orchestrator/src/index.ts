@@ -27,14 +27,15 @@ export { fail, isFailure } from "./fail.ts";
 
 // Agents: an Agent slot and the definition it carries (ADR-0028, ADR-0049).
 export { agent } from "./harness-client.ts";
-export type { AgentDefinition, ThinkingLevel } from "./agent.ts";
+export type { AgentDefinition, AgentMcpServer, ThinkingLevel } from "./agent.ts";
 
 // Workspaces and Repos: a Sandbox and the Repo Slots it binds (ADR-0012, ADR-0051).
 export { workspace } from "./workspace.ts";
 export type { Workspaced } from "./workspace.ts";
 export type { Binding, RepoSlot } from "./parts.ts";
 
-// Effects: work a Machine does outside itself, as an actor slot (ADR-0067, ADR-0068, ADR-0071),
+// Effects: work a Machine does outside itself, as an actor slot (ADR-0067, ADR-0068, ADR-0071,
+// ADR-0079),
 // and what an author writes between a pick and that work.
 export { arg } from "./effect.ts";
 export type { CommandOutput, LaterOutcome } from "./effect.ts";
@@ -58,6 +59,9 @@ export type {
 } from "./worktree.ts";
 export { dispatch } from "./dispatch-effect.ts";
 export type { DispatchOutput } from "./effect.ts";
+export { mcp } from "./mcp-effect.ts";
+export type { McpOptions } from "./mcp-effect.ts";
+export type { McpCallOutput, McpOutput, McpReadOutput } from "./effector-wire.ts";
 export { answer, fromPick, paramsOf } from "./pick.ts";
 
 // Steering: the Machine's free text to one of its Agents, which the Agent hears once (ADR-0002).
@@ -81,4 +85,4 @@ export { chartSchema, chartSchemaFor } from "./chart.ts";
 
 // Config: `jr2.config.ts`, the deployment facts a Machine cannot carry (ADR-0050).
 export { defineConfig } from "./config.ts";
-export type { JR2Config } from "./config.ts";
+export type { JR2Config, McpRemoteServer, McpServer, McpStdioServer } from "./config.ts";

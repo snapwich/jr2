@@ -49,18 +49,21 @@ their own maintainers, and the escapes shipped in systems that used them were in
   answer into the run), so the Open body lends it whole, `lends.gate: true`, and a body that does not has no `gate` in
   its grammar and refuses one at the door; a lent Gate's ids sit below the body's own actor path, so a Chart cannot take
   the name of its wrapper's Gate. (Measured: with `gate` offered beside one lent Agent, three of five missed second
-  Charts reached for it as a worker.) And it mints its own Agents, because an Agent is five plain fields
+  Charts reached for it as a worker.) And it mints its own Agents, because an Agent is plain fields
   ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)) and the Harness runs whatever definition
-  rides the Turn. A minted Agent's model must be one the Open body allows and the Assembly placed a key for;
-  `workspace: "none"` needs the Instance Harness the Assembly converged. Both are door refusals, never a 401 mid-run. It
-  borrows, by slot name only, every Effect (the url, argv and secret were bound once by the author and the Chart fills
-  only its input slots), every Repo and image, every secret, every child Machine, and every guard, action or delay
-  beyond the generic set. Lending is attenuated by construction; an author who lends
-  `command(["sh", "-c", arg("script")])` has lent a shell, and that is theirs to choose. A lent name may not be dotted,
-  `gate`, `fail`, a generic action's name or an integer, because those are the kit's; the Gate itself is lent as
-  `gate: true`, and a Gate slot that hears a Hook ([ADR-0011](0011-workflow-defined-events.md)) is lent by its slot name
-  in `lends.gates`, as an Effect is in `lends.effects`; the door refuses a lent Gate slot whose `delivers` names an
-  event that is not in the Chart's Vocabulary. The Part that fails the run is lent as `fail: true`
+  rides the Turn. A minted Agent names no MCP server: the Chart grammar refuses `mcp`, because an MCP server with its
+  secret is reach, and MCP tools reach a Chart only through a lent Agent
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). A
+  minted Agent's model must be one the Open body allows and the Assembly placed a key for; `workspace: "none"` needs the
+  Instance Harness the Assembly converged. Both are door refusals, never a 401 mid-run. It borrows, by slot name only,
+  every Effect (the url, argv, MCP server and tool, and secret were bound once by the author and the Chart fills only
+  its input slots), every Repo and image, every secret, every child Machine, and every guard, action or delay beyond the
+  generic set. Lending is attenuated by construction; an author who lends `command(["sh", "-c", arg("script")])` has
+  lent a shell, and that is theirs to choose. A lent name may not be dotted, `gate`, `fail`, a generic action's name or
+  an integer, because those are the kit's; the Gate itself is lent as `gate: true`, and a Gate slot that hears a Hook
+  ([ADR-0011](0011-workflow-defined-events.md)) is lent by its slot name in `lends.gates`, as an Effect is in
+  `lends.effects`; the door refuses a lent Gate slot whose `delivers` names an event that is not in the Chart's
+  Vocabulary. The Part that fails the run is lent as `fail: true`
   ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), because the Machine
   decides which ends a Chart can choose. The guards `jr2.failure`, which tells a Failure from a defect on an `onError`,
   and `jr2.ready`, which says that a cut settled `ready`

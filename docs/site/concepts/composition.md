@@ -104,7 +104,7 @@ show.
 | Key         | What it changes                                                                       |
 | ----------- | ------------------------------------------------------------------------------------- |
 | `agents`    | The definition of an Agent, by slot, field by field. `{ model }` keeps the rest.      |
-| `effects`   | The Open url, argv or secret of an Effect, by slot.                                   |
+| `effects`   | The Open url, argv, secret, MCP server or tool of an Effect, by slot.                 |
 | `actors`    | A Machine that this Machine composes, by slot. The value has the same keys, one down. |
 | `repos`     | The Repo Slots of the [`workspace()`](../reference/authoring-surface/workspace.md).   |
 | `image`     | The Sandbox Image of the `workspace()`.                                               |
@@ -126,6 +126,7 @@ A Machine marks a part Open with [`open`](../reference/authoring-surface/open.md
 - a Repo Slot with no url, or the whole Repo Slot map (`repos: open`)
 - the model of an Agent (`agent({ model: open, … })`)
 - the url of an `http` Effect, the argv of a `command`, or the name of the secret of an Effect (`secret(open)`)
+- the server or the tool of an `mcp` Effect (`mcp.call(open, open, { input })`)
 
 An Open part has no default. You bind it with `customize()`. Each Open part has two checks:
 
@@ -136,6 +137,11 @@ An Open part has no default. You bind it with `customize()`. Each Open part has 
 
 One Open part only warns: the look of a Gate slot (`look: open`). `jr2 up` prints a warning for a look that nobody
 bound, because a person can still answer the Gate with `jr2 send`.
+
+The MCP servers of an Agent are not Open. A packaged Machine's Agent names the servers that it needs, such as
+`slack-acme`. When the `mcp` block of your `jr2.config.ts` does not declare that name, `jr2 up` refuses the Workflow and
+prints the `customize()` line that binds the Agent to a server that you declare:
+`customize(machine, { agents: { <slot>: { mcp: [...] } } })`. The list replaces the Agent's whole `mcp` list.
 
 [Bind a shipped Machine's Open parts](../guides/bind-open-parts.md) shows each binding.
 
