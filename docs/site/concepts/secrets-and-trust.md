@@ -222,8 +222,9 @@ jr2 makes its own tokens. `jr2 up` makes the Instance token and the signing key 
   one time, in a Secret of its own, `jr2-caller-<name>`. The Orchestrator holds only the SHA-256 digest of each value,
   in the `jr2-caller-digests` Secret, which it mounts. `jr2 caller token <name>` prints the value, which it reads over
   the Kubernetes API.
-- `jr2 caller rotate <name>` makes a new value. The Orchestrator reads the digests again when the mount changes. Thus
-  the old value works until the kubelet updates the mount, about one minute. No pod restarts.
+- `jr2 caller rotate <name>` makes a new value. The Orchestrator reads the digests again when the mount changes. The
+  kubelet updates the mount in about one minute, and `jr2 caller rotate` waits for it. When it returns, the old value no
+  longer works. No pod restarts.
 - When `callers.tokens` no longer declares a name, the next `jr2 up` deletes its Secret, and its value stops working.
 - A control token or a fetch token cannot answer a Gate, and cannot speak for a different pod. The Orchestrator accepts
   each one only on its own routes. Thus an Agent cannot approve its own work, and a Sandbox cannot send a pick for an

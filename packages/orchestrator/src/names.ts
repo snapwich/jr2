@@ -63,7 +63,8 @@ export const IMAGES_KEY = "images.json";
 /** The digests of the named Caller tokens (ADR-0078): one key, `CALLER_DIGESTS_KEY`, a JSON object
  * `{ "<name>": "<sha-256 hex of the value>" }`. `jr2 up` writes it, and the Orchestrator reads it
  * through a MOUNT and reads it again when it changes, so a rotation rolls no pod. Until the kubelet
- * updates the mount, about a minute, the old value still works. No value is here: each value is in
+ * updates the mount, about a minute, the old value still works, so `jr2 up` and `jr2 caller rotate`
+ * wait until `GET /assembly` reports the new content as loaded. No value is here: each value is in
  * its own Secret (`callerTokenSecret`), which no pod mounts. */
 export const CALLER_DIGESTS_SECRET = "jr2-caller-digests";
 /** Where the Orchestrator reads the digests. */

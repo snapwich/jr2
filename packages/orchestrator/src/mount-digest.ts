@@ -1,13 +1,23 @@
-// What a mounted ConfigMap holds, as one digest (ADR-0038, ADR-0069). A publish rolls no pod, so
-// the Orchestrator reads `jr2-images` and `jr2-held` through mounts the kubelet refreshes on its
-// own period. `jr2 up` digests the data it applied, `GET /assembly` reports the digest of what the
-// process reads, and the publish waits until the two agree. Then the door's checks, and the
-// provisions that follow the converge, read the data this converge wrote.
+// What a mounted ConfigMap or digests Secret holds, as one digest (ADR-0038, ADR-0069, ADR-0078). A
+// write to one rolls no pod, so the Orchestrator reads `jr2-images`, `jr2-held` and the two digests
+// Secrets through mounts that the kubelet refreshes on its own period. `jr2 up` digests the data it
+// applied, `GET /assembly` reports the digest of what the process reads, and `jr2 up` waits until
+// the two agree. Then the door's checks and the provisions after the converge read the data that
+// this converge wrote, and a Caller token or a Hook secret that it wrote works.
 
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { HELD_CONFIGMAP, HELD_MOUNT, IMAGES_CONFIGMAP, IMAGES_MOUNT } from "./names.ts";
+import {
+  CALLER_DIGESTS_KEY,
+  CALLER_DIGESTS_SECRET,
+  HELD_CONFIGMAP,
+  HELD_MOUNT,
+  HOOK_DIGESTS_KEY,
+  HOOK_DIGESTS_SECRET,
+  IMAGES_CONFIGMAP,
+  IMAGES_MOUNT,
+} from "./names.ts";
 
 /** The ConfigMaps the Orchestrator reads through a mount, by name, and where each is mounted. */
 export const MOUNTED_CONFIGMAPS: Readonly<Record<string, string>> = {
@@ -15,7 +25,18 @@ export const MOUNTED_CONFIGMAPS: Readonly<Record<string, string>> = {
   [HELD_CONFIGMAP]: HELD_MOUNT,
 };
 
-/** One digest of a ConfigMap's `data`: the same bytes give the same digest at both ends. */
+/**
+ * The digests Secrets (ADR-0078), by name, and the key of each. For these, `GET /assembly` reports
+ * the digest of the file content that the process LOADED (`watchCallerDigests`), not of the file:
+ * the authenticator and the Hook door use what is loaded, and the poll can be some seconds behind
+ * the file. The content is digests of tokens, never a value.
+ */
+export const DIGEST_SECRETS: Readonly<Record<string, string>> = {
+  [CALLER_DIGESTS_SECRET]: CALLER_DIGESTS_KEY,
+  [HOOK_DIGESTS_SECRET]: HOOK_DIGESTS_KEY,
+};
+
+/** One digest of a mounted object's `data`: the same bytes give the same digest at both ends. */
 export function configMapDigest(data: Readonly<Record<string, string>>): string {
   const entries = Object.keys(data)
     .sort()
@@ -47,6 +68,19 @@ export async function readMountDigests(
   const out: Record<string, string> = {};
   for (const [name, dir] of Object.entries(mounts)) {
     const digest = await readMountDigest(dir);
+    if (digest !== undefined) out[name] = digest;
+  }
+  return out;
+}
+
+/** The digest of what each digests Secret's watcher has loaded, by name (ADR-0078). A Secret with
+ * no watcher, or whose file was not read, is left out, as an absent mount is. */
+export function loadedDigests(
+  watched: Readonly<Record<string, { loaded(): string | undefined } | undefined>>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, watcher] of Object.entries(watched)) {
+    const digest = watcher?.loaded();
     if (digest !== undefined) out[name] = digest;
   }
   return out;

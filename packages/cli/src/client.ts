@@ -25,6 +25,7 @@ import {
   type RunStarter,
   type RunWaiting,
   type Scopes,
+  type ShownStatus,
 } from "@jr2/orchestrator/internal";
 import { parseSSE } from "./sse.ts";
 
@@ -39,7 +40,8 @@ export type RunStatus = {
   runId: string;
   workflow: string;
   instanceId: string;
-  status: string;
+  /** `active` while the run is live, else how it ended (ADR-0025): never xstate's `stopped`. */
+  status: ShownStatus;
   value: unknown;
   context: unknown;
   /** The live child machines beneath the root, context-free — where most of a run is. */

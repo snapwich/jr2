@@ -12,9 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import {
   CUSTODIAN_PROGRAM,
-  configMapDigest,
   imageContextDigest,
-  MOUNTED_CONFIGMAPS,
   custodianRef,
   effectorKey,
   gitPushSecretName,
@@ -31,10 +29,10 @@ import {
   type PlacementWalk,
 } from "@jr2/orchestrator/internal";
 import { linkKit } from "./_kit.ts";
+import { MAP_PROPAGATION, mountedDigests } from "../src/mount-wait.ts";
 import {
   checkPodsOf,
   heldDigest,
-  MAP_PROPAGATION,
   podFault,
   CHECK_MCP_SECONDS,
   CHECK_MODEL_SECONDS,
@@ -73,6 +71,9 @@ import type { Io } from "../src/output.ts";
 /** The instance List of a converge: the one that carries the Orchestrator's Deployment — not the
  * apply of the provider preflight's inputs before it, nor a check pod's own List (ADR-0019). */
 const isInstanceList = (m: string): boolean => m.includes(`"kind":"List"`) && m.includes(`"kind":"Deployment"`);
+/** The digest of each mounted object in the instance List that the world applied, by name. */
+const appliedMounts = (w: World): Record<string, string> =>
+  mountedDigests((JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: [] }).items);
 
 /** A scriptable cluster: `objects` keyed "namespace/kind/name" ("" namespace for cluster-scoped). */
 class FakeCluster implements KubeAdmin {
@@ -2369,38 +2370,87 @@ test("a publish waits until the Orchestrator reads the mounted ConfigMaps this c
   // A publish rolls no pod, so `jr2-images` and `jr2-held` reach the process on the kubelet's
   // period. The PUT waits for the digests `GET /assembly` reports to be the applied ones.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const applied = (w: World): Record<string, string> => {
-    const list = JSON.parse(w.kube.applied.find(isInstanceList)!) as {
-      items: Array<{ kind: string; metadata: { name: string }; data?: Record<string, string> }>;
-    };
-    return Object.fromEntries(
-      list.items
-        .filter((i) => i.kind === "ConfigMap" && i.metadata.name in MOUNTED_CONFIGMAPS)
-        .map((i) => [i.metadata.name, configMapDigest(i.data ?? {})]),
-    );
-  };
   const saved = { ...MAP_PROPAGATION };
   MAP_PROPAGATION.stepMs = 1;
   try {
     const w = mkWorld(root);
     // The first two reads see the old held manifests; the third sees this converge's.
-    w.orchestrator.mounts = (n) => (n < 2 ? { ...applied(w), "jr2-held": "0ld" } : applied(w));
+    w.orchestrator.mounts = (n) => (n < 2 ? { ...appliedMounts(w), "jr2-held": "0ld" } : appliedMounts(w));
     assert.equal(await up(["--yes"], w.io), 0);
     assert.deepEqual(
       w.orchestrator.requests.map((r) => r.method),
       ["GET", "GET", "GET", "PUT"],
       "the PUT waits for the mount",
     );
-    assert.match(w.err.join("\n"), /waiting for the kubelet to deliver jr2-held/);
-    assert.deepEqual(Object.keys(applied(w)).sort(), ["jr2-held", "jr2-images"]);
+    assert.match(w.err.join("\n"), /assembly: waiting for the kubelet to deliver jr2-held to the Orchestrator/);
+    assert.deepEqual(Object.keys(appliedMounts(w)).sort(), [
+      "jr2-caller-digests",
+      "jr2-held",
+      "jr2-hook-digests",
+      "jr2-images",
+    ]);
 
     // A mount that never refreshes refuses the converge, and nothing is sent.
     MAP_PROPAGATION.budgetMs = 5;
     const never = mkWorld(root);
-    never.orchestrator.mounts = () => ({ "jr2-images": "0ld", "jr2-held": "0ld" });
+    never.orchestrator.mounts = () => ({ ...appliedMounts(never), "jr2-images": "0ld", "jr2-held": "0ld" });
     assert.equal(await up(["--yes"], never.io), 1);
     assert.deepEqual(never.orchestrator.puts, []);
-    assert.match(never.err.join("\n"), /still reads an older jr2-images, jr2-held from its mount/);
+    assert.match(
+      never.err.join("\n"),
+      /refusing: after 0s the Orchestrator still reads an older jr2-images, jr2-held from its mount — the kubelet has not refreshed it; nothing was published, and the previous Assembly is still current\. Run `jr2 up` again/,
+    );
+  } finally {
+    Object.assign(MAP_PROPAGATION, saved);
+  }
+});
+
+test("`converged` waits until the Orchestrator has loaded the Caller and Hook digests this converge applied, also when the Assembly is current (ADR-0078)", async () => {
+  // A new Caller token works only when the authenticator holds its digest, which the kubelet
+  // delivers on its own period. So the converge waits for it, publish or no publish.
+  const root = await mkInstance(
+    `export default { name: "myinst", callers: { tokens: { ci: { may: { read: ["work"] } } } } };\n`,
+  );
+  const saved = { ...MAP_PROPAGATION };
+  MAP_PROPAGATION.stepMs = 1;
+  try {
+    const first = mkWorld(root);
+    assert.equal(await up(["--yes"], first.io), 0);
+    const hash = stagedHash(first);
+
+    // The Assembly is current: nothing is published, and the converge still waits for the digests.
+    const w = mkWorld(root);
+    w.orchestrator.current = { hash, kitVersion: KIT_VERSION };
+    // The ConfigMaps are old for every read: a converge that publishes nothing does not wait for them.
+    w.orchestrator.mounts = (n) => ({
+      ...appliedMounts(w),
+      "jr2-images": "0ld",
+      ...(n < 2 ? { "jr2-caller-digests": "0ld" } : {}),
+    });
+    assert.equal(await up(["--yes"], w.io), 0);
+    assert.deepEqual(w.orchestrator.puts, [], "the hashes agree: nothing is sent");
+    assert.equal(w.orchestrator.gets, 3, "it asked until the digests were loaded");
+    const said = w.err.join("\n");
+    assert.match(said, /assembly: waiting for the kubelet to deliver jr2-caller-digests to the Orchestrator/);
+    assert.ok(said.indexOf("waiting for the kubelet") < said.indexOf("converged —"), "before `converged`");
+    assert.match(
+      said,
+      /caller token "ci": made — `jr2 caller token ci` prints it, and it works when `jr2 up` says converged/,
+    );
+    assert.ok(said.indexOf("orchestrator: applying") < said.indexOf('caller token "ci": made'), "made after the apply");
+
+    // Digests that never load fail the converge, and say that the token does not work yet.
+    MAP_PROPAGATION.budgetMs = 5;
+    const never = mkWorld(root);
+    never.orchestrator.current = { hash, kitVersion: KIT_VERSION };
+    never.orchestrator.mounts = () => ({ ...appliedMounts(never), "jr2-hook-digests": "0ld" });
+    assert.equal(await up(["--yes"], never.io), 1);
+    const failed = never.err.join("\n");
+    assert.match(
+      failed,
+      /refusing: after 0s the Orchestrator still reads an older jr2-hook-digests from its mount — the kubelet has not refreshed it; a Caller token or Hook secret that this converge wrote does not work yet\. Run `jr2 up` again/,
+    );
+    assert.doesNotMatch(failed, /converged —/);
   } finally {
     Object.assign(MAP_PROPAGATION, saved);
   }

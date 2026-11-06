@@ -167,7 +167,8 @@ In a Workspace with no Repo:
 - A `worktree()` needs a Repo Slot, a `push` needs a branch, and a `command` with an Effect secret runs on a commit.
   Thus `jr2 up` refuses all three.
 
-jr2 deletes `/work` with the Sandbox. Send what must stay before the body ends, as the example does with `upload`. A
+jr2 deletes `/work` with the Sandbox. Send what must stay before the body ends, as the example does with `upload`. The
+secret `files` that `upload` names is an entry of the `secrets` list of `jr2.config.ts`, as each Effect secret is. A
 Lost Sandbox has lost all of its work, because no commit was pushed.
 
 ## The pod

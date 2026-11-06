@@ -337,9 +337,12 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   ``error: <layer>: rollout reported success, but the running pod carries <images> — expected <image>. The cluster is serving code this converge did not deploy; `kubectl -n <namespace> rollout restart deploy` and re-run `jr2 up` to resolve it.``
 - When the rollout completes but no pod matches, `jr2 up` cannot check the image. It continues:
   `<layer>: WARNING — rollout succeeded but no pod matched <selector> (nothing verified)`
-- Before the publish, the Orchestrator must read the image map that `jr2 up` wrote. When it does not read it in time,
-  `jr2 up` publishes nothing:
-  ``refusing: after <seconds>s the Orchestrator still reads an older <maps> from its mount — the kubelet has not refreshed it; nothing was published, and the previous Assembly is still current. Run `jr2 up` again``
+- Before the publish, the Orchestrator must read the maps that `jr2 up` wrote, and the digests of the Caller tokens and
+  the Hook secrets. With no publish, `jr2 up` waits for the digests only. When the Orchestrator does not read them in
+  time, `jr2 up` stops with exit code 1:
+  ``refusing: after <seconds>s the Orchestrator still reads an older <names> from its mount — the kubelet has not refreshed it; <what this means>. Run `jr2 up` again``
+  `<what this means>` is `nothing was published, and the previous Assembly is still current`, or
+  `a Caller token or Hook secret that this converge wrote does not work yet`, or both.
 - The Orchestrator checks the Assembly again before it makes it current. It loads each Workflow and `jr2.config.ts`. It
   refuses an [Open](../reference/glossary.md#open) part that nobody bound, a secret that the config does not declare, a
   Kit version that is not its own, and a zod `input` that no door reads (a Machine that `jr2Setup` did not make). The

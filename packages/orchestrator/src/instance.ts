@@ -102,8 +102,8 @@ export type InstanceOptions = {
   /** The image map, read when the door checks a publish (ADR-0069). Present only when deployed;
    * absent, the door does not check `file:` image contexts. */
   imageMap?: () => Promise<ImageRefs>;
-  /** The digests of the mounted ConfigMaps, which `GET /assembly` reports (ADR-0069). Present only
-   * when deployed. */
+  /** The digests of the mounted ConfigMaps and of the loaded digests Secrets, which
+   * `GET /assembly` reports (ADR-0069, ADR-0078). Present only when deployed. */
   mounts?: () => Promise<Record<string, string>>;
   /** Called after a publish has landed and the Workflows swapped: the new current Assembly, its
    * config and its Machines, which the entrypoint swaps into the ports (ADR-0069). Synchronous, so

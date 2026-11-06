@@ -50,7 +50,8 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, unwatchFile, watchFile } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { configMapDigest } from "./mount-digest.ts";
 import { SCOPES, type AnswerGrant, type Scope, type Scopes } from "./config.ts";
 
 // ---- Callers (ADR-0078) -----------------------------------------------------------------------
@@ -218,25 +219,32 @@ export function namedTokens(
  * The digests of the named tokens, by name, from the file that `jr2 up` mounts into the
  * Orchestrator (`{ "<name>": "<sha-256 hex>" }`). The file is read again when it changes, so a
  * rotation needs no restart: the kubelet updates a mounted Secret on its own period, about a
- * minute, and until then the old value works (ADR-0078). An absent file reads as no digests. A file
+ * minute, and until then the old value works (ADR-0078). `loaded` tells which content the process
+ * holds, so `jr2 up` and `jr2 caller rotate` wait for it. An absent file reads as no digests. A file
  * that does not parse is logged, and the digests read last stay.
  */
 export function watchCallerDigests(path: string, opts: { intervalMs?: number } = {}) {
   let digests: Record<string, string> = {};
+  // The text that gave `digests`, so that `loaded` tells what the process holds now.
+  let text: string | undefined;
   const read = () => {
     try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      const raw = readFileSync(path, "utf8");
+      const parsed = JSON.parse(raw) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not a JSON object");
       digests = Object.fromEntries(
         Object.entries(parsed as Record<string, unknown>).filter(
           (e): e is [string, string] => typeof e[1] === "string",
         ),
       );
+      text = raw;
     } catch (err) {
       // Absent is the ordinary case for an Instance that declares no named token: no digest. A file
       // that does not parse keeps the digests read last, so a write seen half done stops no Caller.
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") digests = {};
-      else console.error(`caller digests at ${path} not read: ${err instanceof Error ? err.message : err}`);
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        digests = {};
+        text = undefined;
+      } else console.error(`caller digests at ${path} not read: ${err instanceof Error ? err.message : err}`);
     }
   };
   read();
@@ -247,6 +255,12 @@ export function watchCallerDigests(path: string, opts: { intervalMs?: number } =
   return {
     /** The digests now. */
     current: (): Readonly<Record<string, string>> => digests,
+    /**
+     * The digest of the file content that gave the digests now, keyed by the file's name as a
+     * mount's digest is (`configMapDigest`), so that `jr2 up` and `jr2 caller rotate` can wait
+     * until a value they wrote works (ADR-0078). Undefined when no file was read.
+     */
+    loaded: (): string | undefined => (text === undefined ? undefined : configMapDigest({ [basename(path)]: text })),
     /** Read the file now (a test does not wait for the poll). */
     reload: read,
     stop: () => unwatchFile(path, listener),

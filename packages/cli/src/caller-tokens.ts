@@ -13,6 +13,7 @@
 import { CALLER_TOKEN_PREFIX, mintCallerToken } from "@jr2/orchestrator/internal";
 import { CALLER_TOKEN_KEY, callerTokenObjects, LABEL_CALLER_TOKEN, LABEL_INSTANCE } from "./deploy.ts";
 import type { KubeAdmin, KubeObject } from "./kube.ts";
+import { mountedDigests, type AppliedObject } from "./mount-wait.ts";
 
 type Ctx = { context?: string };
 type SecretObject = KubeObject & { data?: Record<string, string> };
@@ -74,12 +75,13 @@ export async function planCallerTokens(
  * Make a new value for one named Caller token, and write the digests again (ADR-0078). The value
  * goes first: when the digests write fails, `jr2 caller rotate` runs again and the token still has
  * a value that `jr2 caller token` prints. Refuses a name that has no token Secret: `jr2 up` makes
- * it, from the config.
+ * it, from the config. Returns the digest of the digests Secret it applied, by name
+ * (`mountedDigests`): `jr2 caller rotate` waits until the Orchestrator has loaded it.
  */
 export async function rotateCallerToken(
   kube: KubeAdmin,
   opts: { instance: string; namespace: string; name: string; ctx: Ctx },
-): Promise<void> {
+): Promise<Record<string, string>> {
   const stored = await storedCallerTokens(kube, opts.namespace, opts.ctx);
   if (!stored.has(opts.name)) {
     const known = [...stored.keys()].sort();
@@ -102,4 +104,5 @@ export async function rotateCallerToken(
   );
   await kube.apply({ manifest: JSON.stringify(valueSecret), ...opts.ctx });
   await kube.apply({ manifest: JSON.stringify(digests), ...opts.ctx });
+  return mountedDigests([digests as AppliedObject]);
 }

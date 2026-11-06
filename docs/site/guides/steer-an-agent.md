@@ -46,7 +46,7 @@ jr2 run notes --input '{"version":"1.4.0"}'
 
 ```text
 → context <context> / namespace <namespace>
-run 683ce1a3-2208-4616-8323-244774bf9a8b (notes) — attached
+run 7058fde8-4c32-4513-82f0-e6c095d8707b (notes) — attached
   → active "writing"
   → active "writing"
 ```
@@ -60,7 +60,7 @@ the path `root`. An Agent in a child Machine has the path of that Machine, such 
 [`jr2 steer`](../reference/cli.md#steer) the run id alone to list the slots:
 
 ```sh
-jr2 steer 683c
+jr2 steer 7058
 ```
 
 ```text
@@ -76,17 +76,18 @@ The list has each Agent of each Machine instance that is live now, also an Agent
 ## Send the message
 
 ```sh
-jr2 steer 683c root/writer "Put the breaking change first."
+jr2 steer 7058 root/writer "Put the breaking change first."
 ```
 
 ```text
 → context <context> / namespace <namespace>
-sent a Steering message to root/writer on 683ce1a3-2208-4616-8323-244774bf9a8b: its open Turn hears it at its next step boundary
+sent a Steering message to root/writer on 7058fde8-4c32-4513-82f0-e6c095d8707b: its open Turn hears it at its next step boundary, or its next Turn hears it if this Turn ends first
 ```
 
 Then one of these things occurs:
 
 - When a Turn of the slot is open, the Harness adds the message to the Turn before the next model request.
+- When the Turn ends with a pick before its next model request, the message waits for the next Turn of the slot.
 - When no Turn of the slot is open, the message waits. The next Turn of the slot in the same Machine instance hears it,
   and `jr2 steer` prints `its next Turn hears it`.
 - When that Machine instance ends first, the message is not delivered.
@@ -98,12 +99,12 @@ entry has the slot, the author, the text, the time, and the `outcome`: `held` wh
 it, or `not-delivered` when its Machine instance ended first.
 
 ```sh
-jr2 status 683c
+jr2 status 7058
 ```
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"683ce1a3-2208-4616-8323-244774bf9a8b","workflow":"notes",…,"steering":[{"id":"533f6b72-3fa4-4011-a0cf-e3301131ae73","agent":"root/writer","author":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"text":"Put the breaking change first.","at":"2026-11-06T19:17:53.570Z","outcome":"heard"},{"id":"08caa70d-25d8-4c35-9385-e3439aed0481","agent":"root/writer","author":{"kind":"machine","from":{"party":"agent","id":"reviewer"}},"text":"Please add missing articles for grammatical correctness:\n\n1. In **Dark Mode Support**: \"toggle **the** dark theme\".\n2. In **Bug Fixes**: \"Fixed **a** crash\" or \"Fixed **an** issue causing **a** crash\".","at":"2026-11-06T19:18:50.569Z","outcome":"heard"}],…}
+{"runId":"7058fde8-4c32-4513-82f0-e6c095d8707b","workflow":"notes",…,"steering":[{"id":"c46a31f0-db82-4d80-b7f1-8908c2d9b121","agent":"root/writer","author":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"text":"Put the breaking change first.","at":"2026-11-06T20:56:33.005Z","outcome":"heard"},{"id":"f788b1f6-2b93-44be-a54e-e91f83685493","agent":"root/writer","author":{"kind":"machine","from":{"party":"agent","id":"reviewer"}},"text":"The release notes are well-structured, but I suggest a change for clarity in the **Notifications** section:\n\n\"Real-time notifications are now **persisted** across device logins.\"\n\n\"Persisted\" is technical jargon referring to data storage. If the intended meaning is that notifications appear on different devices, \"**synchronized**\" (or \"synced\") is the standard and clearer term for users.\n\nSuggested edit: \"Real-time notifications are now **synchronized** across devices.\"","at":"2026-11-06T20:57:35.442Z","outcome":"heard"}],…}
 started by: token/instance on behalf of kubernetes-admin
 ```
 
@@ -134,7 +135,7 @@ curl -X POST http://localhost:4000/runs/<run id>/steering \
 ```
 
 ```text
-{"id":"a1648ed6-c9ac-450e-9a20-7665707bf5d5","agent":"root/writer","open":true}
+{"id":"29e54d63-e858-4249-a789-f7e5506f433a","agent":"root/writer","open":true}
 ```
 
 The status is 202.

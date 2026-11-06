@@ -37,7 +37,7 @@ export async function steer(args: string[], io: Io): Promise<number> {
     activity(
       io,
       sent.open
-        ? `sent a Steering message to ${sent.agent} on ${ref.runId}: its open Turn hears it at its next step boundary`
+        ? `sent a Steering message to ${sent.agent} on ${ref.runId}: its open Turn hears it at its next step boundary, or its next Turn hears it if this Turn ends first`
         : `sent a Steering message to ${sent.agent} on ${ref.runId}: its next Turn hears it`,
     );
     return 0;

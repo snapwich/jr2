@@ -28,15 +28,19 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
   value is `jr2c_` and 32 random bytes in base64url. The prefix lets the seam say "not mine" with no lookup, and lets a
   secret scanner find a value that leaked. The digests go in one Secret, `jr2-caller-digests`, as one JSON object from
   name to digest, and the Orchestrator reads it through a mount. It reads the file again when it changes, so a new token
-  or a rotation needs no restart. The kubelet updates a mounted Secret on its own period, about a minute, so the old
-  value works until then. The scopes come from the config of the current Assembly: a name that has a digest and no entry
-  in the config opens nothing, and a file that does not parse keeps the digests that the Orchestrator read last.
-  `jr2 caller token <name>` prints the value, which it reads from the Secret over the kube API (RBAC is the gate, as for
-  the Instance token), so it takes `-n` and `--context` and never `--url`. `jr2 caller rotate <name>` makes a new value,
-  and the old value stops working. It writes the value's Secret first and the digests after, from every token Secret of
-  the namespace, so a rotate that fails between the two runs again and loses no value. A name that the config no longer
-  declares stops working at the next `jr2 up`, which deletes its Secret. Each token Secret carries its name in the label
-  `jr2.dev/caller-token`, which is how `jr2 up` finds the undeclared ones.
+  or a rotation needs no restart. The kubelet updates a mounted Secret on its own period, about a minute. Thus
+  `GET /assembly` reports a digest of the file that the Orchestrator holds now, beside the digests of its mounted
+  ConfigMaps, and `jr2 up` and `jr2 caller rotate` wait until it is the file that they applied: when `jr2 up` says
+  `converged`, a new token works, and when `rotate` returns, the old value no longer works. After 150 s, each stops with
+  exit code 1 and says that the change does not work yet. The scopes come from the config of the current Assembly: a
+  name that has a digest and no entry in the config opens nothing, and a file that does not parse keeps the digests that
+  the Orchestrator read last. `jr2 caller token <name>` prints the value, which it reads from the Secret over the kube
+  API (RBAC is the gate, as for the Instance token), so it takes `-n` and `--context` and never `--url`.
+  `jr2 caller rotate <name>` makes a new value, and the old value stops working. It writes the value's Secret first and
+  the digests after, from every token Secret of the namespace, so a rotate that fails between the two runs again and
+  loses no value. A name that the config no longer declares stops working at the next `jr2 up`, which deletes its
+  Secret. Each token Secret carries its name in the label `jr2.dev/caller-token`, which is how `jr2 up` finds the
+  undeclared ones.
 - **JWTs from an identity provider.** The `callers` block also declares issuers
   (`callers.issuers: [{ issuer, audience, jwks?, claims?, groups, login? }]`). The JWT authenticator claims a bearer
   that is a JWT whose `iss` is the `issuer` of an entry; a JWT of another issuer is not its. For each issuer, jr2 checks
@@ -194,9 +198,10 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
     with the digest that `jr2 up` gave it, and then removes the header. The digests go in one Secret,
     `jr2-hook-digests`, as one JSON object from the secret's name to its digest. It is not `jr2-caller-digests`, because
     `jr2 caller rotate` writes that Secret whole. The Orchestrator reads it through a mount, and again when it changes,
-    as it reads the Caller digests. `jr2 up` applies it at each converge, empty when no Hook is `token`. It computes
-    each digest on the host, from the entry of the `secrets` list: a literal, or the key of the user's Secret with one
-    trailing newline removed, as the Effector reads a value. The value goes into no object that `jr2 up` writes.
+    and `jr2 up` waits for it, as for the Caller digests. `jr2 up` applies it at each converge, empty when no Hook is
+    `token`. It computes each digest on the host, from the entry of the `secrets` list: a literal, or the key of the
+    user's Secret with one trailing newline removed, as the Effector reads a value. The value goes into no object that
+    `jr2 up` writes.
   - `ed25519`: the door, in the Orchestrator, checks the signature over the timestamp and the body (Discord) against the
     application's public key. A public key can verify a signature and cannot make one, so it is not a secret, and the
     config holds it as a literal.

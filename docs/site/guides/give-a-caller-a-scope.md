@@ -52,9 +52,9 @@ jr2 up
 
 ```text
 …
-caller token "chat-bridge": made — `jr2 caller token chat-bridge` prints it
-caller token "ci": made — `jr2 caller token ci` prints it
-caller token "release-manager": made — `jr2 caller token release-manager` prints it
+caller token "chat-bridge": made — `jr2 caller token chat-bridge` prints it, and it works when `jr2 up` says converged
+caller token "ci": made — `jr2 caller token ci` prints it, and it works when `jr2 up` says converged
+caller token "release-manager": made — `jr2 caller token release-manager` prints it, and it works when `jr2 up` says converged
 …
 ```
 
@@ -111,7 +111,8 @@ jr2 caller rotate ci
 
 ```text
 → context <context> / namespace <namespace>
-caller token "ci": rotated — the old value stops working when the Orchestrator reads the new digest, about a minute; `jr2 caller token ci` prints the new one
+caller token "ci": waiting for the kubelet to deliver jr2-caller-digests to the Orchestrator
+caller token "ci": rotated — the old value no longer works; `jr2 caller token ci` prints the new one
 ```
 
 Give the new value to the Caller. No pod restarts.
@@ -156,7 +157,8 @@ caller token "chat-bridge": deleted — callers.tokens no longer declares it
 - When the wrapper takes no runtime Chart, the same item is a refusal, and the line ends with
   `, and "<wrapper>" takes no runtime Chart`.
 - The Orchestrator refuses a value that it does not know, such as a value from before a rotation, with the status code
-  `401`: `unauthorized`. The old value works until the kubelet updates the mount of the Orchestrator, about one minute.
+  `401`: `unauthorized`. `jr2 caller rotate` returns when the Orchestrator has read the new digest, so the old value no
+  longer works then.
 - The Orchestrator refuses a request that needs a scope that the token does not have for the Workflow, with the status
   code `403`: `the Caller token/<name> needs the "<scope>" scope for Workflow "<workflow>" (ADR-0078)`
 - It refuses an answer to a Gate that an `answer` item with `gates` does not name, with the status code `403`:

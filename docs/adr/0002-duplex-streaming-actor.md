@@ -44,12 +44,12 @@ a step boundary, never an interrupt.
 - **Two senders.** A Caller ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md))
   sends one with `POST /runs/:runId/steering { agent, text }` or `jr2 steer <run> <agent> "<text>"`, and needs the
   `steer` scope for the run's Workflow. A text above 16 KiB of UTF-8 is 413, and an empty one 400. The route answers 202
-  `{ id, agent, open }`: `open` says whether a Turn of the slot hears it at a step boundary or the next Turn hears it.
-  The message names the Caller by the name that jr2 shows (a JWT's `email`, else its name), with its `via` and its
-  `onBehalfOf` claim. The Machine sends one with the authoring action `steer(<agent>, text, { from? })` in a transition,
-  to an Agent of the Machine that runs the action; `from` is the Sender whose words it carries. The action cuts a text
-  above 16 KiB and says so in the text, because a relayed payload is not the author's to bound, and a refusal there
-  would fail the transition.
+  `{ id, agent, open }`: `open` says whether a Turn of the slot was open when the message came. The message names the
+  Caller by the name that jr2 shows (a JWT's `email`, else its name), with its `via` and its `onBehalfOf` claim. The
+  Machine sends one with the authoring action `steer(<agent>, text, { from? })` in a transition, to an Agent of the
+  Machine that runs the action; `from` is the Sender whose words it carries. The action cuts a text above 16 KiB and
+  says so in the text, because a relayed payload is not the author's to bound, and a refusal there would fail the
+  transition.
 - **Addressed by Agent slot.** `agent` names an Agent slot of the run, as the run's slot list names it. The list,
   `{ agent, open, steerable }` for each slot at `GET /runs/:runId/agents`, is open to a Caller with `steer`, so a Caller
   can see where a message would go. It lists each Agent that each live Machine instance carries in its `actors`, with or
@@ -58,14 +58,16 @@ a step boundary, never an interrupt.
   one state of a Machine instance hold it at a time ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)), so it
   names one conversation at a time.
 - **Delivery.** When the slot has an open Turn, its Harness appends the message at the Turn's next step boundary, on the
-  same read as a notice. Otherwise the message is held for the slot's next Turn of the same Machine instance, and that
-  Turn's admission carries it. A held message belongs to the Machine instance that was live when it was sent: when that
-  instance ends, the message retires, and the run records it "not delivered". A Machine instance ends when it leaves its
-  parent's children, when it reaches `done` or `error`, and when the run ends; a host that stops parks the run, and ends
-  nothing. An instance below one that ended ends with it. When no live Machine instance holds the slot — it has ended,
-  or it never was — the route answers 409 with the run's slots, because the Orchestrator cannot tell a slot that ended
-  from one that never was; an unknown run is 404, and a run that is not live is 409. The Agent hears each message once,
-  by the rules of a notice (ADR-0062). The run records each message with its author, its text, when it was sent and its
+  same read as a notice. A pick that ends the Turn skips that read. Thus a message that comes while the Turn's last
+  model request runs is held for the slot's next Turn, as when no Turn is open, and `jr2 steer` says that both can
+  occur. Otherwise the message is held for the slot's next Turn of the same Machine instance, and that Turn's admission
+  carries it. A held message belongs to the Machine instance that was live when it was sent: when that instance ends,
+  the message retires, and the run records it "not delivered". A Machine instance ends when it leaves its parent's
+  children, when it reaches `done` or `error`, and when the run ends; a host that stops parks the run, and ends nothing.
+  An instance below one that ended ends with it. When no live Machine instance holds the slot — it has ended, or it
+  never was — the route answers 409 with the run's slots, because the Orchestrator cannot tell a slot that ended from
+  one that never was; an unknown run is 404, and a run that is not live is 409. The Agent hears each message once, by
+  the rules of a notice (ADR-0062). The run records each message with its author, its text, when it was sent and its
   outcome (`held`, `heard`, `not-delivered`), in the run's persisted state; the record keeps the newest 100 and each one
   still held. The run's status carries it as `steering`, behind `read` like `context` (ADR-0014): a message is a
   Caller's working text, never the open band's.
@@ -89,6 +91,13 @@ a step boundary, never an interrupt.
 Considered and rejected: address a message by conversation (an Instance ID), which a Caller cannot know and which
 changes at a fresh Turn; a built-in tool with which an Agent messages another Agent, which goes around the Machine that
 the author wrote; and a Steering message as a Machine event, which makes free text control.
+
+Considered and not chosen now: a held message turns back a pick that ends the Turn. The Harness would refuse that pick
+while a message waits for the slot, and the model would read the message and pick again, so a message always reaches the
+Turn that was open when it came. It costs a new refusal that the model reads (an `@model` claim), one more model request
+in that case, and a pick that a Caller's message can undo, where today a pick is final. The case is one model request
+wide, and a Gate or the Machine can still send the Agent back. Look at it again if Callers need a message to reach the
+Turn that was open.
 
 ## Durability: the admission is the handle
 

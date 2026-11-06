@@ -1010,8 +1010,10 @@ export type CreateAppOptions = {
   assembly?: AssemblyDoor;
   /**
    * The digests of the ConfigMaps this process reads through a mount (ADR-0069), as
-   * `readMountDigests` reads them. `GET /assembly` reports them, so `jr2 up` can wait for the
-   * kubelet before it publishes. Absent when not deployed: nothing is mounted.
+   * `readMountDigests` reads them, and of the digests Secrets as it loaded them (ADR-0078,
+   * `loadedDigests`). `GET /assembly` reports them, so `jr2 up` can wait for the kubelet before it
+   * publishes, and `jr2 up` and `jr2 caller rotate` before a token they wrote works. Absent when
+   * not deployed: nothing is mounted.
    */
   mounts?: () => Promise<Record<string, string>>;
   /**
@@ -1257,8 +1259,9 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
 
   // The current Assembly and the ones live runs hold (ADR-0069). Open like `/workflows`: a hash
   // and a Kit version are identity, the class of thing `/healthz` already serves.
-  // `mounts` is what this process reads from its mounted ConfigMaps, so a publish can wait until
-  // the kubelet has delivered the data the converge wrote.
+  // `mounts` is what this process reads from its mounted ConfigMaps and holds from its digests
+  // Secrets, so a command can wait until the kubelet has delivered the data it wrote. A digest of
+  // digests: no token value.
   app.get("/assembly", async (c) => {
     const base = opts.assembly ? await opts.assembly.view() : { kitVersion: KIT_VERSION, current: null, held: [] };
     // The standing Workflows (ADR-0017): each one's state and how many items it holds, which

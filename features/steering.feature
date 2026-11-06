@@ -1,7 +1,7 @@
 Feature: A Caller steers one Agent of a live run
   ADR-0002: a Steering message is free text from a Caller, or from the Machine, to one Agent slot of
   a run. The Agent hears it once, with no interrupt: its open Turn at the next step boundary, or the
-  slot's next Turn in the same Machine instance. A held message retires, "not delivered", when its
+  slot's next Turn in the same Machine instance when no Turn is open or the open Turn ends first. A held message retires, "not delivered", when its
   Machine instance ends. The run records each message with its author and its outcome.
 
   As in agent-and-gates.feature, the steps play the Agent's Harness over `/agents/<iid>/*`: there is

@@ -216,6 +216,56 @@ test("CANCEL ends the run: its Agents' turns end, and it does not come back (ADR
   assert.deepEqual(await second.restore(), { reattached: [], lost: [], drifted: [], failed: [] });
 });
 
+// The Agent's Turn is open in a Workspace, so the stop of its invocation ends the Turn in the
+// notice ledger, and that hook saves the run. xstate says "stopped" while it stops the children:
+// mechanism, never a run status (ADR-0025). Every feed must end on `cancelled`, as the row does.
+for (const keep of [false, true]) {
+  test(`a cancel${keep ? " with keep" : ""} of a run with an open Agent Turn ends every feed on cancelled, never stopped (ADR-0025)`, async () => {
+    const store = await mkStore();
+    const clients = new Map<string, MockFlueClient>();
+    const host = new RunHost({ store });
+    host.register(codingDef(clients));
+    const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
+    await admittedIid(clients.get(instanceId)!);
+    host.steer(runId, "root/coder", "too late", { via: "token", name: "ops" });
+
+    const frames: string[] = [];
+    host.subscribe(runId, (e) => {
+      if (e.kind === "status") frames.push(e.status.status);
+    });
+    const watched: string[] = [];
+    host.observeWorkflow("coding", (e) => {
+      if (e.kind === "status") watched.push(e.status.status);
+      if (e.kind === "gone") watched.push("gone");
+    });
+    const settled: string[] = [];
+    host.onSettled(runId, (s) => settled.push(s.status));
+
+    await host.cancel(runId, { keep, by: { via: "token", name: "ops" } });
+    await tick();
+
+    assert.equal(frames.at(-1), "cancelled", `the run's feed ends on cancelled: ${frames.join(", ")}`);
+    assert.deepEqual(
+      frames.filter((s) => s !== "active"),
+      ["cancelled"],
+      "one end, and no other status",
+    );
+    assert.deepEqual(watched.slice(-2), ["cancelled", "gone"], `the Workflow's feed: ${watched.join(", ")}`);
+    assert.equal(watched.filter((s) => s === "gone").length, 1, "gone is said once");
+    assert.deepEqual(settled, ["cancelled"]);
+
+    const read = await host.read(runId);
+    assert.equal(read?.status, "cancelled");
+    assert.equal((await store.load(runId))?.status, "cancelled");
+    assert.deepEqual(read?.cancelledBy, { via: "token", name: "ops" });
+    assert.deepEqual(
+      read?.steering?.map((m) => [m.text, m.outcome]),
+      [["too late", "not-delivered"]],
+      "the held message retires with the run",
+    );
+  });
+}
+
 test("stop() is the other verb: no abort, and the run restores (ADR-0007/0025)", async () => {
   const store = await mkStore();
   const clients = new Map<string, MockFlueClient>();

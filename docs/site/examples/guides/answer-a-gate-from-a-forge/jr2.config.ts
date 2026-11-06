@@ -8,6 +8,8 @@ export default defineConfig({
   secrets: [
     { name: "GH_HOOK", value: process.env.GH_HOOK },
     { name: "GL_HOOK", value: process.env.GL_HOOK },
+    // The look of review reads the reviews with this token. jr2 up places it in the Instance Effector.
+    { name: "github-token", value: process.env.GITHUB_TOKEN },
   ],
   hooks: {
     // POST /hooks/forge: GitHub signs each delivery with the secret GH_HOOK. The Hook may answer

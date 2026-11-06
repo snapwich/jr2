@@ -82,7 +82,14 @@ test("an Assembly answer that cannot be read is one line naming the reason", () 
 // that draws its bound Machine; a run that binds none says nothing.
 
 test("a bound run reads `chart: bound` with its Machine route; an unbound one prints no line", () => {
-  const run = { runId: "r1", workflow: "charted/loop", instanceId: "i", status: "active", value: "x", context: {} };
+  const run = {
+    runId: "r1",
+    workflow: "charted/loop",
+    instanceId: "i",
+    status: "active" as const,
+    value: "x",
+    context: {},
+  };
   assert.equal(
     boundActivity({ ...run, bound: true }),
     "chart: bound — GET /workflows/charted%2Floop/runs/r1/machine draws the Machine this run binds",
@@ -91,7 +98,14 @@ test("a bound run reads `chart: bound` with its Machine route; an unbound one pr
 });
 
 test("a drifted bound run says so: its Machine route may not draw the Chart", () => {
-  const run = { runId: "r1", workflow: "charted", instanceId: "i", status: "drifted", value: "x", context: {} };
+  const run = {
+    runId: "r1",
+    workflow: "charted",
+    instanceId: "i",
+    status: "drifted" as const,
+    value: "x",
+    context: {},
+  };
   assert.equal(
     boundActivity({ ...run, bound: true }),
     "chart: bound, drifted — GET /workflows/charted/runs/r1/machine names each Chart it cannot draw",
@@ -101,7 +115,7 @@ test("a drifted bound run says so: its Machine route may not draw the Chart", ()
 // `jr2 status <run>` (ADR-0071): a dispatched run says who dispatched it beside the result.
 
 test("a dispatched run reads `dispatched by:` with its caller, slot and depth; any other run prints no line", () => {
-  const run = { runId: "r1", workflow: "review", instanceId: "i", status: "active", value: "x", context: {} };
+  const run = { runId: "r1", workflow: "review", instanceId: "i", status: "active" as const, value: "x", context: {} };
   const by = { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 };
   assert.equal(dispatchedActivity({ ...run, dispatchedBy: by }), "dispatched by: caller-run (review), depth 1");
   assert.equal(
@@ -120,7 +134,7 @@ test("a dispatched run reads `dispatched by:` with its caller, slot and depth; a
 });
 
 test("a run that dispatched reads one `dispatched:` line per run it started, the oldest past ten counted", () => {
-  const run = { runId: "r1", workflow: "watch", instanceId: "i", status: "active", value: "x", context: {} };
+  const run = { runId: "r1", workflow: "watch", instanceId: "i", status: "active" as const, value: "x", context: {} };
   assert.deepEqual(dispatchedLines(run), []);
   const two = [
     { slot: "intake", run: "c1", at: "2026-10-20T00:00:01Z" },
@@ -200,7 +214,7 @@ test("`jr2 status <run>` prints one `worktree:` line per cut on stderr, and the 
     { slot: "app", path: "/work/app/fix", branch: "docs/123" },
     { slot: "app", path: "/work/app/review", branch: null },
   ];
-  const s = { runId, workflow: "w", instanceId: "i", status: "active", value: "x", context: {}, worktrees };
+  const s = { runId, workflow: "w", instanceId: "i", status: "active" as const, value: "x", context: {}, worktrees };
   assert.deepEqual(worktreeLines(s), [
     "worktree: /work/app/fix (app), branch docs/123",
     "worktree: /work/app/review (app), detached",

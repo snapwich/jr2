@@ -102,9 +102,12 @@ import {
   LIVE_STATUS,
   newestFirst,
   placingOf,
+  shownOfRow,
+  type EndedStatus,
   type RunListQuery,
   type RunPage,
   type RunSummary,
+  type ShownStatus,
 } from "./run-list.ts";
 import { grantOpens } from "./tokens.ts";
 import { HAND_OVER, standingCarryOf, standingPoolOf, standingTaken, standingTook } from "./pool.ts";
@@ -631,9 +634,6 @@ function runReply(place: Omit<HookReply, "text" | "error">, run: () => unknown):
  * Gate's id, and the verdict. */
 export type SourceLine = { pool: string; workflow: string; source: string } & SourceVerdictLine;
 
-/** A run's current observable state. `fault` carries the error message when status is "error"
- * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). A run that ends
- * "failed" (ADR-0073) has no `fault`: its `output` is the Failure's `{ reason, detail? }`. */
 /** Where a kept conversation's entries may come from ({@link RunHost.conversationPlace}). No
  * `agent` when the run's ledger does not name the Instance ID. */
 export type ConversationPlace = {
@@ -644,8 +644,11 @@ export type ConversationPlace = {
   slot?: string;
 };
 
+/** A run's current observable state. `fault` carries the error message when status is "error"
+ * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). A run that ends
+ * "failed" (ADR-0073) has no `fault`: its `output` is the Failure's `{ reason, detail? }`. */
 export type RunStatus = RunRecord & {
-  status: string;
+  status: ShownStatus;
   value: unknown;
   context: unknown;
   /** The live child machines beneath the root — where most of a run actually is. */
@@ -1327,6 +1330,9 @@ type LiveRun = {
   lastBound?: { hashes: string[]; doc: MachineDoc };
   /** The Caller that cancelled the run (ADR-0078): persisted as `RunBlob.cancelledBy`. */
   cancelledBy?: CallerRecord;
+  /** The end that the host gives the run while it stops its actor ({@link RunHost.end}). Not
+   * persisted: the save that follows the stop writes it as the run's status. */
+  ending?: EndedStatus;
   /** The run that took over from this standing run (ADR-0017): persisted as `RunBlob.handedOverTo`. */
   handedOverTo?: string;
   /** This standing run took its bound of items and none of them started a run (ADR-0017): jr2 ended
@@ -3248,7 +3254,9 @@ export class RunHost {
     // The STORE row is the authority on the run's lifecycle, the snapshot on the Machine's: a
     // cancelled run's actor reports xstate's "stopped", which is mechanism, not an outcome
     // (ADR-0025). While the row still says "live", the Machine's own status is the answer.
-    const status = stored.status === "live" ? (snap.status ?? stored.status) : stored.status;
+    // A live row's snapshot is `active`: the save that ends a run writes its row's end too.
+    const status =
+      stored.status === "live" ? shownOfMachine(snap.status ?? "active", undefined) : shownOfRow(stored.status);
     return {
       runId,
       workflow: blob.workflow,
@@ -3333,7 +3341,7 @@ export class RunHost {
     const summary = (row: EndedRow, ended: boolean): RunSummary => ({
       runId: row.runId,
       workflow: row.workflow,
-      status: ended ? row.status : "active",
+      status: ended ? shownOfRow(row.status) : LIVE_STATUS,
       ...(row.reason !== undefined ? { reason: row.reason } : ended ? {} : { reason: "waiting for restore" }),
       ...(row.startedBy !== undefined ? { startedBy: row.startedBy as RunStarter } : {}),
       startedAt: row.startedAt,
@@ -3524,10 +3532,7 @@ export class RunHost {
     if (opts.by) run.cancelledBy = opts.by;
     // Named BEFORE the stop, while the tree still says which Workspaces are live.
     const sandboxes = opts.keep ? [] : runSandboxes(run.actor, runId);
-    run.actor.stop();
-    // Persist AFTER the stop: the snapshot is final, and `persist` fans out the last status,
-    // announces `gone`, and untracks — the same terminal path a run that settled on its own takes.
-    this.persist(run, "cancelled");
+    this.end(run, "cancelled");
     // The run is over, so nothing can use its Workspaces, and each holds its whole Size (ADR-0025).
     // An actor stop skips the wrapper's `teardown` state, so the host runs the same idempotent
     // delete here, after the stop, so no lease renews what was deleted. `keep` leaves them to the
@@ -3545,8 +3550,24 @@ export class RunHost {
     const run = this.runs.get(runId);
     if (!run || run.binding !== binding || run.fault !== undefined) return;
     run.fault = fault;
+    this.end(run, "error");
+  }
+
+  /**
+   * End a live run that the HOST ends, not its Machine: stop its actor, then save it with `status`.
+   * The save comes AFTER the stop, so the snapshot is final; it feeds the last status, announces
+   * `gone` and untracks, as for a run that ended on its own.
+   *
+   * The run is marked first, because the stop is not quiet. xstate gives the root the status
+   * `stopped` before it stops the children, and each Agent invocation that stops ends its Turn in
+   * the notice ledger, whose hook saves the run (ADR-0024, ADR-0062). That save would write and
+   * feed `stopped`, and untrack the run before this end is said. While the mark is set, `persist`
+   * writes nothing: the save below carries what the stop changed.
+   */
+  private end(run: LiveRun, status: EndedStatus): void {
+    run.ending = status;
     run.actor.stop();
-    this.persist(run, "error");
+    this.persist(run, status);
   }
 
   /**
@@ -3724,8 +3745,7 @@ export class RunHost {
     const workflow = run.record.workflow;
     const ids = this.startStanding(workflow, why, { context: run.actor.getSnapshot().context });
     run.handedOverTo = ids.runId;
-    run.actor.stop();
-    this.persist(run, "done");
+    this.end(run, "done");
   }
 
   /** Hand over from a run that is no longer live, by its saved context: `error`, `drifted`, `lost`,
@@ -3748,7 +3768,7 @@ export class RunHost {
    * counts. After 3 hand-overs from counted runs in a row, the next counted run pauses it. A
    * hand-over's own end, and a run that is not the head, mean nothing more.
    */
-  private standingEnded(run: LiveRun, status: string): void {
+  private standingEnded(run: LiveRun, status: EndedStatus): void {
     const workflow = run.record.workflow;
     const head = this.heads.get(workflow);
     if (head?.run !== run.record.runId || run.handedOverTo !== undefined) return;
@@ -3812,8 +3832,7 @@ export class RunHost {
         return;
       }
       run.boundWithNoRun = true;
-      run.actor.stop();
-      this.persist(run, "done");
+      this.end(run, "done");
     });
   }
 
@@ -3976,7 +3995,7 @@ export class RunHost {
     const snap = run.actor.getSnapshot();
     return {
       ...run.record,
-      status: snap.status,
+      status: shownOfMachine(snap.status, run.ending),
       value: snap.value,
       context: snap.context,
       children: runChildren(snap),
@@ -4535,19 +4554,25 @@ export class RunHost {
   /**
    * Persist the run's snapshot after a transition; drop it from the registry once final.
    *
-   * `terminal` is the run-lifecycle verdict the MACHINE cannot supply. Three callers pass it:
-   * `cancel()` passes "cancelled", because xstate only knows its actor was stopped (ADR-0025); the
-   * error observer passes "failed" for a Failure that no state caught, because xstate gives a
-   * Failure and a defect the same `error` status (ADR-0073); and `faultUnrouted()` passes "error"
-   * for a mechanism event that no transition took, because the host stops the actor and xstate
-   * then knows only that it was stopped (ADR-0074). It is the stored status and the one the feeds report.
+   * `terminal` is the run-lifecycle verdict the MACHINE cannot supply. {@link end} passes the end
+   * of a run whose actor the host stops, because xstate then knows only that it was stopped:
+   * "cancelled" for a cancel (ADR-0025), "error" for a mechanism event that no transition took
+   * (ADR-0074), and "done" for a standing run's hand-over (ADR-0017). The error observer passes
+   * "failed" for a Failure that no state caught, because xstate gives a Failure and a defect the
+   * same `error` status (ADR-0073). It is the stored status and the one the feeds report.
    */
-  private persist(run: LiveRun, terminal?: string): Promise<void> {
+  private persist(run: LiveRun, terminal?: EndedStatus): Promise<void> {
+    // A save that names no end, of an actor that the host stops, writes nothing. When the host ends
+    // the run, its own save names the end ({@link end}). When it parks the run, the last save stays,
+    // `live`, for restore (ADR-0025). xstate's `stopped` is never a run status.
+    const machineStatus = (run.actor.getSnapshot() as { status?: string }).status ?? "active";
+    if (terminal === undefined && (run.ending !== undefined || machineStatus === "stopped")) return Promise.resolve();
     // The holds first: an answer read at Rest, and a notice a route out raised, ride this same save.
     this.settleHolds(run);
     const snapshot = run.actor.getPersistedSnapshot();
-    const machineStatus = (snapshot as { status?: string }).status ?? "active";
-    const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
+    // A Machine that ends on its own ends `done` or `error`.
+    const status: "live" | EndedStatus =
+      terminal ?? (machineStatus === "active" ? "live" : machineStatus === "done" ? "done" : "error");
     // A run that ended holds no Steering message: each one still held retires, "not delivered"
     // (ADR-0002). Before the blob is built, so this save records it.
     if (status !== "live") run.notices.retire();
@@ -4643,6 +4668,18 @@ export class RunHost {
     }
     return saved;
   }
+}
+
+/**
+ * The shown status of a hosted run, off its Machine's status (ADR-0025). A Machine that ends on its
+ * own is `done` or `error`. xstate's `stopped` is mechanism: the run shows the end that the host
+ * gives it, and with none, it is a park, which leaves the run live.
+ */
+function shownOfMachine(machine: string, ending: EndedStatus | undefined): ShownStatus {
+  if (machine === "active") return LIVE_STATUS;
+  if (machine === "done") return "done";
+  if (machine === "stopped") return ending ?? LIVE_STATUS;
+  return "error";
 }
 
 /** A status that is no longer live (ADR-0071): the store's terminal words. A live row reads its

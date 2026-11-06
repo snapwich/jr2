@@ -57,7 +57,7 @@ import { join } from "node:path";
 import { resolveAssembly, type ResolvedAssembly } from "./assembly.ts";
 import { KIT_VERSION, loadConfig, type JR2Config } from "./config.ts";
 import { readImageRefs } from "./images.ts";
-import { readMountDigests } from "./mount-digest.ts";
+import { loadedDigests, readMountDigests } from "./mount-digest.ts";
 import { GIT_CLONE_MANIFEST_KEY, readGitCloneManifest } from "./git-clone.ts";
 import { loadWorkflows, startInstance, type RunningInstance } from "./instance.ts";
 import {
@@ -73,8 +73,10 @@ import {
   EFFECTOR_PORT,
   CALLER_DIGESTS_KEY,
   CALLER_DIGESTS_MOUNT,
+  CALLER_DIGESTS_SECRET,
   HOOK_DIGESTS_KEY,
   HOOK_DIGESTS_MOUNT,
+  HOOK_DIGESTS_SECRET,
 } from "./names.ts";
 import type { AnyStateMachine } from "xstate";
 import { partsOf, type CarriedRepo } from "./parts.ts";
@@ -285,7 +287,16 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // The door reads the same image map a provision reads (ADR-0069): a `file:` context whose
     // digest it lacks is refused at the publish rather than at the first provision.
     ...(dataPlane
-      ? { imageMap: () => readImageRefs(join(IMAGES_MOUNT, IMAGES_KEY)), mounts: () => readMountDigests() }
+      ? {
+          imageMap: () => readImageRefs(join(IMAGES_MOUNT, IMAGES_KEY)),
+          // The ConfigMaps as the mounts hold them, and the digests Secrets as this process LOADED
+          // them (ADR-0078): a token works when the authenticator holds its digest, not when the
+          // file has it.
+          mounts: async () => ({
+            ...(await readMountDigests()),
+            ...loadedDigests({ [CALLER_DIGESTS_SECRET]: digests, [HOOK_DIGESTS_SECRET]: hookDigests }),
+          }),
+        }
       : {}),
     // A publish landed (ADR-0069): its config is the one that applies from now on, and its
     // Machines may bind other Repos, so the Repo pass runs again. Synchronous: the walk is over
