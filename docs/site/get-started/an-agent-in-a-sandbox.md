@@ -243,7 +243,7 @@ Your times are different. Read the commits of the coder. The branch starts at th
 tag are the commits of the coder:
 
 ```sh
-git log --oneline v<version>..HEAD
+git --no-pager log --oneline v<version>..HEAD
 ```
 
 ```text

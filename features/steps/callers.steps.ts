@@ -126,8 +126,8 @@ Then(
   async function (this: E2EWorld, name: string, seconds: number): Promise<void> {
     const old = rotatedFrom.get(this)?.get(name);
     assert.ok(old, `the scenario rotated the Caller token "${name}"`);
-    // The Orchestrator reads the digests through a mount, which the kubelet updates on its own
-    // period, about a minute (ADR-0078): the old value works until then.
+    // `jr2 caller rotate` returned only when the Orchestrator reported the new digest as loaded
+    // (ADR-0078), so the old value is refused at once; the short bound only absorbs the forward.
     await forward(this, async (url) => {
       const deadline = Date.now() + seconds * 1000;
       let status = 0;

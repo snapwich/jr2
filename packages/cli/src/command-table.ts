@@ -188,7 +188,7 @@ const TABLE = [
     env: [],
     summary: "typecheck this instance and load its workflows, as `jr2 up` does first, with no cluster",
     lines: [
-      "runs the check that `jr2 up` runs before it stages the Assembly, and exits 1 with the same refusal: a type error, a module that refuses to load (a refusal of `createMachine`, `defineEvent` or `workspace()`), an Open part, a Chart file, a dispatch, an Effect secret or a Size",
+      "runs the check that `jr2 up` runs before it stages the Assembly, and exits 1 with its refusal: a type error, a module that refuses to load (`createMachine`, `defineEvent` or `workspace()`), an Open part, a Chart file, a dispatch, an Effect secret or a Size",
       "reads no kube context and writes no file, so an Assistant runs it before it gives a change to the user",
     ],
     output: ACTIVITY,
@@ -207,7 +207,7 @@ const TABLE = [
       {
         name: "skip-provider-preflight",
         description:
-          "do not run the provider preflight: no check pod checks the models and no MCP server's tool list is read, so a check that fails when the model or the server works does not stop the converge",
+          "do not run the provider preflight: no check pod checks the models or reads an MCP server's tool list, so a check that fails while the model or server works does not stop the converge",
       },
       NAMESPACE_FLAG,
       CONTEXT_FLAG,
@@ -216,7 +216,7 @@ const TABLE = [
     summary: "converge the current kube context to this instance",
     lines: [
       "reads each `git.credentials` token from the env var it names, after the Instance's .env",
-      "before the cluster work, sets the text between the jr2-docs markers in AGENTS.md to the docs index of the Kit version, and changes nothing outside them; a folder with no markers is left alone",
+      "before the cluster work, sets the text between the jr2-docs markers in AGENTS.md to the docs index of the Kit version, and nothing else; a folder with no markers is left alone",
     ],
     output: ACTIVITY,
     adrs: ["0019", "0051", "0069", "0072"],
@@ -263,7 +263,7 @@ const TABLE = [
     env: [],
     summary: "mirror the published kit images into a registry",
     lines: [
-      `the v${KIT_VERSION} kit images (harness, operator, orchestrator) from their canonical home, and the Custodian's pinned Envoy from its own, for a cluster whose \`kitRegistry\` names the registry`,
+      `the v${KIT_VERSION} kit images (harness, operator, orchestrator) from their canonical home, and the Custodian's pinned Envoy from its own, for a cluster whose \`kitRegistry\` names it`,
     ],
     output: RESULT,
     adrs: ["0044", "0059", "0069"],
@@ -449,7 +449,7 @@ const TABLE = [
     env: TARGET_ENV,
     summary: "send a Steering message to one Agent of a live run, or list the Agent slots that can hear one",
     lines: [
-      "an open Turn of the slot hears the message at its next step boundary; otherwise the slot's next Turn in the same Machine instance hears it",
+      "an open Turn of the slot hears it at its next step boundary; else, or when that Turn ends first, the slot's next Turn in its Machine instance hears it",
       "with a runId alone it prints the run's Agent slots, each with open and steerable; `jr2 status` prints the messages sent to the run, in `steering`",
       "needs the steer scope for the run's Workflow",
     ],
@@ -483,7 +483,7 @@ const TABLE = [
     summary:
       "print a Hook's log: each delivery that jr2 keeps (runs.retain), newest first, and what the door did with it",
     lines: [
-      "a line is a handshake, a delivery and its outcome, a repeat (seen), a payload that the parse refused (with zod's issues), a request that the kind could not read, or a follow-up post that failed",
+      "a line is a handshake, a delivery and its outcome, a repeat (seen), a payload the parse refused (with zod's issues), a request the kind could not read, or a failed follow-up post",
       "needs the Instance token: no scope opens it",
     ],
     output: RESULT,
@@ -508,7 +508,7 @@ const TABLE = [
     env: [],
     summary: "make a new value for a named Caller token; the old value stops working",
     lines: [
-      "the old value works until the Orchestrator reads the new digest, when the kubelet updates its mount: about a minute",
+      "returns when the Orchestrator has loaded the new digest (about a minute), so the old value is then refused; after 150s it fails, and the old value works until the load",
       "prints no value: `jr2 caller token <name>` prints the new one",
     ],
     output: ACTIVITY,
@@ -549,7 +549,7 @@ const TABLE = [
       "a shell in the Workspace as its Agents work: started by the Harness's spawner in the Agents' Landlock domain, with the Workspace's granted Stand-ins and its folder",
     lines: [
       "it never reaches the control Stand-in or a Stand-in that the Workspace does not grant",
-      "`jr2 workspace shell <ws> -- git status` runs one command, with no terminal: a Ctrl-C ends jr2, and the command gets the end of its input but no signal, so a command that does not end at the end of its input (a dev server) can run on",
+      "`jr2 workspace shell <ws> -- git status` runs one command with no terminal: Ctrl-C ends jr2, and the command gets the end of its input but no signal, so one that ignores it (a dev server) runs on",
     ],
     output: ACTIVITY,
     adrs: ["0009", "0076"],

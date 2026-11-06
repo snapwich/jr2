@@ -85,8 +85,6 @@ import {
   doorCompat,
   matchCredential,
   packAssembly,
-  configMapDigest,
-  MOUNTED_CONFIGMAPS,
   partsOf,
   LABEL_EFFECTOR_POD,
   LABEL_GIT_PUSH,
@@ -120,6 +118,7 @@ import {
   memoryBytes,
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
+import { awaitMounts, digestSecretsOf, mountedDigests, staleLine } from "../mount-wait.ts";
 import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
 import {
   assertEmulation,
@@ -794,7 +793,6 @@ export async function up(args: string[], io: Io): Promise<number> {
   // name with none gets one now. The Orchestrator gets only their digests. Read here and written
   // with the instance objects below, so a converge that stops before the apply writes no value.
   const callerTokens = await planCallerTokens(kube, Object.keys(config.callers?.tokens ?? {}), namespace, ctx);
-  for (const n of callerTokens.made) activity(io, `caller token "${n}": made — \`jr2 caller token ${n}\` prints it`);
   // The Instance Harness Custodian's credentials are not here (ADR-0076): its control token and
   // its secret Stand-ins ride its own Secret (`INSTANCE_HARNESS_CREDENTIALS`), whose Stand-ins its
   // Harness container mounts — so it must never be this one.
@@ -1050,6 +1048,14 @@ export async function up(args: string[], io: Io): Promise<number> {
   });
   activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
   await kube.apply({ manifest: instanceList, warn: (line) => activity(io, line), ...ctx });
+  // After the apply, so the line names a value that exists. It works only when the Orchestrator has
+  // loaded its digest, which the publish below waits for (ADR-0078); `converged` says so.
+  for (const n of callerTokens.made) {
+    activity(
+      io,
+      `caller token "${n}": made — \`jr2 caller token ${n}\` prints it, and it works when \`jr2 up\` says converged`,
+    );
+  }
   // A name that the config no longer declares loses its Secret, so its value stops working
   // (ADR-0078). Its digest went with the digests Secret above.
   for (const n of callerTokens.undeclared) {
@@ -1306,7 +1312,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     assembly,
     token: publishToken,
     force: values.force === true,
-    mounts: mountedDigests(instanceList),
+    mounts: mountedDigests((JSON.parse(instanceList) as { items: KubeObject[] }).items),
   });
   if (!published) return 1;
 
@@ -1360,25 +1366,12 @@ function mapRefs(map: Partial<ConvergedImages>): string[] {
 }
 
 /** What `GET /assembly` answers (ADR-0069), read loosely: this is the CLI's view of the door.
- * `mounts` is the digest of each ConfigMap the process reads through a mount. */
+ * `mounts` is the digest of each object the process reads through a mount (`MountsView`). */
 type AssemblyView = {
   current?: { hash?: string; kitVersion?: string } | null;
   mounts?: Record<string, string>;
   standing?: StandingView[];
 };
-
-/** The digest of each mounted ConfigMap's data in the List this converge applied (ADR-0069), by
- * name: what the Orchestrator must read from its mounts before the publish. */
-function mountedDigests(list: string): Record<string, string> {
-  const items = (JSON.parse(list) as { items: Array<KubeObject & { data?: Record<string, string> }> }).items;
-  const out: Record<string, string> = {};
-  for (const item of items) {
-    if (item.kind === "ConfigMap" && item.metadata.name in MOUNTED_CONFIGMAPS) {
-      out[item.metadata.name] = configMapDigest(item.data ?? {});
-    }
-  }
-  return out;
-}
 
 /**
  * The key of each `file:` Sandbox Image context (ADR-0037, ADR-0049, ADR-0069): the digest of its
@@ -1417,20 +1410,13 @@ type PublishBody = {
 };
 
 /**
- * How long a publish waits for the Orchestrator to read the ConfigMaps this converge wrote
- * (ADR-0038, ADR-0069). `jr2-images` and `jr2-held` are mounts, and the kubelet refreshes a mount
- * on its own period (about a minute by default). A publish rolls no pod, so until the refresh the
- * door's checks and the next provision read the previous data. The publish waits until the digests
- * `GET /assembly` reports are the ones this converge applied. Exported so a test can shorten it.
- */
-export const MAP_PROPAGATION = { budgetMs: 150_000, stepMs: 5_000 };
-
-/**
  * Publish the staged Assembly to the running Orchestrator (ADR-0069), over a port-forward of its
  * Service, as `resolveTarget` reaches it. `GET /assembly` first: when the current Assembly is this
  * one, at this Kit version, nothing is sent, so a steady-state converge publishes nothing. Then
  * `PUT /assembly` with the publish token from the Instance Secret — never from the environment.
- * Before the PUT, it waits until the Orchestrator reads the mounted ConfigMaps this converge wrote.
+ * Before the PUT, it waits until the Orchestrator reads the mounted ConfigMaps and the digests
+ * Secrets this converge wrote (`awaitMounts`). When nothing is sent, it still waits for the digests
+ * Secrets, so that `converged` means a Caller token or Hook secret that this converge wrote works.
  * `--force` sends the PUT even when the hashes agree; the door answers `unchanged` and replaces
  * nothing, because the hash names the bytes it already holds.
  *
@@ -1445,7 +1431,7 @@ async function publishAssembly(
     assembly: { hash: string; kitVersion: string; workflows: string[]; tar: Buffer };
     token: string;
     force: boolean;
-    /** The digest of each mounted ConfigMap this converge applied, by name. */
+    /** The digest of each mounted object this converge applied, by name (`mountedDigests`). */
     mounts: Record<string, string>;
   },
 ): Promise<boolean> {
@@ -1464,34 +1450,31 @@ async function publishAssembly(
       if (!seen.ok) throw new Error(`the Orchestrator answered GET /assembly with HTTP ${seen.status}`);
       return (await seen.json()) as AssemblyView;
     };
-    let seen = await view();
-    const current = seen.current ?? null;
-    if (!force && current?.hash === assembly.hash && current.kitVersion === assembly.kitVersion) {
-      activity(io, `assembly: ${assembly.hash} (current — publish skipped)`);
-      for (const s of Array.isArray(seen.standing) ? seen.standing : []) activity(io, standingLine(s));
-      return true;
-    }
+    const first = await view();
+    const current = first.current ?? null;
+    const skip = !force && current?.hash === assembly.hash && current.kitVersion === assembly.kitVersion;
     // The mounts first (ADR-0069): the door checks a `file:` digest against `jr2-images`, and a
-    // provision after the converge reads `jr2-held`. A process that reports no mounts is not
-    // deployed, and has nothing to wait for.
-    const stale = (v: AssemblyView): string[] =>
-      v.mounts ? Object.keys(opts.mounts).filter((name) => v.mounts![name] !== opts.mounts[name]) : [];
-    const deadline = Date.now() + MAP_PROPAGATION.budgetMs;
-    let said = false;
-    for (let names = stale(seen); names.length; names = stale(seen)) {
-      if (Date.now() >= deadline) {
-        activity(
-          io,
-          `refusing: after ${Math.round(MAP_PROPAGATION.budgetMs / 1000)}s the Orchestrator still reads an older ` +
-            `${names.join(", ")} from its mount — the kubelet has not refreshed it; nothing was published, and ` +
-            `the previous Assembly is still current. Run \`jr2 up\` again`,
-        );
-        return false;
-      }
-      if (!said) activity(io, `assembly: waiting for the kubelet to deliver ${names.join(", ")} to the Orchestrator`);
-      said = true;
-      await new Promise((ok) => setTimeout(ok, MAP_PROPAGATION.stepMs));
-      seen = await view();
+    // provision after the converge reads `jr2-held`. With no publish, only the digests Secrets
+    // (ADR-0078): a token that this converge wrote works only when the Orchestrator holds its digest.
+    const waited = await awaitMounts(io, {
+      seen: first,
+      view,
+      want: skip ? digestSecretsOf(opts.mounts) : opts.mounts,
+      prefix: "assembly",
+    });
+    if (waited.stale.length) {
+      const tokens = Object.keys(digestSecretsOf(opts.mounts)).some((n) => waited.stale.includes(n));
+      const consequence = [
+        ...(skip ? [] : ["nothing was published, and the previous Assembly is still current"]),
+        ...(tokens ? ["a Caller token or Hook secret that this converge wrote does not work yet"] : []),
+      ];
+      activity(io, `refusing: ${staleLine(waited.stale)}; ${consequence.join("; ")}. Run \`jr2 up\` again`);
+      return false;
+    }
+    if (skip) {
+      activity(io, `assembly: ${assembly.hash} (current — publish skipped)`);
+      for (const s of Array.isArray(waited.seen.standing) ? waited.seen.standing : []) activity(io, standingLine(s));
+      return true;
     }
     activity(
       io,

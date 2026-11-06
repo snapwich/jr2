@@ -19,7 +19,7 @@ import type { DispatchedBy } from "./registration.ts";
 export type RunSummary = {
   runId: string;
   workflow: string;
-  status: string;
+  status: ShownStatus;
   reason?: string;
   startedBy?: RunStarter;
   startedAt: string;
@@ -35,11 +35,34 @@ export type RunSummary = {
 /** A page of the listing: the runs, and the cursor of the next page when there is one. */
 export type RunPage = { runs: RunSummary[]; next?: string };
 
-/** The statuses of an ended run, as the store writes them (ADR-0065, ADR-0025, ADR-0030, ADR-0073). */
-export const ENDED_STATUSES: readonly string[] = ["done", "failed", "error", "cancelled", "stopped", "lost", "drifted"];
+/** How a run ended, as the store writes it (ADR-0065, ADR-0025, ADR-0030, ADR-0073, ADR-0074). */
+export type EndedStatus = "done" | "failed" | "error" | "cancelled" | "lost" | "drifted";
+
+/** The statuses of an ended run, as the store writes them. xstate's `stopped` is not one: it is
+ * mechanism, and a cancel ends the run `cancelled` (ADR-0025). */
+export const ENDED_STATUSES: readonly EndedStatus[] = ["done", "failed", "error", "cancelled", "lost", "drifted"];
 
 /** The status of a live run: the Machine's own word. */
 export const LIVE_STATUS = "active";
+
+/** A run status as jr2 shows it, on every route and feed: {@link LIVE_STATUS} while the run is
+ * live, else how it ended. The store's own `live` and xstate's `stopped` are never shown. */
+export type ShownStatus = typeof LIVE_STATUS | EndedStatus;
+
+/** A word that the store wrote for an ended run. */
+export function isEndedStatus(word: string): word is EndedStatus {
+  return (ENDED_STATUSES as readonly string[]).includes(word);
+}
+
+/**
+ * The shown status of a store row: `live` shows as {@link LIVE_STATUS}, and an ended word as
+ * itself. jr2 writes no other word. A row with another word is a defect in the store, so it shows
+ * as `error`: it is not live, and nothing can say how it ended.
+ */
+export function shownOfRow(word: string): ShownStatus {
+  if (word === "live") return LIVE_STATUS;
+  return isEndedStatus(word) ? word : "error";
+}
 
 /** How many runs a page holds when the query names no `limit`, and the most it can name. */
 export const RUNS_PAGE_DEFAULT = 50;
@@ -48,7 +71,7 @@ export const RUNS_PAGE_MAX = 500;
 /** The query of `GET /runs`, read. `ended` is the ended statuses to list, or `undefined` for none. */
 export type RunListQuery = {
   live: boolean;
-  ended?: readonly string[];
+  ended?: readonly EndedStatus[];
   workflow?: string;
   since?: string;
   after?: { startedAt: string; runId: string };
@@ -69,14 +92,14 @@ export function parseRunListQuery(
   now: number,
 ): RunListQuery | { error: string } {
   let live = false;
-  const ended = new Set<string>();
+  const ended = new Set<EndedStatus>();
   for (const word of (q.status ?? "live").split(",").map((w) => w.trim())) {
     if (word === "live" || word === LIVE_STATUS) live = true;
     else if (word === "ended") for (const s of ENDED_STATUSES) ended.add(s);
     else if (word === "all") {
       live = true;
       for (const s of ENDED_STATUSES) ended.add(s);
-    } else if (ENDED_STATUSES.includes(word)) ended.add(word);
+    } else if (isEndedStatus(word)) ended.add(word);
     else {
       return {
         error: `status "${word}" is not one jr2 lists — use live, ended, all, or a comma list of ${[LIVE_STATUS, ...ENDED_STATUSES].join(", ")}`,

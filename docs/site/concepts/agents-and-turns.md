@@ -248,6 +248,7 @@ Agent in a child Machine starts with the path of that Machine, such as `review/r
 slots of a run.
 
 - When a Turn of the slot is open, the Harness adds the message to the Turn before the next model request.
+- When the Turn ends with a pick before its next model request, the message waits for the next Turn of the slot.
 - When no Turn of the slot is open, the message waits for the next Turn of the slot in the same Machine instance.
 - When that Machine instance ends first, the message is not delivered. The run records it as `not-delivered`.
 

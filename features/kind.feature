@@ -948,8 +948,7 @@ Feature: a workspace() run drives a real Sandbox on kind
   Rule: jr2 up makes each named Caller token, and a rotation ends the old value
     ADR-0078. A named token's value is in a Secret of its own, which `jr2 caller token` reads over
     the kube API; the Orchestrator holds only its digest, through a mount that it reads again when
-    it changes. So a rotation rolls no pod: the old value stops working when the kubelet updates the
-    mount, about a minute, and from then the new value works. The CLI on a kube context is the
+    it changes. So a rotation rolls no pod, and `jr2 caller rotate` returns only when the Orchestrator has read the new digest: from then the old value is refused and the new value works. The CLI on a kube context is the
     Caller token/instance, on behalf of the user that a SelfSubjectReview names.
 
     Scenario: the CLI is token/instance for the kube user, a named token is its own Caller, and a rotated value is refused
@@ -959,6 +958,6 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I read the Caller token "ci"
       Then the Caller token "ci" acts as "token/ci"
       When I rotate the Caller token "ci"
-      Then the old value of the Caller token "ci" is refused within 240 seconds
+      Then the old value of the Caller token "ci" is refused within 5 seconds
       When I read the Caller token "ci"
       Then the Caller token "ci" acts as "token/ci"

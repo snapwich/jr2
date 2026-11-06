@@ -6,11 +6,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rename, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
+import { configMapDigest } from "../src/mount-digest.ts";
 import { DISPATCHED_BY_HEADER, KEY_ONLY_HEADER } from "../src/registration.ts";
 import type { Scopes } from "../src/config.ts";
 import {
@@ -371,6 +372,34 @@ test("the digests file is read again when it changes, so a rotation needs no res
     assert.equal(await auth(old), undefined, "and the old value stopped working");
   } finally {
     watched.stop();
+  }
+});
+
+test("the digests watcher reports the content it loaded, as `jr2 up` digests what it applied, and keeps it through a bad write (ADR-0078)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-callers-"));
+  const path = join(dir, "digests.json");
+  const watched = watchCallerDigests(path, { intervalMs: 60_000 });
+  try {
+    assert.equal(watched.loaded(), undefined, "no file read: nothing loaded");
+    const text = JSON.stringify({ ci: callerTokenDigest(mintCallerToken()) });
+    await writeFile(path, text);
+    // Not read yet: the report is what the authenticator holds, not what the file holds.
+    assert.equal(watched.loaded(), undefined);
+    watched.reload();
+    // The same form as a Secret's `stringData`, keyed by the file's name.
+    assert.equal(watched.loaded(), configMapDigest({ "digests.json": text }));
+
+    // A write seen half done keeps the digests read last, and so the digest of their content.
+    await writeFile(path, "{ half");
+    watched.reload();
+    assert.equal(watched.loaded(), configMapDigest({ "digests.json": text }));
+
+    await rm(path);
+    watched.reload();
+    assert.equal(watched.loaded(), undefined, "an absent file holds no digest");
+  } finally {
+    watched.stop();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

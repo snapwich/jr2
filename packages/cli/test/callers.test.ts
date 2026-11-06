@@ -14,6 +14,7 @@ import { cancelledByActivity, startedByActivity } from "../src/commands/status.t
 import { callerDigestsJson, callerTokenObjects, CALLER_TOKEN_KEY, LABEL_CALLER_TOKEN } from "../src/deploy.ts";
 import { planCallerTokens } from "../src/caller-tokens.ts";
 import { resolveTarget } from "../src/instance.ts";
+import { MAP_PROPAGATION, mountedDigests, type AppliedObject } from "../src/mount-wait.ts";
 import type { KubeAdmin, KubeObject, KubePort } from "../src/kube.ts";
 import type { Io } from "../src/output.ts";
 import { linkKit } from "./_kit.ts";
@@ -174,13 +175,34 @@ test("jr2 caller with no subcommand or no name is a usage error", async () => {
   }
 });
 
+/**
+ * An Orchestrator behind a port-forward whose `GET /assembly` reports, by GET number (0-based), the
+ * digests it has loaded: what `jr2 caller rotate` waits on.
+ */
+function loadingOrchestrator(mounts: (n: number) => Record<string, string>) {
+  const seen = { gets: 0, forwards: 0, closed: 0 };
+  const kube: KubePort = {
+    ...kubeAs(undefined),
+    portForward: async () => {
+      seen.forwards++;
+      return { url: "http://fwd.test", close: () => void seen.closed++ };
+    },
+  };
+  const fetch = async (url: string | URL | Request) => {
+    assert.equal(String(url), "http://fwd.test/assembly");
+    return Response.json({ current: null, held: [], mounts: mounts(seen.gets++) });
+  };
+  return { seen, io: { kube, fetch: fetch as Io["fetch"] } };
+}
+
 test("jr2 caller rotate writes a new value, then the digests of every token, and prints no value", async () => {
   const root = await mkInstance();
   try {
     const cluster = new SecretCluster();
     cluster.put("ci", "jr2c_old");
     cluster.put("bridge", "jr2c_bridge");
-    const io = mkIo({ cwd: root, kubeAdmin: cluster.admin });
+    const orch = loadingOrchestrator(() => mountedDigests([cluster.applied[1]! as AppliedObject]));
+    const io = mkIo({ cwd: root, kubeAdmin: cluster.admin, ...orch.io });
     assert.equal(await main(["caller", "rotate", "ci"], io), 0);
     assert.deepEqual(io.out, [], "rotate prints no value");
 
@@ -196,8 +218,48 @@ test("jr2 caller rotate writes a new value, then the digests of every token, and
       bridge: sha256("jr2c_bridge"),
       ci: sha256(fresh),
     });
-    assert.match(io.err.join(""), /rotated — the old value stops working .* about a minute/);
+    assert.match(
+      io.err.join(""),
+      /caller token "ci": rotated — the old value no longer works; `jr2 caller token ci` prints the new one/,
+    );
+    assert.equal(orch.seen.closed, orch.seen.forwards, "the port-forward is closed");
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("jr2 caller rotate returns only when the Orchestrator has loaded the new digest, so the old value no longer works (ADR-0078)", async () => {
+  const root = await mkInstance();
+  const saved = { ...MAP_PROPAGATION };
+  MAP_PROPAGATION.stepMs = 1;
+  try {
+    const cluster = new SecretCluster();
+    cluster.put("ci", "jr2c_old");
+    // The first two reads see the digests from before the rotation; the third sees the new ones.
+    const before = mountedDigests([callerTokenObjects({ ci: "jr2c_old" }, (name) => ({ name }))[1] as AppliedObject]);
+    const orch = loadingOrchestrator((n) => (n < 2 ? before : mountedDigests([cluster.applied[1]! as AppliedObject])));
+    const io = mkIo({ cwd: root, kubeAdmin: cluster.admin, ...orch.io });
+    assert.equal(await main(["caller", "rotate", "ci"], io), 0);
+    assert.equal(orch.seen.gets, 3, "it asked until the new digest was loaded");
+    const said = io.err.join("");
+    assert.match(said, /caller token "ci": waiting for the kubelet to deliver jr2-caller-digests to the Orchestrator/);
+    assert.ok(said.indexOf("waiting") < said.indexOf("rotated —"), "rotated is said after the wait");
+
+    // A digest that is never loaded fails the command: the new value is written, the old still works.
+    MAP_PROPAGATION.budgetMs = 5;
+    const stuck = new SecretCluster();
+    stuck.put("ci", "jr2c_old");
+    const never = loadingOrchestrator(() => before);
+    const io2 = mkIo({ cwd: root, kubeAdmin: stuck.admin, ...never.io });
+    assert.equal(await main(["caller", "rotate", "ci"], io2), 1);
+    assert.equal(stuck.applied.length, 2, "the new value and the digests are written");
+    assert.match(
+      io2.err.join(""),
+      /caller token "ci": rotated, but after 0s the Orchestrator still reads an older jr2-caller-digests from its mount — the kubelet has not refreshed it; the old value still works until it does\. `jr2 caller token ci` prints the new one/,
+    );
+    assert.equal(never.seen.closed, never.seen.forwards, "the port-forward is closed");
+  } finally {
+    Object.assign(MAP_PROPAGATION, saved);
     await rm(root, { recursive: true, force: true });
   }
 });

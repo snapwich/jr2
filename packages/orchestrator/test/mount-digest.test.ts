@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
-import { configMapDigest, readMountDigest, readMountDigests } from "../src/mount-digest.ts";
+import { configMapDigest, loadedDigests, readMountDigest, readMountDigests } from "../src/mount-digest.ts";
 import { mkStore } from "./_fixtures.ts";
 
 /** A ConfigMap mount the way the kubelet writes one: a timestamped dir, `..data`, a link per key. */
@@ -51,4 +51,15 @@ test("GET /assembly reports the mount digests when the process has mounts, and n
   const bare = await createApp(host).request("/assembly");
   assert.equal(((await bare.json()) as { mounts?: unknown }).mounts, undefined);
   await host.close();
+});
+
+test("the digests Secrets report what their watchers loaded; one with no watcher or no file is left out (ADR-0078)", () => {
+  assert.deepEqual(
+    loadedDigests({
+      "jr2-caller-digests": { loaded: () => "c1" },
+      "jr2-hook-digests": { loaded: () => undefined },
+      other: undefined,
+    }),
+    { "jr2-caller-digests": "c1" },
+  );
 });

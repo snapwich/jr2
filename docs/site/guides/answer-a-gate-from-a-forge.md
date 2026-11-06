@@ -49,6 +49,8 @@ read:
 - `until` gives one event of `delivers` from the read's output, or `undefined` for "not yet".
 - When the run takes the event, the look stops until the Gate opens again. The run's feed shows `looked`. A looked event
   has the Gate as its Sender and no Caller.
+- The `http` Effect of the look is an Effect, so the secret that it names is an entry of the `secrets` list, as
+  `github-token` is in the example's `jr2.config.ts`. Put its value in `.env` as `GITHUB_TOKEN`.
 
 A state that goes back to its own Gate must change the `meta`, for example to a new `sha`. If not, the look reads the
 same verdict again.
@@ -78,11 +80,11 @@ Each secret that a Hook names is an entry of the `secrets` list. For a `mac` Hoo
 places the secret in the Instance Effector alone, as it places an
 [Effect secret](../reference/glossary.md#effect-secret), and it converges the Instance Effector for the Hook. For a
 `token` Hook, `jr2 up` writes the sha-256 of the secret into the Secret `jr2-hook-digests`, which the Orchestrator
-mounts. The Orchestrator reads it again when it changes, so a new value needs no restart. Until the kubelet updates the
-mount, about one minute, the old value continues to work. A kind that posts a follow-up, such as the reply to a Slack
-click, declares the hosts of the post. `jr2 up` adds these hosts to the Instance Effector's list of targets, with no
-secret. The output of `jr2 up` names the Hook as `hook forge`, in the line of the secret and in the line of the Instance
-Effector.
+mounts. The Orchestrator reads it again when it changes, so a new value needs no restart. The kubelet updates the mount
+in about one minute, and `jr2 up` waits for it before it says `converged`. A kind that posts a follow-up, such as the
+reply to a Slack click, declares the hosts of the post. `jr2 up` adds these hosts to the Instance Effector's list of
+targets, with no secret. The output of `jr2 up` names the Hook as `hook forge`, in the line of the secret and in the
+line of the Instance Effector.
 
 When a delivery comes, the door does these steps in this sequence:
 
