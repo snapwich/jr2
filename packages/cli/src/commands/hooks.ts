@@ -1,5 +1,5 @@
 // `jr2 hooks <name>` (ADR-0011): a Hook's log, as `GET /hooks/:name` gives it — each delivery of
-// the last week, newest first, and what the door did with it: a handshake, the outcome of a
+// the time that jr2 keeps it (`runs.retain`), newest first, and what the door did with it: a handshake, the outcome of a
 // delivery, a repeat, a payload that the parse refused, a request that the kind could not read, or
 // a follow-up post that failed.
 // The route takes the Instance token alone, so on a kube context the CLI reads it, as for every

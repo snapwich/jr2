@@ -120,6 +120,8 @@ test("admits the run over a port built from input.endpoint and ledgers the admis
     instanceId: "inst-42",
     agent: "coder",
     endpoint: "http://sandbox-7.harness.local:8080",
+    // The slot rides it too: the kept conversation's route checks it (ADR-0023, ADR-0076).
+    slot: "root/coder",
     // The Turn's task rides the ledger: a restore drops `prompt` (ADR-0062).
     task: "do the thing",
   });
@@ -804,6 +806,7 @@ test("no-signal: a completed turn with no menu call is re-prompted on the SAME i
       instanceId: "inst-42",
       agent: "coder",
       endpoint: "http://sandbox-7.harness.local:8080",
+      slot: "root/coder",
     },
     "the nudge's admission is ledgered like any other",
   );
@@ -983,6 +986,8 @@ test("runaway: a FRESH turn is rerolled ONCE — fresh conversation, IDENTICAL p
     instanceId: "inst-42-r1",
     agent: "coder",
     endpoint: "http://sandbox-7.harness.local:8080",
+    // The slot rides it too: the kept conversation's route checks it (ADR-0023, ADR-0076).
+    slot: "root/coder",
     // The Turn's task rides the ledger: a restore drops `prompt` (ADR-0062).
     task: "do the thing",
   });

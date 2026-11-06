@@ -1132,6 +1132,34 @@ test("runMachine: the run's doc draws the Chart's states under the body, live an
   assert.equal(await second.runMachine("nope"), undefined);
 });
 
+for (const end of ["done", "cancelled"] as const) {
+  test(`runMachine: a Chart run that ended ${end} keeps its bound Machine (ADR-0069)`, async () => {
+    const { ports, def } = rig();
+    const store = await mkStore();
+    const host = newHost({ store });
+    host.register(def());
+    const runId = await started(host, SIMPLE);
+    await waitFor(() => ports.coder.admits.length === 1);
+    if (end === "done") host.sendToAgent(ports.coder.admits[0]!.instanceId, { type: "submit" });
+    else await host.cancel(runId);
+    await waitFor(() => host.status(runId) === undefined);
+
+    // Another Machine under the name, on another host: the ended run is still drawn on its own.
+    const second = newHost({ store });
+    second.register(rig({ lendGuard: false }).def());
+    const read = await second.read(runId);
+    assert.equal(read?.status, end);
+    const doc = await second.runMachine(runId);
+    assert.equal(doc?.chartsNotDrawn, undefined);
+    const body = doc!.root.states.find((s) => s.key === "run")!.children.find((c) => c.src === "body")!;
+    assert.deepEqual(
+      body.machine?.root.states.map((s) => s.key),
+      ["draft", "shipped"],
+      "the kept doc has the Chart's states under the body",
+    );
+  });
+}
+
 test("invokingMachine consults boundMachineOf: an Agent a Chart's state invokes resolves the compiled Machine", async () => {
   const { ports, def } = rig();
   const host = newHost({ store: await mkStore() });

@@ -31,7 +31,7 @@
 # the very first version is published by hand with a token (npm attaches a trusted publisher only
 # to a package that exists), the trusted publisher is configured on each, and the token
 # revoked. The same holds for each NEW public package: its first version is published by hand before
-# the first tag that holds it, or that tag's stage of it fails (`@jr2/hooks`, ADR-0078).
+# the first tag that holds it, or that tag's stage of it fails.
 #
 # Then `pages` (ADR-0072): the docs site of the same tree, to GitHub Pages. It needs `release`, so
 # a tag whose gate fails publishes no docs; it does not wait for the npm approval, which happens

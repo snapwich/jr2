@@ -1,5 +1,6 @@
 // The Console shell (ADR-0032): nav over a master–detail main — the fleet rail on the left, the
-// selected workflow's Machine in the center, the Attention/Activity drawer on the right. One pure
+// selected workflow's Machine in the center, the Attention/Activity drawer on the right, and under
+// those two the bottom drawer with the selected run's conversations (ADR-0023). One pure
 // render over the store plus the bootstrap's working state; Preact's diff replaces main.js's
 // hand-rolled memo()/paint() machinery (ADR-0034). Which drawer tab the reader chose is view state
 // like the zoom — component state, never the store's.
@@ -8,6 +9,7 @@ import { Fragment, h, type JSX } from "preact";
 import { useState } from "preact/hooks";
 import {
   may,
+  olderAssemblyMark,
   selectedRun,
   selectedRunFailure,
   selectedRunStarter,
@@ -23,6 +25,7 @@ import { Nav } from "./nav.ts";
 import { Fleet } from "./fleet.ts";
 import { Drawer, type DrawerTab } from "./drawer.ts";
 import { MachinePane } from "./machine-pane.ts";
+import { BottomDrawer } from "./bottom-drawer.ts";
 
 /**
  * What the bootstrap (main.ts) hands the components: every write path in one object, so no
@@ -41,8 +44,6 @@ export type AppApi = {
   deliverGate(runId: string, gate: string, event: string, body: Record<string, unknown>): Promise<string | null>;
   /** POST CANCEL to a run (ADR-0002); same contract as {@link AppApi.startRun}. */
   cancelRun(runId: string): Promise<string | null>;
-  /** The run's conversation list (`GET /runs/:id/agents`), or the refusal's text. */
-  steerTargets(runId: string): Promise<AgentLine[] | string>;
   /** POST one Steering message to an Agent slot of a run; same contract as {@link AppApi.startRun}. */
   steer(runId: string, agent: string, text: string): Promise<string | null>;
   /** Keep a typed credential (empty clears it) and ask `GET /whoami` what it may do. */
@@ -56,10 +57,6 @@ export type AppApi = {
   zoomReset(): void;
   zoomFit(): void;
 };
-
-/** One Agent slot of a run, as `GET /runs/:id/agents` lists it (ADR-0002): whether it has an open
- *  Turn, and whether a Caller may steer it. */
-export type AgentLine = { agent: string; open: boolean; steerable: boolean };
 
 /** The center pane's working state — the machine doc in hand (or why there is none). Fetch
  *  bookkeeping like main.ts's doc cache, deliberately NOT store belief: the doc is structure the
@@ -103,21 +100,31 @@ export function App(props: {
     h(
       "main",
       null,
-      h(Fleet, { store, schemas, api }),
-      h(MachinePane, {
-        view,
-        run,
-        selectedNodeId: store.selectedNodeId,
-        gates: selectedRunGates(store),
-        waiting: selectedRunWaiting(store),
-        held: selectedRunHeld(store),
-        failure: selectedRunFailure(store),
-        starter: selectedRunStarter(store),
-        canCancel: live && may(store, "cancel", run.workflow),
-        canSteer: live && may(store, "steer", run.workflow),
-        api,
-      }),
-      h(Drawer, { store, chosenTab, onChooseTab: setChosenTab, api }),
+      h(
+        "div",
+        { id: "work" },
+        h(Fleet, { store, schemas, api }),
+        h(
+          "div",
+          { id: "upper" },
+          h(MachinePane, {
+            view,
+            run,
+            selectedNodeId: store.selectedNodeId,
+            gates: selectedRunGates(store),
+            waiting: selectedRunWaiting(store),
+            held: selectedRunHeld(store),
+            failure: selectedRunFailure(store),
+            starter: selectedRunStarter(store),
+            older: store.selectedRunId ? olderAssemblyMark(store, store.selectedRunId) : null,
+            canCancel: live && may(store, "cancel", run.workflow),
+            api,
+          }),
+          h(Drawer, { store, chosenTab, onChooseTab: setChosenTab, api }),
+        ),
+      ),
+      // Full width under the rail, the Machine and the right drawer (ADR-0032).
+      h(BottomDrawer, { store, api }),
     ),
   );
 }

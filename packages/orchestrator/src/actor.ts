@@ -129,6 +129,14 @@ export type AgentAdmission = {
    */
   agent?: string;
   endpoint?: string;
+  /**
+   * The pod and the slot of the conversation (ADR-0076) — stamped by the ACTOR at ledger time, like
+   * `agent`. The kept conversation's route takes entries for this conversation only from this pod's
+   * control token, for this slot (ADR-0023). It reads the ledger and not the live registration,
+   * because the ledger outlives the Turn and the run.
+   */
+  sandbox?: string;
+  slot?: string;
 };
 
 /**
@@ -853,6 +861,8 @@ export function agentActorWith(
           instanceId: currentIid,
           agent: input.agentName,
           endpoint,
+          ...(sandbox === undefined ? {} : { sandbox }),
+          slot,
           ...(input.turnId === undefined ? {} : { turnId: input.turnId }),
         },
         delivered,

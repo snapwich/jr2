@@ -94,12 +94,15 @@ export async function reviewLoop(): Promise<Record<string, unknown>> {
  * (`chart` is `chartSchema`, so it is a one-shot door), a lent Agent `coder` and a lent guard
  * `underLimit`, and an Open body `body` that allows the stub model with `"none"` or `"write"`.
  * `lendCoder: false` drops `coder` from the lent set, as a publish that stops lending it does;
- * `door: false` leaves the door with no Chart field. Every import is an absolute URL, so the tree
+ * `door: false` leaves the door with no Chart field; `gate: true` lends the kit's Gate. Every import is an absolute URL, so the tree
  * may sit anywhere.
  */
-export function chartedSrc(opts: { id?: string; lendCoder?: boolean; door?: boolean } = {}): string {
+export function chartedSrc(opts: { id?: string; lendCoder?: boolean; door?: boolean; gate?: boolean } = {}): string {
+  const gate = opts.gate ? ", gate: true" : "";
   const lends =
-    opts.lendCoder === false ? `{ guards: ["underLimit"] }` : `{ agents: ["coder"], guards: ["underLimit"] }`;
+    opts.lendCoder === false
+      ? `{ guards: ["underLimit"]${gate} }`
+      : `{ agents: ["coder"], guards: ["underLimit"]${gate} }`;
   const door =
     opts.door === false
       ? `z.object({ endpoint: z.string(), task: z.string() })`

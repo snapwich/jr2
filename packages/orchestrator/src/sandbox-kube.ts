@@ -45,6 +45,8 @@
 //   volume        runtime     the kit's Harness image, as an `image` volume → /opt/jr2
 //   volume        conversations  an emptyDir → /run/jr2/conversations, the Harness container's alone
 //                             (ADR-0031: a Harness restart inside the pod keeps its conversations)
+//   volume        shell       an emptyDir → /run/jr2/shell, the Harness container's alone: the
+//                             socket of a person's shell (`jr2 workspace shell`, ADR-0076)
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
 //   container     harness     the Sandbox Image, command overridden, /work + /opt/jr2 mounted
@@ -105,6 +107,8 @@ import {
   CONVERSATIONS_DIR,
   CONVERSATIONS_DIR_ENV,
   CONVERSATIONS_VOLUME,
+  SHELL_DIR,
+  SHELL_VOLUME,
   HELD_MOUNT,
   CA_CONFIGMAP,
   heldManifestKey,
@@ -115,6 +119,15 @@ import {
   PRIORITY_CLASS_SANDBOX,
   REPOS_MOUNT,
   sandboxCustodianConfigMap,
+  ANNOTATION_HOLD,
+  ANNOTATION_KEEPALIVE,
+  ANNOTATION_WORKSPACE_PATH,
+  HOLD_HELD,
+  HOLD_RELEASED,
+  LABEL_SANDBOX_RUN,
+  LABEL_SANDBOX_WORKFLOW,
+  LABEL_SANDBOX_WORKSPACE,
+  workspaceLabel,
 } from "./names.ts";
 import {
   CONFIGMAPS,
@@ -770,6 +783,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       name: string;
       runId: string;
       workflow: string;
+      path: string;
       image?: string;
       user?: string;
       workGroup?: number;
@@ -802,8 +816,16 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       metadata: {
         name: req.name,
         namespace: ns,
-        // The run↔workspace link `jr2 ls` groups by (ADR-0009/0012) — readable without the host.
-        labels: { "jr2.dev/run": req.runId, "jr2.dev/workflow": req.workflow },
+        // The run↔workspace link the `jr2 workspace` verbs read (ADR-0009/0012), without the host:
+        // the run, the Workflow and a selector form of the path as labels, the exact path as an
+        // annotation. The hold mark is `held` from this first write (ADR-0021); the Lease writes it
+        // again with each renewal, and `released` when it stops for good.
+        labels: {
+          [LABEL_SANDBOX_RUN]: req.runId,
+          [LABEL_SANDBOX_WORKFLOW]: req.workflow,
+          ...(req.path ? { [LABEL_SANDBOX_WORKSPACE]: workspaceLabel(req.path) } : {}),
+        },
+        annotations: { ...(req.path ? { [ANNOTATION_WORKSPACE_PATH]: req.path } : {}), [ANNOTATION_HOLD]: HOLD_HELD },
       },
       spec: {
         // The Sandbox Image, unmodified (ADR-0037) — the user's tools, its own USER and HOME, and
@@ -888,6 +910,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           // that Workspace is `Lost` (ADR-0021) — and mounted below into the Harness container
           // ALONE: the User Container must not read an Agent's history.
           { name: CONVERSATIONS_VOLUME, emptyDir: {} },
+          // The shell socket's folder (ADR-0076): the Harness listens there for `jr2 workspace
+          // shell`, in the Harness container ALONE, where no process that it confines makes a file.
+          { name: SHELL_VOLUME, emptyDir: {} },
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,
           // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
@@ -902,6 +927,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           { name: "work", mountPath: WORK_ROOT },
           RUNTIME_VOLUME_MOUNT,
           { name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR },
+          { name: SHELL_VOLUME, mountPath: SHELL_DIR },
           ...seat.homeMount,
           ...custodian.harnessMounts,
         ],
@@ -1448,11 +1474,33 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     leaseIntervalMs,
 
     async renew(name) {
-      // A write, and only that (ADR-0021): the stamp the operator's idle GC reads. What the
-      // workspace IS comes from the watch, never from this answer.
+      // A write, and only that (ADR-0021): the stamp the operator's idle GC reads, and the hold
+      // mark, written again so a restored run's Lease marks the Sandbox `held`. What the workspace
+      // IS comes from the watch, never from this answer.
       await kube().patch(SANDBOXES, ns, name, {
-        metadata: { annotations: { "jr2.dev/keepalive": new Date().toISOString() } },
+        metadata: { annotations: { [ANNOTATION_KEEPALIVE]: new Date().toISOString(), [ANNOTATION_HOLD]: HOLD_HELD } },
       });
+    },
+
+    async releaseHold(name) {
+      // The Lease stopped for good (ADR-0021): no run holds this Sandbox now, and `jr2 workspace rm`
+      // may remove it. A write, and only that.
+      await kube().patch(SANDBOXES, ns, name, { metadata: { annotations: { [ANNOTATION_HOLD]: HOLD_RELEASED } } });
+    },
+
+    async releaseRun(runId) {
+      // A restore ended this run without hosting it (ADR-0021): no Lease runs, so each of its
+      // Sandboxes gets the mark here. The list is the cluster's, not the watch's cache, which may
+      // not have listed yet at boot.
+      const list = await kube().list<SandboxObject>(SANDBOXES, ns, { labelSelector: `${LABEL_SANDBOX_RUN}=${runId}` });
+      await Promise.all(
+        list.items.flatMap((sb) => {
+          const name = sb.metadata?.name;
+          return name
+            ? [kube().patch(SANDBOXES, ns, name, { metadata: { annotations: { [ANNOTATION_HOLD]: HOLD_RELEASED } } })]
+            : [];
+        }),
+      );
     },
 
     continuity(name, listener) {

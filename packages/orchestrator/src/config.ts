@@ -20,10 +20,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import type { Hook } from "@jr2/hooks";
-import { hookParts, isHook, kindsById } from "@jr2/hooks/door";
+import type { Hook } from "./hook-kinds/index.ts";
+import { hookParts, isHook, kindsById } from "./hook-kinds/door.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import { assertSize, type Size } from "./size.ts";
+import { periodMs } from "./duration.ts";
 
 // ------------------------------------------------------------------------------------------------
 // `git.credentials` (ADR-0051): how the cluster authenticates to a Repo, and the fence.
@@ -572,14 +573,44 @@ export type ScopeGrant = "all" | readonly string[];
 export type Scopes = {
   /** Start a run. */
   start?: ScopeGrant;
-  /** Answer a Gate, and read a run's open Gates without its context. */
-  answer?: ScopeGrant;
+  /** Answer a Gate, and read a run's open Gates without its context. A list item
+   * `{ workflow, gates }` opens only the Gates that it names, by invoke id (see {@link GateGrant}). */
+  answer?: AnswerGrant;
   /** Cancel a run. */
   cancel?: ScopeGrant;
   /** Read a run's state: its status, its context and its feed. */
   read?: ScopeGrant;
   /** Send a Steering message to an Agent of a run. */
   steer?: ScopeGrant;
+};
+
+/**
+ * The Gates that the `answer` scope opens (ADR-0078): `"all"`, or a list in which each item is a
+ * Workflow name, which opens every Gate of that Workflow, or a {@link GateGrant}, which opens only
+ * the Gates that it names: `["triage", { workflow: "deploy", gates: ["approve"] }]`.
+ */
+export type AnswerGrant = "all" | readonly (string | GateGrant)[];
+
+/**
+ * Some Gates of one Workflow, in the `answer` scope (ADR-0078). A Gate's name is its invoke id: the
+ * static name that it has in the Machine that invokes it, and the id that its events carry as their
+ * sender (ADR-0011). That is the invoke `id` that the author wrote, or else the key path of its
+ * gated state below the root of that Machine (`body.humanReview`). One name opens every Gate of the
+ * Workflow with that id, in each child of a Pool too.
+ *
+ * `jr2 up` refuses an item for a Workflow that the Assembly does not have, a name that no Machine
+ * of the Workflow has, and a name that Gates in more than one Machine of the Workflow have. A Chart
+ * wrapper's item (`{ workflow: "plan", gates }`) opens those Gates in each Chart of `plan` too, and
+ * `jr2 up` checks its names against the wrapper's Machines and its Chart files. A runtime Chart is
+ * not in the Assembly, so `jr2 up` cannot check its Gates: a name that no Machine and no Chart file
+ * of the wrapper has, and an item for a runtime Chart (`plan/weekly` with no Chart file), are
+ * warnings, not refusals.
+ */
+export type GateGrant = {
+  /** The Workflow, as a bare name in the list names it. */
+  workflow: string;
+  /** The Gates' names. */
+  gates: readonly string[];
 };
 
 /** The name of one scope of a Caller (ADR-0078). */
@@ -607,9 +638,9 @@ export type CallersConfig = {
   // The name is part of a Secret's name (`jr2 up`), so it is a DNS label. `instance` is the
   // Instance token's Caller name, so no named token takes it.
   /** The named Caller tokens, by name. A name is lowercase letters, digits and `-`, at most 40
-   * characters. It starts with a letter and ends with a letter or digit. The name `instance` is
-   * the Instance token's, and the config load refuses it. A name that the config no longer
-   * declares stops working at the next `jr2 up`. */
+   * characters, from a letter to a letter or digit. The config load refuses `instance`, the
+   * Instance token's name. A name that the config no longer declares stops working at the next
+   * `jr2 up`. */
   tokens?: Readonly<Record<string, CallerToken>>;
   /** The identity providers whose JWTs are Callers. See {@link JwtIssuer}. Two entries with one
    * `issuer` are refused. */
@@ -662,6 +693,44 @@ export type JwtIssuer = {
    * tokens) has no login page. */
   login?: boolean;
 };
+
+/**
+ * How long jr2 keeps an ended run, and the volume that keeps it (ADR-0065). When the config loads,
+ * a bad field is refused: `<file> at runs.<field>: <problem>`.
+ *
+ * @example
+ * ```ts
+ * import { defineConfig } from "@jr2/orchestrator";
+ *
+ * export default defineConfig({ runs: { retain: "90d", volume: "20Gi" } });
+ * ```
+ */
+export type RunsConfig = {
+  /** How long jr2 keeps an ended run: its row, its conversations and the hook log. A number and
+   * `m`, `h`, `d` or `w`, such as `"90d"`. At least `"1h"`, with no upper limit. A live run is
+   * never removed. Default: `"30d"`. */
+  retain?: `${number}${"m" | "h" | "d" | "w"}`;
+  /** The size of the Orchestrator's state volume claim: a number and a unit, such as `"5Gi"` or
+   * `"500Mi"` (a number with no unit is refused). Default: `"5Gi"` for a
+   * new claim; unset, `jr2 up` keeps the size of a claim that exists. A larger size grows the
+   * claim where its StorageClass allows expansion, else `jr2 up` refuses it. A smaller size is
+   * refused: Kubernetes never makes a claim smaller. */
+  volume?: string;
+};
+
+/** `runs.retain` when the config sets none (ADR-0065). */
+export const RUNS_RETAIN_DEFAULT = "30d";
+/** The shortest `runs.retain` (ADR-0065). */
+export const RUNS_RETAIN_MIN_MS = 3_600_000;
+/** The size of a new state volume claim when the config sets no `runs.volume` (ADR-0065). */
+export const STATE_VOLUME_DEFAULT = "5Gi";
+
+/** How long an ended run is kept, in milliseconds: `runs.retain`, or the default. The config load
+ * refuses a bad value, so here a bad one reads as the default. */
+export function retainMs(runs: RunsConfig | undefined): number {
+  const ms = runs?.retain === undefined ? undefined : periodMs(runs.retain);
+  return ms !== undefined && ms >= RUNS_RETAIN_MIN_MS ? ms : periodMs(RUNS_RETAIN_DEFAULT)!;
+}
 
 /**
  * The shape of `jr2.config.ts`: the deployment facts of an Instance, which a Machine cannot carry.
@@ -744,9 +813,9 @@ export type JR2Config = {
    * service. A Hook's value comes from its kind's constructor, which the config imports:
    * `github({ secret: secret("GH_HOOK") })`, `gitlab({ secret: secret("GL_HOOK"), may })`,
    * `discord({ publicKey: "…" })`. `may.answer` names the Workflows whose Gates the Hook may answer,
-   * every Workflow by default. A Hook never starts a run. A name is lowercase letters, digits and
-   * `-`, at most 40 characters, starts with a letter and ends with a letter or digit. When the config
-   * loads, a bad entry is refused: `<file> at hooks.<name>: <problem>`. Default: none. */
+   * every Workflow by default. A Hook never starts a run. A name has the rule of a Caller token's
+   * name. When the config loads, a bad entry is refused: `<file> at hooks.<name>: <problem>`.
+   * Default: none. */
   hooks?: Readonly<Record<string, Hook>>;
   // Reach for tools (ADR-0079): a name of the author's, so an Agent's definition and an Effect name
   // a server without its url or its secret.
@@ -756,6 +825,9 @@ export type JR2Config = {
    * of the Sandbox Image, its `args` and a `timeout`. An Agent names a server in its `mcp` list.
    * Default: none. See {@link McpServer}. */
   mcp?: Readonly<Record<string, McpServer>>;
+  // The history (ADR-0065): how long an ended run is kept, and the volume that keeps it.
+  /** How long ended runs are kept, and the volume size. Default: `{ retain: "30d", volume: "5Gi" }`. */
+  runs?: RunsConfig;
   // Deployment-varying — resolve from env (ADR-0019).
   /** The image registry prefix to which `jr2 up` pushes the images that it builds, such as
    * `registry.example.com/team`. It changes between deployments, so read it from `process.env`
@@ -856,17 +928,77 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   if (mod.default.cors !== undefined) checkCors(mod.default.cors, file);
   if (mod.default.hooks !== undefined) checkHooks(mod.default.hooks, file);
   if (mod.default.mcp !== undefined) checkMcp(mod.default.mcp, mod.default.secrets ?? [], file);
+  if (mod.default.runs !== undefined) checkRuns(mod.default.runs, file);
   return mod.default;
 }
 
-const ScopeGrantShape = z.union([z.literal("all"), z.array(z.string().min(1)).min(1)]);
+const RUNS_HINT = 'runs is { retain?, volume? }, such as { retain: "30d", volume: "5Gi" } (ADR-0065)';
+const RETAIN_FORM = /^\d+(\.\d+)?[mhdw]$/;
+// A unit is required: a bare number is bytes to Kubernetes, so "5" for "5Gi" is a claim of 5 bytes.
+const VOLUME_FORM = /^\d+(\.\d+)?(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)$/;
+
+/** `runs`' SHAPE (ADR-0065): `retain` a duration of at least 1h, `volume` a storage quantity. */
+export function checkRuns(runs: unknown, where: string): void {
+  if (typeof runs !== "object" || runs === null || Array.isArray(runs)) {
+    throw new Error(`${where} at runs: expected an object — ${RUNS_HINT}`);
+  }
+  for (const key of Object.keys(runs)) {
+    if (key !== "retain" && key !== "volume") throw new Error(`${where} at runs.${key}: not a field — ${RUNS_HINT}`);
+  }
+  const { retain, volume } = runs as { retain?: unknown; volume?: unknown };
+  if (retain !== undefined) {
+    const ms = typeof retain === "string" && RETAIN_FORM.test(retain) ? periodMs(retain) : undefined;
+    if (ms === undefined) {
+      throw new Error(
+        `${where} at runs.retain: ${JSON.stringify(retain)} is not a duration — a number and m, h, d or w, such as "30d" (ADR-0065)`,
+      );
+    }
+    if (ms < RUNS_RETAIN_MIN_MS) {
+      throw new Error(
+        `${where} at runs.retain: ${JSON.stringify(retain)} is shorter than 1h — jr2 keeps an ended run for at least 1h (ADR-0065)`,
+      );
+    }
+  }
+  if (
+    volume !== undefined &&
+    (typeof volume !== "string" || !VOLUME_FORM.test(volume) || !(Number.parseFloat(volume) > 0))
+  ) {
+    throw new Error(
+      `${where} at runs.volume: ${JSON.stringify(volume)} is not a storage quantity — a number and a unit, such as "5Gi" or "500Mi" (ADR-0065)`,
+    );
+  }
+}
+
+/** A list item of a scope other than `answer`: a Workflow name. An item that names Gates is refused
+ * with the reason: only `answer` acts on one Gate, and the other scopes act on a whole run. */
+const workflowItem = (scope: Scope) =>
+  z.unknown().superRefine((item, ctx) => {
+    if (typeof item === "string" && item !== "") return;
+    ctx.addIssue({
+      code: "custom",
+      message:
+        typeof item === "object" && item !== null && "gates" in item
+          ? `only "answer" can name single Gates; "${scope}" names whole Workflows, because it acts on a whole run`
+          : "a Workflow name is a string that is not empty",
+    });
+  });
+const ScopeGrantShape = (scope: Scope) => z.union([z.literal("all"), z.array(workflowItem(scope)).min(1)]);
+const GateGrantShape = z
+  .object({
+    workflow: z.string().min(1, "a Workflow name is a string that is not empty"),
+    gates: z
+      .array(z.string().min(1, "a Gate name is a string that is not empty"))
+      .min(1, "gates names at least one Gate"),
+  })
+  .strict();
+const AnswerGrantShape = z.union([z.literal("all"), z.array(z.union([z.string().min(1), GateGrantShape])).min(1)]);
 const ScopesShape = z
   .object({
-    start: ScopeGrantShape.optional(),
-    answer: ScopeGrantShape.optional(),
-    cancel: ScopeGrantShape.optional(),
-    read: ScopeGrantShape.optional(),
-    steer: ScopeGrantShape.optional(),
+    start: ScopeGrantShape("start").optional(),
+    answer: AnswerGrantShape.optional(),
+    cancel: ScopeGrantShape("cancel").optional(),
+    read: ScopeGrantShape("read").optional(),
+    steer: ScopeGrantShape("steer").optional(),
   })
   .strict();
 const CallersShape = z
@@ -935,7 +1067,8 @@ function checkCallers(callers: unknown, where: string): void {
 const CALLERS_HINT =
   "callers is { tokens?: { <name>: { may: <scopes> } }, issuers?: [{ issuer, audience, jwks?, " +
   "claims?: { name?, shown?, groups? }, groups: { <value>: <scopes> }, login? }] }, where <scopes> is " +
-  '{ start?, answer?, cancel?, read?, steer? }, each scope "all" or a list of Workflow names (ADR-0078)';
+  '{ start?, answer?, cancel?, read?, steer? }, each scope "all" or a list of Workflow names, and an answer ' +
+  "item may be { workflow, gates: [<Gate name>] } (ADR-0078)";
 
 /** The name of a Hook (ADR-0078): the last segment of `POST /hooks/:name`, the rule of a Caller
  * token's name. */

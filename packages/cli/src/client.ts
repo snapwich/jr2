@@ -15,15 +15,24 @@ import {
   type HookRefusedMarker,
   type PoolMarker,
   type DispatchedBy,
+  type GateInboxEntry,
   type MachineDoc,
   type PlacingMarker,
   type RepoStatus,
   type RunChild,
+  type RunPage,
+  type RunSummary,
   type RunStarter,
   type RunWaiting,
   type Scopes,
 } from "@jr2/orchestrator/internal";
 import { parseSSE } from "./sse.ts";
+
+/** The query of `GET /runs` (ADR-0009): `status` is `live` (the default), `ended`, `all`, or a comma
+ * list; `since` a duration back from now or an ISO-8601 time; `cursor` a page's `next`. */
+export type RunsQuery = { status?: string; workflow?: string; since?: string; cursor?: string; limit?: number };
+
+export type { RunPage, RunSummary };
 
 /** A run's current observable state — mirrors the orchestrator's `RunStatus` (run-host.ts). */
 export type RunStatus = {
@@ -116,6 +125,21 @@ export type HookLog = { hook: string; declared: boolean; lines: HookLogLine[] };
 /** A run-control event posted to a live run (ADR-0013): CANCEL is the vocabulary that is left.
  * `keep` leaves a cancelled run's Workspaces instead of destroying them (ADR-0025). */
 export type RunEvent = { type: string; keep?: boolean };
+
+/** One kept conversation, as `GET /runs/:runId/conversations` lists it (ADR-0023). `slot` is the
+ * Agent slot from the run's admission ledger. */
+export type KeptConversationView = {
+  agent: string;
+  slot?: string;
+  instanceId: string;
+  open: boolean;
+  bytes: number;
+  cut: boolean;
+  swept?: string;
+};
+
+/** One entry of a kept conversation (ADR-0023): one body of the print, its label as `kind`. */
+export type ConversationEntryView = { id: string; seq: number; at: string; agent: string; kind: string; text: string };
 
 /** One Agent slot of a live run, as `GET /runs/:runId/agents` lists it (ADR-0002). */
 export type RunAgentView = { agent: string; open: boolean; steerable: boolean };
@@ -257,10 +281,42 @@ export class JR2Client {
     return (await this.json(res, "/workflows/:name/runs")) as { runId: string; instanceId: string; resumed?: true };
   }
 
-  /** `GET /runs` — every live run's status. */
-  async list(): Promise<RunStatus[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/runs`, { headers: this.headers() });
-    return (await this.json(res, "/runs")) as RunStatus[];
+  /** `GET /runs` — one page of the run listing (ADR-0009): live runs when `query` names no
+   * `status`, newest start first, and the cursor of the next page when there is one. */
+  async runs(query: RunsQuery = {}): Promise<RunPage> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
+    const qs = params.size ? `?${params}` : "";
+    const res = await this.fetchImpl(`${this.baseUrl}/runs${qs}`, { headers: this.headers() });
+    const page = (await this.json(res, "/runs")) as RunPage;
+    if (typeof page !== "object" || page === null || !Array.isArray(page.runs)) {
+      throw new Error("GET /runs: the answer is not a page of runs");
+    }
+    return page;
+  }
+
+  /** `GET /gates` — the Gate inbox (ADR-0011): the open Gates of every live run that this Caller
+   * may answer, oldest first, of one Workflow when `workflow` names it. */
+  async gates(workflow?: string): Promise<GateInboxEntry[]> {
+    const qs = workflow !== undefined ? `?${new URLSearchParams({ workflow })}` : "";
+    const res = await this.fetchImpl(`${this.baseUrl}/gates${qs}`, { headers: this.headers() });
+    const body = (await this.json(res, "/gates")) as { gates?: unknown };
+    if (typeof body !== "object" || body === null || !Array.isArray(body.gates)) {
+      throw new Error("GET /gates: the answer is not a list of Gates");
+    }
+    return body.gates as GateInboxEntry[];
+  }
+
+  /** Every run that `query` selects: each page of `GET /runs`, in turn, until a page has no `next`. */
+  async allRuns(query: Omit<RunsQuery, "cursor"> = {}): Promise<RunSummary[]> {
+    const runs: RunSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.runs({ ...query, ...(cursor !== undefined ? { cursor } : {}) });
+      runs.push(...page.runs);
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return runs;
   }
 
   /** `GET /repos` — whether the instance has a data plane, and every Repo resource as the cluster
@@ -383,10 +439,63 @@ export class JR2Client {
           return;
         }
         // Any other frame (a Turn marker — ADR-0023 — or a kind this CLI predates) is skipped, not
-        // misread as a status: `jr2 logs -f` decides "settled" off `status.status`, and a marker
+        // misread as a status: `jr2 watch` decides "settled" off `status.status`, and a marker
         // parsed as a status would end the follow mid-run.
       }
       if (settled) return;
+    }
+  }
+
+  /** `GET /runs/:runId/conversations` — the run's kept conversations (ADR-0023), the first first. */
+  async conversations(runId: string): Promise<KeptConversationView[]> {
+    const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/conversations`, {
+      headers: this.headers(),
+    });
+    return (await this.json(res, "/runs/:runId/conversations")) as KeptConversationView[];
+  }
+
+  /** `GET /runs/:runId/conversations/:instanceId` — one page of a kept conversation's entries after
+   * `after` (-1: from the first). */
+  async conversationEntries(
+    runId: string,
+    instanceId: string,
+    after: number,
+    limit = 1000,
+  ): Promise<ConversationEntryView[]> {
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(instanceId)}` +
+        `?after=${after}&limit=${limit}`,
+      { headers: this.headers() },
+    );
+    return (await this.json(res, "/runs/:runId/conversations/:instanceId")) as ConversationEntryView[];
+  }
+
+  /** `GET /runs/:runId/conversations/:instanceId/events` — follow one kept conversation: its entries
+   * after `after`, then each new one, until the server ends the feed (the conversation is not open,
+   * or it is cut or swept). A feed that ends with no `end` frame is opened again after the last
+   * entry read. */
+  async *followConversation(runId: string, instanceId: string, after: number): AsyncGenerator<ConversationEntryView> {
+    let last = after;
+    for (;;) {
+      const res = await this.fetchImpl(
+        `${this.baseUrl}/runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(instanceId)}/events` +
+          `?after=${last}`,
+        { headers: this.headers({ accept: "text/event-stream" }) },
+      );
+      if (!res.ok) {
+        await this.json(res, "/runs/:runId/conversations/:instanceId/events");
+        return;
+      }
+      if (!res.body) return;
+      for await (const frame of parseSSE(res.body)) {
+        if (frame.event === "entry") {
+          const entry = JSON.parse(frame.data) as ConversationEntryView;
+          if (entry.seq > last) last = entry.seq;
+          yield entry;
+        } else if (frame.event === "end") {
+          return;
+        }
+      }
     }
   }
 

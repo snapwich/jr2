@@ -53,7 +53,7 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import type { EventDef } from "@jr2/agent-protocol";
-import type { KindHooks } from "@jr2/hooks";
+import type { KindHooks } from "./hook-kinds/index.ts";
 import type { CallerRecord } from "./callers.ts";
 import { poolWorker } from "./dispatch-effect.ts";
 import type { DispatchOutput, EffectLogic } from "./effect.ts";
@@ -373,7 +373,7 @@ export type StandingPoolSpec<T, I> = {
   source: SourceSpec<T, {}> | SourceSpec<T> | ReadSourceSpec<T, {}> | ReadSourceSpec<T> | PushSourceSpec<T>;
   /** The id of an item, and the KEY of its run in the slot's Workflow (ADR-0071): every Pool, every
    * hand-over and every `jr2 run` that gives this key to that Workflow gets the same run while its
-   * row lives — while it is live, and a week after it ends. */
+   * row lives — while it is live, and for `runs.retain` after it ends. */
   itemId: (item: T) => string;
   /** The most LIVE runs at once that this Pool dispatched. You must choose it. */
   cap: number;
@@ -603,7 +603,7 @@ function refusal(worker: unknown, spec: Record<string, unknown>): string | undef
     if (spec.standing !== true) {
       return (
         "a Pool of runs stands: give it `standing: true`. A Pool of runs that a Caller starts and that ends is not " +
-        "offered: its itemId is a key that lives a week past the run, so a second batch in that week does no work"
+        "offered: its itemId is a key that lives for runs.retain past the run, so a second batch in that time does no work"
       );
     }
     if (effect.wait !== true) {
@@ -761,7 +761,7 @@ export function pool<TWorker extends AnyStateMachine, TInput = unknown>(
  * ```ts
  * import { z } from "zod";
  * import { carry, dispatch, pool, skip, source } from "@jr2/orchestrator";
- * import type {} from "@jr2/hooks/gitlab";
+ * import type {} from "@jr2/orchestrator/hooks/gitlab";
  *
  * const failed = z.object({ sha: z.string() });
  *

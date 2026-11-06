@@ -60,24 +60,28 @@ yet, so it has nothing to look inside.
 
 Nothing renews the [Lease](../reference/glossary.md#lease) of a Workspace that you keep. The
 [operator](../concepts/architecture.md#the-operator) deletes its Sandbox 30 minutes after the last renewal. To delete
-the Sandbox before then, find its name. The label `jr2.dev/run` takes the full run id that `jr2 send` printed:
+the Sandbox before then, find its handle with [`jr2 workspace ls`](../reference/cli.md#workspace-ls). After the cancel,
+its `RUN` column shows `released`:
 
 ```sh
-kubectl -n <namespace> get sandboxes -l jr2.dev/run=<run id>
+jr2 workspace ls <run id>
 ```
 
-[Look inside a Sandbox](look-inside-a-sandbox.md#find-the-sandbox) shows the output of this command. Then give the name
-to this command:
+[Look inside a Sandbox](look-inside-a-sandbox.md#find-the-sandbox) tells what each column shows. Then give the handle in
+the `WORKSPACE` column to [`jr2 workspace rm`](../reference/cli.md#workspace-rm):
 
 ```sh
-kubectl -n <namespace> delete sandbox <sandbox>
+jr2 workspace rm <workspace>
 ```
+
+<!-- output: not run -->
 
 ```text
-sandbox.core.jr2.dev "ws-723cf388-x-12-1k4kghb" deleted from <namespace> namespace
+→ context <context> / namespace <namespace>
+removed Workspace 723cf388/x:12 (ws-723cf388-x-12-1k4kghb)
 ```
 
-Your Sandbox name is different.
+Your handle and your Sandbox name are different. `jr2 workspace rm` refuses the Sandbox of a run that is live.
 
 ## Read how the run ended
 

@@ -81,9 +81,9 @@ starts nothing. For a Pool of runs, an item that started a run has one record of
 the Pool counts its key as known for the rest of its run's life: else the read that its own settle starts would claim it
 again at once, with no pause and no end, and one item that the callee's door refuses would hold the Orchestrator's event
 loop. The next run of the Pool (a hand-over or a resume) tries such an item again, so a publish that fixes the door or
-the `itemInput` takes it. The Pool keeps no week of settled keys of its own: it keeps the run and the status of each
-item that ended in its own run's life, which the bound of a standing run limits, and which a `next` reads as `settled`.
-A `next` that gives an item whose run ended before gets that run (`existing`), whose wait ends at once, so the item
+the `itemInput` takes it. The Pool keeps no settled keys past its own run's life: it keeps the run and the status of
+each item that ended in that life, which the bound of a standing run limits, and which a `next` reads as `settled`. A
+`next` that gives an item whose run ended before gets that run (`existing`), whose wait ends at once, so the item
 settles and is not asked for again.
 
 tk's claim actor is one adapter; GLOSSARY.md's **Work Source** reframes as _the Source adapter for tickets_, and the
@@ -116,12 +116,12 @@ the service's data to an item is written once.
 
 A Pool whose worker is a `dispatch` slot keys each item's run by `itemId`, scoped to the callee Workflow
 ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)): every Pool, every hand-over and every `jr2 run` that
-gives the same key for that Workflow gets the same run while its row lives, live and a week after it ends
-([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)). `cap` counts the live runs that this Pool
-dispatched, so its slot must say `wait: true`: with `started` alone, the Pool cannot know when a run ends. A run that
-ends in any way frees its slot. A run that ends `failed`, `error`, `cancelled`, `lost` or `drifted`, or a start that the
-door refuses, is a failure of its item, and never the Pool's `error`: the run is not the Pool's child. A cancel of the
-Pool never cancels its runs (ADR-0071), and `customize(pool, { agents })` reaches nothing in them
+gives the same key for that Workflow gets the same run while its row lives, live and for `runs.retain` after it ends
+([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md)). `cap` counts the live runs that
+this Pool dispatched, so its slot must say `wait: true`: with `started` alone, the Pool cannot know when a run ends. A
+run that ends in any way frees its slot. A run that ends `failed`, `error`, `cancelled`, `lost` or `drifted`, or a start
+that the door refuses, is a failure of its item, and never the Pool's `error`: the run is not the Pool's child. A cancel
+of the Pool never cancels its runs (ADR-0071), and `customize(pool, { agents })` reaches nothing in them
 ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)). The Pool spawns its slot with the item's id as
 the spawn id, and the Effect sends that id as the key, not its ledger row id. The run's `dispatchedBy` gains `key`, and,
 for a carried item, `hook: { name, delivery, onBehalfOf? }`, so `jr2 status` prints which Pool, key and delivery started
@@ -163,11 +163,12 @@ run is still live (`status: "live"`) is sent again under its key, so the wait fo
   across that step (its key lookup awaits the store) goes on to the new run's Source, so the door never claims a
   delivery that no run holds. jr2 keeps the **head** of each standing Workflow in a table of the store: its newest run,
   when that run started, how many counted runs in a row ended, and why it is paused. jr2 writes the head in the same
-  step as the start. The weekly sweep ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)) never
-  deletes the run that a head names, so a paused Pool keeps its held items for as long as it is paused. A Workflow that
-  a publish removes, or that no longer stands, gets no hand-over: its live run holds its Assembly and runs on, as any
-  run does (ADR-0069), until a person cancels it. A standing run has no Caller: its record's `startedBy` is
-  `{ kind: "jr2", why }`, with `why` one of `boot`, `publish`, `hand-over` and `resume`
+  step as the start. The sweep of rows older than `runs.retain`
+  ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md)) never deletes the run that a head
+  names, so a paused Pool keeps its held items for as long as it is paused. A Workflow that a publish removes, or that
+  no longer stands, gets no hand-over: its live run holds its Assembly and runs on, as any run does (ADR-0069), until a
+  person cancels it. A standing run has no Caller: its record's `startedBy` is `{ kind: "jr2", why }`, with `why` one of
+  `boot`, `publish`, `hand-over` and `resume`
   ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)).
 - **A cancel is a pause.** `jr2 send <run> --event CANCEL` of a standing run ends that run `cancelled`
   ([ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) and pauses its Workflow: jr2 starts it again at no boot and no
@@ -200,8 +201,8 @@ run is still live (`status: "live"`) is sent again under its key, so the wait fo
 - `standing: true` on a Pool that is not the top Machine of its Workflow: jr2 keeps one run for each standing Workflow,
   so the Workflow is the Pool. The fix is to move the Pool to its own file in `workflows/`.
 - A Pool of runs that does not stand. A batch of runs (a Pool of runs that a Caller starts and that ends) is not offered
-  now: its `itemId` is a key that lives a week past the run, so a second batch in that week does no work. To add it
-  later does not break anything.
+  now: its `itemId` is a key that lives for `runs.retain` past the run, so a second batch in that time does no work. To
+  add it later does not break anything.
 - A Pool of runs whose `dispatch` slot has no `wait: true`, or has a `target`: a foreign worker is not designed.
 - A Pool of runs with no `cap`. The author must choose it; a Pool of child Machines keeps its default of 1.
 - A push Source on a Pool that ends when it drains, which would end `drained` at once. The types refuse it too.
@@ -212,9 +213,10 @@ callee: `sentry → alerts → triage`. It warns when two standing Pools dispatc
 issue with two labels can take a slot in each, and the caps add.
 
 **The callee must end the level.** A read Source re-reads a level, such as "the open issues with the label `jr2`". When
-the callee's run ends and the label stays, the key keeps the item from a second run while the run's row lives. A week
-after the run ended, the row is swept, and the next read starts the item again. So the callee (or the person) removes
-the label. A drifted callee holds its key for a week, and nothing starts that item again without a person.
+the callee's run ends and the label stays, the key keeps the item from a second run while the run's row lives.
+`runs.retain` after the run ended (30 days by default), the row is swept, and the next read starts the item again. So
+the callee (or the person) removes the label. A drifted callee holds its key for `runs.retain`, and nothing starts that
+item again without a person.
 
 ## Terminal triage is three-valued, surfaced as status
 
@@ -279,5 +281,5 @@ promise, because the default tier has no Instance Effector. The `@kind` tier pro
 - **Two factories over one Source port**: `pool()` for children and batches, and a second factory for standing Pools of
   runs. Rejected: the split removes three rows from the table of differences, and costs a GLOSSARY term for the second
   factory, which is the Intake again.
-- **A batch Pool of runs now.** Rejected for now, as above: no scenario needs it, and its key makes a second batch in a
-  week do nothing. It adds later without a break.
+- **A batch Pool of runs now.** Rejected for now, as above: no scenario needs it, and its key makes a second batch
+  within `runs.retain` do nothing. It adds later without a break.

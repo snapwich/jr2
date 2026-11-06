@@ -94,16 +94,16 @@ Feature: a Machine lends its parts to a Chart
     Scenario: a runtime Chart is put, listed, run, kept across a restart, and deleted
       When I put the "review-loop" Chart as "charted/loop"
       Then the put answers 201 with origin "runtime"
-      And `jr2 runs` lists "charted/loop (chart)" under its wrapper
+      And `jr2 workflows` lists "charted/loop (chart)" under its wrapper
       And the listing shows "charted/loop" inside its wrapper's entry, not beside it
       When I start "charted/loop" against the stub harness with a task
       Then the run's body is in state "draft"
       When the host-booted orchestrator restarts
-      Then `jr2 runs` lists "charted/loop (chart)" under its wrapper
+      Then `jr2 workflows` lists "charted/loop (chart)" under its wrapper
       And the run's body is in state "draft"
       When I delete the Chart "charted/loop"
       Then the answer is 204
-      And `jr2 runs` does not list "charted/loop"
+      And `jr2 workflows` does not list "charted/loop"
       When the Chart's "coder" picks "submit"
       Then the run's body is in state "review"
 
@@ -125,7 +125,7 @@ Feature: a Machine lends its parts to a Chart
       And the orchestrator is serving
       When I add the "review-loop" Chart as the Chart file "charted/sample" and publish
       Then the publish lists "charted/sample"
-      And `jr2 runs` lists "charted/sample (chart file)" under its wrapper
+      And `jr2 workflows` lists "charted/sample (chart file)" under its wrapper
       When I start "charted/sample" against the stub harness with a task
       Then the run's body is in state "draft"
       When I publish "charted" lending no "coder"

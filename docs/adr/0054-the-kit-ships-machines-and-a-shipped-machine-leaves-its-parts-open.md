@@ -81,9 +81,9 @@ the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
   name, or the secret's name.
 - **Open widens to a hooked Gate's look, which only warns.** A package writes the Hook handlers of its Gate slots for
   each forge that it supports, because a forge's payload is public, so a handler is never Open. It imports the Hook kind
-  of each forge that it hears, for the payload types, and it has `@jr2/hooks` as a peer dependency
-  ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). Which Hooks of those
-  kinds exist is the Instance's config. A look needs a url and a token, so a package leaves `look: open`, and the
+  of each forge that it hears, for the payload types, and it has `@jr2/orchestrator`, which holds the kinds, as a peer
+  dependency ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). Which Hooks of
+  those kinds exist is the Instance's config. A look needs a url and a token, so a package leaves `look: open`, and the
   composer binds it once, to a look or `"none"`, with `customize(machine, { gates: { <slot>: { look } } })`, which can
   also add, replace or remove a handler by kind and event key ([ADR-0011](0011-workflow-defined-events.md)). An Open
   look that nobody binds is the one Open part that `jr2 up` does not refuse: it warns, as it warns about a hooked Gate

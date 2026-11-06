@@ -4,7 +4,7 @@
 // `KubePort` is what target resolution consumes (tests inject a fake), `kubectlKube` is the real
 // one, shelling out to the same `kubectl` a human debugging the cluster would use.
 
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 
@@ -54,6 +54,21 @@ export type KubePort = {
     context?: string;
   }): Promise<{ url: string; close: () => void }>;
 };
+
+/**
+ * A long-lived kubectl child (a port-forward) ends with this process. Node does not end a child
+ * when it exits, so a verb that `process.exit`s, or that a signal handler ends, leaves the child
+ * alive, and it holds an API-server stream. Here the child is killed on this process's `exit`.
+ * Returns the kill, which is also what `close` calls; the hook goes when the child closes.
+ */
+export function endsWithProcess(child: ChildProcess): () => void {
+  const kill = () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  };
+  process.once("exit", kill);
+  child.once("close", () => process.removeListener("exit", kill));
+  return kill;
+}
 
 const ctxArgs = (context?: string): string[] => (context ? ["--context", context] : []);
 
@@ -1169,13 +1184,14 @@ export const kubectlKube: KubePort = {
         `service/${service}`,
         `:${port}`,
       ]);
+      const kill = endsWithProcess(child);
       let out = "";
       let err = "";
       // The forward is long-lived by design, so the bound is on its FIRST BYTE, not on the child:
       // silence here is the same unreachable cluster the Secret read just survived, and a verb that
       // waits forever for the announcement has only moved the hang one line down.
       const gaveUp = setTimeout(() => {
-        child.kill();
+        kill();
         reject(new Error(`kubectl port-forward: no answer after ${REACH_BUDGET_MS / 1000}s`));
       }, REACH_BUDGET_MS);
       gaveUp.unref?.();
@@ -1190,7 +1206,7 @@ export const kubectlKube: KubePort = {
       child.stdout.on("data", (d: Buffer) => {
         out += d.toString();
         const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out);
-        if (m) done({ url: `http://127.0.0.1:${m[1]}`, close: () => child.kill() });
+        if (m) done({ url: `http://127.0.0.1:${m[1]}`, close: kill });
       });
       child.stderr.on("data", (d: Buffer) => (err += d.toString()));
       child.on("error", (e) => failed(new Error(`kubectl port-forward failed: ${e.message}`)));

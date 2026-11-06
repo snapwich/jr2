@@ -36,7 +36,7 @@ import {
   type HeldLookups,
 } from "./held-secrets.ts";
 import { isStdioServer, mcpTimeoutMs, type JR2Config, type McpRemoteServer } from "./config.ts";
-import { hookParts } from "@jr2/hooks/door";
+import { hookParts } from "./hook-kinds/door.ts";
 import { needsASlot } from "./effect.ts";
 import { declaredPushKinds, pushRefusal } from "./git-push.ts";
 import { INSTANCE_HARNESS_HELD_POD } from "./names.ts";

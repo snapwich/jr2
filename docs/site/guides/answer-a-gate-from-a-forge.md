@@ -17,17 +17,14 @@ key. It is the same Gate as `src: "gate"`: it has the same id, the same events, 
 - `look`: a read of the fact that the Gate waits for, with an `http` Effect that is marked `idempotent: true`.
 
 The example is the [Workflow](../reference/glossary.md#workflow) `review`. A run waits for a review of one commit of one
-pull request. Install `@jr2/hooks`, which has the `github` kind, in your [Instance](../reference/glossary.md#instance):
-
-```sh
-npm install @jr2/hooks
-```
+pull request. The `github` kind is `@jr2/orchestrator/hooks/github`, so your
+[Instance](../reference/glossary.md#instance) installs nothing more.
 
 Save the file as `workflows/review.ts`:
 
 <<< @/examples/guides/answer-a-gate-from-a-forge/review.ts
 
-The `import type {} from "@jr2/hooks/github"` line gives the handlers their types: the event key
+The `import type {} from "@jr2/orchestrator/hooks/github"` line gives the handlers their types: the event key
 `pull_request_review.submitted` and its payload. A key that no kind in scope gives does not compile. A handler reads
 only the fields that the kind's schema names.
 
@@ -104,7 +101,8 @@ The answer is the outcome:
 `ignored` counts the open Gates whose handler gave `undefined`. A Gate whose handler throws, or gives an event that the
 run does not take now, is in `refused`, and the run's feed shows `hook-refused`. The run continues.
 
-To see what the door did, print the Hook's log. It keeps each delivery for a week, newest first:
+To see what the door did, print the Hook's log. It keeps each delivery for `runs.retain` (30 days by default), newest
+first:
 
 ```sh
 jr2 hooks forge

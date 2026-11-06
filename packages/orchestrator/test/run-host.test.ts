@@ -329,7 +329,15 @@ test("the admission is ledgered host-side and persisted beside the snapshot (ADR
   assert.equal(typeof turnId, "string", "the mapper mints a Turn ID");
   assert.deepEqual(
     agents?.[iid],
-    { ...minted, task: "do work", instanceId: iid, agent: "coder", endpoint: "http://harness.invalid", turnId },
+    {
+      ...minted,
+      task: "do work",
+      instanceId: iid,
+      agent: "coder",
+      endpoint: "http://harness.invalid",
+      slot: "root/coder",
+      turnId,
+    },
     "the durable handle rides RunBlob.agents",
   );
 });
@@ -409,6 +417,7 @@ test("a second host restores an in-flight run and re-attaches by persisted admis
         instanceId: iid,
         agent: "coder",
         endpoint: "http://harness.invalid",
+        slot: "root/coder",
         turnId: clientsA.get(instanceId)!.admitted!.turnId,
       },
     ],
@@ -567,6 +576,89 @@ test("every save stamps the Assembly the run started under, and a publish does n
   host.register({ ...codingDef(new Map()), assembly: "bbbbbbbbbbbb" });
   await host.cancel(runId);
   assert.equal(((await store.load(runId))!.snapshot as { assembly?: string }).assembly, "aaaaaaaaaaaa");
+});
+
+test("an ended run keeps the Machine it ran on: the route draws it after a publish changes the Workflow (ADR-0069)", async () => {
+  const store = await mkStore();
+  const host = new RunHost({ store });
+  host.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
+  const first = await host.start("coding");
+  const second = await host.start("coding");
+  await tick();
+  const ranOn = (await host.runMachine(first.runId))!.root.states.map((s) => s.key);
+  await host.cancel(first.runId);
+  await host.cancel(second.runId);
+
+  // A publish puts another Machine under the name; the ended runs still draw their own.
+  const other = setup({}).createMachine({ id: "coding", initial: "elsewhere", states: { elsewhere: {} } });
+  const later = new RunHost({ store });
+  later.register({ name: "coding", machine: other, provide: () => ({}), assembly: "bbbbbbbbbbbb" });
+  assert.deepEqual(
+    later.machine("coding")!.root.states.map((s) => s.key),
+    ["elsewhere"],
+  );
+  const kept = await later.runMachine(first.runId);
+  assert.equal(kept?.workflow, "coding");
+  assert.deepEqual(
+    kept!.root.states.map((s) => s.key),
+    ranOn,
+    "the Machine the run ran on, not the current one",
+  );
+  assert.deepEqual(
+    (await later.runMachine(second.runId))!.root.states.map((s) => s.key),
+    ranOn,
+  );
+  assert.deepEqual(
+    (store as unknown as { db: { prepare(sql: string): { get(): { n: number } } } }).db
+      .prepare("SELECT COUNT(*) AS n FROM run_machines")
+      .get().n,
+    1,
+    "two runs of one structure keep one copy",
+  );
+});
+
+test("two Machines that differ only in a guard and a description keep two copies, each run its own (ADR-0069)", async () => {
+  const store = await mkStore();
+  const machineOf = (words: string, guard: string) =>
+    setup({ guards: { [guard]: () => false } }).createMachine({
+      id: "words",
+      initial: "a",
+      states: { a: { description: words, on: { go: { target: "b", guard } } }, b: {} },
+    });
+  const host = new RunHost({ store });
+  host.register({
+    name: "words",
+    machine: machineOf("old words", "oldGuard"),
+    provide: () => ({}),
+    assembly: "aaaaaaaaaaaa",
+  });
+  const first = await host.start("words");
+  await tick();
+  await host.cancel(first.runId);
+  host.register({
+    name: "words",
+    machine: machineOf("NEW words", "newGuard"),
+    provide: () => ({}),
+    assembly: "bbbbbbbbbbbb",
+  });
+  const second = await host.start("words");
+  await tick();
+  await host.cancel(second.runId);
+
+  const later = new RunHost({ store });
+  const firstDoc = JSON.stringify(await later.runMachine(first.runId));
+  const secondDoc = JSON.stringify(await later.runMachine(second.runId));
+  assert.match(firstDoc, /old words/);
+  assert.match(firstDoc, /oldGuard/);
+  assert.match(secondDoc, /NEW words/);
+  assert.match(secondDoc, /newGuard/);
+  assert.equal(
+    (store as unknown as { db: { prepare(sql: string): { get(): { n: number } } } }).db
+      .prepare("SELECT COUNT(*) AS n FROM run_machines")
+      .get().n,
+    2,
+    "one copy for each distinct doc",
+  );
 });
 
 test("a blob that names no Assembly is drift: saved under no Assembly (ADR-0069)", async () => {

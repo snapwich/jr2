@@ -10,7 +10,7 @@ Put the programs that your [Agents](../reference/glossary.md#agent) and
 A [Workspace](../reference/glossary.md#workspace) runs its body in a [Sandbox](../reference/glossary.md#sandbox): a pod
 of its own. The Sandbox Image is the image of the pod's `harness` container. The Agent's
 [Working tools](../reference/glossary.md#working-tools) run in that container, and so do the `command` Effects and the
-shell that you get with `kubectl exec`. Thus a program that is in the image is a program that they can run.
+shell that you get with `jr2 workspace shell`. Thus a program that is in the image is a program that they can run.
 
 Use this table to choose:
 
@@ -153,11 +153,17 @@ an sshd for a person. This image gives a person a shell beside the Agent:
 
 Save it as `workflows/shell/Dockerfile`. Name it in the `workspace()` options with
 `user: import.meta.resolve("./shell")`. `user` takes the same two forms as `image`, and `jr2 up` builds a `file:`
-context in the same way. Open the shell with `kubectl -n <namespace> exec -it <sandbox> -c user -- sh`.
+context in the same way. Open the shell with [`jr2 workspace shell`](../reference/cli.md#workspace-shell) and `--user`.
+[Look inside a Sandbox](look-inside-a-sandbox.md#find-the-sandbox) tells how to find `<workspace>`:
+
+```sh
+jr2 workspace shell <workspace> --user
+```
 
 The User Container is not a second Sandbox Image:
 
-- Its own `ENTRYPOINT` and `CMD` run. Its process must keep running: when it ends, the pod is not ready.
+- Its own `ENTRYPOINT` and `CMD` run. Its process must keep running. When it ends, Kubernetes starts the container
+  again, so a `CMD` that ends at once restarts again and again.
 - jr2 gives it `/work`, which it can write, and `/repos` and `/opt/jr2`, which it can only read. jr2 gives it no other
   mount, no environment variable and no command.
 - It has no floor: an Alpine base is correct here. It runs as the `USER` of its image, and root is permitted.
@@ -173,6 +179,44 @@ container, the [Sandbox Effector](../reference/glossary.md#sandbox-effector). By
 `effector` option gives it an image of its own. See
 [Run a command or call a URL with an Effect](run-a-command-or-call-a-url.md) and
 [Push and sign a branch](push-and-sign-a-branch.md).
+
+### Reach a service in the User Container
+
+No Service of the cluster goes to the User Container. To reach a port in the Sandbox pod, run
+[`jr2 workspace forward`](../reference/cli.md#workspace-forward). It forwards a port on your computer to the port in the
+pod, through the API server of the cluster, until you push Ctrl-C:
+
+```sh
+jr2 workspace forward <workspace> 3000
+```
+
+<!-- output: not run -->
+
+```text
+→ context <context> / namespace <namespace>
+127.0.0.1:41733
+forwarding 127.0.0.1:41733 → a1322024/x:2:3000 — Ctrl-C ends it
+```
+
+The address on stdout is the local address. The port changes on each run.
+
+When the User Container runs an sshd on port `22`, `ssh` can go through `jr2 workspace forward --stdio`. Add this entry
+to `~/.ssh/config`. Replace `<namespace>` with the namespace of your Instance:
+
+```text
+Host *.jr2
+  ProxyCommand jr2 workspace forward %h 22 --stdio -n <namespace>
+```
+
+Then connect with the name of the Sandbox, which `jr2 workspace ls` prints, and `.jr2`:
+
+```sh
+ssh <sandbox>.jr2
+```
+
+With `-n`, `jr2 workspace forward` needs no Instance folder, so `ssh` can run it from each folder. The sshd and its keys
+are yours: jr2 gives the User Container no key. With `ssh -A`, your `ssh-agent` goes only to the User Container, and the
+Agent runs nothing there.
 
 ## Rules
 
@@ -211,6 +255,7 @@ container, the [Sandbox Effector](../reference/glossary.md#sandbox-effector). By
   [`UserContainer`](../reference/authoring-surface/type-usercontainer.md), [`jr2 up`](../reference/cli.md#up)
 - [ADR-0037](../reference/decisions/0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md): the Instance
   builds its Sandbox Images, and jr2 injects the Harness.
-- [ADR-0005](../reference/decisions/0005-sandbox-pod-composition.md): the containers of the Sandbox pod.
+- [ADR-0005](../reference/decisions/0005-sandbox-pod-composition.md): the containers of the Sandbox pod, and how you
+  reach the User Container.
 - [ADR-0049](../reference/decisions/0049-a-machine-carries-its-parts-and-composes-by-invoke.md): a Machine carries its
   images.

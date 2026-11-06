@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { fromPromise } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import type {} from "@jr2/hooks/gitlab";
+import type {} from "../src/hook-kinds/gitlab.ts";
 import { dispatch } from "../src/dispatch-effect.ts";
 import { carry, pool, source, standingPoolOf, type PoolNextInput } from "../src/pool.ts";
 import {
@@ -24,7 +24,7 @@ import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { standingPoolLines } from "../src/assembly-checks.ts";
 import { mkStore } from "./_fixtures.ts";
 import { createHash } from "node:crypto";
-import { gitlab } from "@jr2/hooks/gitlab";
+import { gitlab } from "../src/hook-kinds/gitlab.ts";
 import { hookDoor } from "../src/hooks.ts";
 import { secret } from "../src/http-effect.ts";
 

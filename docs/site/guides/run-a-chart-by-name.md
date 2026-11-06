@@ -49,26 +49,26 @@ Put the Chart file in a folder that has the name of its wrapper: `workflows/<wra
 lower-case letters, digits and `-`. Then run [`jr2 up`](../reference/cli.md#up). It checks each Chart file at the door
 before it changes the cluster, and publishes it in the [Assembly](../reference/glossary.md#assembly).
 
-[`jr2 runs`](../reference/cli.md#runs) lists the Chart under its wrapper, on stderr:
+[`jr2 workflows`](../reference/cli.md#workflows) lists the Chart under its wrapper:
 
 ```sh
-jr2 runs
+jr2 workflows
 ```
+
+<!-- output: not run -->
 
 ```text
 …
 → context kind-jr2 / namespace my-instance
-workflows:
-  notes (machine, Chart wrapper: body "body", one-shot)
-    notes/summary (chart file)
-  ping (machine)
-[]
+notes (machine, Chart wrapper: body "body", one-shot)
+  notes/summary (chart file)
+ping (machine)
 ```
 
 The first line, `…`, is the line `→ .env:`, with the keys that the CLI took from `.env`.
 
-`one-shot` means that the wrapper also takes a Chart in its run input. `jr2 runs --workflows` prints the same list as
-JSON on stdout.
+`one-shot` means that the wrapper also takes a Chart in its run input. `jr2 workflows --json` prints the same list as
+JSON.
 
 ## Run the Chart
 
@@ -115,8 +115,8 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" -H "content-type: application/json
 ```
 
 `hash` is the hash of the Chart text. The status code is `201` for a new name, and `200` when the Chart replaced a
-runtime Chart with the same name. `jr2 runs` then lists `notes/brief (chart)`, and `jr2 run notes/brief` starts it. A
-run of the old text keeps its own text.
+runtime Chart with the same name. `jr2 workflows` then lists `notes/brief (chart)`, and `jr2 run notes/brief` starts it.
+A run of the old text keeps its own text.
 
 To remove the Chart:
 
@@ -125,7 +125,7 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:4000/workflows
 ```
 
 The Orchestrator keeps a runtime Chart on its volume, so it stays after a restart. When a publish removes a part that it
-uses, it stays, and `jr2 runs` marks it `unrunnable` with the reason.
+uses, it stays, and `jr2 workflows` marks it `unrunnable` with the reason.
 
 ## Run a Chart one time
 
@@ -174,7 +174,8 @@ write.
 - [Charts](../concepts/charts.md)
 - [Start a run](start-a-run.md)
 - [Let an Agent write a Chart](let-an-agent-write-a-chart.md)
-- Reference: [`chartSchema`](../reference/authoring-surface/chartschema.md), [`jr2 runs`](../reference/cli.md#runs),
+- Reference: [`chartSchema`](../reference/authoring-surface/chartschema.md),
+  [`jr2 workflows`](../reference/cli.md#workflows),
   [`PUT /workflows/:wrapper/charts/:name`](../reference/http-api.md#put-workflows-wrapper-charts-name),
   [`GET /workflows/:wrapper/chart-schema`](../reference/http-api.md#get-workflows-wrapper-chart-schema)
 - [ADR-0070](../reference/decisions/0070-a-machine-lends-its-parts-to-a-chart.md): a Machine lends its parts to a Chart.

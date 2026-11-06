@@ -34,8 +34,8 @@ can get away with fetching once, because a person can press a button; an API can
   so there is no gap to detect and no cursor to resume from. Same reconciliation idiom as the Lease (ADR-0021) and
   `jr2 up` (ADR-0019): say the whole truth, repeatedly, and let the reader converge.
 - **Two granularities, one vocabulary.** The per-run feed stays — tracking exactly one run is a legitimate thing to
-  want, and it is what `jr2 run` and `jr2 logs -f` already do. Every run-scoped frame carries `runId` even where the
-  route makes it redundant, so one parser serves both.
+  want, and it is what `jr2 run` and `jr2 watch` do. Every run-scoped frame carries `runId` even where the route makes
+  it redundant, so one parser serves both.
 - **`gone` is a fact, not an inference.** A run can leave the live set _without_ a terminal status: `stop()`
   deliberately leaves the stored status `"live"` so a later `restore()` picks the run back up. A client watching for
   `status === "done"` would show a stopped run as live forever, so departure is stated outright.
@@ -61,7 +61,7 @@ can get away with fetching once, because a person can press a button; an API can
   tick, and a reader that keeps up drains them before any ping judges it. Closing is safe because the feed is
   level-triggered: the client reconnects and receives the whole current truth, having missed no state — only activity
   (Emits, retries) that fell in the gap. A page reconnects with EventSource's own retry; the CLI (`jr2 run`,
-  `jr2 logs -f`) re-attaches any feed that ends before a terminal status, and never reads such an end as the run's —
+  `jr2 watch`) re-attaches any feed that ends before a terminal status, and never reads such an end as the run's —
   except `gone`: a run stopped before it settled (parked, ADR-0025) reads through as `active`, so its one-shot feed says
   `gone` after the status, and the CLI ends there instead of re-attaching in a loop. The server keeps no per-client
   queue and no slow-client accounting beyond counting the subscriber's writes (scaling review R10, 2026-09-30).

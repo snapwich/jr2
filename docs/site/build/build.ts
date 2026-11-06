@@ -53,7 +53,7 @@ const GENERATED: Record<string, string> = {
     "Every name that @jr2/orchestrator exports from its root, by group, with a link to its page: its signature, its TSDoc, and an example.",
   "reference/machines": "The Machines that @jr2/machines ships: their input, their output, and their Open parts.",
   "reference/hooks":
-    "Every name that @jr2/hooks exports: the interface of a Hook kind, the kinds that jr2 ships, and webhook().",
+    "Every name that @jr2/orchestrator/hooks exports: the interface of a Hook kind, the kinds that jr2 ships, and webhook().",
   "reference/config": "Every field of jr2.config.ts: its type, whether it is required, its default, and what it does.",
   "reference/cli": "Every jr2 command: its synopsis, its arguments, flags and env vars, and what it prints.",
   "reference/http-api":
@@ -109,7 +109,7 @@ export function referenceContext(repo: string, pages: readonly Page[]): RefConte
   return { repo, program: programFor(repo), pages, adrs: readAdrs(repo), names: new Map(), errors: [] };
 }
 
-/** The text that heads each module's group on the `@jr2/hooks` page. */
+/** The text that heads each module's group on the `@jr2/orchestrator/hooks` page. */
 const HOOKS_INTROS: Record<(typeof HOOKS_MODULES)[number], string> = {
   index:
     "The interface between the door of a Hook and a kind: `defineHookKind`, which makes a kind, the types of a kind, the helpers that read a request, and `HookKinds`, to which each kind adds its id and its payloads.",
@@ -146,8 +146,8 @@ export function generateReference(ctx: RefContext): GeneratedReference {
   const hooks = readModules(
     ctx,
     HOOKS_MODULES.map((m) => ({
-      root: `packages/hooks/src/${m}.ts`,
-      specifier: m === "index" ? "@jr2/hooks" : `@jr2/hooks/${m}`,
+      root: `packages/orchestrator/src/hook-kinds/${m}.ts`,
+      specifier: m === "index" ? "@jr2/orchestrator/hooks" : `@jr2/orchestrator/hooks/${m}`,
       intro: HOOKS_INTROS[m],
     })),
     "reference/hooks.md",
@@ -167,7 +167,7 @@ export function generateReference(ctx: RefContext): GeneratedReference {
   const hooksPages = renderSurface(
     ctx,
     hooks,
-    "`@jr2/hooks` is the interface of a [Hook kind](glossary.md#hook-kind), and the kinds that jr2 ships. `jr2.config.ts` imports a kind to declare a [Hook](glossary.md#hook), and a workflow module imports a kind's types for the handlers of a Gate slot or a Source. Install it beside `@jr2/orchestrator`, at the same version. A kind from another package has a peer dependency on `@jr2/hooks` `^1`. Each group of this page is one module that you import.",
+    "`@jr2/orchestrator/hooks` is the interface of a [Hook kind](glossary.md#hook-kind), and the kinds that jr2 ships. `jr2.config.ts` imports a kind to declare a [Hook](glossary.md#hook), and a workflow module imports a kind's types for the handlers of a Gate slot or a Source. It is part of `@jr2/orchestrator`, so an Instance installs nothing more. A kind from another package has a peer dependency on `@jr2/orchestrator` and states `api: 1`. Each group of this page is one module that you import.",
   );
   const pages = new Map<string, string>([
     ["reference/authoring-surface", surfacePages.body],

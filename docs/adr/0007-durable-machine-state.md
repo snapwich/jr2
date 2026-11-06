@@ -15,7 +15,7 @@ it from the start (the top Machine keeps only counts + ids, children report comp
 snapshot/restore possible.
 
 The store's own durability — what a persist survives, and how long a finished run's row lives — is
-[ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md).
+[ADR-0065](0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md).
 
 Durable **agent handles** do not ride Machine context at all: the host persists an `iid → admission` ledger beside the
 snapshot in the same save (ADR-0016). Iids are globally unique, so restore needs no context-tree walking to find them.

@@ -29,6 +29,7 @@ import {
   readStandIns,
   RESERVED_ENV,
   RUNTIME_SECRETS,
+  SHELL_SOCKET,
   STANDINS_DIR,
   assertHarnessHome,
   takeStartEnv,
@@ -52,6 +53,8 @@ import {
 import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
 import { unixFetch } from "./unix-fetch.ts";
+import { keepSendOver } from "./keep.ts";
+import { serveShells } from "./workspace-shell.ts";
 
 // The env the container STARTED with, before this process changes its own (ADR-0076): the domain's
 // env is made from it, so nothing that this process adds later — a held secret's Stand-in, a model
@@ -277,6 +280,9 @@ const harnessWire = harnessServer({
   // execution in this pod" a property, not a comment.
   ...(menuOnly ? { menuOnly: true } : {}),
   checkBearer: (bearer) => bearer !== undefined && sha256(bearer) === bearerSha256,
+  // Each conversation's entries go to the Orchestrator over the control channel, as the picks do
+  // (ADR-0023, ADR-0076).
+  keepSend: keepSendOver(menu),
   // Where each conversation is persisted and rebuilt from (ADR-0031): the Instance Harness's
   // PersistentVolumeClaim, a Sandbox Harness's emptyDir. Unset, conversations live in memory.
   ...(conversationsDir !== "" ? { conversationsDir } : {}),
@@ -284,6 +290,19 @@ const harnessWire = harnessServer({
 
 // A port another container in the pod took is said in one line, exit 1 (R16 — serve.ts).
 const served = serveHarness(harnessWire, { port: Number(process.env.PORT ?? 8080) });
+
+// A person's shell (`jr2 workspace shell`, ADR-0076): started through the domain's spawner, on a
+// socket in a folder of the Harness container's alone. A Harness that cannot listen there serves
+// the Agents as before, and says why it serves no shell.
+if (children) {
+  const domain = children;
+  const socket = process.env.JR2_SHELL_SOCKET || SHELL_SOCKET;
+  serveShells({ children: () => domain, control, socket }).catch((err: unknown) => {
+    console.error(
+      `jr2 harness: no socket for \`jr2 workspace shell\` at ${socket}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+}
 
 // A rollout drains Turns (ADR-0031): the first signal stops admitting and exits 0 once every
 // admitted Submission has settled. A second is someone who will not wait — a human's second ^C.

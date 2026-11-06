@@ -12,6 +12,9 @@
 //                                                          because its Turn was over (ADR-0024)
 //   <root>/<agent>/<instance id>/record/mcp-tools.json    the MCP tools the conversation offers,
 //                                                          written once at its first Turn (ADR-0079)
+//   <root>/<agent>/<instance id>/record/entries.jsonl     the kept conversation's entries, one per line,
+//                                                          as sent to the Orchestrator (keep.ts, ADR-0023)
+//   <root>/<agent>/<instance id>/record/keep.json         the last seq the Orchestrator took, and the slot
 //   <root>/<agent>/<instance id>/engine/<engine>/         the engine part (for pi: engine/pi/transcript.jsonl)
 //
 // Append-only JSONL, written synchronously: the Conversation's appends are synchronous, and a line

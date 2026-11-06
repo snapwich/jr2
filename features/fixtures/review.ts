@@ -32,8 +32,11 @@ const requestReview = defineEvent({
 });
 const approve = defineEvent({ name: "approve", input: z.object({}) });
 
-type Input = { endpoint: string };
-type Ctx = { endpoint: string; summary?: string };
+// `sandbox` is the pod the Turn is placed in, for a scenario that plays that pod's Harness as it
+// sends the conversation (ADR-0023): the run's admission ledger names it, and the write route takes
+// the conversation's entries only from that pod's control token. No pod exists here.
+type Input = { endpoint: string; sandbox?: string };
+type Ctx = { endpoint: string; sandbox?: string; summary?: string };
 
 /** The Agent this Machine carries (ADR-0049): a slot, so the name the Turn is admitted under is
  * the slot key. The definition's CONTENT is inert here — the tier's stub Harness never runs a
@@ -49,7 +52,10 @@ export const machine = jr2Setup({
   actors: { coder, fail: fail() },
 }).createMachine({
   id: "review",
-  context: ({ input }) => ({ endpoint: input.endpoint }),
+  context: ({ input }) => ({
+    endpoint: input.endpoint,
+    ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+  }),
   on: { "agent.fault": { target: ".faulted" } },
   initial: "working",
   states: {
@@ -62,6 +68,7 @@ export const machine = jr2Setup({
         // this state's own transitions (ADR-0015), which is the `request_review` below.
         input: ({ context }): AgentTurnInput & AgentTurnPlacement => ({
           endpoint: context.endpoint,
+          ...(context.sandbox === undefined ? {} : { sandbox: context.sandbox }),
           prompt: "Do the work, then call request_review.",
           continue: true,
         }),

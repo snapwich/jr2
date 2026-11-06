@@ -130,10 +130,10 @@ Given("the instance declares a Hook for each verifier", async function (this: E2
   const text = await readFile(config, "utf8");
   const declared =
     'import { secret } from "@jr2/orchestrator";\n' +
-    'import { discord } from "@jr2/hooks/discord";\n' +
-    'import { github } from "@jr2/hooks/github";\n' +
-    'import { gitlab } from "@jr2/hooks/gitlab";\n' +
-    'import { slack } from "@jr2/hooks/slack";\n' +
+    'import { discord } from "@jr2/orchestrator/hooks/discord";\n' +
+    'import { github } from "@jr2/orchestrator/hooks/github";\n' +
+    'import { gitlab } from "@jr2/orchestrator/hooks/gitlab";\n' +
+    'import { slack } from "@jr2/orchestrator/hooks/slack";\n' +
     text.replace(
       "export default defineConfig({",
       "export default defineConfig({\n" +

@@ -70,6 +70,27 @@ started by: token/instance on behalf of kubernetes-admin
 
 A run that has no open Gate has `"gates":[]`.
 
+To find the open Gates of all the live runs, run [`jr2 gates`](../reference/cli.md#gates). It prints the Gates that you
+can answer, the oldest first. Give `--workflow <name>` to see only the Gates of the runs of one Workflow:
+
+```sh
+jr2 gates --workflow release
+```
+
+<!-- output: not run -->
+
+```text
+→ context <context> / namespace <namespace>
+[{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"},"openedAt":"2026-11-03T10:31:07.112Z"}]
+```
+
+Each entry has the fields of a Gate in `gates`, and also `runId`, `workflow` and `openedAt`, the time when the Gate
+opened. When the Gate hears a [Hook](../reference/glossary.md#hook), `hook` gives the
+[Hook kinds](../reference/glossary.md#hook-kind). An entry never holds the `context` of the run. A Gate that takes no
+event from a [Caller](../reference/glossary.md#caller), such as the `source` Gate of a
+[Pool](../reference/glossary.md#pool) that hears only Hooks, is not in the list. `jr2 gates` reads
+[`GET /gates`](../reference/http-api.md#get-gates), and it needs the `answer` scope.
+
 ## Answer from the CLI
 
 Run [`jr2 send`](../reference/cli.md#send). Give the Gate in `--gate`, the event in `--event`, and the input of the
@@ -126,10 +147,11 @@ Console. [Open the Console](open-the-console.md) tells how to open it, how to ge
 2. Type the token in the `Caller token` box in the nav, or click `log in`.
 3. Push Enter. The badge beside the box shows `…`, then `live`.
 4. Click the `Attention` tab in the drawer on the right. It shows a card for each open Gate of the Workflow that you
-   selected. To see the Gates of all the Workflows, select `all workflows`. When you select no Workflow, it shows them
-   all.
-5. Find the card. Its top line shows `⚑` and the id of the Gate at the left. At the right, it shows the Workflow and the
-   first 8 characters of the run id. Below it, the card shows the `meta` of the Gate.
+   selected and that your credential can answer, the oldest first. To see the Gates of all the Workflows, select
+   `all workflows`. When you select no Workflow, it shows them all. The Console reads the cards from
+   [`GET /gates`](../reference/http-api.md#get-gates).
+5. Find the card. Its top line shows `⚑` and the id of the Gate at the left. At the right, it shows the Workflow, the
+   first 8 characters of the run id and `open since <time>`. Below it, the card shows the `meta` of the Gate.
 6. The card has a form for each event that the Gate accepts. Fill in the form of the event that you send. A field that
    has `*` after its name is necessary.
 7. Click `send` in that form.
@@ -143,8 +165,8 @@ The `⚑` badge in the nav gives the number of open Gates in all the Workflows. 
 
 A webhook handler or a CI job answers a Gate with
 [`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#post-runs-runid-gates-gate-events) and the token of a
-named [Caller](../reference/glossary.md#caller) with the `answer` scope for the Workflow. A CI job has no access to the
-cluster, so it cannot read the Instance token, and it must not have it: the Instance token can do everything.
+named Caller with the `answer` scope for the Workflow. A CI job has no access to the cluster, so it cannot read the
+Instance token, and it must not have it: the Instance token can do everything.
 [Give a Caller a scope](give-a-caller-a-scope.md) makes the Caller token. A service that a Hook kind covers, such as a
 forge, sends its webhook to a Hook: see [Answer a Gate from a forge](./answer-a-gate-from-a-forge.md). Any other handler
 or CI job uses the Gate route. It reads its own event, finds the run and the Gate, and sends the call. The body is the
@@ -180,15 +202,17 @@ curl -s -X POST http://localhost:4000/runs/<run id>/gates/review/events \
 ```
 
 A webhook handler often knows a fact, such as a version, but not the run id. It can find the run from the `meta` of the
-Gate. [`GET /runs`](../reference/http-api.md#get-runs) gives the live runs, and
-[`GET /runs/:runId`](../reference/http-api.md#get-runs-runid) gives the open Gates of one run. This script approves the
-`release` run that waits for one version. It needs `curl` and `jq`. Save it as `approve-release.sh`:
+Gate. [`GET /gates`](../reference/http-api.md#get-gates) gives the open Gates of all the live runs that the token can
+answer, each with its run id and its `meta`. It needs only the `answer` scope. This script approves the `release` run
+that waits for one version. It needs `curl` and `jq`. Save it as `approve-release.sh`:
 
 <<< @/examples/guides/answer-a-gate/approve-release.sh
 
 ```sh
 JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN VERSION=1.4.0 sh approve-release.sh
 ```
+
+<!-- output: not run -->
 
 ```text
 {"ok":true}
@@ -210,8 +234,8 @@ delivered approve to gate "review" on c44c6e49-452d-4150-8ce4-4d036363d2a0
 
 - The Orchestrator refuses a Gate that is not open on the run, with the status code `404`:
   `no open gate "<gate>" on run "<run id>" (open: <gates>)`. The part `(open: <gates>)` shows only when the run has an
-  open Gate. When an event takes the run out of the state of the Gate, the Gate closes. Thus a second answer gets this
-  refusal.
+  open Gate that the Caller can answer. When an event takes the run out of the state of the Gate, the Gate closes. Thus
+  a second answer gets this refusal.
 - The Orchestrator refuses an event that the Gate does not accept, with the status code `400`:
   `"<gate>" does not accept "<event>" (accepts: <events>)`
 - The Orchestrator refuses an input that does not agree with the schema of the event, with the status code `400`:
@@ -235,6 +259,11 @@ delivered approve to gate "review" on c44c6e49-452d-4150-8ce4-4d036363d2a0
   also holds `scope`.
 - The Orchestrator refuses an event from a Caller that does not have the `answer` scope for the Workflow of the run,
   with the status code `403`: `the Caller <via>/<name> needs the "answer" scope for Workflow "<workflow>" (ADR-0078)`
+- The Orchestrator refuses an event to an open Gate from a Caller whose `answer` scope names other Gates of the
+  Workflow, with the status code `403`:
+  `the Caller <via>/<name> needs the "answer" scope for Gate "<name>" of Workflow "<workflow>" (ADR-0078)`. `<name>` is
+  the name of the Gate, its invoke id. The body also holds `scope`, `workflow` and `gate`.
+  [Give a Caller a scope](give-a-caller-a-scope.md) tells how a scope names single Gates.
 - `jr2 send` prints each refusal of the Orchestrator as `error: <refusal>`, and exits with `1`. After a `404` refusal,
   it also prints the version of the Instance in one more line:
   ``instance: <version> (<hash>) — if it predates this CLI, `jr2 up` converges the cluster to this kit``. `<hash>` is

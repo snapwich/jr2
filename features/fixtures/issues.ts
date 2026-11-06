@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fromPromise } from "xstate";
 import { z } from "zod";
-import type {} from "@jr2/hooks/discord";
+import type {} from "@jr2/orchestrator/hooks/discord";
 import { dispatch, pool, reread, skip, source } from "@jr2/orchestrator";
 
 type Issue = { number: number; title: string };

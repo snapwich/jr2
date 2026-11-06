@@ -69,6 +69,7 @@ import {
   type NotKeptResponse,
 } from "./wire.ts";
 import { noticesOf, steeringOf } from "./notices.ts";
+import { ConversationKeeper, type KeepSend } from "./keep.ts";
 
 /** One conversation's identity and stream seam, as the app hands it to the turn factory. */
 export type ConversationSeat = {
@@ -81,6 +82,9 @@ export type ConversationSeat = {
   engineSeat: EngineSeat;
   /** Where the conversation's MCP tools are kept, fixed at its first Turn (ADR-0079). */
   mcpTools: McpToolsSeat;
+  /** The kept conversation (ADR-0023): its entries, written in its folder and sent to the
+   * Orchestrator in batches. */
+  keep: ConversationKeeper;
 };
 
 export type HarnessAppDeps = {
@@ -90,6 +94,12 @@ export type HarnessAppDeps = {
   /** A conversation this Harness no longer holds (the live set freed it): what it alone held ends,
    * as its stdio MCP servers do (ADR-0079). Omitted, nothing ends. */
   conversationFreed?: (agentName: string, instanceId: string) => void;
+  /** How a batch of a conversation's entries reaches the Orchestrator (`keep.ts`, ADR-0023).
+   * Omitted, the entries are written in the conversation's folder and sent nowhere. */
+  keepSend?: KeepSend;
+  /** How long a drain waits, after its Turns, for the kept conversations' last batches. Default
+   * {@link KEEP_DRAIN_MS}; tests shorten it. */
+  keepDrainMs?: number;
   /** Reject an admission the turn could not run — the reason, or undefined to accept. Takes the
    * RESOLVED definition (this Submission's dials already layered on), because since ADR-0049 the
    * definition and the dials arrive together and a turn runs the resolution of both: an
@@ -198,6 +208,10 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   // Keyed on encoded parts: iids are hierarchical (slashes — ADR-0015), so a raw `/` join
   // could collide two conversations.
   const conversations = new Map<string, Conversation>();
+  /** Each conversation's kept entries (`keep.ts`), by the same key. */
+  const keepers = new Map<string, ConversationKeeper>();
+  /** The keepers of freed conversations that still had entries to send: a drain waits for them too. */
+  const freedKeepers = new Set<ConversationKeeper>();
   const key = (agentName: string, instanceId: string) =>
     `${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
   /** Set by the drain: the Harness is going away, and admits nothing more. */
@@ -213,12 +227,20 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     // The seam is circular by nature — the turn appends to the Conversation that pumps it —
     // so the closures read the binding the next statement fills.
     let created: Conversation;
+    const keep = new ConversationKeeper({
+      instanceId,
+      ...(dir !== undefined ? { dir } : {}),
+      ...(deps.keepSend ? { send: deps.keepSend } : {}),
+      fault: recordFault,
+    });
+    keepers.set(key(agentName, instanceId), keep);
     const run = deps.runSubmissionFor({
       agentName,
       instanceId,
       appendMessage: (message) => created.appendMessage(message),
       engineSeat: engineSeat(dir, () => created.historyView().messages, recordFault),
       mcpTools: mcpToolsSeat(dir, recordFault),
+      keep,
     });
     created = recorded
       ? Conversation.rebuilt(recorded, run, recorder, { sweepWaitMs: deps.sweepWaitMs })
@@ -443,6 +465,14 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     for (const [k, conversation] of conversations) {
       if (held.has(k) || conversation.busy) continue;
       conversations.delete(k);
+      // What is not sent yet goes from memory: the folder goes now.
+      for (const done of [...freedKeepers].filter((f) => f.done)) freedKeepers.delete(done);
+      const keep = keepers.get(k);
+      if (keep) {
+        keep.close();
+        if (keep.pending > 0) freedKeepers.add(keep);
+      }
+      keepers.delete(k);
       deps.conversationFreed?.(conversation.agentName, conversation.instanceId);
       if (root !== undefined) freeDir(conversationDir(root, conversation.agentName, conversation.instanceId));
       freed++;
@@ -588,13 +618,51 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
 
   const drain = async (): Promise<void> => {
     draining = true;
+    // The kept conversations' last entries start on their way now (ADR-0023); nothing waits on them.
+    for (const keep of keepers.values()) keep.kick();
     // A conversation's drain waits out its queue as well: those Submissions were admitted, so the
     // drain owes them their Turns exactly as it owes the running one — except a Turn that waits
     // only on its pick's answer, which it cuts at once (`Conversation.drain`).
     await Promise.all([...conversations.values()].map((conversation) => conversation.drain()));
+    // Then the last entries go: each Turn that the drain finished ended with a kick, which only
+    // starts a send, and a batch in backoff waits for its timer. In a Sandbox the record goes with
+    // the pod, so this is the last chance; there the Custodian can exit first (ADR-0001), and then
+    // the entries since the last send are lost (ADR-0023). No Turn runs now, so a bounded wait blocks
+    // none; the pod's termination grace ends it in any case.
+    await sendLastBatches([...keepers.values(), ...freedKeepers], deps.keepDrainMs ?? KEEP_DRAIN_MS);
   };
 
   return { app, drain };
+}
+
+/** How long a drain waits for the kept conversations' last batches: a few seconds of the pod's
+ * termination grace. */
+export const KEEP_DRAIN_MS = 5_000;
+/** The pause between two tries of a batch that failed during the drain. */
+const KEEP_DRAIN_RETRY_MS = 250;
+
+/** Send what each keeper holds, again after a failure, until all is sent or `ms` is over. */
+export async function sendLastBatches(keepers: readonly ConversationKeeper[], ms: number): Promise<void> {
+  let over = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      over = true;
+      resolve();
+    }, ms);
+  });
+  const sendAll = async (keep: ConversationKeeper) => {
+    while (!over && keep.pending > 0 && !keep.done) {
+      await keep.flush();
+      if (!over && keep.pending > 0) await new Promise((r) => setTimeout(r, KEEP_DRAIN_RETRY_MS).unref());
+    }
+  };
+  try {
+    await Promise.race([Promise.all(keepers.map(sendAll)), bound]);
+  } finally {
+    over = true;
+    clearTimeout(timer);
+  }
 }
 
 /** The live set's conversations, or undefined for a body that is not one. All-or-nothing: a

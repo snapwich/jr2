@@ -184,14 +184,15 @@ Workspaces. The example starts one `triage` run for each alert that an alert ser
 <<< @/examples/shared/alerts/workflows/alerts.ts
 
 jr2 ships no kind for this alert service. Thus the Instance makes the `sentry` kind with `webhook()` from
-`@jr2/hooks/webhook`, in a module of its own: `hooks/sentry.ts`. `jr2.config.ts` imports it for the Hook, and the
-Workflow imports it for the types of its handlers.
+`@jr2/orchestrator/hooks/webhook`, in a module of its own: `hooks/sentry.ts`. `jr2.config.ts` imports it for the Hook,
+and the Workflow imports it for the types of its handlers.
 
 A Pool of runs is different from a Pool of child Machines:
 
 - **The key.** `itemId(item)` is the key of the item's run in the callee Workflow. Each start with the same key gets the
-  same run while the run's row lives: while the run is live, and a week after it ends. Thus an item never starts two
-  runs, also after a restart. `jr2 status` of the run prints the key, and the Hook delivery that carried the item.
+  same run while the run's row lives: while the run is live, and for `runs.retain` after it ends. Thus an item never
+  starts two runs, also after a restart. `jr2 status` of the run prints the key, and the Hook delivery that carried the
+  item.
 - **It stands.** A Pool of runs needs `standing: true`. It never ends by itself, and it has no output. When it has no
   work, it waits for a Hook delivery, a `reread()`, a `wake` or its `pollEvery`.
 - **`cap` counts live runs.** The `dispatch` slot must say `wait: true`, so that the Pool knows when a run ends. A run

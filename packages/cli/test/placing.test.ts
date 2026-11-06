@@ -10,6 +10,7 @@ import {
   RunHost,
   SqliteSnapshotStore,
   createApp,
+  placingOf,
   workspace,
   type Continuity,
   type PlaceRequest,
@@ -17,8 +18,7 @@ import {
   type SandboxPort,
 } from "@jr2/orchestrator/internal";
 import { main } from "../src/cli.ts";
-import { markListed } from "../src/commands/runs.ts";
-import type { RunStatus } from "../src/client.ts";
+import type { RunStatus, RunSummary } from "../src/client.ts";
 import type { Io } from "../src/output.ts";
 
 /** Holds every `place()` until {@link schedule}; {@link waitFor} plays the operator's reason. */
@@ -51,6 +51,7 @@ class HeldSandbox implements SandboxPort {
     return { repos: Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}`])) };
   }
   async renew(): Promise<void> {}
+  async releaseHold(): Promise<void> {}
   continuity(_name: string, listener: (seen: Continuity) => void): () => void {
     queueMicrotask(() => listener({ present: true }));
     return () => {};
@@ -132,32 +133,21 @@ test("runs marks a run with a Workspace in `placing`, and only that run", async 
   await until(() => sandbox.waiting === 1);
 
   assert.equal(await main(["runs"], io), 0);
-  const list = JSON.parse(out()) as Array<RunStatus & { placing?: string[] }>;
+  const list = JSON.parse(out()) as RunSummary[];
   assert.deepEqual(list.find((r) => r.runId === waits)?.placing, ["F-1"]);
   assert.equal("placing" in list.find((r) => r.runId === idle)!, false);
   await host.stop(waits);
   await host.stop(idle);
 });
 
-test("markListed names a run whose root IS the Workspace with the empty path", () => {
-  const run = { runId: "r", workflow: "w", instanceId: "i", status: "active", value: "placing", context: {} };
-  assert.deepEqual(markListed({ ...run, children: [] }).placing, [""]);
-  const nested = {
-    ...run,
-    value: "fanning",
-    children: [
-      { id: "F-1", src: "ws", status: "active", value: "running", children: [] },
-      {
-        id: "G",
-        src: "g",
-        status: "active",
-        value: "x",
-        children: [{ id: "F-2", src: "ws", status: "active", value: "placing", children: [] }],
-      },
-    ],
-  };
-  assert.deepEqual(markListed(nested).placing, ["G/F-2"]);
-  assert.equal(markListed({ ...run, value: "working" }).placing, undefined);
+test("placingOf names a run whose root IS the Workspace with the empty path", () => {
+  assert.deepEqual(placingOf("placing", []), [""]);
+  const children = [
+    { id: "F-1", value: "running", children: [] },
+    { id: "G", value: "x", children: [{ id: "F-2", value: "placing", children: [] }] },
+  ];
+  assert.deepEqual(placingOf("fanning", children), ["G/F-2"]);
+  assert.deepEqual(placingOf("working", []), []);
 });
 
 test("run streams the wait as activity: `placing` with the reason, then `placed`", async () => {

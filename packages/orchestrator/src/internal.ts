@@ -43,6 +43,8 @@ export * from "./tokens.ts";
 export type { CallerRecord, GateAnswer, RunStarter } from "./callers.ts";
 export * from "./durability.ts";
 export * from "./snapshot-store.ts";
+// The run listing of `GET /runs` (ADR-0009): the CLI reads its summary and its query words.
+export * from "./run-list.ts";
 export * from "./actor.ts";
 // The `gate` actor: jr2Setup pre-registers it and a state invokes it as `src: "gate"` (ADR-0015).
 // The Authoring surface has `gate({ … })`, a Gate slot that hears a Hook (ADR-0011).

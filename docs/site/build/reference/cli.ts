@@ -25,7 +25,7 @@ export const commandAnchor = (c: Command): string => anchorOf(nameOf(c));
 
 const OUTPUT_TEXT = {
   result: "one JSON result on stdout, and activity on stderr",
-  report: "a table on stdout, or the one report object with `--json`",
+  report: "a table or lines on stdout, or their JSON with `--json`, where the verb has it",
   activity: "activity on stderr only",
   value: "one value alone on stdout, for `$(…)`, and activity on stderr",
 } as const;
@@ -64,18 +64,26 @@ function renderCommand(ctx: RefContext, c: Command): string {
         c.args.map((a) => [code(a.name), a.optional ? "no" : "yes", prose(a.description)]),
       )}`,
     );
-  if (c.flags.length)
+  // The addressing flags and env vars are the Global options: an entry names them by a link, and
+  // the table there says which verbs take each, so the page states each one once.
+  const isGlobalFlag = (f: Command["flags"][number]) => GLOBAL_OPTIONS.some((o) => o.flag === f);
+  const isGlobalEnv = (e: Command["env"][number]) => GLOBAL_OPTIONS.some((o) => o.env === e);
+  const own = c.flags.filter((f) => !isGlobalFlag(f));
+  const env = c.env.filter((e) => !isGlobalEnv(e));
+  const global = [...c.flags.filter(isGlobalFlag).map(flagName), ...c.env.filter(isGlobalEnv).map((e) => e.name)];
+  if (own.length)
     parts.push(
       `**Flags**\n\n${table(
         ["Flag", "Description"],
-        c.flags.map((f) => [code(flagName(f)), prose(f.description) + (f.required ? " Required." : "")]),
+        own.map((f) => [code(flagName(f)), prose(f.description) + (f.required ? " Required." : "")]),
       )}`,
     );
-  if (c.env.length)
+  if (global.length) parts.push(`Also takes ${global.map(code).join(", ")}: see [Global options](#global-options).`);
+  if (env.length)
     parts.push(
       `**Environment**\n\n${table(
         ["Variable", "Description"],
-        c.env.map((e) => [code(e.name), prose(e.description)]),
+        env.map((e) => [code(e.name), prose(e.description)]),
       )}`,
     );
   const output = c.output.map((o) => `${o.form ? `${code(`jr2 ${o.form}`)}: ` : ""}${o.kind}, ${OUTPUT_TEXT[o.kind]}`);

@@ -295,6 +295,9 @@ export type PlaceRequest = {
   name: string;
   runId: string;
   workflow: string;
+  /** The Workspace's path in the run's Machine: the wrapper's actor ids joined by `/` (ADR-0012).
+   * The port writes it on the CR, where the `jr2 workspace` verbs read it (ADR-0009). */
+  path: string;
   /** The placement route from the registered Machine to this `workspace()` (`actorRoute`). With
    * `workflow`, it names the pod whose Held secrets and Sandbox Effector `jr2 up` placed (ADR-0059). */
   route: PlacementRoute;
@@ -327,9 +330,10 @@ export type ProvisionedRepo = { slot: string; url: string; ref?: string; perRun:
  */
 export interface SandboxPort {
   /**
-   * Write the Sandbox (its token Secret, then the CR, labeled with its run for `jr2 ls`) and wait,
-   * with NO deadline, until the operator says its pod is scheduled (ADR-0064). `image`/`user` are
-   * the wrapper's static image options (ADR-0037/0005/0049) — a `file:` context or a registry ref,
+   * Write the Sandbox (its token Secret, then the CR, labeled with its run, its Workflow and its
+   * path for `jr2 workspace ls`) and wait, with NO deadline, until the operator says its pod is
+   * scheduled (ADR-0064). `image`/`user` are the wrapper's static image options
+   * (ADR-0037/0005/0049) — a `file:` context or a registry ref,
    * the port resolves both, and a context the last converge did not build fails here rather than
    * converge-time. `repos` are the wrapper's slots, resolved, in declaration order (ADR-0051): the
    * port names each Repo on the CR so the cluster mounts its cache, and refuses a per-run url no
@@ -367,6 +371,20 @@ export interface SandboxPort {
    * the next renewal is minutes away and the idle timeout is thirty.
    */
   renew(name: string): Promise<void>;
+  /**
+   * Mark the Sandbox as held by no run (ADR-0021): the Lease stopped for the body's final state, a
+   * fault, a cancel or a parent that left the Workspace — never for a park or a process shutdown.
+   * `jr2 workspace rm` reads the mark with the cluster alone (ADR-0009). A write, and only that; a
+   * failure rejects and the caller shrugs.
+   */
+  releaseHold(name: string): Promise<void>;
+  /**
+   * Mark every Sandbox of a run as held by no run (ADR-0021), found by its `jr2.dev/run` label: a
+   * restore ended the run `drifted` or `lost` without hosting it, so no Lease runs to release them.
+   * A write for each, and only that; a failure rejects and the caller shrugs. Optional: a port
+   * with no cluster has nothing to mark.
+   */
+  releaseRun?(runId: string): Promise<void>;
   /**
    * Hear this workspace's Continuity from the watch (ADR-0021, ADR-0063): once the watch has
    * listed, what it holds now, then again on every change the cluster reports — a Sandbox gone, or
@@ -1359,6 +1377,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
         name,
         runId: binding.runId,
         workflow: binding.workflow,
+        path: child || input.wsId,
         route,
         // The image strings straight through (ADR-0037/0005) — the port owns resolution, and the
         // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
@@ -1522,10 +1541,22 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
       let timer: ReturnType<typeof setTimeout>;
       const schedule = (ms: number) => {
         timer = setTimeout(() => {
+          if (stopped) return;
           // A Workspace that ended in error stopped processing without stopping its children (xstate
-          // does not), and a parent that handled the error only stops what still processes: the
-          // lease asks, and asserts nothing for a Workspace that is over.
-          if (stopped || self._parent?.getSnapshot().status !== "active") return;
+          // does not), and a parent that handled the error only stops what still processes: so this
+          // lease is never stopped, and its cleanup below never runs. The lease asks, asserts nothing
+          // for a Workspace that is over, and releases the hold mark here, once: no run holds the
+          // Sandbox now (ADR-0021). A host that stops writes nothing, as below.
+          if (self._parent?.getSnapshot().status !== "active") {
+            if (runBindingOf(system).hostStopping) return;
+            stopped = true;
+            unsubscribe();
+            // A parent that caught the defect can invoke the same Machine again: the new Workspace
+            // has the same invoke id, so the same Sandbox name, and its own Lease holds it now.
+            if (runBindingOf(system).heldSandboxes?.().has(name)) return;
+            port.releaseHold(name).catch(() => {});
+            return;
+          }
           // A failed renewal is unknown, never lost: the next one is an interval away, well inside
           // the idle timeout, and loss is the watch's to report. Before the CR's write lands it is a
           // 404, and the same shrug.
@@ -1539,6 +1570,19 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
         stopped = true;
         clearTimeout(timer);
         unsubscribe();
+        // The hold mark (ADR-0021). A park writes nothing, so the CR stays `held` and the restored
+        // run's Lease renews it. Else the stop is a step of the wrapper or its end: read the wrapper
+        // once its stop or its transition is over. Still active, it is in a next state with a Lease
+        // of its own, or deletes the Sandbox; over (a cancel, a fault, a parent that left it), no
+        // run holds the Sandbox now.
+        if (runBindingOf(system).hostStopping) return;
+        queueMicrotask(() => {
+          if (runBindingOf(system).hostStopping) return;
+          if (self._parent?.getSnapshot().status === "active") return;
+          // A live Workspace of the same name (a re-invoke after a caught defect) holds it now.
+          if (runBindingOf(system).heldSandboxes?.().has(name)) return;
+          port.releaseHold(name).catch(() => {});
+        });
       };
     },
   );

@@ -86,10 +86,14 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   transport failure, not a status, because a 401 would mean the bearer stopped it and the policy did not.
 - **Port-forward and probes are not affected.** `kubectl port-forward` enters the pod's network namespace through the
   kubelet, and the kubelet's probes come from the node. On kind, neither is filtered by an ingress policy. So the CLI,
-  the Console, and a human's shell into the User Container ([ADR-0005](0005-sandbox-pod-composition.md)) keep working.
-  If routable access to the User Container is added later (ADR-0005 leaves it open), it must add its own ingress rule.
+  the Console, `jr2 workspace forward` and `jr2 workspace shell --user` into the User Container
+  ([ADR-0005](0005-sandbox-pod-composition.md), [ADR-0009](0009-cli-and-instance-interface.md)) keep working: they reach
+  the pod by port-forward and exec through the kube API, and no Service routes to the User Container. If routable access
+  to the User Container is added later (ADR-0005 leaves it open), it must add its own ingress rule.
 - **The `@kind` history reads present the bearer.** The steps derive it from the instance Secret's signing key, as the
-  CLI reads the Instance token: over the kube API, with RBAC as the gate. A human reading a conversation does the same.
+  CLI reads the Instance token: over the kube API, with RBAC as the gate. A human reads a conversation from the
+  Orchestrator's record with `jr2 logs`, behind `read` ([ADR-0023](0023-the-harness-prints-the-conversation.md)), and
+  needs no bearer of a Harness.
 - **Model keys are not in the Harness container.** `JR2_PROVIDER_API_KEY` and every other held secret live in the
   Custodian, and the Harness container's env holds their Stand-ins (ADR-0059). `jr2 up` refuses a known model key in
   `harness.env` or in an `envFrom` Secret.

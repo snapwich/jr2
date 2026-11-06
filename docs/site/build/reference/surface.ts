@@ -1,4 +1,4 @@
-// The Authoring surface, `@jr2/machines` and `@jr2/hooks` pages (ADR-0072): each name a package root exports, in
+// The Authoring surface, `@jr2/machines` and `@jr2/orchestrator/hooks` pages (ADR-0072): each name a package root exports, in
 // the root's own groups and order, followed through its re-exports to the declaration the compiler
 // finds. Per name: its kind, its signature, and its TSDoc — the summary, the params with the fields
 // of the option types an author writes, what it returns, its examples, and its `@see` links. Last,
@@ -41,7 +41,8 @@ import { dependencyNames, namedBy, renderTypes, typeBlocks, type NamedType, type
 
 export type Kind = "function" | "const" | "type";
 export type Entry = { name: string; kind: Kind; symbol: ts.Symbol; decls: ts.Declaration[]; anchor: string };
-export type EntryGroup = { title?: string; intro?: string; entries: Entry[] };
+/** `file`: the module that a group of a module page reads. Its entries do not repeat it. */
+export type EntryGroup = { title?: string; intro?: string; file?: string; entries: Entry[] };
 
 /** One root's exports, grouped by the comment that heads each export statement. A `split` surface
  * gives each name a page of its own. */
@@ -144,7 +145,7 @@ export function readSurface(ctx: RefContext, root: string, page: string, split =
   return { root, page, groups: groups.filter((g) => g.entries.length), split };
 }
 
-/** One module of a package that has more than one entry point, such as `@jr2/hooks/github`: its
+/** One module of a package that has more than one entry point, such as `@jr2/orchestrator/hooks/github`: its
  * file, the specifier that imports it, and the text that heads its group. */
 export type SurfaceModule = { root: string; specifier: string; intro: string };
 
@@ -161,7 +162,7 @@ export function readModules(ctx: RefContext, modules: readonly SurfaceModule[], 
     const entries = [...syms]
       .sort((a, b) => pos(a) - pos(b))
       .flatMap((s) => entryOf(ctx, s.name, s, sf.statements[0] ?? sf) ?? []);
-    return { title: code(m.specifier), intro: m.intro, entries };
+    return { title: code(m.specifier), intro: m.intro, file: m.root, entries };
   });
   const seen = new Set<string>();
   for (const e of groups.flatMap((g) => g.entries)) {
@@ -301,15 +302,19 @@ function renderDoc(
 }
 
 // The packages an Instance lists, so their folders are in its own node_modules: the kit, and
-// @jr2/machines and @jr2/hooks, which their pages tell the reader to add. Any other @jr2 package is a
+// @jr2/machines, which its page tells the reader to add. Any other @jr2 package is a
 // dependency of @jr2/orchestrator, which a strict node_modules (pnpm) keeps out of the Instance's.
-const LISTED = new Set(["orchestrator", "machines", "hooks"]);
+const LISTED = new Set(["orchestrator", "machines"]);
 
 /** Where a declaration's file is, as Markdown, as an Assistant finds it from the Instance's
  * node_modules: `@jr2/orchestrator/src/x.ts`, or for a package the Instance does not list, the
  * file and the package it is in. */
 function declaredIn(ctx: RefContext, d: ts.Declaration): string {
-  const file = relative(ctx.repo, d.getSourceFile().fileName);
+  return declaredInFile(relative(ctx.repo, d.getSourceFile().fileName));
+}
+
+/** `declaredIn` for a repo path. */
+function declaredInFile(file: string): string {
   const m = /^packages\/([^/]+)\/(.*)$/.exec(file);
   if (!m) return code(file);
   if (LISTED.has(m[1]!)) return code(`@jr2/${m[1]}/${m[2]}`);
@@ -337,8 +342,19 @@ const KIND_TITLE: Record<Kind, string> = { function: "Function", const: "Constan
 /** An entry as Markdown blocks after its heading: its kind, then each overload's signature and
  * TSDoc. `back` is the line that leads from an entry's own page to its contents page. An overload
  * has a heading one level under the entry's. */
-function entryBlocks(ctx: RefContext, e: Entry, from: string, named: TypeClosure, sub: string, back = ""): string[] {
-  const parts = [`${KIND_TITLE[e.kind]}, in ${declaredIn(ctx, e.decls[0]!)}.${back}`];
+function entryBlocks(
+  ctx: RefContext,
+  e: Entry,
+  from: string,
+  named: TypeClosure,
+  sub: string,
+  back = "",
+  file?: string,
+): string[] {
+  // An entry of a module page's group is declared in the group's module, which the group names once.
+  const home = relative(ctx.repo, e.decls[0]!.getSourceFile().fileName);
+  const where = file !== undefined && home === file ? "" : `, in ${declaredIn(ctx, e.decls[0]!)}`;
+  const parts = [`${KIND_TITLE[e.kind]}${where}.${back}`];
   const shown = new Set<string>();
   e.decls.forEach((d, i) => {
     if (e.decls.length > 1) parts.push(`${sub} Overload ${i + 1}`);
@@ -350,8 +366,10 @@ function entryBlocks(ctx: RefContext, e: Entry, from: string, named: TypeClosure
   return parts;
 }
 
-function renderEntry(ctx: RefContext, e: Entry, from: string, named: TypeClosure): string {
-  return [`${anchor(e.anchor)}\n\n### ${code(e.name)}`, ...entryBlocks(ctx, e, from, named, "####")].join("\n\n");
+function renderEntry(ctx: RefContext, e: Entry, from: string, named: TypeClosure, file?: string): string {
+  return [`${anchor(e.anchor)}\n\n### ${code(e.name)}`, ...entryBlocks(ctx, e, from, named, "####", "", file)].join(
+    "\n\n",
+  );
 }
 
 /** A page's contents: each group, and a link to each of its names. */
@@ -407,7 +425,10 @@ export function renderSurface(ctx: RefContext, s: Surface, intro: string): Surfa
   const sections = s.groups.map((g) => {
     const head = g.title ? [`## ${g.title}`] : [];
     const intro = g.intro ? [renderProse(ctx, g.intro[0]!.toUpperCase() + g.intro.slice(1), s.page)] : [];
-    return [...head, ...intro, ...g.entries.map((e) => renderEntry(ctx, e, s.page, named))].join("\n\n");
+    const file = g.file ? [`Each name in this group is declared in ${declaredInFile(g.file)}.`] : [];
+    return [...head, ...intro, ...file, ...g.entries.map((e) => renderEntry(ctx, e, s.page, named, g.file))].join(
+      "\n\n",
+    );
   });
   const types = named.types.length
     ? [

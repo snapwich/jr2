@@ -55,7 +55,7 @@ back to `listening`.
 
 ## See the runs
 
-[`jr2 runs`](../reference/cli.md#runs) lists the two runs. The run of `triage` has `dispatchedBy` after its id:
+[`jr2 runs`](../reference/cli.md#runs) lists the two runs. The run of `triage` has `dispatchedBy`:
 
 ```sh
 jr2 runs
@@ -66,18 +66,14 @@ jr2 runs
 ```text
 …
 → context kind-jr2 / namespace my-instance
-workflows:
-  intake (machine)
-  ping (machine)
-  triage (machine)
-[{"runId":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","workflow":"intake","instanceId":"e51d124b-88e5-461c-b464-6a3660ee13dc","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"status":"active","value":"listening","context":{"started":["45b52048-0848-4015-ad56-6ff8ae33d817"],"request":"The greeting looks wrong sometimes.","last":{"outcome":"started","run":"45b52048-0848-4015-ad56-6ff8ae33d817"}},"children":[],"waiting":[],"held":[],"assembly":"3229103a2952","dispatched":[{"slot":"triage","run":"45b52048-0848-4015-ad56-6ff8ae33d817","at":"2026-10-24T06:20:43.465Z"}]},{"runId":"45b52048-0848-4015-ad56-6ff8ae33d817","dispatchedBy":{"run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage","effect":"08423831-751f-41e5-9d93-1fa063faaf61","depth":1},"workflow":"triage","instanceId":"a2ad6e54-6a52-45c2-81f4-89f408a27d1f","startedBy":{"kind":"run","run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage"},"status":"active","value":"triaging","context":{"request":"The greeting looks wrong sometimes.","exchange":[]},"children":[],"waiting":[],"held":[],"assembly":"3229103a2952"}]
+[{"runId":"45b52048-0848-4015-ad56-6ff8ae33d817","workflow":"triage","status":"active","startedBy":{"kind":"run","run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage"},"startedAt":"2026-10-24T06:20:43.470Z","assembly":"3229103a2952","openGates":0,"dispatchedBy":{"run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage","effect":"08423831-751f-41e5-9d93-1fa063faaf61","depth":1}},{"runId":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","workflow":"intake","status":"active","startedBy":{"kind":"caller","via":"token","name":"instance","onBehalfOf":"kubernetes-admin"},"startedAt":"2026-10-24T06:20:41.902Z","assembly":"3229103a2952","openGates":0}]
 ```
 
-The first line, `…`, is the line `→ .env:`, with the keys that the CLI took from `.env`. The lines on stderr list the
-Workflows of the Instance. In `dispatchedBy`, `run` is the run that started it, `slot` is the slot of the Effect, and
-`effect` is the id of that Effect in the record of the run that started it. jr2 uses it as the key of the start, so that
-a start that jr2 sends again starts no second run. `depth` is the number of runs before it in the chain. `dispatched` of
-`intake` lists each run that it started. Your ids, your time and your hash are different.
+The first line, `…`, is the line `→ .env:`, with the keys that the CLI took from `.env`. In `dispatchedBy`, `run` is the
+run that started it, `slot` is the slot of the Effect, and `effect` is the id of that Effect in the record of the run
+that started it. jr2 uses it as the key of the start, so that a start that jr2 sends again starts no second run. `depth`
+is the number of runs before it in the chain. The list gives the newest start first, so `triage` comes before `intake`.
+`jr2 status` of `intake` shows `dispatched`: each run that it started. Your ids, your time and your hash are different.
 
 [`jr2 status`](../reference/cli.md#status) prints the link in both directions, on stderr. For the run of `intake`:
 

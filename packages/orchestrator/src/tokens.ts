@@ -25,7 +25,7 @@
 //                   container ALONE, which no Workspace code reaches (ADR-0059):
 //     control token   `agent:<pod>.<sig>`. Delivers to `kind: "agent"` registrations whose pod is
 //                   THIS one, and only for the slot the Harness states (`X-Jr2-Slot`), on the
-//                   four agent routes. The Harness process alone holds its secret Stand-in.
+//                   five agent routes. The Harness process alone holds its secret Stand-in.
 //     fetch token     `<pod>.<sig>`. Asks for a fetch for THIS Sandbox (ADR-0053), on
 //                   `POST /sandboxes/<pod>/fetch` alone. Its Stand-in is public: it can do
 //                   nothing else.
@@ -51,7 +51,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { readFileSync, unwatchFile, watchFile } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { SCOPES, type Scope, type ScopeGrant, type Scopes } from "./config.ts";
+import { SCOPES, type AnswerGrant, type Scope, type Scopes } from "./config.ts";
 
 // ---- Callers (ADR-0078) -----------------------------------------------------------------------
 // A Caller acts on the Instance from outside its Machines: the CLI, a CI job, a bridge, a person in
@@ -103,18 +103,44 @@ export function isInstanceCaller(caller: Caller): boolean {
   return caller.via === "token" && caller.name === "instance";
 }
 
-/** Whether `grant` opens `workflow`. A wrapper's name opens each of its named Charts
- * (`plan` opens `plan/weekly`), because a named Chart runs its wrapper's Machine (ADR-0070). */
-function grantOpens(grant: ScopeGrant | undefined, workflow: string): boolean {
-  if (grant === undefined) return false;
-  if (grant === "all") return true;
+/** Whether a list item's Workflow name opens `workflow`. A wrapper's name opens each of its named
+ * Charts (`plan` opens `plan/weekly`), because a named Chart runs its wrapper's Machine (ADR-0070). */
+function nameOpens(name: string, workflow: string): boolean {
+  if (name === workflow) return true;
   const cut = workflow.indexOf("/");
-  return grant.includes(workflow) || (cut > 0 && grant.includes(workflow.slice(0, cut)));
+  return cut > 0 && name === workflow.slice(0, cut);
 }
 
-/** Whether a Caller has `scope` for `workflow`. */
+/** Whether `grant` opens `workflow`: for the `answer` scope, at least one Gate of it (ADR-0078). */
+export function grantOpens(grant: AnswerGrant | undefined, workflow: string): boolean {
+  if (grant === undefined) return false;
+  if (grant === "all") return true;
+  return grant.some((item) => nameOpens(typeof item === "string" ? item : item.workflow, workflow));
+}
+
+/** Whether an `answer` grant opens the Gate named `gate` (its invoke id, ADR-0011) of `workflow`:
+ * a bare Workflow name opens each of its Gates, and a `{ workflow, gates }` item the Gates that it
+ * names (ADR-0078). */
+export function grantOpensGate(grant: AnswerGrant | undefined, workflow: string, gate: string): boolean {
+  if (grant === undefined) return false;
+  if (grant === "all") return true;
+  return grant.some((item) =>
+    typeof item === "string"
+      ? nameOpens(item, workflow)
+      : nameOpens(item.workflow, workflow) && item.gates.includes(gate),
+  );
+}
+
+/** Whether a Caller has `scope` for `workflow`. For `answer`, that is at least one Gate of it:
+ * {@link callerMayAnswer} asks for one Gate. */
 export function callerMay(caller: Caller, scope: Scope, workflow: string): boolean {
   return grantOpens(caller.may[scope], workflow);
+}
+
+/** Whether a Caller may answer the Gate named `gate` (its invoke id) of a run of `workflow`
+ * (ADR-0078). */
+export function callerMayAnswer(caller: Caller, workflow: string, gate: string): boolean {
+  return grantOpensGate(caller.may.answer, workflow, gate);
 }
 
 /** Whether a Caller has `scope` for at least one Workflow. */

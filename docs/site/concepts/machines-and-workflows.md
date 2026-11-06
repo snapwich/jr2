@@ -176,8 +176,8 @@ in the run to the feeds, also those of each child Machine.
 
 You see an Emit in these places:
 
-- `jr2 run`, and `jr2 logs -f`, write each Emit on stderr while they are attached to the run. The line holds `emit`,
-  then the Emit as JSON. `jr2 logs` without `-f` writes no Emit.
+- `jr2 run` and `jr2 watch` write each Emit while they are attached to the run. The line holds `emit`, then the Emit as
+  JSON. `jr2 run` and `jr2 watch --json` write it on stderr; `jr2 watch` writes it on stdout.
 - The Activity tab of the Console shows the type of each Emit that comes while the page is open.
 - The [Harness](../reference/glossary.md#harness) of each [Workspace](../reference/glossary.md#workspace) writes the
   Emits of its run in its log, beside the conversation of its Agents.

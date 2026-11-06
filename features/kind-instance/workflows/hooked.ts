@@ -15,8 +15,8 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import type {} from "@jr2/hooks/github";
-import type {} from "@jr2/hooks/gitlab";
+import type {} from "@jr2/orchestrator/hooks/github";
+import type {} from "@jr2/orchestrator/hooks/gitlab";
 import type {} from "./_chat.ts";
 import { defineEvent, gate, http, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 

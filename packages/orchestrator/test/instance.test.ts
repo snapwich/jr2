@@ -10,7 +10,7 @@
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,7 @@ import {
   FIXTURE_ASSEMBLY,
   hashesOnVolume,
   onVolume,
+  plainSrc,
   publishTree,
   reviewLoop,
   scratchInstance,
@@ -95,10 +96,9 @@ test("discovers workflows and serves the HTTP surface", async () => {
     const { runId } = (await started.json()) as { runId: string };
     assert.ok(runId);
 
-    const runs = (await (await fetch(`${inst.url}/runs`, auth(inst))).json()) as Array<{
-      runId: string;
-      workflow: string;
-    }>;
+    const { runs } = (await (await fetch(`${inst.url}/runs`, auth(inst))).json()) as {
+      runs: Array<{ runId: string; workflow: string }>;
+    };
     assert.ok(runs.some((r) => r.runId === runId && r.workflow === "echo"));
 
     const status = (await (await fetch(`${inst.url}/runs/${runId}`, auth(inst))).json()) as {
@@ -935,10 +935,25 @@ function age(dbPath: string, runId: string, daysAgo: number): void {
   db.close();
 }
 
+/** Publish a plain Assembly into `dir` (with `config` as its jr2.config.ts, if given) through a boot
+ * of its own, so that the next boot of `dir` has a current Assembly. Only then does a boot sweep:
+ * with no current Assembly, no `runs.retain` is bound (ADR-0065). */
+async function published(dir: string, dbPath: string, config?: string): Promise<void> {
+  const inst = await startInstance({ dir, store: new SqliteSnapshotStore(dbPath), signingKey: KEY });
+  try {
+    await publishTree(inst, dir, {
+      "workflows/echo.ts": plainSrc("echo"),
+      ...(config ? { "jr2.config.ts": config } : {}),
+    });
+  } finally {
+    await inst.close();
+  }
+}
+
 /** A finished run's row as the host writes it: the blob `read()` projects. */
 const finished = { workflow: "echo", instanceId: "i-1", snapshot: { status: "done", value: "end", context: {} } };
 
-test("the boot sweeps a finished run older than a week, and `read()` then answers it unknown (ADR-0065)", async () => {
+test("the boot sweeps a finished run older than runs.retain (30 days by default), and `read()` then answers it unknown (ADR-0065)", async () => {
   const dbDir = await mkdtemp(join(tmpdir(), "jr2-sweep-"));
   const dbPath = join(dbDir, "state.db");
   try {
@@ -947,14 +962,58 @@ test("the boot sweeps a finished run older than a week, and `read()` then answer
     await seed.save("old-run", finished, "done");
     await seed.save("new-run", finished, "done");
     await seed.close();
-    age(dbPath, "old-run", 8);
-    age(dbPath, "new-run", 6);
+    await published(dbDir, dbPath);
+    age(dbPath, "old-run", 31);
+    age(dbPath, "new-run", 29);
 
     const inst = await startInstance({ dir: dbDir, store: new SqliteSnapshotStore(dbPath), signingKey: KEY });
     try {
       assert.equal(await inst.host.read("old-run"), undefined, "swept: `jr2 status` answers `no run`");
-      assert.equal((await inst.host.read("new-run"))?.status, "done", "six days old: still readable");
+      assert.equal((await inst.host.read("new-run"))?.status, "done", "29 days old: still readable");
       assert.deepEqual(await inst.host.candidates("old", 10), [], "a swept id frees its abbreviations");
+    } finally {
+      await inst.close();
+    }
+  } finally {
+    await rm(dbDir, { recursive: true, force: true });
+  }
+});
+
+test("a boot with no current Assembly sweeps nothing, so a Kit bump keeps the history a longer runs.retain keeps (ADR-0065, ADR-0069)", async () => {
+  const dbDir = await mkdtemp(join(tmpdir(), "jr2-sweep-"));
+  const dbPath = join(dbDir, "state.db");
+  try {
+    await published(dbDir, dbPath, `export default { runs: { retain: "90d" } };\n`);
+    const seed = new SqliteSnapshotStore(dbPath);
+    await seed.init();
+    await seed.save("forty-days", finished, "done");
+    await seed.save("hundred-days", finished, "done");
+    await seed.close();
+    age(dbPath, "forty-days", 40);
+    age(dbPath, "hundred-days", 100);
+
+    // The Kit bump window: the record names another Kit version, so the boot has no current
+    // Assembly and no runs.retain is bound.
+    const records = join(dbDir, ".jr2", "assemblies");
+    const file = (await readdir(records)).find((f) => f.endsWith(".json"));
+    assert.ok(file, "the publish wrote a record");
+    const record = JSON.parse(await readFile(join(records, file), "utf8")) as Record<string, unknown>;
+    await writeFile(join(records, file), JSON.stringify({ ...record, kitVersion: "0.0.1-old" }));
+    let inst = await startInstance({ dir: dbDir, store: new SqliteSnapshotStore(dbPath), signingKey: KEY });
+    try {
+      assert.equal(inst.assembly, null, "no current Assembly");
+      assert.equal((await inst.host.read("forty-days"))?.status, "done", "not swept at the 30d default");
+      assert.equal((await inst.host.read("hundred-days"))?.status, "done", "nothing is swept");
+    } finally {
+      await inst.close();
+    }
+
+    // The same Kit again: runs.retain 90d is bound, so the boot sweeps past 90 days only.
+    await writeFile(join(records, file), JSON.stringify(record));
+    inst = await startInstance({ dir: dbDir, store: new SqliteSnapshotStore(dbPath), signingKey: KEY });
+    try {
+      assert.equal((await inst.host.read("forty-days"))?.status, "done", "40 days old: kept under 90d");
+      assert.equal(await inst.host.read("hundred-days"), undefined, "100 days old: swept");
     } finally {
       await inst.close();
     }
@@ -968,14 +1027,15 @@ test("the sweep runs again every hour while the Orchestrator is up (ADR-0065)", 
   const dbPath = join(dbDir, "state.db");
   mock.timers.enable({ apis: ["setInterval"] });
   try {
+    await published(dbDir, dbPath);
     const inst = await startInstance({ dir: dbDir, store: new SqliteSnapshotStore(dbPath), signingKey: KEY });
     try {
-      // A row that ages past the week while the process is up — the boot sweep already ran.
+      // A row that ages past runs.retain while the process is up — the boot sweep already ran.
       const other = new SqliteSnapshotStore(dbPath);
       await other.init();
       await other.save("aged-run", finished, "done");
       await other.close();
-      age(dbPath, "aged-run", 8);
+      age(dbPath, "aged-run", 31);
       assert.equal((await inst.host.read("aged-run"))?.status, "done");
 
       mock.timers.tick(60 * 60 * 1000);
@@ -991,6 +1051,7 @@ test("the sweep runs again every hour while the Orchestrator is up (ADR-0065)", 
 
 test("a failed sweep, at boot or on the hour, is logged and never fails the Orchestrator (ADR-0065)", async (t) => {
   const dbDir = await mkdtemp(join(tmpdir(), "jr2-sweep-"));
+  await published(dbDir, join(dbDir, "state.db"));
   const store = new SqliteSnapshotStore(join(dbDir, "state.db"));
   const sweep = store.sweep.bind(store);
   let sweeps = 0;

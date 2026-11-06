@@ -177,10 +177,11 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
     long as its run** (ADR-0031). The Harness persists each conversation to a directory as it goes and rebuilds it on
     boot, so a Harness restart inside a living pod keeps it; a Submission in flight at the restart settles `failed`.
     What is durable across a lost pod is Orchestrator-side — the admission ledger and snapshot
-    ([ADR-0007](0007-durable-machine-state.md)), and `wait`'s reconnect-from-offset. A conversation that is gone
-    surfaces as 404 → fault → workflow policy, the same family as `workspace.lost`. Provider-stream retry moves inside
-    the turn: the Harness states 2 retries, and pi-ai runs them (`maxRetries`) — the seat ADR-0016 delegated to flue's
-    `durability{}`.
+    ([ADR-0007](0007-durable-machine-state.md)), `wait`'s reconnect-from-offset, and the kept conversation, which a
+    person reads and no Turn continues from ([ADR-0023](0023-the-harness-prints-the-conversation.md)). A conversation
+    that is gone surfaces as 404 → fault → workflow policy, the same family as `workspace.lost`. Provider-stream retry
+    moves inside the turn: the Harness states 2 retries, and pi-ai runs them (`maxRetries`) — the seat ADR-0016
+    delegated to flue's `durability{}`.
   - **[ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)'s enabling fact is reproduced
     as explicit code.** Each Submission reads `$JR2_CUSTODIAN_URL/agents/<iid>/surface` afresh and presents it to pi as
     the Menu, so the menu is per-turn with no push channel, no turn index, no second port. Menu tools keep the

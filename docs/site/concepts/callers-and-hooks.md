@@ -53,19 +53,26 @@ credential, with its scopes. Use them to see what a credential can do before a r
 
 A scope is one act of a Caller. Its value is `"all"`, or a list of the names of the Workflows that it opens:
 
-| Scope    | The act                                                         |
-| -------- | --------------------------------------------------------------- |
-| `start`  | Start a run.                                                    |
-| `read`   | Read the full state of a run, and follow its feed.              |
-| `answer` | Answer a Gate, and read the open Gates of a run and their meta. |
-| `cancel` | Cancel a run.                                                   |
-| `steer`  | Send a Steering message to an Agent of a run.                   |
+| Scope    | The act                                                                                   |
+| -------- | ----------------------------------------------------------------------------------------- |
+| `start`  | Start a run.                                                                              |
+| `read`   | Read the full state of a run, follow its feed, list the runs, and read its conversations. |
+| `answer` | Answer a Gate, and read the open Gates and their meta.                                    |
+| `cancel` | Cancel a run.                                                                             |
+| `steer`  | Send a Steering message to an Agent of a run.                                             |
 
 For a route that addresses a run, jr2 checks the scope against the Workflow of that run. The name of a Chart wrapper
 also opens each named Chart of that wrapper. A request without the scope gets 403, which names the scope and the
 Workflow. [`GET /runs`](../reference/http-api.md#get-runs) shows only the runs of the Workflows that the Caller can
 read. A few routes, such as a runtime Chart and the log of a Hook, need the Instance token: no scope opens them. The
 [HTTP API](../reference/http-api.md#band-guarded) gives the scope of each route.
+
+The `answer` scope can also name single Gates of a Workflow, with an item `{ workflow, gates }` beside the names of
+Workflows. The name of a Gate is its invoke id. A Caller with such an item answers only those Gates of that Workflow,
+and it sees only those Gates, in [`GET /gates`](../reference/http-api.md#get-gates) and in `GET /runs/:runId`. A gate
+POST to another open Gate of that Workflow gets 403, which names the scope, the Workflow and the Gate. `jr2 up` refuses
+a Gate name that the Machines of the Workflow do not have. The other scopes, and the `may.answer` of a Hook, name only
+Workflows.
 
 A scope does not limit what a run does. A run that a Caller starts can start a run of a different Workflow with a
 [`dispatch`](../reference/authoring-surface/dispatch.md) Effect. The Machine is the limit of what its run does.
@@ -146,8 +153,8 @@ The answer is the outcome of the delivery, as JSON: where it went, and what each
 command or a click, the person who acted reads one text in the envelope of the kind
 ([The answer that a person reads](gates.md#the-answer-that-a-person-reads)).
 
-The log of the Hook keeps each delivery and its outcome for a week. The repeat check reads it. Print it with
-[`jr2 hooks <name>`](../reference/cli.md#hooks).
+The log of the Hook keeps each delivery and its outcome for `runs.retain`, 30 days by default. The repeat check reads
+it. Print it with [`jr2 hooks <name>`](../reference/cli.md#hooks).
 
 ## Hook kinds
 
@@ -155,7 +162,7 @@ A Hook kind is code that `jr2.config.ts` imports. It tells what the service sign
 payloads, the handshake of the service, and the envelope of a text that a person reads. A workflow module imports the
 same kind for the types of its handlers. Thus a handler for an event key that the kind does not give does not compile.
 
-- `@jr2/hooks` ships the kinds `github`, `gitlab`, `slack` and `discord`.
+- `@jr2/orchestrator/hooks` ships the kinds `github`, `gitlab`, `slack` and `discord`.
 - [`webhook()`](../reference/hooks.md#webhook) makes a kind from data, for a service that sends JSON, signs only the
   body, and has no handshake.
 - [`defineHookKind()`](../reference/hooks.md#definehookkind) makes a kind for any other service, in a module of the
@@ -189,7 +196,7 @@ it declares the hosts of its posts, and `jr2 up` adds them to the targets of the
 - [Open the Console](../guides/open-the-console.md)
 - [Secrets and trust](secrets-and-trust.md), [Gates](gates.md) and [Pools and Sources](pools-and-sources.md)
 - Reference: [`callers`](../reference/config.md#callers), [`hooks`](../reference/config.md#hooks),
-  [`cors`](../reference/config.md#cors), [`@jr2/hooks`](../reference/hooks.md),
+  [`cors`](../reference/config.md#cors), [`@jr2/orchestrator/hooks`](../reference/hooks.md),
   [`jr2 whoami`](../reference/cli.md#whoami), [`jr2 hooks`](../reference/cli.md#hooks), and the
   [HTTP API](../reference/http-api.md)
 - [ADR-0078](../reference/decisions/0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md): the

@@ -50,13 +50,13 @@ a step boundary, never an interrupt.
   to an Agent of the Machine that runs the action; `from` is the Sender whose words it carries. The action cuts a text
   above 16 KiB and says so in the text, because a relayed payload is not the author's to bound, and a refusal there
   would fail the transition.
-- **Addressed by Agent slot.** `agent` names an Agent slot of the run, as the run's conversation list names it. The
-  list, `{ agent, open, steerable }` for each slot at `GET /runs/:runId/agents`, is open to a Caller with `steer`, so a
-  Caller can see where a message would go. It lists each Agent that each live Machine instance carries in its `actors`,
-  with or without an open Turn, and `jr2 steer <run>` prints it. An Instance ID is not the address: jr2 computes it, a
-  Caller cannot know it, and a fresh Turn gets a new one. A slot is the name that the author gave, and the walk lets at
-  most one state of a Machine instance hold it at a time ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)),
-  so it names one conversation at a time.
+- **Addressed by Agent slot.** `agent` names an Agent slot of the run, as the run's slot list names it. The list,
+  `{ agent, open, steerable }` for each slot at `GET /runs/:runId/agents`, is open to a Caller with `steer`, so a Caller
+  can see where a message would go. It lists each Agent that each live Machine instance carries in its `actors`, with or
+  without an open Turn, and `jr2 steer <run>` prints it. An Instance ID is not the address: jr2 computes it, a Caller
+  cannot know it, and a fresh Turn gets a new one. A slot is the name that the author gave, and the walk lets at most
+  one state of a Machine instance hold it at a time ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)), so it
+  names one conversation at a time.
 - **Delivery.** When the slot has an open Turn, its Harness appends the message at the Turn's next step boundary, on the
   same read as a notice. Otherwise the message is held for the slot's next Turn of the same Machine instance, and that
   Turn's admission carries it. A held message belongs to the Machine instance that was live when it was sent: when that

@@ -9,11 +9,11 @@ import assert from "node:assert/strict";
 import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { defineHookKind, json } from "@jr2/hooks";
-import { gitlab } from "@jr2/hooks/gitlab";
-import { discord } from "@jr2/hooks/discord";
-import { github } from "@jr2/hooks/github";
-import { slack } from "@jr2/hooks/slack";
+import { defineHookKind, json } from "../src/hook-kinds/index.ts";
+import { gitlab } from "../src/hook-kinds/gitlab.ts";
+import { discord } from "../src/hook-kinds/discord.ts";
+import { github } from "../src/hook-kinds/github.ts";
+import { slack } from "../src/hook-kinds/slack.ts";
 import { gate } from "../src/gate.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { secret } from "../src/http-effect.ts";
@@ -183,6 +183,9 @@ const outcome = (b: unknown): HookOutcome => b as HookOutcome;
 
 test("a token Hook: the digest matches, the run takes the event, and the Hook is its Caller", async () => {
   const { host, door, runId } = await setup();
+  // The Gate inbox names the Hook kinds that the open Gate hears (ADR-0011).
+  const [entry] = host.gateInbox(() => true);
+  assert.deepEqual([entry?.gate, entry?.hook], ["inReview", ["discord", "github", "gitlab"]]);
   const d = gitlabDelivery("d-1");
   const answer = await door.deliver("gl", d.headers, d.body);
   assert.equal(answer.status, 200);

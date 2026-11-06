@@ -273,3 +273,30 @@ test("in an installed Instance, the `jr2` binary loads the kit from node_modules
     "the compiler passed it; the load refused it",
   );
 });
+
+test("an answer item that names a Gate the Workflow lacks: `jr2 check` and `jr2 up` refuse it alike (ADR-0078)", async () => {
+  const gated =
+    `import { defineEvent } from ${JSON.stringify(KIT_SRC)};\nimport { z } from ${JSON.stringify(ZOD)};\n` +
+    `const approve = defineEvent({ name: "approve", input: z.object({}) });\n` +
+    `export const machine = jr2Setup({ events: [approve] }).createMachine({\n` +
+    `  id: "deploy",\n  initial: "wait",\n` +
+    `  states: { wait: { invoke: { id: "approve", src: "gate", input: { gate: "D-1", accepts: ["approve"] } }, on: { approve: "done" } }, done: { type: "final" } },\n});\n`;
+  const root = await mkInstance({ deploy: gated });
+  const callers = (gates: string[]) =>
+    `export default { name: "myinst", callers: { tokens: { rm: { may: { answer: [{ workflow: "deploy", gates: ${JSON.stringify(gates)} }] } } } } };\n`;
+  await writeFile(join(root, "jr2.config.ts"), callers(["aprove"]));
+  const check = mkIo(root);
+  const up = mkIo(root);
+  assert.equal(await main(["check"], check.io), 1);
+  assert.equal(await main(["up", "--yes"], up.io), 1);
+  assert.deepEqual(why(check.err), why(up.err));
+  assert.match(
+    why(check.err).join("\n"),
+    /^refusing: callers\.tokens\.rm\.may\.answer: Workflow "deploy" has no Gate "aprove" — .*its Gates are "approve"/m,
+  );
+  // A module is imported once per process, so the fixed config is a second Instance.
+  const good = await mkInstance({ deploy: gated });
+  await writeFile(join(good, "jr2.config.ts"), callers(["approve"]));
+  const fixed = mkIo(good);
+  assert.equal(await main(["check"], fixed.io), 0, fixed.err.join(""));
+});

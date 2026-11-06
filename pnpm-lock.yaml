@@ -23,9 +23,6 @@ importers:
 
   docs/site:
     devDependencies:
-      '@jr2/hooks':
-        specifier: workspace:*
-        version: link:../../packages/hooks
       '@jr2/machines':
         specifier: workspace:*
         version: link:../../packages/machines
@@ -68,9 +65,6 @@ importers:
       '@jr2/cli':
         specifier: workspace:*
         version: link:../packages/cli
-      '@jr2/hooks':
-        specifier: workspace:*
-        version: link:../packages/hooks
       '@jr2/orchestrator':
         specifier: workspace:*
         version: link:../packages/orchestrator
@@ -89,9 +83,6 @@ importers:
 
   features/kind-instance:
     dependencies:
-      '@jr2/hooks':
-        specifier: workspace:*
-        version: link:../../packages/hooks
       '@jr2/machines':
         specifier: workspace:*
         version: link:../../packages/machines
@@ -191,19 +182,6 @@ importers:
         specifier: ^3.3.0
         version: 3.8.4
 
-  packages/hooks:
-    dependencies:
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
-    devDependencies:
-      '@types/node':
-        specifier: ^26.0.1
-        version: 26.0.1
-      typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
-
   packages/machines:
     devDependencies:
       '@jr2/orchestrator':
@@ -230,9 +208,6 @@ importers:
       '@jr2/agent-protocol':
         specifier: workspace:*
         version: link:../agent-protocol
-      '@jr2/hooks':
-        specifier: workspace:*
-        version: link:../hooks
       elkjs:
         specifier: ^0.11.1
         version: 0.11.1

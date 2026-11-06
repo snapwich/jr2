@@ -38,8 +38,9 @@ In this repository:
 | `packages/orchestrator/`   | TS   | The Orchestrator: xstate runtime, HTTP API + Console, Actors, and the Authoring surface.                               |
 | `packages/harness/`        | TS   | jr2's own Harness (ADR-0027): hosts the Agents inside a Sandbox and on the Instance Harness.                           |
 | `packages/agent-protocol/` | TS   | The Orchestrator↔Agent wire: `defineEvent` and nothing else — a pure leaf.                                             |
-| `packages/hooks/`          | TS   | The interface of a Hook kind, `webhook()`, and the kinds that jr2 ships (ADR-0078).                                    |
-| `operator/`                | Go   | Kubernetes operator: the `Sandbox` and `Repo` CRDs, the controller, and the per-node cache agent (ADR-0051).           |
+
+| `operator/` | Go | Kubernetes operator: the `Sandbox` and `Repo` CRDs, the controller, and the per-node cache agent
+(ADR-0051). |
 
 `packages/*` are pnpm workspace packages; `operator/` is a standalone Go module. `harness` and `operator` ship as the
 Kit images (ADR-0038). Every Harness pod also runs a Custodian (ADR-0059): upstream Envoy, pinned by digest, which jr2

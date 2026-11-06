@@ -85,6 +85,7 @@ const SURFACE_TYPES = [
   "PoolNextInput",
   "PushOutput",
   "RepoSlot",
+  "RunsConfig",
   "Size",
   "SourceReply",
   "SourceVerdict",
@@ -159,7 +160,7 @@ async function sourcesUnder(dir: URL, rel = ""): Promise<string[]> {
   return out;
 }
 
-test("the Machines the kit ships and the Instance-shaped folders import the root only", async () => {
+test("the Machines the kit ships and the Instance-shaped folders import the root and the Hook kinds only", async () => {
   const repo = new URL("../../../", import.meta.url);
   for (const folder of AUTHOR_FOLDERS) {
     const dir = new URL(`${folder}/`, repo);
@@ -167,7 +168,12 @@ test("the Machines the kit ships and the Instance-shaped folders import the root
     assert.ok(sources.length > 0, `${folder}: no source files`);
     for (const file of sources) {
       const text = await readFile(new URL(file, dir), "utf8");
-      assert.doesNotMatch(text, /["']@jr2\/orchestrator\/[^"']+["']/, `${folder}/${file}: imports past the root`);
+      // `@jr2/orchestrator/hooks` and its kinds are public subpaths (ADR-0078); `/internal` is not.
+      assert.doesNotMatch(
+        text,
+        /["']@jr2\/orchestrator\/(?!hooks(?:\/[a-z]+)?["'])[^"']+["']/,
+        `${folder}/${file}: imports past the root`,
+      );
     }
   }
 });

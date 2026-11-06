@@ -7,17 +7,19 @@
 import { isAbsolute, relative, sep } from "node:path";
 import type { AnyStateMachine } from "xstate";
 import { z } from "zod";
-import { isStdioServer, type JR2Config } from "./config.ts";
+import { isStdioServer, type AnswerGrant, type GateGrant, type JR2Config } from "./config.ts";
+import { senderIds } from "./party.ts";
 import type { AgentMcpServer } from "./agent.ts";
 import { imageContextDigest, type ImageRefs } from "./images.ts";
 import { openPartsText } from "./open-effect.ts";
 import { asMachine, customizeLine, partsOf, placedEffectsOf, workspacePodsOf } from "./parts.ts";
 import { isGateSlot } from "./gate.ts";
 import { isStandingPool, standingPoolOf } from "./pool.ts";
-import { hookParts, isHook } from "@jr2/hooks/door";
+import { hookParts, isHook } from "./hook-kinds/door.ts";
 import { open } from "./open.ts";
 import { refuseEffectSecrets, type PlacementWalk } from "./secret-placement.ts";
 import {
+  admitUnder,
   chartFileRefusals,
   chartName,
   chartWrapperOf,
@@ -578,6 +580,153 @@ function doorOf(machine: AnyStateMachine, chartFields: readonly string[]): Door 
   }
 }
 
+/**
+ * The `answer` items that name single Gates (ADR-0078), checked against the Machines that they
+ * name. Each item of `callers.tokens.<name>.may.answer` and of each issuer's `groups` map that is
+ * `{ workflow, gates }` must name a Workflow of this Assembly, and each Gate name must be the invoke
+ * id of a Gate in one Machine of that Workflow (ADR-0011): its registered Machine, each Machine that
+ * it composes, and for a Chart wrapper each of its Chart files. A name that two Machines of one
+ * Workflow have is refused too, because one name would open both Gates.
+ *
+ * A runtime Chart is not in the Assembly (ADR-0070), so its Gates cannot be checked: a name that
+ * only a runtime Chart of a wrapper can have, and an item for a Chart that no Chart file is, are
+ * warnings. The lines follow `refusing: ` and `warning: ` in `jr2 up`'s output; the prefixes are the
+ * caller's.
+ */
+export function gateScopeChecks(
+  workflows: readonly LoadedWorkflow[],
+  config: JR2Config | undefined,
+  charts: readonly ChartFile[] = [],
+): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const grants: Array<{ at: string; grant: AnswerGrant | undefined }> = [];
+  for (const [name, token] of Object.entries(config?.callers?.tokens ?? {})) {
+    grants.push({ at: `callers.tokens.${name}.may.answer`, grant: token.may.answer });
+  }
+  (config?.callers?.issuers ?? []).forEach((issuer, i) => {
+    for (const [value, may] of Object.entries(issuer.groups)) {
+      grants.push({ at: `callers.issuers.${i}.groups.${value}.answer`, grant: may.answer });
+    }
+  });
+  for (const { at, grant } of grants) {
+    if (grant === undefined || grant === "all") continue;
+    for (const item of grant) {
+      if (typeof item === "string") continue;
+      const checked = checkGateGrant(item, workflows, charts);
+      errors.push(...checked.errors.map((line) => `${at}: ${line}`));
+      warnings.push(...checked.warnings.map((line) => `${at}: ${line}`));
+    }
+  }
+  return { errors, warnings };
+}
+
+/** One Machine's Gates, named for a line: its Machine id, or a Chart file's path. */
+type GateHolder = { label: string; gates: ReadonlySet<string> };
+
+/** The Gates of a registered Machine and of each Machine that it composes, one holder for each
+ * Machine. A composed Machine is a key of the Machine's `actors`, or a plain child Machine written
+ * inline on a state's `invoke.src`, which runs with its own Gates as a named one does. */
+function gateHoldersOf(root: AnyStateMachine): GateHolder[] {
+  const out: GateHolder[] = [];
+  const seen = new Set<AnyStateMachine>();
+  const walk = (machine: AnyStateMachine): void => {
+    if (seen.has(machine)) return;
+    seen.add(machine);
+    const { gates } = senderIds(machine);
+    if (gates.size) out.push({ label: `machine "${machine.id}"`, gates });
+    const actors = machine.implementations.actors as Record<string, unknown>;
+    const visit = (node: AnyStateMachine["root"]): void => {
+      const written = [node.config.invoke ?? []].flat() as Array<{ src?: unknown } | undefined>;
+      node.invoke.forEach((inv, i) => {
+        const child = asMachine(typeof inv.src === "string" ? actors[inv.src] : inv.src) ?? asMachine(written[i]?.src);
+        if (child) walk(child);
+      });
+      for (const state of Object.values(node.states)) visit(state);
+    };
+    visit(machine.root);
+    for (const logic of Object.values(actors)) {
+      const child = asMachine(logic);
+      if (child) walk(child);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+/** A Chart file's Gates, or none when the Chart does not admit: `chartFileRefusals` says why. */
+function chartHolder(file: ChartFile, machine: AnyStateMachine): GateHolder | undefined {
+  const wrapper = chartWrapperOf(machine);
+  if (!wrapper || file.error !== undefined) return undefined;
+  try {
+    return { label: file.path, gates: new Set(admitUnder(wrapper, file.text).gates) };
+  } catch {
+    return undefined;
+  }
+}
+
+function checkGateGrant(
+  item: GateGrant,
+  workflows: readonly LoadedWorkflow[],
+  charts: readonly ChartFile[],
+): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const split = splitChartName(item.workflow);
+  const registered = workflows.find((w) => w.name === (split?.wrapper ?? item.workflow));
+  if (!registered) {
+    errors.push(
+      `{ workflow: "${item.workflow}", gates } names the Gates of a Workflow that this Assembly does not register, so ` +
+        "jr2 cannot check them: name a registered Workflow or a Chart file (ADR-0078)",
+    );
+    return { errors, warnings };
+  }
+  const own = gateHoldersOf(registered.machine);
+  const wrapper = chartWrapperOf(registered.machine);
+  const runtime = wrapper !== undefined && wrapper.chartFields.length > 0;
+  // Each Workflow that the item opens is one set of Machines: the wrapper's own, and for each Chart
+  // its Chart besides.
+  const files = charts.filter((f) => f.wrapper === registered.name && (split === undefined || f.name === split.name));
+  if (split !== undefined && files.length === 0) {
+    const line =
+      `{ workflow: "${item.workflow}", gates } names a Chart that is no Chart file of this Assembly; ` +
+      "a runtime Chart's Gates cannot be checked at jr2 up (ADR-0070, ADR-0078)";
+    if (runtime) warnings.push(line);
+    else errors.push(`${line}, and "${registered.name}" takes no runtime Chart`);
+    return { errors, warnings };
+  }
+  const sets: GateHolder[][] = split === undefined ? [own] : [];
+  // A Chart file that does not admit has Gates that jr2 cannot read: `chartFileRefusals` refuses it
+  // with its own line, and a name that only it could have gets no second line.
+  let unread = false;
+  for (const f of files) {
+    const chart = chartHolder(f, registered.machine);
+    if (chart) sets.push([...own, chart]);
+    else unread = true;
+  }
+  const known = [...new Set(sets.flat().flatMap((h) => [...h.gates]))].sort();
+  for (const gate of item.gates) {
+    const holders = sets.map((set) => set.filter((h) => h.gates.has(gate)));
+    const twice = holders.find((h) => h.length > 1);
+    if (twice) {
+      errors.push(
+        `Gate "${gate}" of Workflow "${item.workflow}" is in more than one Machine (${twice.map((h) => h.label).join(", ")}), ` +
+          "so the one name would open each of those Gates: give one of them an invoke id of its own (ADR-0078)",
+      );
+      continue;
+    }
+    if (holders.some((h) => h.length === 1) || unread) continue;
+    const has = known.length ? `its Gates are ${known.map((g) => `"${g}"`).join(", ")}` : "it has no Gate";
+    const line =
+      `Workflow "${item.workflow}" has no Gate "${gate}" — a Gate's name is its invoke id: the invoke id that the ` +
+      `author wrote, or else the key path of its gated state; ${has} (ADR-0011, ADR-0078)`;
+    if (runtime && split === undefined) {
+      warnings.push(`${line}; a runtime Chart of it may have one, which jr2 up cannot check`);
+    } else errors.push(line);
+  }
+  return { errors, warnings };
+}
+
 export type AssemblyRefusalInput = {
   /** The Assembly's `jr2.config.ts`, loaded; `undefined` when it ships none. */
   config: JR2Config | undefined;
@@ -626,6 +775,9 @@ export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<str
   ];
   // A Chart file is the Instance's own (ADR-0070): one that fails refuses the publish.
   if (input.charts?.length) lines.push(...chartFileRefusals(input.charts, input.workflows));
+  // An `answer` item that names single Gates names Gates that the Assembly has (ADR-0078). Its
+  // warnings have no channel in the publish's answer: `jr2 up` printed them before the publish.
+  lines.push(...gateScopeChecks(input.workflows, input.config, input.charts ?? []).errors);
   // A same-Instance dispatch names a Workflow this Assembly has (ADR-0071). The door sees the
   // runtime Charts, so a miss is an error here. Its warnings (a schema "not compared") have no
   // channel in the publish's answer, and are dropped: `jr2 up` printed them before the publish.

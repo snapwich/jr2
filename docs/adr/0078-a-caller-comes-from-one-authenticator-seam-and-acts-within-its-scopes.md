@@ -66,6 +66,25 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
   scope opens which route is [ADR-0014](0014-observation-is-open-run-state-is-not.md)'s table. A 403 names the scope and
   the Workflow that the request needed. A Caller with the scope for no Workflow at all is refused before the Workflow is
   read, and the 403 names the scope.
+- **`answer` can name single Gates.** Its list takes an item `{ workflow, gates: [<name>] }` beside a bare Workflow
+  name, which still means every Gate of that Workflow: `answer: ["triage", { workflow: "deploy", gates: ["approve"] }]`.
+  The same form is a value of the `groups` map, so a team's group answers its own Gate of a Workflow and not the others.
+  A Hook's `may.answer` stays per Workflow: the Gate slot's handlers already say which Gates hear its kind. A Gate's
+  name is its invoke id, its static name in the Machine that invokes it ([ADR-0011](0011-workflow-defined-events.md)).
+  One name covers every Gate of the Workflow with that id, and `jr2 up` refuses a name that the Workflow's Machines do
+  not have, so a typo fails at the door and not at the first answer, and a name that matches Gates in more than one
+  Machine of the Workflow, so one name never opens two Gates without the author's word. An item for a Chart wrapper,
+  `{ workflow: "plan", gates }`, opens those Gates in each named Chart of `plan` too, and `jr2 up` checks its names
+  against the wrapper's Machine and each named Chart of the Assembly; an item for `plan/weekly` opens and checks that
+  Chart alone. A runtime Chart's Gates do not exist at `jr2 up`, so `jr2 up` cannot check them: a name that no Machine
+  and no Chart file of the wrapper has, and an item for a Chart that is no Chart file, are warnings and not refusals,
+  and at run time the item opens the Gates of that name in the runtime Charts too. `GET /gates`, `GET /runs/:id` and the
+  404 of a gate POST list only the Gates that the Caller may answer. A gate POST to an open Gate that the Caller may not
+  answer is a 403 that names the scope, the Workflow and the Gate. The check and the delivery are one step, so a Gate
+  that opens while the request is in flight is checked too. So a 403 and a 404 tell a Caller which Gate is open. That is
+  not a secret: which state a run is in is observation, and the open run projections show it
+  ([ADR-0014](0014-observation-is-open-run-state-is-not.md)). The other four scopes stay per Workflow: each of them acts
+  on a whole run.
 - **The CLI is the Caller `token/instance`.** It reads the Instance token as before, and it sends `onBehalfOf`: the user
   name that a kube `SelfSubjectReview` gives for the current context. It asks for the name beside the port-forward, and
   a server that does not answer gives no claim and no failure. A name that is not printable ASCII is not sent, because a
@@ -136,13 +155,14 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
   reads needs a kind module. Sentry, the alert service of the standing Pool
   ([ADR-0017](0017-pool-over-a-source-port.md)), fits `webhook()` or a kind from another package.
 
-- **A Hook kind is a module of the `@jr2/hooks` interface, from any package or a local file.** `jr2.config.ts` declares
-  it by `import`, and `jr2 up` bundles it into the Assembly
+- **A Hook kind is a module of the `@jr2/orchestrator/hooks` interface, from any package or a local file.**
+  `jr2.config.ts` declares it by `import`, and `jr2 up` bundles it into the Assembly
   ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). jr2 loads no kind at run
-  time and discovers none from a folder. jr2's own kinds (`@jr2/hooks/github` and the others) use the same interface,
-  and nothing more. `@jr2/hooks` is a dependency of `@jr2/orchestrator`, so the Orchestrator Kit image holds its one
-  copy, and each kind in an Assembly uses that copy. The door reads a Hook and a kind through `@jr2/hooks/door`, which
-  is not part of a kind's interface, because the module that makes a Hook decides its shape.
+  time and discovers none from a folder. jr2's own kinds (`@jr2/orchestrator/hooks/github` and the others) use the same
+  interface, and nothing more. The interface and the kinds are subpath exports of `@jr2/orchestrator`, so the
+  Orchestrator Kit image holds their one copy, and each kind in an Assembly uses that copy. The door reads a Hook and a
+  kind through a module that the package does not export, because it is not part of a kind's interface. It sits beside
+  the module that makes a Hook, because that module decides the shape of a Hook.
   - **A kind never gets the credential.** jr2 makes the kind's constructor, so the credential goes from the config to
     the door and never through code that the kind wrote. For `token`, the door removes the header before any code of the
     kind runs.
@@ -159,7 +179,8 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
     its url and its JSON (the reply to a Slack click). The kind declares the hosts of its posts, and `jr2 up` adds them
     to the Instance Effector's fence (ADR-0068).
   - **The interface is a public surface of v1.** A kind states `api: 1`, and a kind's package has a peer dependency on
-    `@jr2/hooks` `^1`. In 1.x, a new field of the interface is optional. A change that breaks a kind is `api: 2`.
+    `@jr2/orchestrator`. The `api` is the contract, not the package version: the door refuses a kind whose `api` it does
+    not know. Within `api: 1`, a new field of the interface is optional. A change that breaks a kind is `api: 2`.
 
 - **Three verifiers, a closed set, and the Effector knows no Hook kind.** A kind chooses one, and gives the door what to
   verify: the bytes that the service signed, the signature, and the signed timestamp `at` when the signature covers one.
@@ -183,11 +204,11 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
   **One window: 300 seconds, for every signed timestamp.** The door refuses a delivery whose `at` is more than 300
   seconds from its clock. A kind gives the timestamp and never the window, and no config changes it. Slack asks for 5
   minutes. Discord states no window, and its signature covers its timestamp, so the same window applies. The window
-  closes a replay after the hook log forgets the delivery, a week later
-  ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)). A failed check, or a timestamp out of the
-  window, is 401 (Discord sends bad signatures on purpose and expects 401). A new scheme is a change to the set. What a
-  delivery does after the verifier is ADR-0011's: the handshake, the parse, the route, the repeat check, the fan-in and
-  the answer.
+  closes a replay after the hook log forgets the delivery, `runs.retain` later
+  ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md)). A failed check, or a timestamp
+  out of the window, is 401 (Discord sends bad signatures on purpose and expects 401). A new scheme is a change to the
+  set. What a delivery does after the verifier is ADR-0011's: the handshake, the parse, the route, the repeat check, the
+  fan-in and the answer.
 
 - **Tests.** The unit tier checks the JWT authenticator against an in-process issuer made with `jose`: a good token, a
   wrong issuer or audience, an expired token, a key that rotated, and a token with no scope. The `@console` tier checks
@@ -225,6 +246,8 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
   token ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). A digest that leaks starts nothing.
 - **A Caller's scope as a limit on its run's dispatches.** Rejected: a run's Effects are the author's Machine, not the
   Caller's. A limit there makes the same Machine do different things for different Callers.
+- **`answer` for whole Workflows only.** Rejected: one Workflow can wait on Gates that different people answer (a team's
+  review, a release manager's approval), and a scope for the whole Workflow lets each of them answer the other's Gate.
 - **A scope for each route.** Rejected: the five scopes are the five acts of a Caller. A finer scope names a route,
   which can change, and not an act.
 - **`may.start` on a Hook**, so that a Hook can start runs of a Workflow. Rejected: a Hook never starts a run
@@ -238,6 +261,10 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
   window). Rejected: every new service is then a change to the Go binary that is the trust boundary, and nothing in the
   bytes to check or in the window is secret. The Effector needs only the one operation that needs the secret: an HMAC
   over given bytes.
+- **A package of its own for the interface and the kinds** (`@jr2/hooks`). Rejected: the Kit releases every package at
+  one version, so a separate package gives the interface no version line of its own, and `api` already is its contract.
+  A kind's package has a peer dependency on the kit either way, because every Instance that loads a kind has
+  `@jr2/orchestrator`. A separate package only adds a public package to publish, pin and stage at each release.
 
 ## Consequences
 
@@ -246,10 +273,8 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
 - [ADR-0014](0014-observation-is-open-run-state-is-not.md)'s guarded band becomes a scope check for each route.
   [ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)'s Console takes any Caller's credential, and shows
   only what its scopes allow. ADR-0071's foreign dispatch takes any token with `start` for that Workflow.
-- The Kit gains the package `@jr2/hooks`: the interface of a Hook kind, `webhook()`, and jr2's kinds. It is a new public
-  package, so a maintainer publishes its first version by hand before the first tag that holds it
-  ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)'s bootstrap). Until then the
-  release job cannot stage it, and the staged `@jr2/orchestrator`, which depends on it, cannot install.
+- `@jr2/orchestrator` gains the subpath exports `@jr2/orchestrator/hooks` (the interface of a Hook kind) and
+  `@jr2/orchestrator/hooks/github`, `/gitlab`, `/slack`, `/discord` and `/webhook` (jr2's kinds and `webhook()`).
 - `jr2.config.ts` gains `callers`, `hooks` and `cors`. The CLI gains `jr2 caller token|rotate <name>` and `jr2 whoami`
   ([ADR-0009](0009-cli-and-instance-interface.md)).
 - GLOSSARY.md: **Caller** names the Steering message and the Hook. **Hook** and **Hook kind** are new terms.

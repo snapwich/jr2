@@ -122,8 +122,22 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   Effector manifests, the held-secret Secrets, and the roots of the image sweep. A held run that still needs one the
   current Assembly dropped fails at that provision, naming the held Assembly; so a publish strands no run whose Machine
   it changed, and a publish that drops a Sandbox Image context a parked run has not yet provisioned is the one edit that
-  still can. The Console draws a run on the current Machine; a held run's `assembly` is in its status, and a Console
-  that marks or draws held runs is a later decision. So a publish strands nothing: the "editing a workflow strands its
+  still can. A held run's `assembly` is in its status and in its `GET /runs` summary. The Console marks a run whose
+  Assembly is not the current one, "older Assembly · <hash>", and draws it on the run's own Machine, not on the current
+  Machine, from `GET /workflows/:name/runs/:runId/machine`; so the lit states are always states of the run's own Machine
+  ([ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)). For a live run the route reads the Machine from
+  the Assembly that the run holds. An ended run holds no Assembly, so the run's terminal write keeps its Machine, as
+  structure with the Charts that it bound last compiled in, in a table of its own in `state.db`, once for each distinct
+  doc: the key is a digest of the kept doc. The Machine digest of
+  [ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md) is not the key, because it hashes only what a
+  restore needs, and two Machines that differ in a guard, a description or an Effect's command would share one copy. The
+  Console draws every ended run from the route, because the status of an ended run binds no Chart. The run's row holds
+  only the key, so a thousand runs of one Workflow on one Assembly keep one copy, and the terminal write adds a row only
+  for a doc that the table does not have. The route serves that copy for as long as the row is kept
+  ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md)), and the run sweep deletes a doc
+  that no kept row names. So the collection rule above does not change for history: an ended run needs no Assembly to be
+  drawn. A `drifted` run has no Machine to keep, because its Assembly could not load: the Console shows no graph for it,
+  and shows its drift reason in place of the graph. So a publish strands nothing: the "editing a workflow strands its
   parked runs" consequence of [ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md) is retired, and
   drift is what it always meant, "I can no longer read what I saved": an Assembly that cannot load after a Kit version
   bump, or a volume that lost it. Such a run is `drifted` with a reason naming the Assembly hash and the import error;
@@ -155,6 +169,14 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   The agent path is data: [ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md).
 - **Semver-compatible Assemblies.** Rejected above; one line to loosen later.
 - **Keep only the current Assembly and report the runs a publish will strand.** Rejected above.
+- **Hold each Assembly that a kept run names, to draw an ended run.** Rejected: an ended run needs only its Machine's
+  structure, not the code of the Assembly, and a hold for each kept row would keep every Assembly for `runs.retain` and
+  grow the volume with each publish. The run's structure is kept instead.
+- **Keep the Machine in each ended run's row.** Rejected: every run of a Workflow on one Assembly would store the same
+  structure again, the space guard never frees rows, and the copy would add work to the synchronous terminal write. One
+  copy for each distinct structure, named by the row, costs neither.
+- **Draw no graph for an ended run whose Assembly is gone.** Rejected: the graph of a failed run is what a person reads
+  first, and the copy in the row is small.
 
 ## Consequences
 

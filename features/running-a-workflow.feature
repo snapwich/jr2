@@ -47,7 +47,8 @@ Feature: Running a workflow
 
   Rule: live and settled runs are observable
     A still-running workflow shows up in `jr2 runs`; a settled one is read through to the store by
-    `jr2 status`. (The instant `ping` scaffold can't stay live, so this Rule also serves a `loop`.)
+    `jr2 status`, and `jr2 runs --status ended` lists it from the store (ADR-0009). (The instant
+    `ping` scaffold can't stay live, so this Rule also serves a `loop`.)
 
     Background:
       Given a fresh instance
@@ -65,25 +66,42 @@ Feature: Running a workflow
       Then the status is "done"
       And the reply is "pong: hi"
 
-  Rule: logs replays a run's status, and follows a live one until it settles
-    ADR-0009. `jr2 logs <runId>` re-attaches to the run's feed: the orchestrator replays the current
-    status on attach, so even a settled run answers with where it ended. `-f` keeps streaming
-    deltas and returns on its own once the run is no longer active — the verb for watching a run
-    someone else started, or one `run --detach` let go of.
+    Scenario: runs lists a settled run with --status ended, and only when its filters match
+      When I run "ping" with message "hi"
+      And I list the runs with "--status ended"
+      Then the run appears in the runs list with status "done"
+      When I list the runs with "--status ended --workflow ping --since 1h"
+      Then the run appears in the runs list with status "done"
+      When I list the runs with "--status ended --workflow loop"
+      Then the run does not appear in the runs list
+      And the run is absent from the runs list
+
+  Rule: watch replays a run's status, and follows a live one until it settles
+    ADR-0009. `jr2 watch <runId>` re-attaches to the run's feed: the orchestrator replays the current
+    status on attach, so even a settled run answers with where it ended, once. On a live run it keeps
+    streaming deltas and returns on its own once the run is no longer active — the verb for watching
+    a run someone else started, or one `run --detach` let go of. `--json` prints each status as JSON.
 
     Background:
       Given a fresh instance
       And the instance also has a long-running workflow
       And the orchestrator is serving
 
-    Scenario: logs on a settled run prints its terminal status once
+    Scenario: watch on a settled run prints its terminal status once
       When I run "ping" with message "hi"
-      And I read the logs of that run
+      And I watch that run
       Then stdout is the terminal status with reply "pong: hi"
       And the command exits 0
 
-    Scenario: logs -f on a live run returns when the run settles
+    Scenario: watch on a live run returns when the run settles
       When I start the "loop" workflow detached
-      And I follow the logs of that run while it is cancelled
+      And I watch that run while it is cancelled
       Then the last status printed is "cancelled"
       And the command exits 0
+
+    Scenario: watch without --json prints the lines that jr2 run prints while it is attached
+      When I run "ping" with message "hi"
+      And I watch that run as a person reads it
+      Then the command exits 0
+      And stdout starts with the attach line of the "ping" run
+      And stdout holds "done"

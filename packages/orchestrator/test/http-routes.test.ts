@@ -24,7 +24,7 @@ import {
   mintInstanceToken,
   sandboxToken,
 } from "../src/tokens.ts";
-import { gitlab } from "@jr2/hooks/gitlab";
+import { gitlab } from "../src/hook-kinds/gitlab.ts";
 import { hookDoor } from "../src/hooks.ts";
 import { secret } from "../src/http-effect.ts";
 import { mkStore } from "./_fixtures.ts";

@@ -64,7 +64,7 @@ decision generalizes that container. It holds every credential the Harness in it
   ([ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md)), and a `poll` event refuses the turn
   (`deferred` is retired, ADR-0006). The event's own JSON Schema is the tool's parameters, so the model sees the
   contract the Orchestrator validates against.
-- **The control listener forwards five routes and no other.** Plain HTTP, to the Orchestrator's Service
+- **The control listener forwards six routes and no other.** Plain HTTP, to the Orchestrator's Service
   (`jr2-orchestrator.<ns>.svc:4000`, written into the pod's bootstrap by whoever makes the pod — see "Objects, per
   pod"):
 
@@ -73,21 +73,23 @@ decision generalizes that container. It holds every credential the Harness in it
   POST /agents/<iid>/events           → the same path     a pick
   GET  /agents/<iid>/deliveries/<id>  → the same path     an outstanding pick's answer (ADR-0024)
   POST /agents/<iid>/notices          → the same path     a step boundary's notices heard (ADR-0062, ADR-0076)
+  POST /agents/<iid>/conversation     → the same path     a batch of the conversation's entries (ADR-0023)
   POST /fetch                         → /sandboxes/<this pod's Sandbox>/fetch     the ask (ADR-0053)
   anything else                       → 404, from the Custodian
   ```
 
-  The four agent routes are on a Unix socket, `/run/jr2/custodian/control.sock`, in a folder that the Harness and the
+  The five agent routes are on a Unix socket, `/run/jr2/custodian/control.sock`, in a folder that the Harness and the
   Custodian share and that no confined program can write (ADR-0076). The fetch is on `127.0.0.1:8081`, because
   `jr2-upload-pack` runs in the domain, and the fetch Stand-in is public. Each listener answers 404 to the other's
   routes. Landlock does not limit a connect to a named socket, so a confined program can connect to the control socket.
   It holds no control Stand-in, so the Custodian refuses each agent route that it asks for there, with the fetch
   Stand-in or with none, and the control socket answers 404 to the fetch route.
 
-  A read — the surface, a delivery's poll — and an acknowledgment of notices, which marks them heard however often it
-  lands, are retried on any reset; a pick and the ask only on a reset before they were sent, so one the Orchestrator may
-  have read is not sent twice. A poll holds up to about 25 s, far below the listener's 3600 s idle limit, so an
-  outstanding pick never rides one long request (ADR-0002).
+  A read — the surface, a delivery's poll — an acknowledgment of notices, which marks them heard however often it lands,
+  and a batch of the conversation's entries, whose `seq`s make a second send add nothing (ADR-0023), are retried on any
+  reset; a pick and the ask only on a reset before they were sent, so one the Orchestrator may have read is not sent
+  twice. A poll holds up to about 25 s, far below the listener's 3600 s idle limit, so an outstanding pick never rides
+  one long request (ADR-0002).
 
   On each forwarded request, the Custodian swaps `Authorization: Bearer <Stand-in>` for the token of that route — the
   control token on an agent route, the fetch token on the fetch route — and removes every other credential header. A

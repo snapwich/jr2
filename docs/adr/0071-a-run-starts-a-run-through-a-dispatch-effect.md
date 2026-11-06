@@ -109,31 +109,32 @@ composition and does not replace it. The two uses stay two mechanisms.
   no run under the key, 400 when a header does not parse, and 500, never 404, for any other throw, since a foreign
   caller reads a 404 as "nothing was started" (ADR-0033 as amended). **The key is scoped to the callee Workflow**: the
   store finds a key with the Workflow's name, so the same key in two Workflows is two runs, and a key never answers with
-  a run of another Workflow. A key answers `existing` while its run's row lives, in any status: live, and a week after
-  it ends. A retry after a failure is then a person's act, not a re-sent start's. The Effect checks the key before it
-  checks its input against the slot's schema, in-process and on the foreign path, as the door does: a start sent again
-  across a change of the callee's door answers `existing`, not an error. In-process it asks the run host for the key
-  before it reads the input, within the slot's bound. On the foreign path, a body that the slot's schema refuses is
-  never sent: the start is a **key-only ask**, the header `jr2-key-only: true` beside `jr2-dispatched-by` and no body,
-  out of band as the key is. The door keeps its order: the scope check (ADR-0078), then the key. With a run under the
-  key it answers `existing`, as for any start; with none it starts nothing and answers 200 with `{ existing: false }`,
-  which a foreign caller cannot read as a refused name (404) or a defect (5xx). The Instance Effector settles that
-  answer as `absent`, an outcome of the wire alone, and the Effect makes it the slot's schema refusal, the invoke's
-  error. So input that fails the slot's schema starts nothing on either path, and a run that its key already started is
-  answered on both. A body that the slot's schema takes goes as before, in one request. This is the same for a first
-  send and for a send again (a restore, a retry): a Pool's hand-over is a first send of a new run's Effect under a key
-  that may already name a run of a callee whose door changed. A `wait` sent again under a key that answers `existing`
-  follows that run, and settles when it ends. **A Pool's worker sends its `itemId` as the key**
-  ([ADR-0017](0017-pool-over-a-source-port.md)), so a Pool's hand-over re-attaches to each live run. An author's own key
-  (`dispatch({ key })`) is not offered now; to add it later breaks nothing. The key lives in the callee's blob (a Pool's
-  `dispatchedBy.key`, else `dispatchedBy.effect`), and the store copies it and the Workflow into columns of their own
-  (`dispatch_effect`, `dispatch_workflow`) at every save and indexes the pair, not an expression index over
-  `json_extract`: SQLite's JSON parser refuses a blob nested about a thousand deep, and such an index would fail that
-  row's save and every later open of the volume. A run restore marks `lost` keeps its row and its blob, so its key keeps
-  answering; the weekly sweep ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)) removes the key
-  with the row, and a re-send after it starts a new run: known, and not guarded. In-process the ledger is consulted
-  directly, through the same start under the same key, with the starts in flight held so two arrivals of one key before
-  the first save are one run. So a dispatch is idempotent whatever its author writes: its intent row says
+  a run of another Workflow. A key answers `existing` while its run's row lives, in any status: live, and for
+  `runs.retain` after it ends ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md)). A
+  retry after a failure is then a person's act, not a re-sent start's. The Effect checks the key before it checks its
+  input against the slot's schema, in-process and on the foreign path, as the door does: a start sent again across a
+  change of the callee's door answers `existing`, not an error. In-process it asks the run host for the key before it
+  reads the input, within the slot's bound. On the foreign path, a body that the slot's schema refuses is never sent:
+  the start is a **key-only ask**, the header `jr2-key-only: true` beside `jr2-dispatched-by` and no body, out of band
+  as the key is. The door keeps its order: the scope check (ADR-0078), then the key. With a run under the key it answers
+  `existing`, as for any start; with none it starts nothing and answers 200 with `{ existing: false }`, which a foreign
+  caller cannot read as a refused name (404) or a defect (5xx). The Instance Effector settles that answer as `absent`,
+  an outcome of the wire alone, and the Effect makes it the slot's schema refusal, the invoke's error. So input that
+  fails the slot's schema starts nothing on either path, and a run that its key already started is answered on both. A
+  body that the slot's schema takes goes as before, in one request. This is the same for a first send and for a send
+  again (a restore, a retry): a Pool's hand-over is a first send of a new run's Effect under a key that may already name
+  a run of a callee whose door changed. A `wait` sent again under a key that answers `existing` follows that run, and
+  settles when it ends. **A Pool's worker sends its `itemId` as the key** ([ADR-0017](0017-pool-over-a-source-port.md)),
+  so a Pool's hand-over re-attaches to each live run. An author's own key (`dispatch({ key })`) is not offered now; to
+  add it later breaks nothing. The key lives in the callee's blob (a Pool's `dispatchedBy.key`, else
+  `dispatchedBy.effect`), and the store copies it and the Workflow into columns of their own (`dispatch_effect`,
+  `dispatch_workflow`) at every save and indexes the pair, not an expression index over `json_extract`: SQLite's JSON
+  parser refuses a blob nested about a thousand deep, and such an index would fail that row's save and every later open
+  of the volume. A run restore marks `lost` keeps its row and its blob, so its key keeps answering; the sweep of rows
+  older than `runs.retain` ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md)) removes
+  the key with the row, and a re-send after it starts a new run: known, and not guarded. In-process the ledger is
+  consulted directly, through the same start under the same key, with the starts in flight held so two arrivals of one
+  key before the first save are one run. So a dispatch is idempotent whatever its author writes: its intent row says
   `idempotent: true`, a restore that cannot tell whether its start arrived sends it again under its key with what is
   left of the bound, the Instance Effector sends a start whose answer was lost again under its key with backoff until
   the bound, and the Effector's rollout grace is never stretched by a dispatch's wait. Once the answer names the run,

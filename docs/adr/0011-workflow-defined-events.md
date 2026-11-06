@@ -74,10 +74,27 @@ _normal_ case), all accepting `approve` — a run-level POST is ambiguous. And e
 in gates: a CLI listing shows pending decisions and acts on one; a UI inbox renders one card per gate (schemas drive the
 forms, `meta` drives the copy); a hooked Gate's own handler matches a forge's delivery against its `meta` (e.g. `pr`,
 below), which is why `meta` exists. Generalizing beyond humans also closes a hole hard-coded event types left: a push
-seam like "a Hook brings an item" is a Pool's `source` Gate ([ADR-0017](0017-pool-over-a-source-port.md)). Two obvious
-later additions, both deferred: a cross-run inbox (`GET /gates`, which the `answer` scope opens,
-[ADR-0014](0014-observation-is-open-run-state-is-not.md)), and CLI segment-matching over derived gate ids (`--gate F-12`
-resolving an unambiguous segment, git-style like run-id prefixes).
+seam like "a Hook brings an item" is a Pool's `source` Gate ([ADR-0017](0017-pool-over-a-source-port.md)). The cross-run
+inbox is `GET /gates`: the open Gates of every live run that the Caller may answer, oldest first, with a `workflow`
+filter, each entry `{ runId, workflow, gate, path, accepts, acceptsNow, meta, openedAt, hook? }` (`hook` names the Hook
+kinds that the Gate hears, when it hears one) and never the run's `context`
+([ADR-0014](0014-observation-is-open-run-state-is-not.md)). A Gate that takes no event from a Caller, as a Pool's
+`source` Gate that hears only Hooks, is not in it: no person can answer it. `jr2 gates [--workflow]` prints it, and the
+Console's Gate cards read it. A stream of it is a later addition. CLI segment-matching over derived gate ids
+(`--gate F-12` resolving an unambiguous segment, git-style like run-id prefixes) is deferred.
+
+**The `answer` scope can name single Gates**, in the form of
+[ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md). It names a Gate by its invoke
+id, the one static name a Gate has in the Machine that invokes it, and the id that its events carry as their sender
+(below): the invoke `id` that the author wrote, or else the key path of its gated state below the root of that Machine
+(`body.humanReview`), with `.0`, `.1` after it when that state invokes more than one unnamed Gate. So `body.humanReview`
+names that Gate in every child of a Pool, and two gated states with one key at two paths of one Machine have two names.
+The name is not unique across the Workflow: a Workflow composes Machines by invoke
+([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), and two composed Machines that each gate a
+state `approve` give that name to two Gates. One per-Gate name covers every Gate of the Workflow that has that invoke
+id, and `jr2 up` refuses a per-Gate name that matches Gates in more than one Machine of the Workflow, so a scope never
+opens a Gate that its author did not see; the author writes an invoke `id` on one of them to tell them apart. It is not
+the caller-facing gate id, which is different in each child and which a workflow may compute.
 
 **The gate id is derived; authoring one is the exception.** Absent an authored `gate`, the id is the gate actor's own
 path below the run root, and jr2Setup's menu-derivation walk names an unnamed gate invoke with its state key path so the
@@ -285,13 +302,14 @@ an event for a run.
   Discord's deferred answer (type 5) would make the run's result the answer, but its token lives 15 minutes, a run is
   often longer, and a deferred answer that nobody edits stays "thinking". When the door misses the service's 3 seconds,
   the person sees the service's error, the hook log keeps what jr2 did, and a held item still runs.
-- **The hook log keeps each delivery a week** ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)):
-  its Hook, id, digest, outcome and the status that the rules give, a `payload-refused` delivery with zod's issues, a
-  Source's skip with its reason, a `reply` that threw, and a failed follow-up post. `jr2 hooks <name>` prints it, newest
-  first, from `GET /hooks/:name`, which takes the Instance token alone
-  ([ADR-0014](0014-observation-is-open-run-state-is-not.md)): a line can hold a payload's fields and a handler's words.
-  A run's blob keeps its `(delivery, gate)` pairs as the `delivery` of each answer that a Hook gave (the run's last 100
-  answers, ADR-0078), so a restore never gives one delivery twice to one Gate.
+- **The hook log keeps each delivery for `runs.retain`**
+  ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-kept-for-a-set-time.md)): its Hook, id, digest, outcome and
+  the status that the rules give, a `payload-refused` delivery with zod's issues, a Source's skip with its reason, a
+  `reply` that threw, and a failed follow-up post. `jr2 hooks <name>` prints it, newest first, from `GET /hooks/:name`,
+  which takes the Instance token alone ([ADR-0014](0014-observation-is-open-run-state-is-not.md)): a line can hold a
+  payload's fields and a handler's words. A run's blob keeps its `(delivery, gate)` pairs as the `delivery` of each
+  answer that a Hook gave (the run's last 100 answers, ADR-0078), so a restore never gives one delivery twice to one
+  Gate.
 - **Tests.** The default tier drives `POST /hooks/:name` with a `token` and an `ed25519` verifier against hooked Gates
   and a Pool's Source, with the handshakes, the parse, the join of the replies and the envelopes. It has no Instance
   Effector, so the `@kind` tier drives a `mac` verifier through the Instance Effector, and a look whose `http` read runs

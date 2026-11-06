@@ -225,7 +225,7 @@ const provisionable = {
 const APP_URL = "https://example.test/app.git";
 const APP_KEY = repoKey(APP_URL);
 const app: ProvisionedRepo = { slot: "app", url: APP_URL, perRun: false };
-const withApp = { repos: [app], route: [] as PlacementRoute };
+const withApp = { repos: [app], route: [] as PlacementRoute, path: "ws" };
 
 /** The CPU hints every Harness container carries (ADR-0060): its own `limits.cpu`, whole cpus. */
 const CPU_HINTS = ["JR2_CPUS", "OMP_NUM_THREADS", "PYTHON_CPU_COUNT", "GOMAXPROCS"].map((name) => ({
@@ -258,7 +258,13 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
   const { exec, calls, api } = cluster([PENDING, PENDING, READY]);
   const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
 
-  const { endpoint } = await port.provision({ name: "sb-1", runId: "run-9", workflow: "coding", ...withApp });
+  const { endpoint } = await port.provision({
+    name: "sb-1",
+    runId: "run-9",
+    workflow: "coding",
+    ...withApp,
+    path: "review/item #7/ws",
+  });
   assert.equal(endpoint, "http://sb-1.default.svc:8080");
   // Waited on WATCH EVENTS (ADR-0063): the Sandbox was never read by name, and no Pod ever was.
   assert.deepEqual(
@@ -273,7 +279,17 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
 
   const applied = crOf(calls);
   assert.equal(applied.metadata.name, "sb-1");
-  assert.deepEqual(applied.metadata.labels, { "jr2.dev/run": "run-9", "jr2.dev/workflow": "coding" });
+  // The run, the Workflow and the path's selector form as labels; the exact path and the hold mark
+  // as annotations (ADR-0012, ADR-0021): what `jr2 workspace` reads with no Orchestrator.
+  assert.deepEqual(applied.metadata.labels, {
+    "jr2.dev/run": "run-9",
+    "jr2.dev/workflow": "coding",
+    "jr2.dev/workspace": "review-item--7-ws",
+  });
+  assert.deepEqual(applied.metadata.annotations, {
+    "jr2.dev/workspace-path": "review/item #7/ws",
+    "jr2.dev/hold": "held",
+  });
   // No `image` on the request (the wrapper named none) → `images/default` (ADR-0037's middle
   // leg), resolved from the map.
   assert.equal(applied.spec.image, "jr2-sandbox-inst-default:d00");
@@ -292,6 +308,8 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     // The conversations' directory (ADR-0031), the Harness container's alone, under `/run/jr2`,
     // which no confined child can read (ADR-0076).
     { name: "conversations", mountPath: "/run/jr2/conversations" },
+    // The socket of a person's shell (ADR-0076): the Harness container's alone.
+    { name: "shell", mountPath: "/run/jr2/shell" },
     // Its Stand-ins, as files no confined child can read (ADR-0076, C1).
     { name: "harness-credentials", mountPath: "/run/jr2", readOnly: true },
     // The Custodian's control socket, which it connects to and cannot write (ADR-0076).
@@ -305,13 +323,14 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
       "work",
       "runtime",
       "conversations",
+      "shell",
       "custodian-values",
       "custodian-config",
       "custodian-socket",
       "harness-credentials",
     ],
   );
-  assert.deepEqual(applied.spec.volumes.slice(0, 3), [
+  assert.deepEqual(applied.spec.volumes.slice(0, 4), [
     { name: "work", emptyDir: {} },
     // The KIT's image, mounted as a volume (ADR-0037): no pull policy of its own, so the kubelet
     // treats the ref exactly as it treats the same ref on a container.
@@ -319,6 +338,7 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     // An emptyDir: a Harness restart inside the pod keeps its conversations, and a pod that is
     // gone takes them with it — that Workspace is Lost (ADR-0021, ADR-0031).
     { name: "conversations", emptyDir: {} },
+    { name: "shell", emptyDir: {} },
   ]);
   assert.ok(!JSON.stringify(applied).includes("persistentVolumeClaim"), "no source PVC — the cache is per node");
 });
@@ -360,6 +380,7 @@ test("two slots spelling one repository are ONE CR entry; two repositories are t
     runId: "r",
     workflow: "w",
     route: [],
+    path: "ws",
     repos: [
       { slot: "app", url: "git@github.com:acme/app.git", perRun: false },
       { slot: "same", url: "https://github.com/acme/app", perRun: false },
@@ -1422,6 +1443,7 @@ test("a push on a per-run slot takes the one path: its url, matched at provision
     runId: "r",
     workflow: "w",
     route: [],
+    path: "ws",
     repos: [{ slot: "target", url: "https://github.com/ourorg/x.git", perRun: true }],
   });
   assert.deepEqual(crOf(calls).spec.gitCredentials, [{ name: gitPushSecretName("*") }]);
@@ -1448,6 +1470,7 @@ test("a per-run push the entry cannot spend is refused at provision, before any 
         runId: "r",
         workflow: "w",
         route: [],
+        path: "ws",
         repos: [{ slot: "target", url, perRun: true }],
       }),
       (err: Error) => ((message = err.message), true),
@@ -1790,9 +1813,30 @@ test("renew() is a merge patch of the keepalive stamp — a write, and nothing i
   assert.equal(patch!.contentType, "application/merge-patch+json");
   const stamp = patch!.body.metadata.annotations["jr2.dev/keepalive"];
   assert.ok(!Number.isNaN(Date.parse(stamp)), "value is a parseable timestamp");
+  assert.equal(patch!.body.metadata.annotations["jr2.dev/hold"], "held", "a restored run's Lease marks it again");
+
+  // The Lease's last word (ADR-0021): the hold mark alone, `released`.
+  calls.length = 0;
+  await port.releaseHold("sb-1");
+  assert.deepEqual(calls[0]!.body, { metadata: { annotations: { "jr2.dev/hold": "released" } } });
 
   // A failure rejects — the lease shrugs it off; loss is the watch's to report, never this.
   await assert.rejects(() => port.renew("gone"), /404/);
+});
+
+test("releaseRun() marks each Sandbox of the run released, found by its run label (ADR-0021)", async () => {
+  const { exec, calls, api } = cluster();
+  api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  api.seed("sandboxes", { metadata: { name: "sb-2", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  api.seed("sandboxes", { metadata: { name: "sb-3", labels: { "jr2.dev/run": "other" } }, status: READY } as never);
+  const port = kubeSandbox({ ...exec });
+
+  await port.releaseRun!("r");
+  const patched = calls.filter((c) => c.method === "PATCH").map((c) => c.target);
+  assert.deepEqual(patched.sort(), ["sandboxes/sb-1", "sandboxes/sb-2"], "only the run's own Sandboxes");
+  for (const c of calls.filter((c) => c.method === "PATCH")) {
+    assert.deepEqual(c.body, { metadata: { annotations: { "jr2.dev/hold": "released" } } });
+  }
 });
 
 /** Every Continuity the port reports for one name, in order. */
@@ -1928,6 +1972,7 @@ test("a per-run url matching no git.credentials entry is REFUSED before any writ
         runId: "r",
         workflow: "w",
         route: [],
+        path: "ws",
         repos: [{ slot: "target", url: "https://github.com/nobody/x.git", perRun: true }],
       }),
     (err: Error) => {
@@ -1955,6 +2000,7 @@ test("a per-run url matching no git.credentials entry is REFUSED before any writ
         runId: "r",
         workflow: "w",
         route: [],
+        path: "ws",
         repos: [{ slot: "target", url: "--upload-pack=sh -c evil #@github.com:ourorg/repo", perRun: true }],
       }),
     /repo url begins with "-", which git reads as an option/,
@@ -1966,6 +2012,7 @@ test("a per-run url matching no git.credentials entry is REFUSED before any writ
         runId: "r",
         workflow: "w",
         route: [],
+        path: "ws",
         repos: [{ slot: "target", url: "git@github.com:ourorg/../evil/repo", perRun: true }],
       }),
     /no git\.credentials entry matches "github\.com\/evil\/repo"/,
@@ -1976,7 +2023,15 @@ test("a per-run url matching no git.credentials entry is REFUSED before any writ
   // No entries at all → every per-run url is refused, and the message says the list is empty.
   const bare = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   await assert.rejects(
-    () => bare.provision({ name: "sb", runId: "r", workflow: "w", route: [], repos: [{ ...app, perRun: true }] }),
+    () =>
+      bare.provision({
+        name: "sb",
+        runId: "r",
+        workflow: "w",
+        route: [],
+        path: "ws",
+        repos: [{ ...app, perRun: true }],
+      }),
     /entries: none/,
   );
 });
@@ -1994,6 +2049,7 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
     runId: "r",
     workflow: "w",
     route: [],
+    path: "ws",
     repos: [{ slot: "app", url: "https://github.com/nobody/x.git", perRun: false }],
   });
   assert.ok(crOf(none.calls), "applied");
@@ -2004,6 +2060,7 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
     runId: "r",
     workflow: "w",
     route: [],
+    path: "ws",
     repos: [{ slot: "t", url: "git@github.com:ourorg/app.git", perRun: true }],
   });
   assert.deepEqual(crOf(org.calls).spec.repos, [
@@ -2017,6 +2074,7 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
     runId: "r",
     workflow: "w",
     route: [],
+    path: "ws",
     repos: [{ slot: "t", url: "https://gitlab.com/a/b.git", perRun: true }],
   });
   assert.ok(crOf(any.calls));
@@ -2050,6 +2108,7 @@ test("provision ENSURES every Repo's resource — per key, identity and boundnes
     runId: "r",
     workflow: "w",
     route: [],
+    path: "ws",
     repos: [
       { slot: "app", url: "git@github.com:acme/app.git", perRun: false },
       { slot: "same", url: "https://github.com/acme/app", perRun: true },
@@ -2231,7 +2290,7 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
     { slot: "app", url: APP_URL, perRun: false },
     { slot: "infra", url: infraUrl, perRun: false },
   ];
-  await port.provision({ name: "sb-stale", runId: "r", workflow: "w", route: [], repos: slots });
+  await port.provision({ name: "sb-stale", runId: "r", workflow: "w", route: [], path: "ws", repos: slots });
   const out = await port.attach({ name: "sb-stale", repos: slots });
   assert.deepEqual(out.stale, {
     infra: `Repo "${infraKey}" on node kind-worker is stale: fatal: unable to access 'https://example.test/infra.git/': Could not resolve host`,
@@ -2247,7 +2306,7 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
   };
   const { exec: e2 } = cluster([fresh]);
   const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...e2 });
-  await port2.provision({ name: "sb-stale", runId: "r", workflow: "w", route: [], repos: slots });
+  await port2.provision({ name: "sb-stale", runId: "r", workflow: "w", route: [], path: "ws", repos: slots });
   assert.equal("stale" in (await port2.attach({ name: "sb-stale", repos: slots })), false);
 });
 

@@ -467,8 +467,9 @@ function isIpLiteral(host: string): boolean {
  * converge by `jr2 up`, identical for every Harness pod of the Instance.
  *
  *   control   /run/jr2/custodian/control.sock
- *                              the four agent routes — the Menu, a pick, a delivery's poll and a
- *                              notice's acknowledgment — plain HTTP, to the Orchestrator's Service.
+ *                              the five agent routes — the Menu, a pick, a delivery's poll, a
+ *                              notice's acknowledgment and a batch of the kept conversation — plain
+ *                              HTTP, to the Orchestrator's Service.
  *                              They swap the control Stand-in for the control token. A Unix socket
  *                              in a folder that no confined process can write, so no process in
  *                              the domain can take this listener's place (ADR-0013, ADR-0076)
@@ -549,6 +550,11 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
       // The acknowledgment of the notices a step boundary appended (ADR-0062, ADR-0076): marking
       // them heard twice changes nothing, so any reset is retried.
       route("notices", "POST", "/agents/[^/]+/notices", {
+        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
+      }),
+      // A batch of the conversation's entries (ADR-0023): the Orchestrator keeps each entry once,
+      // so a batch sent twice changes nothing, and any reset is retried.
+      route("conversation", "POST", "/agents/[^/]+/conversation", {
         retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
       }),
     ]),

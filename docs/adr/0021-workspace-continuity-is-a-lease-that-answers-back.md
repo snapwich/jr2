@@ -57,6 +57,19 @@ end. And a restarted Harness answered a `continue` with no memory of the convers
   attached pod. Its lifetime is the state's lifetime, which xstate already manages: it re-invokes on snapshot restore,
   so restore-reconcile stops being a special case and becomes the first tick of the normal loop; and it stops on every
   exit — body final, run stopped, run faulted.
+- **The Lease marks its hold on the CR.** The CR's first write sets the annotation `jr2.dev/hold: held`, and each
+  renewal writes it again. When the Lease stops for the body's final state, a fault, a cancel or a parent that leaves
+  the Workspace's state, it sets `jr2.dev/hold: released` and renews no more. A defect that a parent catches does not
+  stop the Lease, because xstate stops no child of a Machine that ended in error: at its next renewal the Lease sees
+  that its Workspace is over, and sets `released` then. A Lease does not set `released` on a name that a live Workspace
+  of the run holds: a parent that catches the defect can invoke the same Machine again, and the new Workspace gets the
+  same Sandbox name and a Lease of its own. A step of the wrapper from one state to the next writes nothing: the next
+  state has a Lease of its own. A park (`RunHost.stop`, [ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) and a
+  process shutdown write nothing, so a crash keeps the mark `held` and the restored run's Lease writes it again. A
+  restore that ends a run `drifted` or `lost` without hosting it starts no Lease, so the Orchestrator sets `released` on
+  each CR with that run's `jr2.dev/run` label. So `jr2 workspace rm` tells a held Sandbox from a free one with the
+  cluster alone ([ADR-0009](0009-cli-and-instance-interface.md)): the keepalive's age cannot tell it, because a renewal
+  can be late by more than one interval and a few missed renewals are survivable.
 
 That last point deletes machinery rather than adding it. Three mechanisms with three different owners and lifetimes —
 the process-global heartbeat map, the one-shot probe, and `release(runId)` (which label-queried the cluster to stop
@@ -98,4 +111,4 @@ behavior `release()` was written to produce is emergent.
   independently. This falls out of invoking it beside the body rather than owning it at the host.
 - `SandboxPort` has no optional method: `renew` is a write, `continuity` is a subscription to the watch, and
   `memoryFault` (ADR-0061) answers undefined from a backend that cannot see the container. The `jr2.dev/run` label
-  survives for `jr2 ls` and as the watch's selector, no longer load-bearing for lease bookkeeping.
+  survives for the `jr2 workspace` verbs and as the watch's selector, no longer load-bearing for lease bookkeeping.

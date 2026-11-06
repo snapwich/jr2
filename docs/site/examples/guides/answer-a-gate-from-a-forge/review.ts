@@ -5,7 +5,7 @@
 
 // #region imports
 import { z } from "zod";
-import type {} from "@jr2/hooks/github";
+import type {} from "@jr2/orchestrator/hooks/github";
 import { bearer, defineEvent, gate, http, jr2Setup, secret, type HttpOutput } from "@jr2/orchestrator";
 // #endregion imports
 

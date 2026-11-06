@@ -9,6 +9,7 @@
 import type { BuildPort } from "./build.ts";
 import type { FetchLike } from "./client.ts";
 import type { KubeAdmin, KubePort } from "./kube.ts";
+import type { WorkspaceKube } from "./workspaces.ts";
 import type { TypecheckPort } from "./typecheck.ts";
 
 export type Io = {
@@ -20,6 +21,8 @@ export type Io = {
   fetch?: FetchLike;
   /** Override the kube transport (tests inject a fake); default → `kubectl` subprocesses. */
   kube?: KubePort;
+  /** Override the cluster side of `jr2 workspace` (ADR-0009); default → `kubectl`. */
+  workspaces?: WorkspaceKube;
   /** Override the kube admin surface `jr2 up`/`down` converge through; default → `kubectl`. */
   kubeAdmin?: KubeAdmin;
   /** Override the image build port; default → pnpm + docker + kind subprocesses. */

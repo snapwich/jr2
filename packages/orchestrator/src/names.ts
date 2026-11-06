@@ -33,6 +33,12 @@ export const CONVERSATIONS_DIR = "/run/jr2/conversations";
 export const CONVERSATIONS_DIR_ENV = "JR2_CONVERSATIONS_DIR";
 export const CONVERSATIONS_VOLUME = "conversations";
 
+/** Where the Harness of a Sandbox listens for a person's shell (`jr2 workspace shell`, ADR-0076):
+ * a folder under `/run/jr2`, an emptyDir mounted into the Harness container alone. No process that
+ * the Harness confines can make a file there, so none can listen in the Harness's place. */
+export const SHELL_DIR = "/run/jr2/shell";
+export const SHELL_VOLUME = "shell";
+
 /** The harness config ConfigMap the stock Harness boots from (ADR-0018): what this instance can
  * REACH — the custom model provider minus its key, and the catalog providers' gateways (ADR-0059). No Agents ride it: a Machine carries its own
  * (ADR-0049), and the definition rides each admission, so this holds deployment facts alone
@@ -141,7 +147,7 @@ export const CUSTODIAN_FETCH_PORT = 8081;
  * listener's place while the Custodian restarts. The Custodian writes it; the Harness mounts it
  * read-only, which still lets it connect to the socket. */
 export const CUSTODIAN_SOCKET_DIR = "/run/jr2/custodian";
-/** The control socket: the Custodian's listener for the four agent routes, which carry the control
+/** The control socket: the Custodian's listener for the five agent routes, which carry the control
  * Stand-in (ADR-0059, ADR-0076). */
 export const CUSTODIAN_CONTROL_SOCKET = `${CUSTODIAN_SOCKET_DIR}/control.sock`;
 
@@ -169,6 +175,34 @@ export const REPOS_MOUNT = "/repos";
 export const LABEL_REPO_BOUND = "jr2.dev/bound";
 export const ANNOTATION_REPO_IDENTITY = "jr2.dev/identity";
 export const ANNOTATION_REPO_LAST_ATTACHED = "jr2.dev/last-attached";
+
+/** What a Workspace writes on its Sandbox CR (ADR-0012, ADR-0021). The labels carry its run, its
+ * Workflow and a selector form of its path; the annotation carries the exact path, which the
+ * `jr2 workspace` verbs compare a handle with (ADR-0009). The keepalive is the Lease's stamp, and
+ * the hold mark says whether a run still holds the Sandbox: `held` from the Lease's first write,
+ * `released` when the Lease stops for the body's final state, a fault, a cancel or a parent that
+ * leaves the Workspace's state. */
+export const LABEL_SANDBOX_RUN = "jr2.dev/run";
+export const LABEL_SANDBOX_WORKFLOW = "jr2.dev/workflow";
+export const LABEL_SANDBOX_WORKSPACE = "jr2.dev/workspace";
+export const ANNOTATION_WORKSPACE_PATH = "jr2.dev/workspace-path";
+export const ANNOTATION_KEEPALIVE = "jr2.dev/keepalive";
+export const ANNOTATION_HOLD = "jr2.dev/hold";
+export const HOLD_HELD = "held";
+export const HOLD_RELEASED = "released";
+
+/** The selector form of a Workspace path for the `jr2.dev/workspace` label (ADR-0012): a label
+ * value holds at most 63 characters from `[A-Za-z0-9._-]` and starts and ends with an alphanumeric.
+ * Each other character becomes `-`; a value above 63 characters is cut and ends with a hash of the
+ * whole path. For `kubectl -l` alone: no jr2 reader selects by it. */
+export function workspaceLabel(path: string): string {
+  const form = path.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
+  if (form.length <= 63) return form;
+  let h = 0;
+  for (const ch of path) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  const hash = (h >>> 0).toString(36);
+  return `${form.slice(0, 62 - hash.length).replace(/[^A-Za-z0-9]+$/, "")}-${hash}`;
+}
 
 /** The mark one ask leaves on a Sandbox CR, per Repo key (ADR-0053): a timestamp the Orchestrator
  * writes when something inside the pod asks for a fetch. The operator copies it onto the pod, and

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { webhook } from "@jr2/hooks/webhook";
+import { webhook } from "@jr2/orchestrator/hooks/webhook";
 
 // An alert service that jr2 ships no kind for. The service signs the raw body with a shared secret
 // (sha256, hex) in the header sentry-hook-signature. The event key is the resource and its action,
@@ -18,7 +18,7 @@ export const sentry = webhook({
   delivery: { header: "request-id" },
 });
 
-declare module "@jr2/hooks" {
+declare module "@jr2/orchestrator/hooks" {
   interface HookKinds {
     sentry: typeof sentry;
   }

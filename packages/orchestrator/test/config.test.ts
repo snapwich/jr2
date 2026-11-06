@@ -248,7 +248,11 @@ test("loadConfig takes callers.issuers, each with its claims and its groups map"
           audience: "jr2",
           jwks: "https://dex.example.com/keys",
           claims: { name: "sub", shown: "email", groups: "roles" },
-          groups: { "jr2-ops": { start: "all", answer: "all" }, "jr2-viewers": { read: ["triage"] } },
+          groups: {
+            "jr2-ops": { start: "all", answer: "all" },
+            "jr2-viewers": { read: ["triage"] },
+            "release-managers": { answer: ["triage", { workflow: "deploy", gates: ["approve"] }] },
+          },
           login: true,
         },
       ],
@@ -266,6 +270,14 @@ test("loadConfig refuses a bad callers entry, naming its path", async () => {
     [{ tokens: { ci: { may: { write: "all" } } } }, /at callers\.tokens\.ci\.may/],
     [{ tokens: { ci: { may: { start: [] } } } }, /at callers\.tokens\.ci\.may\.start/],
     [{ tokens: { ci: {} } }, /at callers\.tokens\.ci\.may/],
+    [
+      { tokens: { ci: { may: { start: [{ workflow: "deploy", gates: ["approve"] }] } } } },
+      /at callers\.tokens\.ci\.may\.start\.0: only "answer" can name single Gates; "start" names whole Workflows/,
+    ],
+    [
+      { tokens: { ci: { may: { answer: [{ workflow: "deploy", gates: [] }] } } } },
+      /at callers\.tokens\.ci\.may\.answer\.0\.gates: gates names at least one Gate/,
+    ],
     [{ hooks: [] }, /at callers/],
     [
       { issuers: [{ issuer: "dex", audience: "jr2", groups: {} }] },
@@ -309,7 +321,7 @@ test("loadConfig refuses a cors entry that is not an origin", async () => {
 // `hooks` (ADR-0078): each entry is a Hook that a kind's constructor made, under a name of the Caller
 // name's form, and one kind id is one kind. The config imports the kind by its file here, because a
 // temp folder resolves no package.
-const KIND = (name: string): string => new URL(`../../hooks/src/${name}.ts`, import.meta.url).href;
+const KIND = (name: string): string => new URL(`../src/hook-kinds/${name}.ts`, import.meta.url).href;
 
 test("loadConfig takes hooks that a kind made, and refuses a bad name, a value no kind made, and two kinds of one id", async () => {
   const write = async (body: string): Promise<string> => {

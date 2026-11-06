@@ -862,6 +862,9 @@ export type AdmittedChart = {
   agents: Record<string, AgentDefinition>;
   /** The bytes of the text's canonical JSON. */
   size: number;
+  /** The invoke ids of the Chart's Gates (ADR-0011), as `jr2Setup` names them: the names that the
+   * `answer` scope can name them by (ADR-0078). */
+  gates: string[];
 };
 
 /**
@@ -1073,6 +1076,8 @@ class Door {
   private readonly invokeKinds = new Map<ChartInvoke, NonNullable<ReturnType<Door["srcKind"]>>>();
   /** Every `jr2.sentBy` id, for the party check. */
   private readonly sentBys: Array<{ id: string; path: string }> = [];
+  /** The Gates' invoke ids, which the party check finds. */
+  private readonly gateIds = new Set<string>();
 
   private readonly chart: ChartText;
   private readonly decl: OpenBodyDeclaration;
@@ -1135,7 +1140,14 @@ class Door {
     const events = Object.entries(this.chart.events ?? {}).map(([name, ev]) => this.eventDef(name, ev)!);
     const agents: Record<string, AgentDefinition> = {};
     for (const [slot, a] of Object.entries(this.chart.agents ?? {})) agents[slot] = { ...a };
-    const admitted: AdmittedChart = { text: this.chart, hash: chartHash(this.chart), events, agents, size };
+    const admitted: AdmittedChart = {
+      text: this.chart,
+      hash: chartHash(this.chart),
+      events,
+      agents,
+      size,
+      gates: [...this.gateIds],
+    };
     this.trialCompile(admitted);
     return admitted;
   }
@@ -1752,7 +1764,7 @@ class Door {
   /** The parties' rules, as `jr2Setup` applies them (ADR-0015), each with its path in the Chart. */
   private checkParties(): void {
     const agents = new Set<string>();
-    const gates = new Set<string>();
+    const gates = this.gateIds;
     const slotStates = new Map<string, Node[]>();
     for (const node of this.nodes) {
       const invokes = listAt(node.state.invoke, `${node.doc}.invoke`);

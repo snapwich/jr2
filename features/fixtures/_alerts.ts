@@ -5,7 +5,7 @@
 // header, as a forge's shared token. One event key, `issue.created`.
 
 import { z } from "zod";
-import { webhook } from "@jr2/hooks/webhook";
+import { webhook } from "@jr2/orchestrator/hooks/webhook";
 
 export const alerts = webhook({
   id: "alerts",
@@ -21,7 +21,7 @@ export const alerts = webhook({
   delivery: { header: "x-alerts-delivery" },
 });
 
-declare module "@jr2/hooks" {
+declare module "@jr2/orchestrator/hooks" {
   interface HookKinds {
     alerts: typeof alerts;
   }

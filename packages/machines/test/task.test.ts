@@ -100,6 +100,7 @@ class FakeSandbox implements SandboxPort {
   /** The Sandboxes the watch reports gone by name, whatever `present` says. */
   lostNames: RegExp | undefined;
   async renew(): Promise<void> {}
+  async releaseHold(): Promise<void> {}
   continuity(name: string, listener: (seen: { present: boolean }) => void): () => void {
     const lost = this.lostNames?.test(name) ?? false;
     queueMicrotask(() => listener({ present: this.present && !lost }));

@@ -38,7 +38,7 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import { SENDER_KEY, type EventDef, type EventFrom } from "@jr2/agent-protocol";
-import type { KindHooks } from "@jr2/hooks";
+import type { KindHooks } from "./hook-kinds/index.ts";
 import type { CallerRecord } from "./callers.ts";
 import type { Duration } from "./effect.ts";
 import { isGateSlotLogic } from "./gate-brand.ts";
@@ -151,7 +151,7 @@ export type GateHandler<Meta, Ev, P = unknown> = (delivery: GateIn<Meta> & { rea
 
 /**
  * The handlers of a Gate slot, by Hook kind id and event key. Each key's payload type comes from the
- * kind's schema (`HookKinds`, `@jr2/hooks`).
+ * kind's schema (`HookKinds`, `@jr2/orchestrator/hooks`).
  *
  * @internal
  */
@@ -605,7 +605,7 @@ export const plainGate: PlainGate = gateLogic(undefined);
  * @example
  * ```ts
  * import { z } from "zod";
- * import type {} from "@jr2/hooks/github";
+ * import type {} from "@jr2/orchestrator/hooks/github";
  * import { defineEvent, gate, jr2Setup } from "@jr2/orchestrator";
  *
  * const approve = defineEvent({ name: "approve", input: z.object({ by: z.string() }) });

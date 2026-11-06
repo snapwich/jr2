@@ -37,8 +37,8 @@ Workspaces for the Instance (R4), and concurrent Turns per model provider (R5)?
   delete does not touch a name that a live Workspace of the run holds then: a parent that re-enters the state, or
   invokes the same Machine again, gives its new Workspace the same invoke id and so the same name, and that Workspace
   has placed it again ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)). A
-  Sandbox that was placed and then faulted keeps ADR-0021's rule: it stays inspectable (logs, `jr2 ssh`) and ages out at
-  the idle timeout.
+  Sandbox that was placed and then faulted keeps ADR-0021's rule: it stays inspectable (`kubectl logs`,
+  `jr2 workspace shell`) and ages out at the idle timeout.
 - **jr2 caps nothing of its own.** Not live Workspaces (R4), not concurrent Turns per provider (R5). See the options.
 - **A provider's refusal is named.** A Turn that ends because the Harness's provider retries ran out has a fault reason
   with the fixed prefix `provider limit`, as a memory kill has `memory limit` (ADR-0061), so `jr2 status` and the

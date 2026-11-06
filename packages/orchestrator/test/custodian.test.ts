@@ -2,7 +2,7 @@
 // Harness pod gains from it. The claims only a real engine can check — the swap on the wire, the
 // dial guard, streaming, abort — are the Custodian suite's (`packages/cli/test/custodian.docker.ts`).
 // What is pinned here is that the rendering says what that suite proves: no admin listener, the
-// four agent routes on the control socket and the ask on the fetch listener and nothing else, TLS ended only for bound targets, upstream verified
+// five agent routes on the control socket and the ask on the fetch listener and nothing else, TLS ended only for bound targets, upstream verified
 // against `upstream.crt` alone, and never a value anywhere in what a ConfigMap carries.
 
 import { test } from "node:test";
@@ -92,7 +92,7 @@ test("nothing held: the control, fetch and health listeners alone — no admin, 
   });
 });
 
-test("the control socket forwards the four agent routes, the fetch listener the ask alone, and each answers the other's routes with 404", () => {
+test("the control socket forwards the five agent routes, the fetch listener the ask alone, and each answers the other's routes with 404", () => {
   const routesOf = (name: string) => {
     const hcm = listeners(EMPTY_HELD).find((l) => l.name === name)!.filter_chains[0]!.filters[0]!.typed_config;
     return { hcm, routes: hcm.route_config.virtual_hosts[0].routes as Array<Record<string, any>> };
@@ -105,9 +105,10 @@ test("the control socket forwards the four agent routes, the fetch listener the 
     ["events", "POST", "/agents/[^/]+/events"],
     ["deliveries", "GET", "/agents/[^/]+/deliveries/[^/]+"],
     ["notices", "POST", "/agents/[^/]+/notices"],
+    ["conversation", "POST", "/agents/[^/]+/conversation"],
     ["deny", undefined, "/"],
   ]);
-  assert.deepEqual(routes[4]!.direct_response, { status: 404 }, "the ask, and anything else, never leaves here");
+  assert.deepEqual(routes[5]!.direct_response, { status: 404 }, "the ask, and anything else, never leaves here");
   const fetch = routesOf("fetch");
   assert.deepEqual(shape(fetch.routes), [
     ["fetch", "POST", "/fetch"],

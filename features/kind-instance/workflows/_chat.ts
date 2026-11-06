@@ -1,5 +1,5 @@
 // The @kind tier's chat kind (ADR-0011, ADR-0068): Slack's own protocol — its `mac` verifier, its
-// reader and its events, from `@jr2/hooks/slack` — under another id, with one change: its follow-up
+// reader and its events, from `@jr2/orchestrator/hooks/slack` — under another id, with one change: its follow-up
 // host. Slack's is `https://hooks.slack.com/`, which no kind cluster can serve. This kind's is
 // `https://follow/`, a Service in the scenario's own namespace that a step points at a server on
 // the host (`steps/kind.steps.ts`). So the click's follow-up leaves the real Instance Effector, to a
@@ -8,8 +8,8 @@
 // Not a Workflow: a file whose name starts with `_` is not one. It sits in `workflows/` because the
 // instance's bundle holds only that folder and the config.
 
-import { defineHookKind, type Delivery } from "@jr2/hooks";
-import { slack } from "@jr2/hooks/slack";
+import { defineHookKind, type Delivery } from "@jr2/orchestrator/hooks";
+import { slack } from "@jr2/orchestrator/hooks/slack";
 
 /** The follow-up host: a short name, which the Effector's resolver completes in its namespace. */
 export const FOLLOW = "https://follow/";
@@ -36,7 +36,7 @@ export const chat = defineHookKind({
   posts: [FOLLOW],
 });
 
-declare module "@jr2/hooks" {
+declare module "@jr2/orchestrator/hooks" {
   interface HookKinds {
     chat: typeof chat;
   }

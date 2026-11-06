@@ -38,6 +38,8 @@ Without the token, the Console shows the runs, and you cannot change them:
   Click the caret of a Workflow to list its runs.
 - The center shows the [Machine](../reference/glossary.md#machine) of the Workflow that you select. When you select a
   run, the Console shows the states that the run is in.
+- A run on an [Assembly](../reference/glossary.md#assembly) that is not the current one shows the mark
+  `older Assembly · <hash>`. The center then shows the Machine of that run, not the current Machine.
 - The Activity tab of the right drawer lists the type of each [Emit](../reference/glossary.md#emit) of the runs of the
   Workflow, the newest first.
 
@@ -70,13 +72,13 @@ while the Console checks the token, then `live`. The nav then shows who the Cons
 The Console asks the Orchestrator what the token may do ([`GET /whoami`](../reference/http-api.md#get-whoami)). Then it
 shows each control that a scope of the token opens:
 
-| Scope    | What the Console shows                                                                                    |
-| -------- | --------------------------------------------------------------------------------------------------------- |
-| `start`  | A `start` button for the Workflow in the Fleet rail. It opens a form for the run input of the Workflow.   |
-| `answer` | The Attention tab of the right drawer, with a card for each open Gate and a form for each event it takes. |
-| `read`   | The full state of the selected run: why it waits, why it failed, and who started it.                      |
-| `cancel` | A `cancel run` button on the selected run, while the run is live.                                         |
-| `steer`  | A `steer` button on the selected run, while the run is live. It opens a box to send a Steering message.   |
+| Scope    | What the Console shows                                                                                                                                                                    |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start`  | A `start` button for the Workflow in the Fleet rail. It opens a form for the run input of the Workflow.                                                                                   |
+| `answer` | The Attention tab of the right drawer, with a card for each open Gate and a form for each event it takes.                                                                                 |
+| `read`   | The full state of the selected run: why it waits, why it failed, and who started it. The ended runs of the Workflow in the Fleet rail. The conversations of the run in the bottom drawer. |
+| `cancel` | A `cancel run` button on the selected run, while the run is live.                                                                                                                         |
+| `steer`  | A box in the bottom drawer, beside the [Agent](../reference/glossary.md#agent) slot, to send a [Steering message](../reference/glossary.md#steering-message) while the run is live.       |
 
 The Instance token has each scope for each Workflow, so it shows each control. A named Caller token shows the controls
 of its scopes, for its Workflows ([Give a Caller a scope](give-a-caller-a-scope.md)). A Workflow that declares no run
@@ -85,6 +87,18 @@ Workflow.
 
 The Console keeps the token in the browser tab. A reload keeps it. When you close the tab, the token is gone. Click
 `sign out` to forget it before then.
+
+## Read a conversation
+
+With `read`, the Fleet rail lists the ended runs of the selected Workflow under its live runs, each with its status. A
+`drifted` run shows its reason. Click an ended run to see its Machine, the state where it ended, and its conversations,
+for as long as jr2 keeps the run ([`runs.retain`](../reference/config.md#runs)).
+
+The bottom drawer shows the [Conversations](../reference/glossary.md#conversation) of the selected run. Closed, it is a
+bar with one tab for each Agent slot of the run. A dot shows a slot whose [Turn](../reference/glossary.md#turn) is open.
+Click a tab to open the drawer on that slot. The drawer shows what the model wrote, each tool call with the answer of
+its pick, the refusals, the Steering messages and the notices. While the Turn is open, the drawer adds each new entry.
+Drag the top edge of the drawer to change its height. The browser keeps the height for you.
 
 ## Log in
 

@@ -188,27 +188,32 @@ If `meta` has a `reason` and no `summary`, the [Turn](../reference/glossary.md#t
 
 ## Find the Sandbox
 
-The label `jr2.dev/run` on the Sandbox holds the full run id. A prefix does not work here. Copy the full run id from the
-line `run <run id> (task) — attached` in the first terminal:
+List the Workspaces of the run with [`jr2 workspace ls`](../reference/cli.md#workspace-ls):
 
 ```sh
-kubectl -n my-instance get sandboxes -l jr2.dev/run=<run id>
+jr2 workspace ls <run id>
 ```
+
+<!-- output: not run -->
 
 ```text
-NAME                      PHASE   ENDPOINT                                              AGE
-ws-290b4be9-x-0-19gh8ze   Ready   http://ws-290b4be9-x-0-19gh8ze.my-instance.svc:8080   5m25s
+…
+→ context kind-jr2 / namespace my-instance
+WORKSPACE     SANDBOX                  WORKFLOW  PHASE  AGE  RUN
+290b4be9/x:0  ws-290b4be9-x-0-19gh8ze  task      Ready  5m   held
 ```
 
-`ws-290b4be9-x-0-19gh8ze` is the name of the Sandbox. Your Sandbox has a different name. It starts with `ws-` and the
-first 8 characters of the run id. The pod of the Sandbox has the same name. The commands below write it as `<sandbox>`.
+`290b4be9/x:0` is the handle of the Workspace: the first 8 characters of the run id, then the path of the Workspace in
+the run. `ws-290b4be9-x-0-19gh8ze` is the name of the Sandbox. The name of the Sandbox is a handle too. Your values are
+different. The commands below write the handle as `<workspace>`. `held` tells that the run holds the Sandbox.
 
 ## Look inside the Sandbox
 
-Go into the `harness` container of the pod. The Agent's tools run in this container:
+Open a shell in the Sandbox with [`jr2 workspace shell`](../reference/cli.md#workspace-shell). The shell runs as the
+Agent's tools run: in the same container, with the same files and the same limits:
 
 ```sh
-kubectl -n my-instance exec -it <sandbox> -c harness -- bash
+jr2 workspace shell <workspace>
 ```
 
 In the Sandbox, go to the fixture in the Worktree. Then run its tests. `<worktree>` is the `worktree` that you copied:
@@ -274,10 +279,10 @@ The coder continues the same conversation, with your notes as its next prompt. T
 ## Push the branch
 
 `task` does not push, and the Agent has no credential to push with. While the run waits at `review`, you push the branch
-from the Sandbox. Go into the Sandbox again:
+from the Sandbox. Open a shell in the Sandbox again:
 
 ```sh
-kubectl -n my-instance exec -it <sandbox> -c harness -- bash
+jr2 workspace shell <workspace>
 ```
 
 In the Sandbox, go to the Worktree. Then push the branch. `<branch>` is the `branch` that you copied:
@@ -335,15 +340,21 @@ In the first terminal, `jr2 run` prints the end of the run, then the final statu
 
 ## Make sure that the Sandbox is gone
 
-Use the full run id again:
+List the Workspaces of the run again:
 
 ```sh
-kubectl -n my-instance get sandboxes -l jr2.dev/run=<run id>
+jr2 workspace ls <run id>
 ```
 
+<!-- output: not run -->
+
 ```text
-No resources found in my-instance namespace.
+…
+→ context kind-jr2 / namespace my-instance
+WORKSPACE  SANDBOX  WORKFLOW  PHASE  AGE  RUN
 ```
+
+The list has no row, because the run removed its Sandbox.
 
 ## What happened
 
@@ -355,8 +366,9 @@ No resources found in my-instance namespace.
 - The `review` Gate kept the Sandbox while the run waited. `request_changes` sent the coder back to the same
   conversation. `approve` ended the run, and the end of the Workspace removed the Sandbox. See
   [Gates](../concepts/gates.md) and [ADR-0012](../reference/decisions/0012-workspace-wrapper-machine.md).
-- You used `kubectl exec` to go into the Sandbox. The guide [Look inside a Sandbox](../guides/look-inside-a-sandbox.md)
-  gives the same commands.
+- You used `jr2 workspace shell` to go into the Sandbox. The shell runs as the Agent runs, so it cannot read the
+  credential of the Agent. The guide [Look inside a Sandbox](../guides/look-inside-a-sandbox.md) gives the same
+  commands.
 - You pushed by hand, because `task` does not push. On the next page, a Machine pushes the branch with an
   [Effect](../reference/glossary.md#effect).
 

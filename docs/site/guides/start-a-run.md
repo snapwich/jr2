@@ -47,7 +47,7 @@ output starts with one more line, `→ .env:`, with the keys that the CLI took f
 - `jr2 run` stays attached until the run ends. A run that waits at a [Gate](../reference/glossary.md#gate) does not end,
   so `jr2 run` waits too. To answer the Gate, use a second terminal. See [Answer a Gate](answer-a-gate.md).
 - When you stop `jr2 run`, for example with Ctrl-C, the run continues in the Orchestrator. To attach again, run
-  `jr2 logs -f <run id>`.
+  `jr2 watch <run id>`.
 - `jr2 run` exits with `0` only when the run ends with the status `done`. It exits with `1` for each other end:
   `failed`, `error`, `cancelled`, `lost` and `drifted`, and also when the run stops before it ends. For a run that ends
   `failed`, the line `failed: <reason>` on stderr gives the reason.
@@ -65,7 +65,7 @@ jr2 run ping --input '{"message":"hi"}' --detach
 {"runId":"fc8b82d1-bd73-498d-9057-ef13cf962240"}
 ```
 
-Use the run id, or its first 4 characters or more, with `jr2 status`, `jr2 logs` and `jr2 send`.
+Use the run id, or its first 4 characters or more, with `jr2 status`, `jr2 watch`, `jr2 logs` and `jr2 send`.
 
 ## Start a run from the Console
 
@@ -147,8 +147,8 @@ curl -s http://localhost:4000/workflows/ping -H "Accept: application/json"
 ```
 
 [`GET /workflows`](../reference/http-api.md#get-workflows) gives all the Workflows, each with where it comes from, and
-the named Charts of each Chart wrapper. It also needs no token. [`jr2 runs`](../reference/cli.md#runs) prints the same
-list on stderr.
+the named Charts of each Chart wrapper. It also needs no token. [`jr2 workflows`](../reference/cli.md#workflows) prints
+the same list.
 
 ### Use the CLI without the Instance folder
 
@@ -195,9 +195,9 @@ JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN jr2 run ping --input '{"message":
   ``error: no kube context — `kind create cluster` (or point kubectl at one), then `jr2 up` ``
 - When the connection to the Orchestrator ends before the run ends, for example when the Orchestrator stops, `jr2 run`
   prints `error: <message>` and exits with `1`. The run continues when the Orchestrator starts again. To attach again,
-  run `jr2 logs -f <run id>`.
+  run `jr2 watch <run id>`.
 - When the Orchestrator holds the run but did not continue it, `jr2 run` exits with `1`:
-  ``run <run id> is parked: stopped before it settled — `jr2 logs -f <run id>` follows it once restored``
+  ``run <run id> is parked: stopped before it settled — `jr2 watch <run id>` follows it once restored``
 
 ## Read next
 

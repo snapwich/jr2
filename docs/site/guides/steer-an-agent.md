@@ -104,6 +104,14 @@ jr2 status 5c1f
 The model reads the message after the notices of the Turn and before its Allowed picks. The Harness tells the model that
 the message is an instruction from outside the run, and gives your name as a [Caller](../reference/glossary.md#caller).
 
+## Send the message from the Console
+
+With a credential that has the `steer` scope for the Workflow, the [Console](../reference/glossary.md#console) shows a
+box beside the conversation in the bottom drawer. Select the run, and click the tab of the Agent slot. Type the message
+in the box under `steer <slot>`, and click `send`. The box shows `<slot> cannot be steered now` when the definition of
+the Agent says `steerable: false`, or when the Machine instance of the slot ended. The conversation shows the message
+where the model read it. [Open the Console](open-the-console.md#read-a-conversation) tells how to open the drawer.
+
 ## Send the message from HTTP
 
 A client that is not the CLI sends the message to

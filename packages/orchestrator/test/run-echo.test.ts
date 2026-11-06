@@ -34,6 +34,7 @@ class EchoSandbox implements SandboxPort {
     return { repos };
   }
   async renew() {}
+  async releaseHold() {}
   continuity(_name: string, listener: (seen: { present: true }) => void) {
     queueMicrotask(() => listener({ present: true }));
     return () => {};

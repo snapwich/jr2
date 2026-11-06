@@ -206,7 +206,7 @@ Then(
     const refused = this.mcp.requests.filter((r) => r.refused);
     assert.deepEqual(refused, [], "every request carried the value of a key");
     const status = await this.runCli(["status", this.runId!]);
-    const logs = await this.runCli(["logs", this.runId!]);
+    const logs = await this.runCli(["watch", this.runId!, "--json"]);
     for (const [where, seen] of [
       ["the run's record", status.stdout],
       ["the run's log", logs.stdout + logs.stderr],

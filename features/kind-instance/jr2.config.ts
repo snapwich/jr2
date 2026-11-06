@@ -19,8 +19,8 @@
 // holds only its Stand-in.
 
 import { defineConfig, secret } from "@jr2/orchestrator";
-import { github } from "@jr2/hooks/github";
-import { gitlab } from "@jr2/hooks/gitlab";
+import { github } from "@jr2/orchestrator/hooks/github";
+import { gitlab } from "@jr2/orchestrator/hooks/gitlab";
 import { chat } from "./workflows/_chat.ts";
 
 export default defineConfig({

@@ -66,14 +66,17 @@ jr2 run plan --input '{"task":"Write the release notes for the greet CLI, and as
 Open the run in the [Console](../reference/glossary.md#console). After the planner picks `run_chart`, the Console draws
 the Chart inside `running`. The Chart of each run is different, because the planner writes it.
 
-When the door refuses a Chart, the answer to the pick holds the report. The log of the
-[Instance Harness](../reference/glossary.md#instance-harness) shows each answer. Replace `<namespace>` with the
-namespace of your Instance, and `<run id>` with the full run id. The log holds the lines of each run of a Menu-only
-Agent, and the first `grep` keeps the lines of your run:
+When the door refuses a Chart, the answer to the pick holds the report. The conversation of the planner shows each
+answer. [`jr2 logs`](../reference/cli.md#logs) prints it. Replace `<run id>` with the run id, or its first 4 characters
+or more:
 
 ```sh
-kubectl -n <namespace> logs statefulset/jr2-instance-harness -c harness | grep -F '[<run id>/' | grep -F '[run_chart answer]'
+jr2 logs <run id> planner | grep -F '[run_chart answer]'
 ```
+
+[Read a conversation](read-a-conversation.md) tells more. The log of the Instance Harness has the same lines, for each
+run of a Menu-only Agent:
+`kubectl -n <namespace> logs statefulset/jr2-instance-harness -c harness | grep -F '[<run id>/'`, with the full run id.
 
 For example, in one run with the model of each tab, the first Chart of the planner gave a prompt to the Gate. The door
 refused it:

@@ -6,10 +6,11 @@ A Sandbox pod composes up to four containers around one shared worktree volume (
   [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) with jr2's runtime mounted at
   `/opt/jr2` and the command overridden to start the Harness. The Agent's toolchain lives here because the Working tools
   (read/write/edit/bash) execute here — the tools the Agent can reach are this image's. It is also where a human
-  `kubectl exec`s to inspect a run with the agent's exact tools, worktrees, and filesystem. One Harness container serves
-  every workspace-ful Agent of the Sandbox. Each process that the Harness starts in `/work` — a Working tool's shell, a
-  test, git, a `command` Effect — runs as a confined child of the Harness process, so no code from `/work` reaches the
-  control credential that the Harness process holds
+  inspects a run with the agent's exact tools, worktrees, and filesystem: `jr2 workspace shell` starts its shell through
+  the spawner, as an Agent's `bash` starts ([ADR-0009](0009-cli-and-instance-interface.md)), so the shell does not reach
+  the control Stand-in. One Harness container serves every workspace-ful Agent of the Sandbox. Each process that the
+  Harness starts in `/work` — a Working tool's shell, a test, git, a `command` Effect — runs as a confined child of the
+  Harness process, so no code from `/work` reaches the control credential that the Harness process holds
   ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)).
 - **Custodian container** — jr2-composed sidecar, upstream Envoy configured at provision by the Orchestrator
   ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md),
@@ -28,10 +29,11 @@ A Sandbox pod composes up to four containers around one shared worktree volume (
   Size ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)): a budget is the pod's business, not
   the process's, so it puts nothing in the container. Env and ports are not forwarded, because every key jr2 forwarded
   into the process would be a crack in "jr2 puts nothing in it"; a routable port (the follow-up below) is the known
-  candidate for the next key. In the pod it is the container named `user` (`kubectl exec -c user`). It runs its **own
-  entrypoint, untouched**: jr2 injects nothing into its process — no env, no command, no probe — and overrides nothing;
-  it mounts only what the checkouts need to be checkouts (below). The zero-contract seat, which is exactly why it
-  exists. Two jobs no other seat can do:
+  candidate for the next key. In the pod it is the container named `user`: `jr2 workspace shell <ws> --user` is
+  `kubectl exec -c user`, and `jr2 workspace forward <ws> <port> [--stdio]` reaches its sshd or any of its listeners by
+  port-forward ([ADR-0009](0009-cli-and-instance-interface.md)). It runs its **own entrypoint, untouched**: jr2 injects
+  nothing into its process — no env, no command, no probe — and overrides nothing; it mounts only what the checkouts
+  need to be checkouts (below). The zero-contract seat, which is exactly why it exists. Two jobs no other seat can do:
   - **Unattended services.** A container's one command belongs to the Harness in the primary seat (ADR-0037), so an
     image's own services — an sshd for managed access, an IDE server, a metrics agent — need a container whose command
     jr2 deliberately does not own. A system built _on_ jr2 that hands people access to their Sandboxes automates through
@@ -235,6 +237,8 @@ plainly:
 - The Harness container's `/work` writes being group-writable widens nothing: every process that could abuse group
   access already runs in the same trust domain, and the work group exists only inside this pod.
 - **Routable access is a follow-up, deliberately untaken**: the operator's Service serves the Harness at `:8080`, and a
-  managed system wanting cluster-routed ssh to the User Container needs a declared port there. `kubectl port-forward`
-  reaches any listener in the pod without one, which covers the human case day one.
+  managed system wanting cluster-routed ssh to the User Container needs a declared port there. A person reaches the User
+  Container through the kube API: `jr2 workspace shell --user` by exec, and `jr2 workspace forward` by port-forward,
+  which reaches any listener in the pod with no Service. `forward --stdio` is an ssh `ProxyCommand`, so
+  `ssh <sandbox>.jr2` with agent forwarding reaches the User Container's sshd (ADR-0009).
 - **GLOSSARY.md**: **User Container** is a glossary term.

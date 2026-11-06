@@ -5,13 +5,11 @@ set -eu
 
 auth="Authorization: Bearer $JR2_TOKEN"
 
-# The live runs of the release Workflow.
-for run in $(curl -fsS -H "$auth" "$JR2_URL/runs" | jq -r '.[] | select(.workflow == "release") | .runId'); do
-  # The open Gates of the run, with their meta.
-  version=$(curl -fsS -H "$auth" "$JR2_URL/runs/$run" | jq -r '.gates[] | select(.gate == "review") | .meta.version')
-  if [ "$version" = "$VERSION" ]; then
-    curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
-      -d '{"type":"approve"}' "$JR2_URL/runs/$run/gates/review/events"
-    echo
-  fi
+# The open Gates of the live release runs that this token can answer, with their meta.
+runs=$(curl -fsS -H "$auth" "$JR2_URL/gates?workflow=release" |
+  jq -r --arg v "$VERSION" '.gates[] | select(.gate == "review" and .meta.version == $v) | .runId')
+for run in $runs; do
+  curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
+    -d '{"type":"approve"}' "$JR2_URL/runs/$run/gates/review/events"
+  echo
 done

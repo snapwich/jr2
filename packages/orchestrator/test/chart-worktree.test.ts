@@ -433,6 +433,7 @@ class OneSlotSandbox implements SandboxPort {
     return { repos: Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}`])) };
   }
   async renew() {}
+  async releaseHold() {}
   continuity(_name: string, listener: (seen: { present: true }) => void) {
     queueMicrotask(() => listener({ present: true }));
     return () => {};

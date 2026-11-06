@@ -117,6 +117,7 @@ import {
   type StandingView,
   workspaceHeldPod,
   type JR2Config,
+  memoryBytes,
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
@@ -166,6 +167,8 @@ import {
   priorityClassNames,
   priorityClassObjects,
   REPO_CACHE,
+  STATE_PVC,
+  stateVolumePlan,
   trustObject,
   holdsAny,
   LABEL_HELD_POD,
@@ -332,6 +335,69 @@ export async function up(args: string[], io: Io): Promise<number> {
     activity(io, `  pick a different namespace (-n) or context (--context)`);
     return 1;
   }
+  // --- the state volume (ADR-0065): its size before anything is applied ---------------------------
+  // A claim never shrinks, and grows only where its StorageClass allows expansion: a size that the
+  // cluster would refuse is refused here, naming the class, before the namespace is touched. Both
+  // reads THROW on a failure (`listJson`, not `getJson`): a claim that reads as absent when the API
+  // could not be read would be applied over at another size. The claim is read even when the
+  // namespace read gave nothing: `getJson` reads a failure as absent, and a list in a namespace
+  // that is not there is empty, so only a real failure refuses.
+  type StateClaim = { spec?: { storageClassName?: string; resources?: { requests?: { storage?: string } } } };
+  let stateClaim: StateClaim | undefined;
+  try {
+    stateClaim = (
+      await kube.listJson<StateClaim>({
+        kind: "persistentvolumeclaim",
+        fieldSelector: `metadata.name=${STATE_PVC}`,
+        namespace,
+        ...ctx,
+      })
+    )[0];
+  } catch (e) {
+    activity(
+      io,
+      `refusing: cannot read the state volume claim ${STATE_PVC} in namespace "${namespace}" (${(e as Error).message}). Nothing was applied.`,
+    );
+    return 1;
+  }
+  const claimSize = stateClaim?.spec?.resources?.requests?.storage;
+  const claimClass = stateClaim?.spec?.storageClassName;
+  const wantVolume = config.runs?.volume;
+  const grows = claimSize !== undefined && wantVolume !== undefined && memoryBytes(wantVolume) > memoryBytes(claimSize);
+  let claimClassObject: { allowVolumeExpansion?: boolean } | undefined;
+  if (grows && claimClass) {
+    try {
+      claimClassObject = (
+        await kube.listJson<{ allowVolumeExpansion?: boolean }>({
+          kind: "storageclass",
+          fieldSelector: `metadata.name=${claimClass}`,
+          ...ctx,
+        })
+      )[0];
+    } catch (e) {
+      activity(
+        io,
+        `refusing: runs.volume is ${wantVolume}, larger than the state volume claim ${STATE_PVC} (${claimSize}), and jr2 cannot read StorageClass "${claimClass}" to see if it allows expansion (${(e as Error).message}). Nothing was applied.`,
+      );
+      return 1;
+    }
+  }
+  const volumePlan = stateVolumePlan(
+    wantVolume,
+    claimSize === undefined
+      ? undefined
+      : {
+          size: claimSize,
+          ...(claimClass ? { storageClass: claimClass } : {}),
+          ...(grows ? { expandable: claimClassObject?.allowVolumeExpansion === true } : {}),
+        },
+  );
+  if ("refused" in volumePlan) {
+    activity(io, `refusing: ${volumePlan.refused}. Nothing was applied.`);
+    return 1;
+  }
+  if (volumePlan.line) activity(io, volumePlan.line);
+
   if (!ns || !owner) {
     const what = ns ? `adopt existing namespace "${namespace}"` : `create namespace "${namespace}"`;
     const ok =
@@ -966,6 +1032,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   const instanceList = instanceObjects({
     name,
     namespace,
+    stateVolume: volumePlan.size,
     image: refs.orchestrator,
     secretData,
     callerTokens: callerTokens.values,

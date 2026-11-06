@@ -107,8 +107,6 @@ function kitFiles(harnessSrc: string, protocolSrc = "export const v = 1;\n"): Re
     "packages/orchestrator/src/index.ts": "export {};\n",
     "packages/agent-protocol/package.json": `{"name":"@jr2/agent-protocol"}`,
     "packages/agent-protocol/src/index.ts": protocolSrc,
-    "packages/hooks/package.json": `{"name":"@jr2/hooks"}`,
-    "packages/hooks/src/index.ts": "export {};\n",
   };
 }
 
@@ -274,7 +272,7 @@ test("kit hashes exclude only what each context's OWN .dockerignore drops", asyn
   );
   assert.equal(withDocs.orchestrator, base.orchestrator, "packages/orchestrator/docs is dockerignored, so excluded");
   const ignore = await readFile(new URL("../../../.dockerignore", import.meta.url), "utf8");
-  for (const source of ["packages/orchestrator", "packages/agent-protocol", "packages/hooks", "deploy/orchestrator"]) {
+  for (const source of ["packages/orchestrator", "packages/agent-protocol", "deploy/orchestrator"]) {
     assert.match(ignore, new RegExp(`^${source}/\\*\\*/docs$`, "m"), `${source}/**/docs is in .dockerignore`);
   }
 });

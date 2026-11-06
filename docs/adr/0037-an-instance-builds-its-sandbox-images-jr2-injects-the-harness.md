@@ -81,10 +81,11 @@ every build) and promotes incidental image properties into contract items.
   because jr2's file supplies one; such an image sets `GIT_CONFIG_SYSTEM=/etc/gitconfig` itself, and jr2 then adds
   nothing. With the variable set, `git config --system <key> <value>` writes jr2's file on the read-only volume and
   fails (exit 4); without it, an Agent that runs as root wrote `/etc/gitconfig`. A `--global` or repo-local write works
-  as before. A human's `kubectl exec` shell does not get the variable, as it does not get the PATH append. jr2's other
-  git is out of scope: the sync runs under `GIT_CONFIG_NOSYSTEM` (ADR-0067); the Sandbox Effector is another container
-  with its own committer rules (ADR-0068), and a credentialed `command` Effect runs there with `PATH`, `HOME` and
-  `TMPDIR` alone, so it gets no default identity.
+  as before. A raw `kubectl exec` shell does not get the variable, as it does not get the PATH append;
+  `jr2 workspace shell` starts through the spawner, as an Agent's `bash` does (ADR-0009). jr2's other git is out of
+  scope: the sync runs under `GIT_CONFIG_NOSYSTEM` (ADR-0067); the Sandbox Effector is another container with its own
+  committer rules (ADR-0068), and a credentialed `command` Effect runs there with `PATH`, `HOME` and `TMPDIR` alone, so
+  it gets no default identity.
 
 - **The contract is the floor, and the preflight proves it.** What is inherent to "jr2's runtime in your filesystem" and
   nothing more: a **glibc** base no older than the one jr2's node was built against (musl is out entirely), **`git`** on

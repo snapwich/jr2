@@ -19,6 +19,7 @@ import {
   dispatchRefusals,
   doorRefusals,
   gateLookWarnings,
+  gateScopeChecks,
   standingPoolLines,
   standingPoolRefusals,
   loadCharts,
@@ -133,6 +134,15 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
   const chartRefusals = chartFileRefusals(charts, workflows);
   if (chartRefusals.length) {
     for (const line of chartRefusals) activity(io, `refusing: ${line}`);
+    return undefined;
+  }
+  // Each `answer` item that names single Gates (ADR-0078) names Gates that the Workflow's Machines or
+  // its Chart files have: the door's own check, so a typo fails here and not at the first answer. A
+  // name that only a runtime Chart can have is a warning, because the host cannot see those Charts.
+  const gateScopes = gateScopeChecks(workflows, config, charts);
+  for (const line of gateScopes.warnings) activity(io, `warning: ${line}`);
+  if (gateScopes.errors.length) {
+    for (const line of gateScopes.errors) activity(io, `refusing: ${line}`);
     return undefined;
   }
   // What each same-Instance dispatch names resolves in this Assembly, and its slot schema matches

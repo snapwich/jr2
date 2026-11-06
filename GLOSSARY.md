@@ -232,6 +232,11 @@ _Avoid_: template, expression, interpolation, variable, placeholder (the `{{ }}`
 
 ### Turns and conversations
 
+**Conversation**:
+One Agent's exchange with its model, from its first Turn to its end: the prompts, the model's words, its tool calls and
+their results. An Instance ID names it, and one conversation spans one or more Turns.
+_Avoid_: session, transcript, chat, log
+
 **Turn**:
 One Agent's answer to the Frame that a Machine state set for it: the prompt, the work, and the pick that ends it. It
 belongs to the state that asked for it and ends when that state stops waiting; it rides on a Submission but is not one.
@@ -271,8 +276,9 @@ _Avoid_: result, status
 **Sweep**:
 The Turn's sweep: the Orchestrator's end of an Agent's Submissions when the state that asked for the Turn stops
 waiting. It settles the running Submission and every one queued behind it. It says how the Turn ended: by the Turn's
-own pick, or by something else. Two other sweeps are not this one: the image sweep of `jr2 up` (ADR-0039,
-"swept N image(s)"), and the Repo sweep of `jr2 gc` (ADR-0051).
+own pick, or by something else. Other sweeps are not this one: the image sweep of `jr2 up` (ADR-0039,
+"swept N image(s)"), the Repo sweep of `jr2 gc` (ADR-0051), and the run sweep of the Orchestrator, which deletes the
+ended runs older than `runs.retain` and, when the state volume is more than 80% full, the oldest kept conversations (ADR-0065).
 _Avoid_: abort (the wire's route, not the act), cancel (the end of a run)
 
 **Runaway**:

@@ -44,6 +44,9 @@ export const CONTROL_SOCKET = `${RUNTIME_SECRETS}/custodian/control.sock`;
 /** Where a Harness keeps its conversations (ADR-0031): under `/run/jr2`, so no process of the
  * domain reads another Agent's conversation (ADR-0076). */
 export const CONVERSATIONS_DIR = `${RUNTIME_SECRETS}/conversations`;
+/** Where the Harness of a Sandbox listens for a person's shell (`workspace-shell.ts`): in a folder
+ * of the Harness container's alone under `/run/jr2`, where no process of the domain makes a file. */
+export const SHELL_SOCKET = `${RUNTIME_SECRETS}/shell/shell.sock`;
 
 /**
  * The Harness process's own HOME (ADR-0076): not the domain's. The domain writes its HOME, and code
