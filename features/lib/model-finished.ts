@@ -1,9 +1,9 @@
 // What each @model claim workflow means by "finished" (ADR-0066): the run reached a final state its
 // task allows, whichever the model chose. Pure, so a unit test pins each table row without a cluster.
 //
-// A trial that took the other task final still FINISHED: the claim's measure says whether that was
-// the right pick, and its floor is what tolerates a miss. Counting such a trial unfinished as well
-// would fail every scenario on one miss, and make the floor 10 of 10 in all but name.
+// A trial passes only when its measure passed and its run finished; an unfinished trial is a miss,
+// and the floor decides. A trial that took the other task final still FINISHED: the claim's measure
+// says whether that was the right pick.
 //
 // Only `done` finishes. A trial whose run ended `failed` did not finish: its Machine invoked `fail`
 // from `faulted` (an `agent.fault`) or `lost` (a `workspace.lost`), and the note prints the
