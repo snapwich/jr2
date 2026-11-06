@@ -75,14 +75,14 @@ another Agent slot (a nested Turn: its picks are its own) or a `gate` (its trans
 leaves out everything below that child; a child that runs anything else stays in. A state that invokes `gate` gets its
 accepted set from its own and its ancestors' transitions and those written on its plain children, by the same descent:
 position gives a Gate the writings below it that no other party answers for, as it gives an Agent its modes (the Pool's
-`source` Gate, on its root, takes the writing on `parked`). The consumer names neither; MCP appears nowhere in workflow
-code. Mechanics: the **vocabulary** derivation is static, in `jr2Setup.createMachine` — a config walk wraps each
-invoke's `input` to append the derived names, so names still ride serializable input and the ADR-0007 restore path and
-invoke-time validation are unchanged. The same walk unions the derived sets of every state that invokes an Agent of one
-name into that Agent's **Menu** — its tools, fixed for a conversation so the provider's prompt cache survives a change
-of state. The walk reads transition _keys_ and so cannot see guards, which is why what a Turn may pick is not static on
-top of it: `agentSurface` asks the invoking machine's guards, and the Turn is told its **Allowed picks** — the derived
-set, less every event that the live snapshot, in its active mode, would not take
+`source` Gate, on its root, takes the writing on `parked`). The consumer names neither, and the Menu's `mcp__jr2__` tool
+names appear nowhere in workflow code. Mechanics: the **vocabulary** derivation is static, in `jr2Setup.createMachine` —
+a config walk wraps each invoke's `input` to append the derived names, so names still ride serializable input and the
+ADR-0007 restore path and invoke-time validation are unchanged. The same walk unions the derived sets of every state
+that invokes an Agent of one name into that Agent's **Menu** — its tools, fixed for a conversation so the provider's
+prompt cache survives a change of state. The walk reads transition _keys_ and so cannot see guards, which is why what a
+Turn may pick is not static on top of it: `agentSurface` asks the invoking machine's guards, and the Turn is told its
+**Allowed picks** — the derived set, less every event that the live snapshot, in its active mode, would not take
 ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md) owns the rationale).
 Authoring is untouched by the split: a workflow names no tools in either leg. The same walk feeds `jr2 visualize` ("this
 state's agent can call X, Y"). Dotted names (`agent.*`, `workspace.lost`, `xstate.*`, `after`) are mechanically

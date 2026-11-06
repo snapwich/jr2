@@ -18,8 +18,8 @@ code from `/work`.
 
 - **The boundary.** A credential that lets a request act for an Agent lives only where no Workspace code runs.
   **Workspace code** is each process whose program or input comes from `/work`: the Working tools, tests, builds, git
-  (its hooks, its filters, fsmonitor, textconv and each repository-local config) and `command` Effects. The boundary
-  needs no separate container for each Agent.
+  (its hooks, its filters, fsmonitor, textconv and each repository-local config), `command` Effects and stdio MCP
+  servers. The boundary needs no separate container for each Agent.
 - **One Harness container for each Sandbox.** It serves every workspace-ful Agent below the `workspace()`
   ([ADR-0005](0005-sandbox-pod-composition.md)). A Menu-only Agent has no Sandbox, and it runs on the Instance Harness,
   as before ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)).
@@ -33,7 +33,10 @@ code from `/work`.
     ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md),
     [ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), because a smudge filter or a textconv
     in the shared `.git/config` runs in git's process;
-  - each `command` Effect that is placed in the Harness, which is each `command` that names no secret.
+  - each `command` Effect that is placed in the Harness, which is each `command` that names no secret;
+  - each stdio MCP server of an Agent
+    ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)),
+    which the Harness starts through the spawner, never with its MCP client's own spawn.
 
   So the trust boundary is inside the Harness container: the Harness process on one side, the domain on the other.
   [ADR-0077](0077-jr2-requires-landlock-on-every-sandbox-node.md) makes Landlock a requirement of jr2, so no path runs a

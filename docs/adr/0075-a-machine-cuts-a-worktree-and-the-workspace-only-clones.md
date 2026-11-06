@@ -106,8 +106,8 @@ send:    { name: "r.md", worktree: "/work/app/fix" } // http with a file body
 
 ### Output and the walk
 
-- **Every Effect outcome is open.** `worktree()`, `push`, `command` and `http` each hold a stand-in member in their
-  union, so that no author can write an exhaustive check. A later outcome is then no break.
+- **Every Effect outcome is open.** `worktree()`, `push`, `command`, `http` and `mcp` each hold a stand-in member in
+  their union, so that no author can write an exhaustive check. A later outcome is then no break.
 - **The load-time walk refuses an Effect's `onDone` with no unguarded last arm.** A type cannot see a missing arm, and
   with no match a run stays in that state and shows no fault.
 

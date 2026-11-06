@@ -31,9 +31,12 @@ definition can state.
   Workspace (it is this ADR's title). A string field, JSON-serializable, riding the existing ConfigMap channel unchanged
   (ADR-0018's constraint holds).
 - **`"none"` is the Menu-only Agent — and the value also names the Harness that hosts the Agent.** `"none"` withholds
-  the entire Working toolset: the Agent converses and picks from its Menu, nothing else — the decisioning persona (read
-  inputs, pick the next event). Because such an Agent touches no Workspace, it does not run in one: `"write"`/`"read"`
-  place a Turn on the enclosing Workspace's Harness; `"none"` places it on the
+  the entire Working toolset: the Agent converses, picks from its Menu and calls the MCP tools of the remote servers it
+  names
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)), and
+  runs no code — the decisioning persona (read inputs, pick the next event). "Menu-only" means "no Working tools": such
+  an Agent can also hold MCP tools. Because such an Agent touches no Workspace, it does not run in one:
+  `"write"`/`"read"` place a Turn on the enclosing Workspace's Harness; `"none"` places it on the
   [Instance Harness](0031-menu-only-agents-run-on-the-instance-harness.md), always — even when a `workspace()` encloses
   the invocation. Placement is definitional, which is this ADR's thesis extended one step: what an Agent may do to the
   Workspace decides where it runs. (`cwd` is moot for `"none"` — only Working tools consume it.)
@@ -50,6 +53,18 @@ definition can state.
 - **Two layers, one structure: the tool list is the hint, the worktree is the guarantee** — the same shape as ADR-0024's
   receipt (hint) and abort (guarantee). Neither layer alone: tools without the worktree leak through bash; the worktree
   without tools invites the model to fight its checkout instead of declining politely.
+- **An MCP allowlist is a guarantee about the credential, and jr2 offers it only where it can keep it.** An Agent's MCP
+  tools ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md))
+  spend the server's token, so the allowlist guards that token, not the Workspace. A remote server needs a list (tool
+  names, or `"*"`): the Harness offers and runs only those tools. Where Workspace code of the Sandbox in which the
+  Agent's Turns run can spend that secret, Workspace code can call every tool, so `jr2 up` refuses a list and takes only
+  `"*"`. That is the case when the Sandbox's `workspace()` grants the secret, when a credentialed `command` of that
+  Workspace names it, or when an `http` Effect of that Workspace whose body is a Worktree file names it: the Agent
+  writes that body ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A `"none"` Agent's
+  Turns run on the Instance Harness, where no Workspace code runs, so it keeps its list. A stdio server runs as
+  Workspace code and gets no list. The token's own scopes are the outer limit. This is not the shape of
+  `workspace: "read"` above: there the tool list is the hint, because `bash` can write; here the list is the guarantee,
+  because no Workspace code can spend the secret.
 - **A state before the reviewing state cuts the review Worktree on each round.** The sha under review moves between
   rounds, so each round cuts the one folder again at the new sha. The cut forces the folder to the commit and cleans it
   with `-ffd`. Ignored files stay, because the reviewer runs the tests. The folder's path frames the reviewer's turn —
@@ -79,10 +94,11 @@ definition can state.
 - **The reviewer definition becomes `workspace: "read"`**, and the prose ban stays in its instructions as intent — the
   half of the contract a model reads — no longer as the mechanism. A decisioner becomes `workspace: "none"`.
 - **The definition stays plain data.** No code enters the ConfigMap channel; composition by re-export/spread (ADR-0018)
-  is preserved. Custom tool _implementations_ remain out of the contract — this decision adds a restriction vocabulary,
-  not an extension one. Growing extension tools is a separate, later decision.
-- **GLOSSARY.md arbitrates the three senses of "tools"**: the Menu (control plane — what an Agent may say) and Working
-  tools (data plane — what it may do) become glossary entries; unqualified "tools" joins the Avoid lists.
+  is preserved. Tool _implementations_ stay out of the contract — this decision adds a restriction vocabulary, not an
+  extension one. The extension is MCP: an Agent names servers, and a server holds the code (ADR-0079).
+- **GLOSSARY.md arbitrates the senses of "tools"**: the Menu (control plane — what an Agent may say), Working tools
+  (data plane — what it may do) and MCP tools (what it may do through a service, ADR-0079) are glossary entries;
+  unqualified "tools" joins the Avoid lists.
 - **The `@kind` tier gains the containment scenario**: from the review worktree, a write probe followed by a commit must
   leave the branch ref and the coder's worktree untouched.
 - **The zero-support guard stays available to workflows**: a workflow can still have both Agents report the sha and gate

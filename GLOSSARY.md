@@ -106,9 +106,9 @@ that occurs remotely. An Agent is an Actor in a named slot.
 _Avoid_: agent actor
 
 **Agent**:
-A configured worker, such as a coder or a reviewer: a model, instructions, Working tools and access to the Workspace.
-It is a data definition that a Machine carries in a named Actor slot, so its name is the slot's name and its scope is
-that Machine; a Turn can set its Dials but never its identity.
+A configured worker, such as a coder or a reviewer: a model, instructions, Working tools, MCP tools and access to the
+Workspace. It is a data definition that a Machine carries in a named Actor slot, so its name is the slot's name and its
+scope is that Machine; a Turn can set its Dials but never its identity.
 _Avoid_: role, persona, roster entry
 
 **Dials**:
@@ -192,17 +192,17 @@ automatic status. It is never control: nothing consumes an Emit, and an Emit can
 _Avoid_: event (what a Gate or an Agent delivers), log (not a diagnostic)
 
 **Effect**:
-Work that a Machine does outside itself: it runs a command, calls a URL, pushes a branch or starts a run. A run that
-an Effect started is **dispatched by** the run that started it, and the two are independent: an in-run child is a
-nested Machine, never a dispatched run.
+Work that a Machine does outside itself: it runs a command, calls a URL, calls an MCP server, pushes a branch
+or starts a run. A run that an Effect started is **dispatched by** the run that started it, and the two are independent:
+an in-run child is a nested Machine, never a dispatched run.
 _Avoid_: action (xstate's word), side effect, job, task, step, operation, errand, tool; sub-run, child run, nested run,
 spawned run (a dispatched run is a run of its own)
 
 **Open**:
 A part that a Machine declares but does not bind, so that its composer binds it: for example, a Repo Slot with no url,
-an Agent with no model, or an Effect with no url, program or secret. It is the shape that a packaged Machine ships in,
-`jr2 up` refuses an Open part that nobody bound, and a run never sees one, except an Open body, which a run binds, and
-a Gate's Open look, about which `jr2 up` only warns.
+an Agent with no model, or an Effect with no url, program, MCP server or tool, or secret. It is the shape that a
+packaged Machine ships in, `jr2 up` refuses an Open part that nobody bound, and a run never sees one, except an Open
+body, which a run binds, and a Gate's Open look, about which `jr2 up` only warns.
 _Avoid_: unset, default (an Open part has none), placeholder
 
 **Open body**:
@@ -282,7 +282,7 @@ _Avoid_: degeneration (the model behavior, not the fault class), loop, hang, sta
 
 **step**:
 One tool call of a model answer that the engine starts while a Turn is live, whether or not it runs: a call of a
-Working tool or a pick, a call of an unknown tool or with invalid arguments, a pick that the Harness blocks as the
+Working tool, of an MCP tool or a pick, a call of an unknown tool or with invalid arguments, a pick that the Harness blocks as the
 second pick of its model answer, each call of a model answer that hit the output limit, and the call that trips the
 Runaway watch. A call after a pick that ended the Turn is not a step. The Harness counts steps to find a Runaway. A
 **step boundary** is the point after a model answer and the results of all its calls, and before the next model
@@ -336,9 +336,17 @@ re-prompt of an open Turn)
 
 **Working tools**:
 The file and shell tools that the Harness runs in its own container: what an Agent may do, as its Menu is what it may
-say. Every program that they run, and their file I/O, is confined, so it cannot reach what the Harness itself holds. The Agent's access to
-the Workspace decides which of them it gets, and a Menu-only Agent gets none.
+say. Every program that they run, and their file I/O, is confined, so it cannot reach what the Harness itself holds. The
+Agent's access to the Workspace decides which of them it gets, and a Menu-only Agent gets none.
 _Avoid_: tools (unqualified), sandbox tools
+
+**MCP tools**:
+The tools of the MCP servers that an Agent's definition names: what an Agent may do through a service, beside its
+Working tools and its Menu. The Instance's config declares each server by a name of the author's, and the Agent names
+the servers and, for a remote server, the tools that it may call. They are fixed for a conversation, and a call to one
+is never a pick. A call that needs a person's approval is not made with an MCP tool: the Machine makes it as an Effect,
+after a Gate.
+_Avoid_: connector, plugin, integration, extension, tools (unqualified)
 
 ### Sandboxes, Harnesses and secrets
 
@@ -348,9 +356,9 @@ resources: no ports, no filesystem, no process space.
 _Avoid_: worker pod, container
 
 **Harness**:
-jr2's own long-running server that hosts the conversations of Agents and executes their Working tools, in every Sandbox
-and once per Instance as the Instance Harness. It holds no Agent of its own: each Submission carries the definition
-that it runs.
+jr2's own long-running server that hosts the conversations of Agents and executes their Working tools and calls their
+MCP tools, in every Sandbox and once per Instance as the Instance Harness. It holds no Agent of its own: each Submission
+carries the definition that it runs.
 _Avoid_: flue agent, server, `local()`
 
 **engine**:
@@ -373,9 +381,10 @@ _Avoid_: proxy (the mechanism, and the Handoff's word), sidecar (its deployment 
 firewall
 
 **Held secret**:
-A credential that the Harness uses through its pod's Custodian but never holds: a model API key above all, and the
-Sandbox tokens. The Harness holds only its Stand-in, so no Agent can take the secret out of the pod. Workspace code can
-spend it through the Custodian, while the pod lives, only when its Workspace grants that secret.
+A credential that the Harness uses through its pod's Custodian but never holds: a model API key above all, the token of
+an MCP server that an Agent names, and the Sandbox tokens. The Harness holds only its Stand-in, so no Agent can take the
+secret out of the pod. Workspace code can spend it through the Custodian, while the pod lives, only when its Workspace
+grants that secret.
 _Avoid_: masked secret, injected secret, proxied key, secret (unqualified)
 
 **Stand-in**:
@@ -394,27 +403,28 @@ _Avoid_: pod token, agent token, slot token, Instance token (the Caller's creden
 
 **Workspace code**:
 Each process in a Sandbox whose program or input comes from the Workspace's shared files: what an Agent's Working tools
-run, tests and builds, git and what a repository's own config makes it run, and a command that a Machine runs there. Any
-Agent can run what another Agent wrote, so jr2 trusts none of it, and no credential that acts for an Agent is where
-Workspace code runs.
+run, tests and builds, git and what a repository's own config makes it run, a stdio MCP server, and a command that a
+Machine runs there. Any Agent can run what another Agent wrote, so jr2 trusts none of it, and no credential that acts
+for an Agent is where Workspace code runs.
 _Avoid_: agent code (any Agent can run another's), user code, untrusted code (unqualified), tool process
 
 **Check pod**:
-The one-shot pod in which the provider preflight of `jr2 up` checks the models of one class of Harness pod, before the
-converge writes an object that the Instance reads. It has a Custodian, its own copies of the objects that it reads, and
-labels that no Harness pod has. Its check container calls each model as a Turn calls it. The preflight is the step of
-`jr2 up`, and a check is what the check container does for one model: one call, and at most a second one after an
-answer in text. `jr2 check` is not this check: it runs the typecheck and the Machine walk of `jr2 up`, with no pod and no
-cluster.
+The one-shot pod in which the provider preflight of `jr2 up` checks the models of one class of Harness pod, and the tool
+list of each remote MCP server that an Agent of the class names, before the converge writes an object that the Instance
+reads. It has a Custodian, its own copies of the objects that it reads, and labels that no Harness pod has. Its check
+container calls each model as a Turn calls it. The preflight is the step of `jr2 up`, and a check is what the check
+container does for one model: one call, and at most a second one after an answer in text; for an MCP server, it reads
+its tool list once through the Custodian. `jr2 check` is not this check: it runs the typecheck and the Machine walk of
+`jr2 up`, with no pod and no cluster.
 _Avoid_: probe, probe pod, preflight pod, test pod, Harness (it runs none)
 
 **Effector**:
 The container where jr2's own process holds the secrets that the Orchestrator must not hold and makes the calls to the
 outside that jr2 makes for a Machine or a Hook, and where the Agent executes nothing: a Sandbox Effector or the Instance
 Effector. It serves a Machine's Effects and, in the Instance Effector, the Hook door, and it knows no Hook kind or
-service. Every Effect runs in it except a command that names no secret,
-which runs beside the Agent, and a dispatch that names no target, which runs in the Orchestrator's own process; a
-command that runs in it sees a pinned commit, never the live Worktree.
+service. Every Effect runs in it except a command that names no secret, which runs beside the Agent, and a dispatch that
+names no target, which runs in the Orchestrator's own process; a command that runs in it sees a pinned commit, never the
+live Worktree.
 _Avoid_: Courier, Actuator, Clerk, machine container, tool image
 
 **Sandbox Effector**:
@@ -425,8 +435,9 @@ _Avoid_: sidecar, worker, runner
 
 **Instance Effector**:
 The Effector as a stateless pod of its own, one per Instance, for an Effect that calls a URL and reads no Worktree file,
-for a dispatch that starts a run on another Orchestrator, and for the Hook door's two operations: it checks an HMAC
-with a Hook's secret, which the Orchestrator never holds, and makes the door's one call out.
+for an Effect that calls an MCP server, for a dispatch that starts a run on another Orchestrator, and for the Hook
+door's two operations: it checks an HMAC with a Hook's secret, which the Orchestrator never holds, and makes the door's
+one call out.
 _Avoid_: sidecar, worker, runner
 
 **Effect secret**:
@@ -435,7 +446,7 @@ secret where an Agent's pod names it and an Effect secret where an Effect names 
 _Avoid_: secret (unqualified), injected secret
 
 **Sandbox Image**:
-The user-owned image that a Sandbox's Harness runs in: the tools that the Agent's Working tools can reach, and the shell
+The user-owned image that a Sandbox's Harness runs in: the tools that the Agent's Working tools can reach, the program of each stdio MCP server, and the shell
 that a human gets where the Harness runs. A Workspace names it as a fact of its Machine, built by `jr2 up` or brought
 from a registry, and it carries no part of jr2.
 _Avoid_: workspace image (a Workspace is a Machine; the image is the pod's), agent image, harness image (the kit's own),

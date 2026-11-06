@@ -31,48 +31,54 @@ the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
   who never reads the file spends money on a model they did not choose, silently, which is the failure class `jr2 up`
   exists to make loud. Rejected: a Machine factory `task({ model })` — ADR-0049 settled that a package exports a Machine
   and retunes with `customize`, and a factory reopens that.
-- **Open widens to an Effect's url, argv and secret, bound once.** A package cannot know the host its `http` Effect
-  calls, the program its `command` runs
+- **Open widens to an Effect's url, argv, MCP server and tool, and secret, bound once.** A package cannot know the host
+  its `http` Effect calls, the program its `command` runs, the MCP server and tool its `mcp` Effect calls
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), or the secret its
   composer spends, so it may leave each Open: `http({ method, url: open, auth, input, request })`,
-  `http({ method: "PUT", url: open, body: file(path) })`, `command(open, { env, pin })`, and `secret(open)` in place of
-  a secret's name. The url, the argv and the secret's name are the Open parts of an Effect that exist; everything else
-  the definition says is the package's as written — the method, the headers, the auth and the secrets they name, the
-  input, `request`, the env, `pin` — and is checked when the Machine is built. `secret(open)` is taken by `bearer`,
-  `basic` (the user or the password), a header's value, and a command's env, as its value or its `.path`; in a url it is
-  refused when the Machine is built ("leave the whole url Open"), since a url that carries a secret is left Open whole
-  (below). An Effect takes one Open secret: a second `secret(open)` in one definition is refused when the Machine is
-  built ("an Effect takes one Open secret"); the one `secret(open)` may stand in several places, a value and its
-  `.path`. An Effect that names an Open secret is placed as one that names a secret is — a credentialed command in the
-  Sandbox Effector, an `http` where its body places it — before the name is known. The composer binds the parts with
-  `customize(machine, { effects: { <slot>: { url } } })`, `{ argv }` or `{ secret }`, and an Effect with an Open url or
-  argv beside an Open secret takes one object with both keys (`{ url, secret }`, `{ argv, secret }`): a url is a string
-  or a `text` with a secret in its path, an argv is the usual list, and a secret is a name that obeys `secret()`'s own
-  rule — it is the secret's file in the Effector's mount (ADR-0068). The type of `effects` is the intersection of the
-  Open parts' bindings, so a binding that leaves one of them unbound is a compile error, as an unbound url is; at run
-  time, a binding that leaves one unbound gives an Effect still Open in it, which a later `customize()` may bind. Each
-  is bound ONCE, to a value: never a mapper over the door, so a host is fixed in the definition or bound before any run,
-  and no run chooses one, nor a secret. Binding builds the Effect again with its constructor, with the bound name in
-  every place `secret(open)` stood, so a bound part meets every rule the constructor checks — a literal host, no secret
-  in a query, a non-empty argv, a secret's name — and the bound Effect is the one the same definition written with that
-  name gives; `jr2 up` reads it as written: the placement, the secrets it names, and the Effector's fence
-  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)) are the bound ones, and the bound secret
-  is placed only in that Effect's Effector, as a named secret is. Only an Open part is offered: a part the author fixed
-  is no key of `effects` and is refused at the call, and a part bound once is fixed from then on, so a second composer
-  cannot move it. `effects` reaches through `workspace()`'s body, `pool()`'s worker and a composed Machine's `actors`,
-  as `agents` does, typed off the slot's logic. An Open argv's slots are the composer's, so the load walk counts every
-  pick param as read by it when the Machine is built, and `customize()` runs the walk's pick-param check again once the
-  argv is bound — a param the bound argv does not read is refused there, and a warning it gives for the bound argv is
-  the bound Machine's, as it is the same Machine's written with that argv: the bound Machine gets a config of its own,
-  which carries those warnings ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), so a copy
-  `provide()` makes of it — a run's — keeps them, and the Open Machine keeps its own. The compiler's check does not
-  reach a bound argv: an Open argv's input is one string per key, so nothing at build or at `customize()` checks that
-  the invoke supplies each slot the bound argv names, and a slot it does not supply faults when the Effect starts — its
-  state's `onError`, with nothing run. The `jr2 up` walk reports an Open Effect beside Open Repo Slots and Agents and
-  refuses the converge naming the `effects` line — `{ effects: { <slot>: { secret: "<name>" } } }` for an Open secret,
-  one object with both keys for an Effect with two Open parts; the Effect refuses to run while Open, as the second fence
-  — its state's `onError`, with nothing sent and no ledger row. The Open part is the whole url, the whole argv, or the
-  secret's name.
+  `http({ method: "PUT", url: open, body: file(path) })`, `command(open, { env, pin })`,
+  `mcp.call(open, open, { input })`, and `secret(open)` in place of a secret's name. The url, the argv, an `mcp`
+  Effect's server and tool, and the secret's name are the Open parts of an Effect that exist; everything else the
+  definition says is the package's as written — the method, the headers, the auth and the secrets they name, the input,
+  `request`, the env, `pin` — and is checked when the Machine is built. `secret(open)` is taken by `bearer`, `basic`
+  (the user or the password), a header's value, and a command's env, as its value or its `.path`; in a url it is refused
+  when the Machine is built ("leave the whole url Open"), since a url that carries a secret is left Open whole (below).
+  An Effect takes one Open secret: a second `secret(open)` in one definition is refused when the Machine is built ("an
+  Effect takes one Open secret"); the one `secret(open)` may stand in several places, a value and its `.path`. An Effect
+  that names an Open secret is placed as one that names a secret is — a credentialed command in the Sandbox Effector, an
+  `http` where its body places it — before the name is known. The composer binds the parts with
+  `customize(machine, { effects: { <slot>: { url } } })`, `{ argv }`, `{ secret }`, `{ server }` or `{ tool }`, and an
+  Effect with two Open parts takes one object with both keys (`{ url, secret }`, `{ argv, secret }`,
+  `{ server, tool }`): a url is a string or a `text` with a secret in its path, an argv is the usual list, and a secret
+  is a name that obeys `secret()`'s own rule — it is the secret's file in the Effector's mount (ADR-0068) — and a server
+  is a name of the `mcp` block of `jr2.config.ts`, whose secret is the server's own, so an `mcp` Effect takes no
+  `secret(open)`
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). The
+  type of `effects` is the intersection of the Open parts' bindings, so a binding that leaves one of them unbound is a
+  compile error, as an unbound url is; at run time, a binding that leaves one unbound gives an Effect still Open in it,
+  which a later `customize()` may bind. Each is bound ONCE, to a value: never a mapper over the door, so a host is fixed
+  in the definition or bound before any run, and no run chooses one, nor a secret. Binding builds the Effect again with
+  its constructor, with the bound name in every place `secret(open)` stood, so a bound part meets every rule the
+  constructor checks — a literal host, no secret in a query, a non-empty argv, a secret's name — and the bound Effect is
+  the one the same definition written with that name gives; `jr2 up` reads it as written: the placement, the secrets it
+  names, and the Effector's fence ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)) are the
+  bound ones, and the bound secret is placed only in that Effect's Effector, as a named secret is. Only an Open part is
+  offered: a part the author fixed is no key of `effects` and is refused at the call, and a part bound once is fixed
+  from then on, so a second composer cannot move it. `effects` reaches through `workspace()`'s body, `pool()`'s worker
+  and a composed Machine's `actors`, as `agents` does, typed off the slot's logic. An Open argv's slots are the
+  composer's, so the load walk counts every pick param as read by it when the Machine is built, and `customize()` runs
+  the walk's pick-param check again once the argv is bound — a param the bound argv does not read is refused there, and
+  a warning it gives for the bound argv is the bound Machine's, as it is the same Machine's written with that argv: the
+  bound Machine gets a config of its own, which carries those warnings
+  ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), so a copy `provide()` makes of it — a run's
+  — keeps them, and the Open Machine keeps its own. The compiler's check does not reach a bound argv: an Open argv's
+  input is one string per key, so nothing at build or at `customize()` checks that the invoke supplies each slot the
+  bound argv names, and a slot it does not supply faults when the Effect starts — its state's `onError`, with nothing
+  run. The `jr2 up` walk reports an Open Effect beside Open Repo Slots and Agents and refuses the converge naming the
+  `effects` line — `{ effects: { <slot>: { secret: "<name>" } } }` for an Open secret, one object with both keys for an
+  Effect with two Open parts, `{ effects: { <slot>: { server: "<name>" } } }`, `{ tool: "<tool>" }` or both for an `mcp`
+  Effect, with only its Open keys; the Effect refuses to run while Open, as the second fence — its state's `onError`,
+  with nothing sent and no ledger row. The Open part is the whole url, the whole argv, an MCP server's name or a tool's
+  name, or the secret's name.
 - **Open widens to a hooked Gate's look, which only warns.** A package writes the Hook handlers of its Gate slots for
   each forge that it supports, because a forge's payload is public, so a handler is never Open. It imports the Hook kind
   of each forge that it hears, for the payload types, and it has `@jr2/hooks` as a peer dependency

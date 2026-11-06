@@ -21,12 +21,19 @@ whole history again. It also left the history calling tools the request no longe
 
 ## Decision
 
-- **The Menu is the whole of what an Agent can ever be offered in its Machine, and it is the tools block.** It is the
-  union of the derived sets of every state that invokes an Agent of that name — the same scope as its continued
-  conversation's id (ADR-0057). `jr2Setup.createMachine` derives it in ADR-0015's walk, in a fixed order, so it is
-  byte-stable for every Turn of the conversation and for every fresh conversation of that Agent. The descriptions are
-  the event defs' own and do not vary by state, so a def's description must hold at every writing of it the Agent can
-  reach; the load warns where its writings on one path differ (ADR-0015).
+- **The Menu is the whole of what an Agent can ever be offered in its Machine, and it is the Menu's part of the tools
+  block.** It is the union of the derived sets of every state that invokes an Agent of that name — the same scope as its
+  continued conversation's id (ADR-0057). `jr2Setup.createMachine` derives it in ADR-0015's walk, in a fixed order, so
+  it is byte-stable for every Turn of the conversation and for every fresh conversation of that Agent. The descriptions
+  are the event defs' own and do not vary by state, so a def's description must hold at every writing of it the Agent
+  can reach; the load warns where its writings on one path differ (ADR-0015).
+- **An Agent's MCP tools are fixed for the conversation too.** The Harness reads a server's tools at the conversation's
+  first Turn, keeps the allowed ones sorted by name, records them with the conversation, and never reads them again for
+  it, across a park and a restart
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). The
+  tools block is the Working tools, then the MCP tools, then the Menu, and it is the same bytes for every Turn of the
+  conversation. Any fixed order keeps the cache. A tool that the server took away stays in the block, and its call fails
+  with jr2's text.
 - **What one Turn may pick is its Allowed picks**: the invoking state's derived set (its own, its ancestors' and its
   modes' picks — ADR-0015), narrowed to what the live Machine would currently accept **from this Agent**: xstate's
   selection for an event that carries the Agent's sender, a guard that reads the payload counted as passing, must move
@@ -117,7 +124,8 @@ block was not perfect either: once the model invented a tool it had never been g
   cross-state `continue`.
 - **The Machine's whole agent-audience vocabulary as the Menu.** Rejected: it offers picks only another Agent's states
   handle.
-- **Put the Menu tools last.** Rejected: measured, a reordered tools block misses as completely as a changed one.
+- **Narrow the Menu per Turn, with the Menu tools last so that only the tail of the block changes.** Rejected: measured,
+  a change at the tail of the tools block misses as completely as one at its head.
 - **Mask at decode time** (OpenAI `allowed_tools`, logit masking). Deferred: it is provider-specific — Anthropic has no
   subset form, and changing `tool_choice` there drops the messages cache; vLLM's Chat Completions refuses it. The design
   must hold without it; where it is cache-safe, it can be added in the presenter.
@@ -141,9 +149,9 @@ block was not perfect either: once the model invented a tool it had never been g
 
 ## Consequences
 
-- **One state can allow different picks as its context changes or its active mode changes; the Menu does not change.**
-  The conformance tier asserts it: two Submissions with different Allowed picks send a byte-identical tools block
-  (ADR-0027).
+- **One state can allow different picks as its context changes or its active mode changes; the Menu and the MCP tools do
+  not change.** The conformance tier asserts it: two Submissions with different Allowed picks send a byte-identical
+  tools block (ADR-0027).
 - **A restatement is appended, never rewritten.** Conformance asserts that each request of a Submission is a byte prefix
   of the next, with the tools and the system prompt unchanged, and that the restatement sits right after the model
   answer's last tool result.

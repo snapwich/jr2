@@ -39,20 +39,23 @@ built.
   the Harness has exactly one route to its Menu — the Custodian on `localhost` — and forking that path for one pod buys
   a divergence in the component this ADR keeps deliberately uniform. The pod is composed by the same function a
   Sandbox's is ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), so its Custodian
-  carries the Instance Harness's model calls the same way. It holds only the model keys of the `"none"` Agents it hosts
-  — the keys their providers read — and none of the held secrets a `workspace()` lists: a `"none"` Agent cannot execute
-  code, so it had no way to use the rest. Its held objects are its own (`held-instance.json`,
-  `jr2-held-secrets-instance`). Its held secrets get secret Stand-ins, as in every Harness pod: `jr2 up` mints them with
-  the signing key when it writes that pod's Secrets, as it does for the Instance Effector's key
-  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). It starts no confined child, so this
-  is for consistency, not a boundary. Defense-in-depth is the bonus, not the reason.
+  carries the Instance Harness's model calls the same way. It holds what the `"none"` Agents it hosts name — the keys
+  their providers read, and the secrets of the remote MCP servers they name
+  ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)) — and
+  none of the held secrets a `workspace()` lists: a `"none"` Agent cannot execute code, so it had no way to use the
+  rest. A `"none"` Agent names no stdio MCP server, because the Instance Harness has no Landlock domain to start one in.
+  Its held objects are its own (`held-instance.json`, `jr2-held-secrets-instance`). Its held secrets get secret
+  Stand-ins, as in every Harness pod: `jr2 up` mints them with the signing key when it writes that pod's Secrets, as it
+  does for the Instance Effector's key ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
+  It starts no confined child, so this is for consistency, not a boundary. Defense-in-depth is the bonus, not the
+  reason.
 - **The Instance Effector is the second Instance-level pod, beside it**
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), on the same convention: `jr2 up`
-  converges it when a registered Machine places an Effect there — an `http` Effect — or a Hook needs it (a `mac`
-  verifier, or a kind that declares `posts`), and deletes it otherwise. It runs the same `jr2-harness` image with
-  `/opt/jr2/bin/effector` as its command, holds no conversation and runs no Agent, and is a Deployment, not a
-  StatefulSet: it keeps nothing, and a rollout must run the new pod beside the old one. No config key names, sizes,
-  addresses, or enables it.
+  converges it when a registered Machine places an Effect there — an `http`, an `mcp` or a targeted `dispatch` Effect —
+  or a Hook needs it (a `mac` verifier, or a kind that declares `posts`), and deletes it otherwise. It runs the same
+  `jr2-harness` image with `/opt/jr2/bin/effector` as its command, holds no conversation and runs no Agent, and is a
+  Deployment, not a StatefulSet: it keeps nothing, and a rollout must run the new pod beside the old one. No config key
+  names, sizes, addresses, or enables it.
 - **No image config at all.** The Harness image was once configured as `sandbox.image` because the Sandbox pod was the
   only place a Harness ran — a misnomer once the Instance Harness exists, and config is the wrong seat regardless:
   `jr2 up` builds and resolves every image it deploys ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)), and
@@ -72,13 +75,14 @@ pointers only; memory snapshots are tied to one template version, so the state w
 change is a volume the actor reloads on a cold boot. These decisions take that shape.
 
 - **A conversation is persisted to a directory, and rebuilt from it on boot.** The Harness writes each conversation as
-  it goes: jr2's own record — the stream log, the Settlements, the history messages, in the wire's shapes — plus the
-  engine part, in a folder the engine names (`engine/<name>`), which the record does not read. Today it is jr2's
-  transcript (ADR-0027): `engine/pi/transcript.jsonl`, the pi-ai messages the model read and each Compaction. Rebuilding
-  reads jr2's record first; an engine that cannot read the engine part (another engine, another version) continues from
-  the history messages. The record is the contract; the engine part is not. A Submission in flight at the restart
-  settles `failed` (the typed error `harness_restarted`, which the Agent's Actor reads as "Turn lost") on the rebuilt
-  stream, so the Orchestrator reads a Settlement, not a 404, and the conversation's next Turn continues it.
+  it goes: jr2's own record — the stream log, the Settlements, the history messages, the conversation's MCP tools, in
+  the wire's shapes — plus the engine part, in a folder the engine names (`engine/<name>`), which the record does not
+  read. Today it is jr2's transcript (ADR-0027): `engine/pi/transcript.jsonl`, the pi-ai messages the model read and
+  each Compaction. Rebuilding reads jr2's record first; an engine that cannot read the engine part (another engine,
+  another version) continues from the history messages. The record is the contract; the engine part is not. A Submission
+  in flight at the restart settles `failed` (the typed error `harness_restarted`, which the Agent's Actor reads as "Turn
+  lost") on the rebuilt stream, so the Orchestrator reads a Settlement, not a 404, and the conversation's next Turn
+  continues it.
 - **A restart while the Agent's state is busy cuts the Turn and is no fault.** When the Agent's state is not at Rest —
   its pick is outstanding, or work it started in runs below it — or its pick's answer was read and never reached the
   model, the Agent's Actor raises no `agent.fault` for a restart: the Machine would route it and stop the work the Turn
