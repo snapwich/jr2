@@ -157,9 +157,10 @@ the use of each Turn, and a call that you did not allow cannot go around that re
 The read, write and edit tools reach the same paths as the shell. A path in `/run/jr2`, or a link to one, gives the
 error of a file that the user cannot read. In a path, `~` is the `HOME` of the confined programs.
 
-The [project context](agents-and-turns.md#the-project-context) (`AGENTS.md`, `CLAUDE.md` and the skills of a Worktree)
-is read by a confined program too. Thus an `AGENTS.md` that links to a file in `/run/jr2` gives no text to the model. In
-the image user's `~/.pi/agent`, that program reads only the context file and the skills, and not `auth.json`.
+The [project context](agents-and-turns.md#the-project-context) (`AGENTS.md`, `CLAUDE.md` and the skills of a Worktree,
+or of `/work`) is read by a confined program too. Thus an `AGENTS.md` that links to a file in `/run/jr2` gives no text
+to the model. In the image user's `~/.pi/agent`, which the pod mounts read-only from the image, that program reads only
+the context file and the skills, and not `auth.json`.
 
 The Harness process has its own `HOME`, in `/run/jr2`, from before Node starts. Thus a file that a program writes in its
 `HOME`, such as `~/.aws/config` or a module in `~/.node_modules`, does not change what the Harness process does. The

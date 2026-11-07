@@ -604,6 +604,47 @@ test("the Harness hears the Workspace's projectContext in JR2_PROJECT_CONTEXT, w
   assert.equal(await envFor("workspace"), "workspace");
 });
 
+test("an image whose record names a user context folder gets it mounted read-only from the image itself, and the Harness hears where (ADR-0062)", async () => {
+  const dir = "/home/node/.pi/agent";
+  const refs = {
+    ...REFS,
+    sandbox: { ...REFS.sandbox, [DEV.key]: "jr2-sandbox-inst-dev:e00" },
+    sandboxUser: { [DEV.key]: "1000", [RUST.key]: "1000" },
+    sandboxUserContext: { [DEV.key]: dir, [RUST.key]: "" },
+  };
+  const podFor = async (image: string) => {
+    const { exec, calls } = cluster();
+    await kubeSandbox({
+      imagesPath: await mkImages(refs),
+      ...provisionable,
+      ...exec,
+      env: [{ name: "JR2_USER_CONTEXT", value: "/home/node/.pi/agent" }],
+    }).provision({ name: "sb", runId: "r", workflow: "w", image, ...withApp });
+    return crOf(calls).spec;
+  };
+  const spec = await podFor(DEV.url);
+  assert.deepEqual(
+    spec.volumes.find((v: { name: string }) => v.name === "user-context"),
+    { name: "user-context", image: { reference: "jr2-sandbox-inst-dev:e00" } },
+    "the Sandbox Image again, the same ref",
+  );
+  assert.deepEqual(
+    spec.volumeMounts.find((m: { name: string }) => m.name === "user-context"),
+    { name: "user-context", mountPath: dir, subPath: "home/node/.pi/agent", readOnly: true },
+  );
+  const announced = spec.env.filter((e: { name: string }) => e.name === "JR2_USER_CONTEXT");
+  assert.equal(announced.at(-1).value, dir, "jr2's entry is last, after harness.env's");
+
+  // An image with none, a registry ref, and an image that no record names: no mount, and the
+  // Harness hears "", whatever harness.env says.
+  for (const image of [RUST.url, "registry.example/app:1", undefined]) {
+    const other = await podFor(image as string);
+    assert.ok(!other.volumes.some((v: { name: string }) => v.name === "user-context"), String(image));
+    assert.ok(!other.volumeMounts.some((m: { name: string }) => m.name === "user-context"), String(image));
+    assert.equal(other.env.filter((e: { name: string }) => e.name === "JR2_USER_CONTEXT").at(-1).value, "");
+  }
+});
+
 test("the pod carries the work group: fsGroup = spec.workGroup ?? 2000", async () => {
   // ADR-0005's ownership half of cross-uid sharing on `/work` (the attach's default ACL is the
   // writability half). The override exists for the image whose sessions already hold a gid of
@@ -1079,6 +1120,8 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
       "GOMAXPROCS",
       // How far up the Agents' context files are read (ADR-0062): the `workspace()`'s word.
       "JR2_PROJECT_CONTEXT",
+      // Where the image user's context is mounted read-only, or "" (ADR-0062): mechanism.
+      "JR2_USER_CONTEXT",
       // Where the conversations persist (ADR-0031): mechanism too.
       "JR2_CONVERSATIONS_DIR",
       "JR2_HARNESS_TOKEN_SHA256",
@@ -1699,6 +1742,7 @@ test("a held secret: the Harness gets Stand-in files and the proxy, the Custodia
       ["GIT_SSL_CAINFO", "/etc/jr2/ca/bundle.crt"],
       ...CPU_HINTS.map((h) => [h.name, undefined]),
       ["JR2_PROJECT_CONTEXT", "worktree"],
+      ["JR2_USER_CONTEXT", ""],
       ["JR2_CONVERSATIONS_DIR", "/run/jr2/conversations"],
       ["JR2_HARNESS_TOKEN_SHA256", harnessTokenDigest(provisionable.signingKey, "sb-held")],
     ],
@@ -1799,6 +1843,7 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
     { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/ca.crt" },
     ...CPU_HINTS,
     { name: "JR2_PROJECT_CONTEXT", value: "worktree" },
+    { name: "JR2_USER_CONTEXT", value: "" },
     { name: "JR2_CONVERSATIONS_DIR", value: "/run/jr2/conversations" },
     { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(provisionable.signingKey, "sb-ca") },
   ]);

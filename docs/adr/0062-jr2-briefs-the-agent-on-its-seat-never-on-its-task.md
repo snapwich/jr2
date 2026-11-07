@@ -38,16 +38,17 @@ inherits a Workspace whose processes are gone, with no way to know why.
     Worktree, `/work/<slot>/<name>`. ADR-0075 makes each Worktree, and each slot's clone `default`, at exactly that
     depth. In `/work` (a Workspace with no Repo Slot) or in a slot's folder, which no Worktree holds, the walk reads
     that folder alone. `"workspace"`: up to `/work`, so a `/work/AGENTS.md` and a `/work/<slot>/AGENTS.md` reach each
-    Agent of the Workspace. Neither value reads above `/work`. The default is the narrow one, for isolation. A file in
-    `/work` or in a slot's folder is in no Worktree, so it is in no diff and no reviewer reads it
-    ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)). And under `"workspace"` one
-    Agent writes text into each other Agent's system prompt, where a peer's word becomes a rule; ADR-0002 keeps a peer's
-    word from being an order (`peer-not-order`). An author who wants rules that each Agent of the Workspace shares
-    chooses `"workspace"` and accepts that. Neither value is a wall: the Agents of one Workspace share `/work`
-    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), so one Agent can still
-    write in another's Worktree. A write to a file that is not ignored is then in that Worktree's diff. An ignored
-    context file is in no diff (an Agent writes the clone's shared `info/exclude`), so each detached cut removes the
-    ignored context files and skills of its Worktree
+    Agent of the Workspace. Neither value reads above `/work`. The default is the narrow one, for isolation, and the
+    isolation is for an Agent in a Worktree: an Agent whose working directory is `/work` or a slot's folder reads that
+    folder's context file under either value. A file in `/work` or in a slot's folder is in no Worktree, so it is in no
+    diff and no reviewer reads it ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)).
+    And under `"workspace"` one Agent writes text into each other Agent's system prompt, where a peer's word becomes a
+    rule; ADR-0002 keeps a peer's word from being an order (`peer-not-order`). An author who wants rules that each Agent
+    of the Workspace shares chooses `"workspace"` and accepts that. Neither value is a wall: the Agents of one Workspace
+    share `/work` ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), so one
+    Agent can still write in another's Worktree. A write to a file that is not ignored is then in that Worktree's diff.
+    An ignored context file is in no diff (an Agent writes the clone's shared `info/exclude`), so each detached cut
+    removes the ignored context files and skills of its Worktree
     ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)): a reviewer's system prompt has only
     what the commit under review has, and what an Agent writes after the cut. A branch Worktree is given back as it is,
     so an ignored context file that another Agent writes there reaches its Agent, in no diff.
@@ -56,17 +57,34 @@ inherits a Workspace whose processes are gone, with no way to know why.
     pi's walk goes up to `/` and has no option to stop. So the Harness keeps only the files that the child names in a
     folder from the working directory up to the bound, and drops the rest. The walk reads the folders above in the
     domain, which can read them anyway, and their text goes nowhere.
-  - **The image user's context, when the image has one.** When the Sandbox Image's user has `~/.pi/agent` at the
-    Harness's start, pi reads it as its user folder (`agentDir`): its context file comes first, before the walk's files,
-    and its skills come from `skills/`. Never otherwise: not jr2's own home for an image with no `USER` (`/home/jr2`, an
-    emptyDir, [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)), not a folder in
-    `/work`, and not a folder that is made after the start. It does not depend on `projectContext`. The child that reads
-    it is confined further: in that folder it reads only the names that pi's loaders read there, so not `auth.json`,
-    `settings.json` or `models.json` (ADR-0076). **An Agent can write it.** ADR-0037 requires a writable `HOME` for the
-    image's user, and the domain does what that uid does (ADR-0076). So a file there that the image's user owns is as
-    writable by each Agent of the Workspace as `/work` is, and what an Agent writes there reaches each Agent's next
-    conversation. An image keeps the folder read-only for its Agents when another owner (root) holds the folder and its
-    files and the image's user cannot write them.
+  - **The image user's context, when the image has one, read-only from the image.** When the Sandbox Image's user has
+    `~/.pi/agent` (pi's user folder, `agentDir`), pi reads it: its context file comes first, before the walk's files,
+    and its skills come from `skills/`. It does not depend on `projectContext`. Each Agent of the Workspace runs as the
+    image's user, and ADR-0037 requires a writable `HOME` for that user, so a folder there that the image's user owns is
+    one that each Agent writes
+    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). What one Agent (or the
+    repo code that it runs) wrote there would be in the system prompt of each later Agent: a coder could tell the
+    reviewer to approve. So the Agents never read that folder as it is in `HOME`:
+    - `jr2 up` records, for each Sandbox Image that it builds, the folder `<home>/.pi/agent`, when each folder of that
+      path is a real folder in the image and no link. `<home>` is the image's `HOME`, or its `USER`'s home in the
+      image's `/etc/passwd`. An image with no `USER` has none: its home is jr2's emptyDir (`/home/jr2`,
+      [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). A multi-platform image is read
+      for its first platform, from the registry. A registry ref that jr2 did not build has none.
+    - The Sandbox pod mounts the Sandbox Image a second time, as an `image` volume, with that folder as its `subPath`,
+      at the same path, read-only, in the Harness container. The files are the image's, at the path that pi expects, and
+      the kernel refuses each write, each new file, each removal and each move there. The mount needs the record: a
+      `subPath` that the image does not have stops the container.
+    - The pod tells the Harness the folder (`JR2_USER_CONTEXT`, after `harness.env`, `""` for none). The Harness reads
+      the user context from that mount alone: with none, it reads none, also when an Agent makes a `~/.pi/agent`. At its
+      start, it checks that the folder is its own real path and a read-only mount (`/proc/self/mountinfo`), and notes
+      the mount and its device. Before each load and after it, it checks that the folder is still that mount, the newest
+      at that path, on that device. Before: if not, the load reads no user context, and the pod log has one line. After:
+      if not, the folder gives no project context, as a child that fails does. An Agent cannot unmount it or mount over
+      it; the check is for the folder above it, which can move when the home is on a file system that lets it. A move
+      and a move back within one load is not seen.
+    - The child that reads it is confined further: in that folder it reads only the names that pi's loaders read there,
+      so not `auth.json`, `settings.json` or `models.json` (ADR-0076). The image's author put a link there, if there is
+      one, and a read through it is a read of the path that it names, which the rules do not allow.
   - **Loaded once for each conversation and folder,** at the first Submission there, and kept in memory: the system
     prompt is the same bytes on each later Submission, so the provider's prefix cache holds
     ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). A change to
@@ -308,6 +326,16 @@ inherits a Workspace whose processes are gone, with no way to know why.
 - **A third value, `"user"`, above `"workspace"`, that also reads the image's user context.** Rejected: the image's user
   context is the image author's choice, not a level of the walk. Tied above `"workspace"`, an author who wants the
   image's context would have to accept a shared `/work` file too.
+- **Read the image user's folder as it is in `HOME`** (live, in the Agents' domain). Rejected: each Agent writes it, so
+  one Agent's text reaches each later Agent's system prompt, in no diff. An image could give the folder to root, but jr2
+  cannot tell an image's author to, and an image built for a person's own use leaves it to that person.
+- **Copy the folder out of the image at the Harness's start.** Rejected: a copy is only as safe as where it is kept. A
+  folder that no process of the domain writes is one more place in the Harness container, and the Harness reads the
+  image's folder in the Harness process to copy it, where a link the image has is followed. The mount is the image's own
+  files, and the kernel keeps them read-only.
+- **A shared, writable user context** (`userContext: "shared"`, the folder in `HOME` as it is). Not now: no Workflow
+  needs Agents that leave rules to each other there. A Workflow that does would name it, and its pod would have no
+  mount.
 - **No user context, or the user context only by an author's switch.** Rejected: an image that has `~/.pi/agent` is an
   author's statement that its Agents read it, as the image's tools are its statement of what they run.
 - **No project context** (jr2 before pi-coding-agent). Rejected: a repo's `AGENTS.md` is where its rules for each coding
@@ -352,6 +380,9 @@ inherits a Workspace whose processes are gone, with no way to know why.
   package root does not export pi's: a unit test compares the copy with the sections that pi's own system prompt builds
   at the pin, so a bump that moves the frame fails it.
 - Each conversation in a Worktree starts one node child per folder, about half a second before its first request.
+- `jr2 up` reads each Sandbox Image that it builds once more for the user context: a container that it creates and does
+  not start, and one `docker cp` header for each folder of the path. Each Sandbox pod whose image has the folder mounts
+  the image twice.
 - Each admission into a Workspace costs one more request to its Harness, `GET /memory-kills`. The first read from a
   Harness that fails is said in one line of the Orchestrator's log.
 - The no-signal nudge stays a re-prompt within a Turn (ADR-0016); it is not a notice.

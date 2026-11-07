@@ -38,9 +38,11 @@ every build) and promotes incidental image properties into contract items.
   do not run, because a container has one command and the Harness must own it (its death must be the container's death —
   the Ready probe and restart semantics are the operator's contract at `:8080`). A **built** image that declares no user
   runs as uid 1000 with `HOME=/home/jr2` on an emptyDir as the fallback — jr2 learns "declares none" for free at build
-  time (`docker inspect`) and records it beside the ref. A **brought** ref is never inspected — that is the point of
-  refs — so the fallback cannot apply: a ref must declare a numeric non-root `USER` itself, and one that would run as
-  root fails at provision with an error that names that line (never as the kubelet's silent
+  time (`docker inspect`) and records it beside the ref. It records the image user's context folder (`~/.pi/agent`)
+  there too, which the pod mounts again from the image, read-only
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). A **brought** ref is never inspected — that
+  is the point of refs — so the fallback cannot apply: a ref must declare a numeric non-root `USER` itself, and one that
+  would run as root fails at provision with an error that names that line (never as the kubelet's silent
   `CreateContainerConfigError`). A process the image _wants_ running is not lost — it has its own seat, the User
   Container ([ADR-0005](0005-sandbox-pod-composition.md)).
 - **PATH is appended at the process level, never prepended.** The Harness exports `PATH="${PATH}:/opt/jr2/bin"` for

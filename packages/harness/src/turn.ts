@@ -79,7 +79,7 @@ import { mcpServersFor, resolveDefinition, type HarnessSpec, type ResolvedDefini
 import type { HistoryMessage, SubmissionUsage } from "./wire.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
 import { workingToolsFor } from "./working-tools.ts";
-import { hasProjectContext, projectContexts, type LoadOptions } from "./project-context.ts";
+import { hasProjectContext, projectContexts, type ContextOptions } from "./project-context.ts";
 
 /** What one conversation's turn loop needs. `appendMessage` is the Conversation's stream seam —
  * completed messages land on the durable stream and the history view through it. */
@@ -125,10 +125,10 @@ export type TurnDeps = {
    * CPUs and no Size — a host run. */
   standing?: StandingBriefing;
   /** The project context's load (`project-context.ts`, ADR-0062): its scope (the Workspace's
-   * `projectContext`) and the image user's folder, which `main.ts` passes; where its failure is
-   * said (default `console.error`, the pod log); and, for a test, another child entry, bounds or
-   * work root. */
-  projectContext?: Omit<LoadOptions, "signal"> & {
+   * `projectContext`) and the image user's context mount, which `main.ts` passes; where its failure
+   * is said (default `console.error`, the pod log); and, for a test, another child entry, bounds,
+   * work root or mount table. */
+  projectContext?: ContextOptions & {
     log?: (line: string) => void;
   };
   /** ADR-0035's runaway bounds — jr2-owned defaulted knobs (ADR-0016), no author surface. These

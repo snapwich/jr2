@@ -54,7 +54,7 @@ import {
 } from "./startup.ts";
 import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
-import { contextScopeOf, imageUserContext } from "./project-context.ts";
+import { contextScopeOf, userContextMount } from "./project-context.ts";
 import { OutputFolder } from "./output-folder.ts";
 import { unixFetch } from "./unix-fetch.ts";
 import { keepSendOver } from "./keep.ts";
@@ -245,18 +245,26 @@ guard.start();
 // every conversation sends the same bytes. Unknown where this is not a Sandbox, and then unsaid.
 const standing = standingBriefing(seatFacts(process.env));
 
-// The project context's reach (ADR-0062): the Workspace's bound on the context files
-// (`JR2_PROJECT_CONTEXT`, the `workspace()`'s `projectContext`), and the image user's context
-// folder, as the Sandbox Image holds it now, before any Agent runs.
 // The Harness's output folder (ADR-0076): each `bash` call prunes it when it ends.
 const output = new OutputFolder(OUTPUT_DIR);
 
-const userDir = children ? imageUserContext(children.env.HOME) : undefined;
+// The project context's reach (ADR-0062): the Workspace's bound on the context files
+// (`JR2_PROJECT_CONTEXT`, the `workspace()`'s `projectContext`), and the image user's context: the
+// folder that the pod mounts read-only from the Sandbox Image (`JR2_USER_CONTEXT`), checked as that
+// mount now, before any Agent runs. No announced mount, no user context: a `~/.pi/agent` that an
+// Agent makes is never read.
+const userContext = children ? userContextMount(process.env.JR2_USER_CONTEXT) : undefined;
+if (userContext !== undefined && "fault" in userContext) {
+  console.error(`jr2 harness: no user context: ${userContext.fault} (ADR-0062)`);
+} else if (userContext !== undefined) {
+  console.error(
+    `jr2 harness: the image user's context in ${userContext.dir} is read, from a read-only mount (ADR-0062)`,
+  );
+}
 const projectContext = {
   scope: contextScopeOf(process.env.JR2_PROJECT_CONTEXT),
-  ...(userDir !== undefined ? { userDir } : {}),
+  ...(userContext !== undefined && !("fault" in userContext) ? { userContext } : {}),
 };
-if (userDir !== undefined) console.error(`jr2 harness: the image user's context in ${userDir} is read (ADR-0062)`);
 
 // The MCP servers of the Instance (ADR-0079): a remote server's one connection for this pod, and the
 // stdio servers of each conversation, which start in the domain. The Instance Harness has no domain,

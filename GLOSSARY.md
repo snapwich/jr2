@@ -342,8 +342,9 @@ re-prompt of an open Turn)
 
 **Project context**:
 The repo's own text to an Agent in `/work`: the context files (`AGENTS.md`, `CLAUDE.md`) from its working directory up
-to its Worktree's root, or up to `/work` when the Workspace's `projectContext` is `"workspace"`; the skills in
-`.pi/skills`, as pi finds them; and the Sandbox Image's user context (`~/.pi/agent`), when the image has one. It is in
+to its Worktree's root (in `/work` or a slot's folder, that folder alone), or up to `/work` when the Workspace's
+`projectContext` is `"workspace"`; the skills in `.pi/skills`, as pi finds them; and the Sandbox Image's user context
+(`~/.pi/agent`), when the image has one, which the pod mounts read-only from the image. It is in
 the system prompt after the `instructions` and before the Briefing's standing part. It is loaded once for each folder of
 a conversation. A Menu-only Agent has none.
 _Avoid_: Briefing (jr2's own text), instructions (identity's word), memory

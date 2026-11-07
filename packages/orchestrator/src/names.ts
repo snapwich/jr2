@@ -49,6 +49,13 @@ export const OUTPUT_VOLUME = "output";
  * (ADR-0062): `worktree` or `workspace`, the `workspace()`'s `projectContext`. */
 export const PROJECT_CONTEXT_ENV = "JR2_PROJECT_CONTEXT";
 
+/** The env var that tells the Harness of a Sandbox where the image user's context folder is
+ * mounted read-only from the Sandbox Image (ADR-0062), or `""` when the pod mounts none. The
+ * Harness reads that context from this mount alone. */
+export const USER_CONTEXT_ENV = "JR2_USER_CONTEXT";
+/** The volume of that mount: the Sandbox Image again, as an `image` volume. */
+export const USER_CONTEXT_VOLUME = "user-context";
+
 /** The harness config ConfigMap the stock Harness boots from (ADR-0018): what this instance can
  * REACH — the custom model provider minus its key, and the catalog providers' gateways (ADR-0059). No Agents ride it: a Machine carries its own
  * (ADR-0049), and the definition rides each admission, so this holds deployment facts alone

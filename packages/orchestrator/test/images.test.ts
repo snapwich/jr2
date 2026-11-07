@@ -76,12 +76,20 @@ test("readImageRefs: unparseable or malformed content is loud, never a partial m
   await rejects({ harness: "h", sandbox: {} }, /no `custodian` ref/);
   await rejects({ harness: "h", custodian: "envoy:c00", sandbox: { x: 7 } }, /`sandbox\.x` is not a ref/);
   await rejects({ harness: "h", custodian: "envoy:c00", sandboxUser: { x: 7 } }, /`sandboxUser\.x` is not a USER/);
+  // The image user's context folder is a mount's path and subPath (ADR-0062): absolute and normal.
+  for (const dir of ["home/u/.pi/agent", "/home/u/../agent", "/home/u/.pi/agent/", "/", 7]) {
+    await rejects(
+      { harness: "h", custodian: "envoy:c00", sandboxUserContext: { x: dir } },
+      /`sandboxUserContext\.x` is not an absolute folder/,
+    );
+  }
+  await rejects({ harness: "h", custodian: "envoy:c00", sandboxUserContext: [] }, /`sandboxUserContext` must be/);
 });
 
 test("readImageRefs: a map with no Sandbox Images reads as an empty set, not an error", async () => {
   // The scaffolded, workspace-less instance: `jr2 up` builds no Sandbox Image when `repos` is empty.
   const map = await readImageRefs(await mkMap(JSON.stringify({ harness: "h", custodian: "envoy:c00" })));
-  assert.deepEqual(map, { harness: "h", custodian: "envoy:c00", sandbox: {}, sandboxUser: {} });
+  assert.deepEqual(map, { harness: "h", custodian: "envoy:c00", sandbox: {}, sandboxUser: {}, sandboxUserContext: {} });
 });
 
 /** A build context on disk: a directory whose FULL content is the image's address. */

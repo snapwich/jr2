@@ -248,25 +248,33 @@ with Working tools whose directory is `/work` or a directory in it gets it:
 - the skills in `.pi/skills/<name>/SKILL.md` of that directory: their names, their descriptions and where they are. The
   model reads a skill's file with `read` when its task agrees with the description;
 - the context file and the skills in `~/.pi/agent` of the user of the Sandbox Image, when the image has that directory.
-  They come first.
+  They come first. The pod mounts that directory from the image, read-only (see below).
 
 The `projectContext` option of [`workspace()`](../reference/authoring-surface/workspace.md) sets the limit:
 
 - `"worktree"`, the default: the root of the Agent's Worktree, `/work/<slot>/<name>`. In `/work`, or in the directory of
   a Repo Slot, jr2 reads that directory only. Thus a file that another Agent writes in `/work` does not get into the
-  prompt.
+  prompt of an Agent in a Worktree. An Agent whose directory is `/work` or `/work/<slot>` reads the context file of that
+  directory with each value.
 - `"workspace"`: `/work`. A `/work/AGENTS.md` then gets into the prompt of each Agent of the Workspace. That file is in
   no Worktree, so no diff shows it. Any Agent of the Workspace can change it.
 
-jr2 reads nothing above `/work`. The project context goes in the system prompt between the instructions and the standing
-part of the Briefing. jr2 reads it once for each conversation and directory, at its first Turn there. A change to
-`AGENTS.md` during a conversation thus gets to the next conversation. A Menu-only Agent gets no project context.
+jr2 reads no context file above `/work`. The project context goes in the system prompt between the instructions and the
+standing part of the Briefing. jr2 reads it once for each conversation and directory, at its first Turn there. A change
+to `AGENTS.md` during a conversation thus gets to the next conversation. A Menu-only Agent gets no project context.
 
 jr2 reads the files with the rights of the Agent's own processes. A link from `AGENTS.md` to a file that the Agent
 cannot read gives no text. In `~/.pi/agent`, jr2 reads only the context file and `skills/`, and not a file such as
-`auth.json`. The Agent's processes can write `~/.pi/agent` when the user of the image owns it. To stop that, give the
-directory and its files to another owner, such as root, in the image. When jr2 cannot read the project context, the Turn
-runs without it, and the Harness's log tells why.
+`auth.json`.
+
+Each Agent of the Workspace runs as the user of the image, and that user can write in its home. Thus jr2 does not read
+`~/.pi/agent` as it is in the home: an Agent could write text there for the system prompt of each later Agent. `jr2 up`
+records the directory when the image has it, and the Sandbox pod mounts that directory of the image again, at the same
+path and read-only. The Agents read the image's files and cannot change them. A `~/.pi/agent` that an Agent makes gets
+no read. The directory must be a real directory in the image, and each directory above it too, not a link. `jr2 up`
+prints `user context:` for each Sandbox Image that it builds, with the directory or why there is none.
+
+When jr2 cannot read the project context, the Turn runs without it, and the Harness's log tells why.
 
 ## Steering messages
 

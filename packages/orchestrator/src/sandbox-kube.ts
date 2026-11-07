@@ -114,6 +114,8 @@ import {
   OUTPUT_DIR,
   OUTPUT_VOLUME,
   PROJECT_CONTEXT_ENV,
+  USER_CONTEXT_ENV,
+  USER_CONTEXT_VOLUME,
   HELD_MOUNT,
   CA_CONFIGMAP,
   heldManifestKey,
@@ -686,6 +688,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     custodian: CustodianComposition,
     hints: HarnessEnvVar[],
     projectContext: "worktree" | "workspace",
+    userContext: string | undefined,
   ): HarnessEnvVar[] => {
     if (!opts.signingKey) throw new Error("kubeSandbox: a Harness needs a signingKey to check its bearer");
     return [
@@ -697,6 +700,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // How far up the Harness reads an Agent's context files (ADR-0062): the `workspace()`'s
       // word, so no `harness.env` entry chooses it.
       { name: PROJECT_CONTEXT_ENV, value: projectContext },
+      // The image user's context folder that this pod mounts read-only from the image (ADR-0062),
+      // or "" for none: always set, so no `harness.env` entry names a folder that is not that mount.
+      { name: USER_CONTEXT_ENV, value: userContext ?? "" },
       // Where the Harness persists its conversations (ADR-0031) — the volume below, mechanism, so
       // no `harness.env` entry chooses it.
       { name: CONVERSATIONS_DIR_ENV, value: CONVERSATIONS_DIR },
@@ -750,6 +756,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     homeVolume: Array<{ name: string; emptyDir: Record<string, never> }>;
     homeMount: Array<{ name: string; mountPath: string }>;
     securityContext: typeof HARDENED & { runAsUser?: number };
+    /** The image user's context folder that the pod mounts read-only from the image (ADR-0062). */
+    userContext?: string;
   };
 
   const seatFor = async (
@@ -761,7 +769,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     // ADR-0037's chain (images.ts). It is async because a `file:` context is keyed by its content
     // digest, which is a directory walk — the price of the host and the pod agreeing about an
     // image without a path table (ADR-0049).
-    const { ref: image, fallbackSeat, refusedUser } = await resolveSandboxImage(refs, name, held);
+    const { ref: image, fallbackSeat, refusedUser, userContext } = await resolveSandboxImage(refs, name, held);
     // Fail HERE, before a Secret or a CR exists, on a `USER` the kubelet will refuse (images.ts).
     // The alternative is the worst shape a failure has: the preflight container never starts, so
     // it has no logs, and the whole 120s Ready budget burns before anything is said. The converge
@@ -780,7 +788,14 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     // `HOME`, and jr2 touches neither — the human who execs in lands in the environment the
     // image's author built, dotfiles included.
     if (!fallbackSeat) {
-      return { image, env: [], homeVolume: [], homeMount: [], securityContext: HARDENED };
+      return {
+        image,
+        env: [],
+        homeVolume: [],
+        homeMount: [],
+        securityContext: HARDENED,
+        ...(userContext !== undefined ? { userContext } : {}),
+      };
     }
     return {
       image,
@@ -890,7 +905,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // Marked (`harness-env.ts`, ADR-0076): the Harness's start tells jr2's names from the image's.
         ...(() => {
           const marked = markHarnessEnv(
-            [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv(), req.projectContext ?? "worktree")],
+            [
+              ...seat.env,
+              ...harnessEnv(req.name, custodian, cpuHintEnv(), req.projectContext ?? "worktree", seat.userContext),
+            ],
             cfg().envFrom ?? [],
           );
           return { env: marked.env, ...(marked.envFrom.length ? { envFrom: marked.envFrom } : {}) };
@@ -935,6 +953,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           { name: OUTPUT_VOLUME, emptyDir: {} },
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,
+          // The image user's context (ADR-0062): the Sandbox Image itself, a second time, for the
+          // read-only mount below. Only when the converge saw that folder in the image.
+          ...(seat.userContext !== undefined ? [{ name: USER_CONTEXT_VOLUME, image: { reference: seat.image } }] : []),
           // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
           ...custodian.volumes,
           // The Sandbox Effector's (ADR-0068): its secrets, its key and config, its scratch.
@@ -950,6 +971,19 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           { name: SHELL_VOLUME, mountPath: SHELL_DIR },
           { name: OUTPUT_VOLUME, mountPath: OUTPUT_DIR },
           ...seat.homeMount,
+          // At its own path, read-only: the same files, and no Agent of the Workspace writes what
+          // each Agent reads into its system prompt. The Harness reads the user context from this
+          // mount alone (`JR2_USER_CONTEXT`).
+          ...(seat.userContext !== undefined
+            ? [
+                {
+                  name: USER_CONTEXT_VOLUME,
+                  mountPath: seat.userContext,
+                  subPath: seat.userContext.slice(1),
+                  readOnly: true,
+                },
+              ]
+            : []),
           ...custodian.harnessMounts,
         ],
       },
