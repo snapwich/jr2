@@ -246,6 +246,8 @@ test("the fetch route takes an LFS ask: it checks the lfs part, keeps the scope,
       [lfs({ base: "a\nb", objects: [{ oid, size: 1 }] }), /NUL or a newline/],
       [lfs({ base: "a\u0000b", objects: [{ oid, size: 1 }] }), /NUL or a newline/],
       [lfs({ base: "b".repeat(256), objects: [{ oid, size: 1 }] }), /longer than 255/],
+      // Bytes, not characters: the operator's parser counts bytes.
+      [lfs({ base: "\u00e9".repeat(200), objects: [{ oid, size: 1 }] }), /longer than 255 bytes/],
       [{ identity: app.identity, lfs: { objects: [{ oid, size: 1 }] } }, /base must be a string/],
     ];
     for (const [body, words] of bad) {

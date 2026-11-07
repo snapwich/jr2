@@ -28,13 +28,16 @@
 //
 // An LFS ask (ADR-0053) takes the same route with an `lfs` part: the objects a smudge, a cut or an
 // attach needs, by oid and size. It writes its own mark, `jr2.dev/lfs-<key>`, and never the fetch's
-// `jr2.dev/asked-<key>`, so it causes no git fetch. Its seat (one Sandbox and key) keeps the union
-// of the objects of every open LFS ask, up to LFS_MAX_OBJECTS: an ask whose objects the open mark
-// holds joins its wait, an ask with new objects marks the union again with a later `at`, and an
-// ask that would take the union past the cap (or that names another base) waits until the open
-// mark lands. A mark lands when the Sandbox's status says `lfs.answered` is at or after its `at`.
-// The answer says only that the cache agent served the mark, with git-lfs's words when an object
-// is still missing; the asker reads the objects off its own read-only mount.
+// `jr2.dev/asked-<key>`, so it causes no git fetch. Its line (one Sandbox and key) keeps the union
+// of the objects of every open LFS ask, up to LFS_MAX_OBJECTS: an ask whose objects a mark holds
+// joins its wait, an ask with new objects marks the union again with a later `at` (at most one
+// mark each second), and an ask that would take the union past the cap (or that names another
+// base) waits until the open mark lands. A mark lands when the Sandbox's status says
+// `lfs.answered` is at or after its `at`. The answer says only that the cache agent served the
+// mark, with git-lfs's words when an object is still missing; the asker reads the objects off its
+// own read-only mount. LFS lines have their own cap, and past it an ask waits for a line inside
+// its budget: a checkout fails only for an object that the cache cannot get, never because this
+// process was busy.
 //
 // The mark is a merge patch through the Orchestrator's own client, and the wait is the one
 // Sandbox watch (ADR-0063): the watch event that carries the landing answers the ask. Both are
@@ -60,7 +63,7 @@ export type LfsAsk = { base: string; objects: LfsObject[] };
 
 /** What an LFS ask settles as. `answered` is the `at` of the mark that the cache agent served;
  * `error` is git-lfs's words when an object is still missing, or this port's words when the wait
- * ran out. The asker reads the objects off its own mount, so the answer lists none. */
+ * ran out (on the node cache, or for a free line past the Orchestrator's cap). The asker reads the objects off its own mount, so the answer lists none. */
 export type LfsAnswer = { lfs: { answered?: string; error?: string } };
 
 /** The most objects one ask, and one mark, can name. A longer list is split into several asks. */
@@ -69,7 +72,7 @@ export const LFS_MAX_OBJECTS = 256;
 /**
  * The `lfs` part of a fetch body, checked: the ask, or the words of a 400 that says what is wrong.
  * An oid is 64 lowercase hex characters, a size a safe integer of 0 or more, a base at most 255
- * characters with no NUL, no newline and no leading `-` (the cache agent gives it to git).
+ * bytes with no NUL, no newline and no leading `-` (the cache agent gives it to git).
  */
 export function parseLfsAsk(value: unknown): LfsAsk | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -77,7 +80,8 @@ export function parseLfsAsk(value: unknown): LfsAsk | string {
   }
   const { base, objects } = value as { base?: unknown; objects?: unknown };
   if (typeof base !== "string") return "lfs.base must be a string (empty for the default branch)";
-  if (base.length > 255) return "lfs.base is longer than 255 characters";
+  // Bytes, as the operator's parser counts them: a mark it cannot parse would never land.
+  if (Buffer.byteLength(base, "utf8") > 255) return "lfs.base is longer than 255 bytes";
   if (/[\0\n\r]/.test(base)) return "lfs.base must not hold a NUL or a newline";
   if (base.startsWith("-")) return 'lfs.base must not start with "-"';
   if (!Array.isArray(objects)) return "lfs.objects must be an array of { oid, size }";
@@ -117,13 +121,23 @@ export class UnmountedRepoError extends Error {}
 const CACHE_BUDGET_MS = 60_000;
 /** The cache agent's LFS budget (`defaultLFSTimeout`): what it gives one batch of objects. */
 const LFS_BUDGET_MS = 600_000;
-/** How many asks this Orchestrator will hold open at once, counting one per Sandbox and key (and
- * one per Sandbox and key for LFS asks). The
- * caller is inside a pod (ADR-0013: untrusted), an Agent that loops on `git fetch` is a mode this
- * codebase has already seen, and every open ask costs a write and a waiter in the one process
+/** How many fetch asks this Orchestrator will hold open at once, counting one per Sandbox and key.
+ * The caller is inside a pod (ADR-0013: untrusted), an Agent that loops on `git fetch` is a mode
+ * this codebase has already seen, and every open ask costs a write and a waiter in the one process
  * that serves every run in the instance. Past the cap an ask is answered the way a failed one is —
- * the cache, said out loud — so a pod that floods degrades its own fetches and nobody else's. */
+ * the cache, said out loud — so a pod that floods degrades its own fetches and nobody else's. LFS
+ * asks have their own cap ({@link MAX_LFS_LINES}), so a long LFS wait never turns a fetch stale. */
 const MAX_IN_FLIGHT = 16;
+/** How many LFS lines (one Sandbox and key each) may mark and wait at once. Past it an LFS ask
+ * waits, first come first served, for a line to close, inside its own budget: a checkout must not
+ * fail because this process was busy (ADR-0053), and a waiting ask costs a waiter and no write. */
+const MAX_LFS_LINES = 16;
+/** How many LFS asks one Sandbox may hold open at once. git-lfs asks for at most a few batches at
+ * a time, so only a pod that floods reaches it, and past it the pod's own asks are refused. */
+const MAX_LFS_ASKS_PER_SANDBOX = 256;
+/** The shortest time between two marks of one line, as for a fetch mark (one each second): a pod
+ * that sends new oids without a pause costs one write each second, not one each ask. */
+const LFS_MARK_GAP_MS = 1_000;
 /** Watch slack on top of it: the agent's verdict has to reach the Repo CR, the operator has to
  * compute the Sandbox entry from it, and the watch has to carry it here. The ADR's "nothing else owns a
  * timeout" holds — this is the agent's budget plus the round trip, not a second policy. */
@@ -140,38 +154,57 @@ export type KubeRepoFetchesOptions = {
   now?: () => Date;
   /** The whole wait. Default: the cache agent's on-demand budget plus watch slack. */
   budgetMs?: number;
-  /** The whole wait of an LFS ask. Default: the cache agent's LFS budget plus watch slack. */
+  /** The whole wait of an LFS ask, a wait for a line included. Default: the cache agent's LFS
+   * budget plus watch slack. */
   lfsBudgetMs?: number;
-  /** How many asks may be open at once, fetch and LFS seats together. Default {@link MAX_IN_FLIGHT}. */
+  /** How many fetch asks may be open at once. Default {@link MAX_IN_FLIGHT}. */
   maxInFlight?: number;
+  /** How many LFS lines may be open at once. Default {@link MAX_LFS_LINES}. */
+  maxLfsLines?: number;
+  /** The shortest time between two marks of one LFS line. Default {@link LFS_MARK_GAP_MS}. */
+  lfsMarkGapMs?: number;
 };
 
 const TOO_MANY = "the orchestrator is holding too many fetches at once";
+const TOO_MANY_LFS = "the orchestrator is holding too many LFS asks at once";
 const TIMED_OUT = "timed out waiting for the node cache";
 
-/** One LFS ask while it waits. `at` is the mark that holds its objects; none while it waits for
- * room in the seat. */
+/** One LFS ask while it waits. It waits for a line, then for room in its line, then in the next
+ * mark (`next`), then on the sent mark `at`. */
 type LfsAsker = {
+  name: string;
+  sandbox: string;
+  key: string;
+  found: SandboxObject;
   base: string;
   entries: string[];
+  /** In the line's next mark, which has not gone out yet. */
+  next: boolean;
+  /** The `at` of the sent mark that holds its objects. */
   at?: number;
   settle: (answer: LfsAnswer) => void;
   fail: (err: Error) => void;
 };
 
-/** One Sandbox and key's LFS asks: the union that the open mark holds, and every waiting ask in
- * the order it came. */
-type LfsSeat = {
+/** One Sandbox and key's LFS asks: the union of the open marks, and every waiting ask in the order
+ * it came. */
+type LfsLine = {
   name: string;
   sandbox: string;
   key: string;
   base: string;
-  /** The objects of the open mark, as `"<oid> <size>"`. Empty: no mark is open. */
+  /** The objects of the open marks and of the next one, as `"<oid> <size>"`. Empty: no mark is open. */
   union: Set<string>;
-  /** The `at` of the latest mark, in ms. */
+  /** The objects of the latest sent mark. */
+  sent: Set<string>;
+  /** The `at` of the latest sent mark, in ms. */
   markAt: number;
   /** The floor of the next `at`: it increases strictly. */
   lastAt: number;
+  /** When the latest mark went out, on the process clock, for the gap between marks. */
+  sentAt: number;
+  /** The next mark, while it waits for the gap. */
+  due?: ReturnType<typeof setTimeout>;
   askers: Set<LfsAsker>;
   /** The marks go out one after another, so a later union never lands under an earlier one. */
   chain: Promise<void>;
@@ -183,6 +216,8 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
   const budgetMs = opts.budgetMs ?? CACHE_BUDGET_MS + WATCH_SLACK_MS;
   const lfsBudgetMs = opts.lfsBudgetMs ?? LFS_BUDGET_MS + WATCH_SLACK_MS;
   const maxInFlight = opts.maxInFlight ?? MAX_IN_FLIGHT;
+  const maxLfsLines = opts.maxLfsLines ?? MAX_LFS_LINES;
+  const lfsMarkGapMs = opts.lfsMarkGapMs ?? LFS_MARK_GAP_MS;
   let client: KubeClient | undefined = opts.client;
   const kube = () => (client ??= kubeClient());
   let watch: SandboxWatch | undefined = opts.watch;
@@ -200,8 +235,11 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
     return sandboxes().get(sandbox) ?? (await kube().get<SandboxObject>(SANDBOXES, opts.namespace, sandbox));
   };
 
-  // The LFS seats, one per Sandbox and key, each while it has an ask open.
-  const lfsSeats = new Map<string, LfsSeat>();
+  // The LFS lines, one per Sandbox and key, each while it has an ask open; the asks that wait for
+  // a line, in the order they came; and how many asks each Sandbox holds open.
+  const lfsLines = new Map<string, LfsLine>();
+  const lineQueue: LfsAsker[] = [];
+  const lfsAsksOf = new Map<string, number>();
 
   /** The scope check FIRST, against `spec.repos` — the keys this pod actually mounts. The ask
    * names the identity, so the key is derived here (repo-identity.ts) and never sent; a spelling
@@ -221,14 +259,14 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
       const { key, found } = await scope(sandbox, identity);
       const asked = now().toISOString();
       const until = askedAt(asked);
-      const seat = `${sandbox}\u0000${key}`;
+      const pair = `${sandbox}\u0000${key}`;
       // An ask whose bar is already being waited on is the same ask: one mark, one wait, one
       // answer. A LATER bar is not — it is a fetch that must begin after this ask — so it opens
-      // its own wait and takes the seat, and the wait it displaced still answers whoever joined
-      // it.
-      const held = openAsks.get(seat);
+      // its own wait and takes the pair's place, and the wait it displaced still answers whoever
+      // joined it.
+      const held = openAsks.get(pair);
       if (held && held.until >= until) return held.answer;
-      if (!held && openAsks.size + lfsSeats.size >= maxInFlight) {
+      if (!held && openAsks.size >= maxInFlight) {
         // Nothing is marked and nothing is waited on: the cache as it stands is the honest answer,
         // and the interval keeps refreshing it (ADR-0051). Freshness degrades, absence does not.
         return { stale: TOO_MANY, asOf: fetchedOf(found, key) };
@@ -238,139 +276,223 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
         answer: undefined as unknown as Promise<FetchAnswer>,
       };
       mine.answer = wait(sandbox, key, asked).finally(() => {
-        if (openAsks.get(seat) === mine) openAsks.delete(seat);
+        if (openAsks.get(pair) === mine) openAsks.delete(pair);
       });
-      openAsks.set(seat, mine);
+      openAsks.set(pair, mine);
       return mine.answer;
     },
 
     async fetchLfs(sandbox, identity, lfs) {
       const { key, found } = await scope(sandbox, identity);
-      const name = `${sandbox}\u0000${key}`;
-      let seat = lfsSeats.get(name);
-      if (!seat) {
-        // The same cap as a fetch's, and the same stance past it: the caller is told, and the
-        // asker names the file it could not get.
-        if (openAsks.size + lfsSeats.size >= maxInFlight) return { lfs: { error: TOO_MANY } };
-        seat = openSeat(name, sandbox, key, found);
+      const open = lfsAsksOf.get(sandbox) ?? 0;
+      if (open >= MAX_LFS_ASKS_PER_SANDBOX) {
+        return { lfs: { error: `Sandbox "${sandbox}" holds ${open} LFS asks open at once` } };
       }
-      const open = seat;
+      lfsAsksOf.set(sandbox, open + 1);
       return new Promise<LfsAnswer>((resolve, reject) => {
         let ended = false;
         const end = (fn: () => void) => {
           if (ended) return;
           ended = true;
           clearTimeout(timer);
-          open.askers.delete(asker);
+          const left = (lfsAsksOf.get(sandbox) ?? 1) - 1;
+          if (left > 0) lfsAsksOf.set(sandbox, left);
+          else lfsAsksOf.delete(sandbox);
+          const queued = lineQueue.indexOf(asker);
+          if (queued >= 0) lineQueue.splice(queued, 1);
+          const line = lfsLines.get(asker.name);
+          if (line?.askers.delete(asker) && line.askers.size === 0) closeLine(line);
           fn();
-          if (open.askers.size === 0) closeSeat(open);
         };
         const asker: LfsAsker = {
+          name: `${sandbox}\u0000${key}`,
+          sandbox,
+          key,
+          found,
           base: lfs.base,
           entries: [...new Set(lfs.objects.map((o) => `${o.oid} ${o.size}`))],
+          next: false,
           settle: (answer) => end(() => resolve(answer)),
           fail: (err) => end(() => reject(err)),
         };
-        // The budget counts from the ask, so a wait for room in the seat is inside it.
-        const timer = setTimeout(() => asker.settle({ lfs: { error: TIMED_OUT } }), lfsBudgetMs);
-        // FIFO: an ask that comes while others wait for room waits behind them, unless the open
-        // mark already holds its objects.
-        const waiting = [...open.askers].some((a) => a.at === undefined);
-        open.askers.add(asker);
-        place(open, asker, waiting);
+        // The budget counts from the ask, so a wait for a line, and for room in it, is inside it.
+        // An ask that never got a line says so.
+        const timer = setTimeout(
+          () => asker.settle({ lfs: { error: lineQueue.includes(asker) ? TOO_MANY_LFS : TIMED_OUT } }),
+          lfsBudgetMs,
+        );
+        enter(asker);
       });
     },
   };
 
-  /** A seat for one Sandbox and key, on the one watch. The first `at` is after the mark the CR
-   * already carries, so a landing for an earlier seat answers nothing here. */
-  function openSeat(name: string, sandbox: string, key: string, found: SandboxObject): LfsSeat {
-    const before = lfsMarkAt(found, key);
-    const seat: LfsSeat = {
-      name,
-      sandbox,
-      key,
+  /** Into its line, or into the wait for one: first come, first served, so an ask for a new line
+   * never passes one that waits. An ask whose line is open joins it at once. */
+  function enter(asker: LfsAsker): boolean {
+    const line = lfsLines.get(asker.name);
+    if (line) {
+      join(line, asker);
+      return true;
+    }
+    if (lineQueue.length > 0 || lfsLines.size >= maxLfsLines) {
+      if (!lineQueue.includes(asker)) lineQueue.push(asker);
+      return false;
+    }
+    join(openLine(asker), asker);
+    return true;
+  }
+
+  /** The asks that wait for a line, in the order they came, after a line closed. */
+  function pumpLines(): void {
+    const waiting = lineQueue.splice(0);
+    for (const a of waiting) enter(a);
+  }
+
+  /** A line for one Sandbox and key, on the one watch. The first `at` is after the mark the CR
+   * already carries, so a landing for an earlier line answers nothing here. */
+  function openLine(asker: LfsAsker): LfsLine {
+    const current = sandboxes().get(asker.sandbox) ?? asker.found;
+    const line: LfsLine = {
+      name: asker.name,
+      sandbox: asker.sandbox,
+      key: asker.key,
       base: "",
       union: new Set(),
+      sent: new Set(),
       markAt: 0,
-      lastAt: before ?? 0,
+      lastAt: Math.max(lfsMarkAt(current, asker.key) ?? 0, lfsMarkAt(asker.found, asker.key) ?? 0),
+      sentAt: -Infinity,
       askers: new Set(),
       chain: Promise.resolve(),
       unsubscribe: () => {},
     };
-    lfsSeats.set(name, seat);
-    seat.unsubscribe = sandboxes().subscribe(sandbox, (item) => land(seat, item));
-    return seat;
+    lfsLines.set(line.name, line);
+    line.unsubscribe = sandboxes().subscribe(line.sandbox, (item) => land(line, item));
+    return line;
   }
 
-  function closeSeat(seat: LfsSeat): void {
-    seat.unsubscribe();
-    if (lfsSeats.get(seat.name) === seat) lfsSeats.delete(seat.name);
+  function closeLine(line: LfsLine): void {
+    line.unsubscribe();
+    clearTimeout(line.due);
+    if (lfsLines.get(line.name) === line) lfsLines.delete(line.name);
+    pumpLines();
   }
 
-  /** Join the open mark, mark the union again, or wait for room. Answers whether the ask has a mark. */
-  function place(seat: LfsSeat, asker: LfsAsker, behind: boolean): boolean {
-    const open = seat.union.size > 0;
-    if (open && asker.base === seat.base && asker.entries.every((e) => seat.union.has(e))) {
-      asker.at = seat.markAt;
-      return true;
+  /** FIFO in the line: an ask that comes while others wait for room waits behind them, unless a
+   * mark already holds its objects. */
+  function join(line: LfsLine, asker: LfsAsker): void {
+    const behind = [...line.askers].some((a) => waitsForRoom(a));
+    line.askers.add(asker);
+    place(line, asker, behind);
+  }
+
+  function waitsForRoom(a: LfsAsker): boolean {
+    return a.at === undefined && !a.next;
+  }
+
+  /** Join the sent mark, join the next mark, or wait for room. Answers whether the ask has a mark. */
+  function place(line: LfsLine, asker: LfsAsker, behind: boolean): boolean {
+    const open = line.union.size > 0;
+    if (open && asker.base === line.base) {
+      if (asker.entries.every((e) => line.sent.has(e))) {
+        asker.at = line.markAt;
+        return true;
+      }
+      if (line.due !== undefined && asker.entries.every((e) => line.union.has(e))) {
+        asker.next = true;
+        return true;
+      }
     }
     if (behind) return false;
     if (open) {
-      if (asker.base !== seat.base) return false;
-      let size = seat.union.size;
-      for (const e of asker.entries) if (!seat.union.has(e)) size++;
+      if (asker.base !== line.base) return false;
+      let size = line.union.size;
+      for (const e of asker.entries) if (!line.union.has(e)) size++;
       if (size > LFS_MAX_OBJECTS) return false;
     }
-    seat.base = asker.base;
-    for (const e of asker.entries) seat.union.add(e);
-    asker.at = mark(seat);
+    line.base = asker.base;
+    for (const e of asker.entries) line.union.add(e);
+    asker.next = true;
+    schedule(line);
     return true;
   }
 
-  /** One mark: the union, with an `at` later than every earlier one of this seat. */
-  function mark(seat: LfsSeat): number {
-    const at = Math.max(now().getTime(), seat.lastAt + 1);
-    seat.lastAt = at;
-    seat.markAt = at;
-    const value = JSON.stringify({ at: new Date(at).toISOString(), base: seat.base, objects: [...seat.union] });
-    seat.chain = seat.chain
+  /** The next mark: now, or when the gap since the last one has passed. */
+  function schedule(line: LfsLine): void {
+    if (line.due !== undefined) return;
+    const wait = line.sentAt + lfsMarkGapMs - performance.now();
+    if (wait <= 0) return send(line);
+    line.due = setTimeout(() => {
+      line.due = undefined;
+      send(line);
+    }, wait);
+  }
+
+  /** One mark: the union, with an `at` later than every earlier one of this line. */
+  function send(line: LfsLine): void {
+    const at = Math.max(now().getTime(), line.lastAt + 1);
+    line.lastAt = at;
+    line.markAt = at;
+    line.sentAt = performance.now();
+    line.sent = new Set(line.union);
+    for (const a of line.askers) {
+      if (!a.next) continue;
+      a.next = false;
+      a.at = at;
+    }
+    const value = JSON.stringify({ at: new Date(at).toISOString(), base: line.base, objects: [...line.union] });
+    line.chain = line.chain
       .then(() =>
-        kube().patch<SandboxObject>(SANDBOXES, opts.namespace, seat.sandbox, {
-          metadata: { annotations: { [lfsAnnotation(seat.key)]: value } },
+        kube().patch<SandboxObject>(SANDBOXES, opts.namespace, line.sandbox, {
+          metadata: { annotations: { [lfsAnnotation(line.key)]: value } },
         }),
       )
       // The merge patch answers the object as it stands afterwards: a landing on it answers now.
       .then(
-        (marked) => land(seat, marked),
-        (err: unknown) => {
-          // The mark did not go: no ask that it holds can land, so each is told why. The union
-          // goes with it, and the asks that waited for room mark again.
-          for (const a of [...seat.askers]) if (a.at !== undefined) a.fail(err as Error);
-          seat.union.clear();
-          drain(seat);
-        },
+        (marked) => land(line, marked),
+        (err: unknown) => refused(line, at, err as Error),
       );
-    return at;
   }
 
-  /** A Sandbox event (or a patch's answer) for one seat. */
-  function land(seat: LfsSeat, item: SandboxObject | undefined): void {
-    if (!lfsSeats.has(seat.name)) return;
+  /** The mark `at` did not go. Its asks move to a later sent mark that holds their objects; the
+   * rest are told why. A mark that went before it is on the CR and can still land, so its asks
+   * keep their wait. When it was the latest mark, the union closes and the asks that wait mark
+   * again. */
+  function refused(line: LfsLine, at: number, err: Error): void {
+    if (lfsLines.get(line.name) !== line) return;
+    const later = line.markAt > at;
+    for (const a of [...line.askers]) {
+      if (a.at !== at) continue;
+      if (later && a.base === line.base && a.entries.every((e) => line.sent.has(e))) a.at = line.markAt;
+      else a.fail(err);
+    }
+    if (later || lfsLines.get(line.name) !== line) return;
+    line.union.clear();
+    line.sent.clear();
+    clearTimeout(line.due);
+    line.due = undefined;
+    for (const a of line.askers) a.next = false;
+    drain(line);
+  }
+
+  /** A Sandbox event (or a patch's answer) for one line. */
+  function land(line: LfsLine, item: SandboxObject | undefined): void {
+    if (lfsLines.get(line.name) !== line) return;
     if (!item) {
-      const gone = new UnmountedRepoError(`Sandbox "${seat.sandbox}" is gone`);
-      for (const a of [...seat.askers]) a.fail(gone);
+      const gone = new UnmountedRepoError(`Sandbox "${line.sandbox}" is gone`);
+      for (const a of [...line.askers]) a.fail(gone);
       return;
     }
-    const status = entryOf(item, seat.key)?.lfs;
+    const status = entryOf(item, line.key)?.lfs;
     const answered = at(status?.answered);
     if (answered === undefined) return;
-    const done = [...seat.askers].filter((a) => a.at !== undefined && answered >= a.at);
-    // The latest mark landed: the union is closed, and the asks that waited for room mark now —
-    // before the answered asks leave, so the seat stays open for them.
-    if (seat.union.size > 0 && answered >= seat.markAt) {
-      seat.union.clear();
-      drain(seat);
+    const done = [...line.askers].filter((a) => a.at !== undefined && answered >= a.at);
+    // The latest mark landed and no next mark waits: the union is closed, and the asks that waited
+    // for room mark now — before the answered asks leave, so the line stays open for them.
+    if (line.union.size > 0 && answered >= line.markAt && line.due === undefined) {
+      line.union.clear();
+      line.sent.clear();
+      drain(line);
     }
     const answer: LfsAnswer = {
       lfs: { answered: status!.answered!, ...(status!.error ? { error: status!.error } : {}) },
@@ -379,10 +501,10 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
   }
 
   /** The asks that waited for room, in the order they came, until one must wait again. */
-  function drain(seat: LfsSeat): void {
-    for (const a of seat.askers) {
-      if (a.at !== undefined) continue;
-      if (!place(seat, a, false)) return;
+  function drain(line: LfsLine): void {
+    for (const a of line.askers) {
+      if (!waitsForRoom(a)) continue;
+      if (!place(line, a, false)) return;
     }
   }
 

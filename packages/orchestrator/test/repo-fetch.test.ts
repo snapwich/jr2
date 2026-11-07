@@ -76,7 +76,7 @@ function cluster(t: TestContext, mounts: string[], initial?: Entry[], later: Ent
   });
   const marks = () => api.calls.filter((c) => c.method === "PATCH" && c.target === "sandboxes/sb-1").map((c) => c.body);
   const port = (opts: Partial<KubeRepoFetchesOptions> = {}) =>
-    kubeRepoFetches({ namespace: "inst", client, watch, now: () => new Date(ASKED), ...opts });
+    kubeRepoFetches({ namespace: "inst", client, watch, now: () => new Date(ASKED), lfsMarkGapMs: 0, ...opts });
   return { api, port, publish, marks };
 }
 
@@ -429,21 +429,113 @@ test("a fetch ask and an LFS ask on one key do not touch each other's mark or an
   assert.deepEqual(await lfs, { lfs: { answered: at } });
 });
 
-test("LFS seats count toward the cap on open asks", async (t) => {
+test("LFS lines have their own cap: a fetch is not stale while LFS asks wait", async (t) => {
   const c = cluster(t, [APP.key, OTHER.key], [{ key: OTHER.key, asked: ASKED_AT, fetched: BEFORE }]);
-  const port = c.port({ maxInFlight: 1, lfsBudgetMs: 60_000 });
+  const port = c.port({ maxInFlight: 1, budgetMs: 60_000, lfsBudgetMs: 60_000 });
   const lfs = port.fetchLfs("sb-1", APP.identity, objs(1));
   await waitFor(() => c.marks().length === 1);
-  assert.deepEqual(await port.fetch("sb-1", OTHER.identity), {
-    stale: "the orchestrator is holding too many fetches at once",
-    asOf: BEFORE,
-  });
-  assert.deepEqual(await port.fetchLfs("sb-1", OTHER.identity, objs(1)), {
-    lfs: { error: "the orchestrator is holding too many fetches at once" },
-  });
-  assert.equal(c.marks().length, 1);
+  const fetched = port.fetch("sb-1", OTHER.identity);
+  await waitFor(() => c.marks().length === 2);
+  c.publish([{ key: OTHER.key, asked: ASKED_AT, fetched: AFTER, attempted: AFTER }]);
+  assert.deepEqual(await fetched, { fetched: AFTER });
   c.publish(served(lfsMarks(c)[0]!.at));
   await lfs;
+});
+
+test("past the cap on LFS lines, an ask waits for a free line, then marks and is answered", async (t) => {
+  // A cold cache and many Sandboxes: the ask of the Sandbox past the cap must not fail because
+  // this process was busy (ADR-0053).
+  const c = cluster(t, [APP.key]);
+  c.api.seed("sandboxes", {
+    metadata: { name: "sb-2", labels: { "jr2.dev/run": "r" } },
+    spec: { repos: [{ key: APP.key }] },
+  } as never);
+  const port = c.port({ maxLfsLines: 1, lfsBudgetMs: 60_000 });
+  const marksOf = (sb: string) =>
+    c.api.calls
+      .filter((x) => x.method === "PATCH" && x.target === `sandboxes/${sb}`)
+      .map(
+        (x) =>
+          JSON.parse(
+            (x.body as { metadata: { annotations: Record<string, string> } }).metadata.annotations[LFS_MARK]!,
+          ) as LfsMark,
+      );
+
+  const first = port.fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => marksOf("sb-1").length === 1);
+  const second = port.fetchLfs("sb-2", APP.identity, objs(2));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(marksOf("sb-2").length, 0, "the ask past the cap marks nothing while it waits");
+
+  c.publish(served(marksOf("sb-1")[0]!.at));
+  assert.deepEqual(await first, { lfs: { answered: marksOf("sb-1")[0]!.at } });
+  await waitFor(() => marksOf("sb-2").length === 1);
+  const mark = marksOf("sb-2")[0]!;
+  assert.deepEqual(mark.objects, [`${OID(2)} 2`]);
+  c.api.setStatus("sandboxes", "sb-2", { repos: [{ key: APP.key, lfs: { asked: mark.at, answered: mark.at } }] });
+  assert.deepEqual(await second, { lfs: { answered: mark.at } });
+});
+
+test("an LFS ask that never got a line says so when its budget runs out", async (t) => {
+  // A holds the one line from 0 ms, and B joins it at 100 ms, so the line stays open until 300 ms.
+  // C asks at 20 ms for another line and waits for it until its budget ends at 220 ms.
+  const c = cluster(t, [APP.key, OTHER.key]);
+  const port = c.port({ maxLfsLines: 1, lfsBudgetMs: 200 });
+  const a = port.fetchLfs("sb-1", APP.identity, objs(1));
+  await new Promise((r) => setTimeout(r, 20));
+  const waiting = port.fetchLfs("sb-1", OTHER.identity, objs(1));
+  await new Promise((r) => setTimeout(r, 80));
+  const b = port.fetchLfs("sb-1", APP.identity, objs(1));
+  assert.deepEqual(await waiting, { lfs: { error: "the orchestrator is holding too many LFS asks at once" } });
+  assert.deepEqual(await a, { lfs: { error: "timed out waiting for the node cache" } });
+  assert.deepEqual(await b, { lfs: { error: "timed out waiting for the node cache" } });
+});
+
+test("marks of one line go out at most once in the gap: asks in it share the next mark", async (t) => {
+  const c = cluster(t, [APP.key]);
+  const port = c.port({ lfsBudgetMs: 60_000, lfsMarkGapMs: 50 });
+  const first = port.fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => c.marks().length === 1);
+  const two = port.fetchLfs("sb-1", APP.identity, objs(2));
+  const three = port.fetchLfs("sb-1", APP.identity, objs(3));
+  // An ask whose objects only the next mark holds joins it, and writes nothing.
+  const joined = port.fetchLfs("sb-1", APP.identity, objs(2));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(c.marks().length, 1, "no mark inside the gap");
+  await waitFor(() => c.marks().length === 2);
+  const [one, next] = lfsMarks(c);
+  assert.deepEqual(next!.objects, [`${OID(1)} 1`, `${OID(2)} 2`, `${OID(3)} 3`]);
+  c.publish(served(one!.at));
+  assert.deepEqual(await first, { lfs: { answered: one!.at } });
+  c.publish(served(next!.at));
+  for (const p of [two, three, joined]) assert.deepEqual(await p, { lfs: { answered: next!.at } });
+  assert.equal(c.marks().length, 2);
+});
+
+test("a refused re-mark fails its own asks only: an earlier mark on the CR can still land", async (t) => {
+  const c = cluster(t, [APP.key]);
+  const port = c.port({ lfsBudgetMs: 60_000 });
+  const first = port.fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => c.marks().length === 1);
+  c.api.refuse((call) =>
+    call.method === "PATCH" ? new Response(JSON.stringify({ message: "boom" }), { status: 500 }) : undefined,
+  );
+  const second = port.fetchLfs("sb-1", APP.identity, objs(2));
+  await assert.rejects(second);
+  c.publish(served(lfsMarks(c)[0]!.at));
+  assert.deepEqual(await first, { lfs: { answered: lfsMarks(c)[0]!.at } });
+});
+
+test("a Sandbox past its own cap on open LFS asks is refused at once", async (t) => {
+  const c = cluster(t, [APP.key]);
+  const port = c.port({ lfsBudgetMs: 60_000 });
+  const open = Array.from({ length: 256 }, () => port.fetchLfs("sb-1", APP.identity, objs(1)));
+  await waitFor(() => c.marks().length === 1);
+  assert.deepEqual(await port.fetchLfs("sb-1", APP.identity, objs(1)), {
+    lfs: { error: 'Sandbox "sb-1" holds 256 LFS asks open at once' },
+  });
+  c.publish(served(lfsMarks(c)[0]!.at));
+  await Promise.all(open);
 });
 
 // --- the route (`POST /sandboxes/:name/fetch`) ------------------------------------------------
