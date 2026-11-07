@@ -20,8 +20,8 @@
 #      baked on their own registry is runnable without jr2 ever touching it.
 #
 # So **/opt/jr2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/cut-lock · bin/jr2-upload-pack · bin/effector · lib/*.so ·
-#   etc/gitconfig · src/ · node_modules/ · package.json
+#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/cut-lock · bin/jr2-upload-pack · bin/git-lfs ·
+#   bin/jr2-lfs · bin/effector · lib/*.so · etc/gitconfig · src/ · node_modules/ · package.json
 # — is mounted verbatim, this image's own layers, into a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
 # this repo never sees. `/opt/jr2` and not `/app`, because a user's base may already use /app and a
@@ -58,6 +58,7 @@ FROM node:24-slim AS vendor
 ARG TARGETARCH
 ARG RG_VERSION=15.2.0
 ARG TINI_VERSION=0.19.0
+ARG GIT_LFS_VERSION=3.8.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates patchelf \
  && rm -rf /var/lib/apt/lists/*
@@ -100,6 +101,25 @@ RUN set -eux; \
     install -m 0755 /tmp/tini /opt/jr2/bin/tini; \
     /opt/jr2/bin/tini --version
 
+# git-lfs, the OFFICIAL release (ADR-0053): the attach writes its filter into each clone's config
+# by this absolute path, with no `git lfs install`, so a Repo that stores files with Git LFS needs
+# nothing from the user's image. The release binary is static (Ubuntu's is not), for rg's reason:
+# it runs in every seat, on a base jr2 does not control. Pinned version + literal per-arch sha256
+# from the release's sha256sums file, the rg rule; an unhandled arch fails the build naming itself.
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) lfs_sha='e72cf723a4a660438862282e8aecf3885fc8123e88bfcad534cf6b941a354b75' ;; \
+      arm64) lfs_sha='67895dd77b63329796bc5efdd47b57f218e1f7b98717ebaf936a8238dbcaec0f' ;; \
+      *) echo "jr2: no static git-lfs asset for TARGETARCH='${TARGETARCH}' — the Harness cannot vendor git-lfs for this architecture" >&2; exit 1 ;; \
+    esac; \
+    tgz="git-lfs-linux-${TARGETARCH}-v${GIT_LFS_VERSION}.tar.gz"; \
+    curl -fsSLo "/tmp/${tgz}" "https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/${tgz}"; \
+    echo "${lfs_sha}  /tmp/${tgz}" | sha256sum -c -; \
+    tar -xzf "/tmp/${tgz}" -C /tmp "git-lfs-${GIT_LFS_VERSION}/git-lfs"; \
+    mkdir -p /opt/jr2/bin; \
+    install -m 0755 "/tmp/git-lfs-${GIT_LFS_VERSION}/git-lfs" /opt/jr2/bin/git-lfs; \
+    /opt/jr2/bin/git-lfs version
+
 # node, relocated. Two traps, both verified in docker rather than reasoned about:
 #   - `cp -L` is load-bearing: libstdc++.so.6 is a SYMLINK, and a plain `cp` copies a dangling link
 #     into an image where its target does not exist.
@@ -137,7 +157,9 @@ RUN set -eux; \
 # (ADR-0053): git's built-in `ext::` transport runs it, it asks the Custodian on localhost for a
 # fetch of the Repo, waits for the landing, then execs `git upload-pack` on the node cache. Its
 # source is the operator's Go module, because the ask and the cache agent that answers it are one
-# decision; nothing about it is operator-specific at runtime.
+# decision; nothing about it is operator-specific at runtime. The stage also builds jr2-lfs, by
+# the same rules: jr2's standalone transfer agent for git-lfs, and the attach's and the cut's ask
+# for one commit's large files (ADR-0053, ADR-0075). It asks on the same path.
 #
 # STATIC, the work-acl rule (ADR-0037): it runs in whatever image the user brought, and in the
 # User Container beside it (ADR-0005), on a libc jr2 does not control. `ext::` names it by absolute
@@ -155,13 +177,15 @@ FROM --platform=$BUILDPLATFORM golang:1.26 AS uploadpack
 ARG TARGETARCH
 
 WORKDIR /operator
-# The program imports the standard library and nothing else. That is why this stage downloads no
-# modules and copies no more of the operator than the two packages it builds — a controller change
+# The programs import the standard library and nothing else. That is why this stage downloads no
+# modules and copies no more of the operator than the packages it builds — a controller change
 # does not rebuild it. An import beyond stdlib fails HERE, and would owe a `go mod download` and a
 # wider copy.
 COPY operator/go.mod operator/go.sum ./
 COPY operator/cmd/jr2-upload-pack ./cmd/jr2-upload-pack
 COPY operator/internal/uploadpack ./internal/uploadpack
+COPY operator/cmd/jr2-lfs ./cmd/jr2-lfs
+COPY operator/internal/lfstransfer ./internal/lfstransfer
 
 # The smoke is the same proof the vendored rg and work-acl give: the blob built here RUNS on the
 # TARGETARCH — binfmt dispatches by the ELF's own arch, so a foreign blob runs emulated here and a
@@ -171,7 +195,9 @@ COPY operator/internal/uploadpack ./internal/uploadpack
 # shipped is unchanged — GODEBUG is the process's, not the binary's.
 RUN set -eux; \
     CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /out/jr2-upload-pack ./cmd/jr2-upload-pack; \
-    GODEBUG=asyncpreemptoff=1 /out/jr2-upload-pack 2>&1 | grep -q '^usage: jr2-upload-pack'
+    GODEBUG=asyncpreemptoff=1 /out/jr2-upload-pack 2>&1 | grep -q '^usage: jr2-upload-pack'; \
+    CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /out/jr2-lfs ./cmd/jr2-lfs; \
+    GODEBUG=asyncpreemptoff=1 /out/jr2-lfs 2>&1 | grep -q '^usage: jr2-lfs'
 
 # ---------------------------------------------------------------------------------------------
 # effector stage — discarded. The Effector (ADR-0068): jr2's own process in the container that runs
@@ -207,6 +233,10 @@ COPY --from=vendor /opt/jr2/lib /opt/jr2/lib
 # Beside work-acl, and published with it: the fetch url lives in the shared `default/.git/config`,
 # so every seat that holds the checkouts holds the program (ADR-0053).
 COPY --from=uploadpack --chmod=0755 /out/jr2-upload-pack /opt/jr2/bin/jr2-upload-pack
+
+# Beside git-lfs, for the same reason: the clone's config names it as git-lfs's standalone
+# transfer agent, and the attach and the cut run it (ADR-0053, ADR-0075).
+COPY --from=uploadpack --chmod=0755 /out/jr2-lfs /opt/jr2/bin/jr2-lfs
 
 # The Effector (ADR-0068): the Instance Effector runs this image with it as its command.
 COPY --from=effector --chmod=0755 /out/effector /opt/jr2/bin/effector

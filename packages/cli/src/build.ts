@@ -340,12 +340,13 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     // runtime. The directory covers whatever the next `COPY` adds.
     //
     // And the ONE thing this image builds from outside those two trees: `jr2-upload-pack`, the
-    // program behind `origin`'s fetch url in every Sandbox (ADR-0053). Its source lives in the
+    // program behind `origin`'s fetch url in every Sandbox, and `jr2-lfs`, the LFS transfer agent
+    // and the attach's and the cut's ask for large files (ADR-0053). Their source lives in the
     // operator's Go module, because the ask and the cache agent that answers it are one decision —
-    // so the harness image's address has to cover it, or an edit to the program would move no tag
-    // and `jr2 up` would report convergence onto pods running the previous one. Its packages and
-    // not the whole module: the rest of `operator/` addresses the operator image, and the program
-    // imports the standard library alone — which the Dockerfile's builder stage enforces by
+    // so the harness image's address has to cover it, or an edit to a program would move no tag
+    // and `jr2 up` would report convergence onto pods running the previous one. Their packages and
+    // not the whole module: the rest of `operator/` addresses the operator image, and the programs
+    // import the standard library alone — which the Dockerfile's builder stage enforces by
     // copying no more than this and downloading nothing.
     //
     // And the Effector (ADR-0068), on /opt/jr2 beside it: its own Go module, again exactly what the
@@ -357,6 +358,8 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
       "operator/go.sum",
       "operator/cmd/jr2-upload-pack",
       "operator/internal/uploadpack",
+      "operator/cmd/jr2-lfs",
+      "operator/internal/lfstransfer",
       "effector/go.mod",
       "effector/cmd",
       "effector/internal",

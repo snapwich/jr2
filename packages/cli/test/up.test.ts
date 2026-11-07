@@ -606,11 +606,13 @@ async function mkKit(): Promise<string> {
   const files: Record<string, string> = {
     "deploy/harness/Dockerfile": "FROM node:24-slim\n",
     "operator/Dockerfile": "FROM golang:1.23\n",
-    // The Harness image builds `jr2-upload-pack` out of the operator module too (ADR-0053).
+    // The Harness image builds `jr2-upload-pack` and `jr2-lfs` out of the operator module too (ADR-0053).
     "operator/go.mod": "module github.com/snapwich/jr2/operator\n",
     "operator/go.sum": "",
     "operator/cmd/jr2-upload-pack/main.go": "package main\n",
     "operator/internal/uploadpack/uploadpack.go": "package uploadpack\n",
+    "operator/cmd/jr2-lfs/main.go": "package main\n",
+    "operator/internal/lfstransfer/lfstransfer.go": "package lfstransfer\n",
     // And the Effector (ADR-0068), on /opt/jr2 beside it.
     "effector/go.mod": "module github.com/snapwich/jr2/effector\n",
     "effector/cmd/effector/main.go": "package main\n",
