@@ -19,8 +19,7 @@
           "description": "Maximum number of lines to read"
         }
       }
-    },
-    "strict": false
+    }
   },
   {
     "name": "write",
@@ -38,8 +37,7 @@
           "description": "Content to write to the file"
         }
       }
-    },
-    "strict": false
+    }
   },
   {
     "name": "edit",
@@ -71,8 +69,7 @@
           "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
         }
       }
-    },
-    "strict": false
+    }
   },
   {
     "name": "bash",
@@ -83,15 +80,14 @@
       "properties": {
         "command": {
           "type": "string",
-          "description": "Bash command to execute"
+          "description": "Shell command to execute"
         },
         "timeout": {
           "type": "number",
           "description": "Timeout in seconds (optional, no default timeout)"
         }
       }
-    },
-    "strict": false
+    }
   },
   {
     "name": "grep",
@@ -109,26 +105,28 @@
           "description": "File or directory to search, relative to the working directory (default: all of it)"
         }
       }
-    },
-    "strict": false
+    }
   },
   {
-    "name": "glob",
-    "description": "Find files by name pattern. Answers matching paths, first 200.",
+    "name": "find",
+    "description": "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB (whichever is hit first).",
     "parameters": {
       "type": "object",
       "required": ["pattern"],
       "properties": {
         "pattern": {
           "type": "string",
-          "description": "Filename pattern, e.g. `*.ts` or `src/**/*.test.ts`"
+          "description": "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'"
         },
         "path": {
           "type": "string",
-          "description": "Directory to search, relative to the working directory (default: all of it)"
+          "description": "Directory to search in (default: current directory)"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Maximum number of results (default: 1000)"
         }
       }
-    },
-    "strict": false
+    }
   }
 ]

@@ -3,7 +3,16 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,12 +22,14 @@ import {
   childPolicy,
   grantedOf,
   HARNESS_HOME,
+  harnessTmpFault,
   lookPath,
   probeLandlock,
   readControlStandIn,
   readStandIns,
   RUNTIME_SECRETS,
   runIn,
+  type ChildPolicy,
 } from "../src/children.ts";
 import { deniedDir, testChildren, testConfiner } from "./support/children.ts";
 
@@ -122,6 +133,35 @@ test("childPolicy refuses a HOME or a TMPDIR in what the domain may not reach", 
       }),
     /TMPDIR is .*run-jr2, which is in/,
   );
+});
+
+// ADR-0076: pi's bash writes a long command's whole output in this process's TMPDIR. The Harness
+// serves only when that folder is the domain's TMPDIR, by its own name, in a folder that its user
+// cannot write, so the domain cannot move it or put a link in its place.
+test("harnessTmpFault: the Harness's TMPDIR is the domain's, no link, in a folder its user cannot write", () => {
+  const domain = (tmp: string) => ({ env: { TMPDIR: tmp } }) as unknown as ChildPolicy;
+  let rootWritable = true;
+  try {
+    accessSync("/", constants.W_OK);
+  } catch {
+    rootWritable = false;
+  }
+  if (!rootWritable) assert.equal(harnessTmpFault("/tmp", domain(realpathSync("/tmp"))), undefined);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "jr2-harness-tmp-")));
+  const writableParent = join(root, "tmp");
+  mkdirSync(writableParent);
+  assert.match(
+    harnessTmpFault(writableParent, domain(writableParent)) ?? "",
+    /is in .*jr2-harness-tmp-[^,]*, which the Harness's user can write, so the domain could move TMPDIR/,
+  );
+  const link = join(root, "link");
+  symlinkSync(writableParent, link);
+  assert.match(harnessTmpFault(link, domain(writableParent)) ?? "", /TMPDIR .*link is a link, which the domain/);
+  assert.match(
+    harnessTmpFault(writableParent, domain(join(root, "other"))) ?? "",
+    /is not the domain's TMPDIR .*other: the model could not read/,
+  );
+  assert.match(harnessTmpFault(join(root, "missing"), domain(join(root, "missing"))) ?? "", /is not there/);
 });
 
 test("lookPath: the program by PATH — never by a relative PATH entry", () => {

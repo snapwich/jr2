@@ -24,8 +24,7 @@
 // serve (`probeLandlock`), and every process here starts through the spawner.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { accessSync, constants, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { open, unlink, type FileHandle } from "node:fs/promises";
+import { accessSync, constants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -329,32 +328,33 @@ export function childPolicy(inputs: PolicyInputs): ChildPolicy {
 }
 
 /**
- * A new file of the Harness's own in the domain's TMPDIR, opened once: the bash tool's full output.
- * The domain writes in that folder, so the Harness writes there through the handle alone, never by
- * path again. One component below TMPDIR, created here (`O_EXCL`), never a link (`O_NOFOLLOW`). If
- * the domain moved TMPDIR and put a link in its place, the file lands elsewhere: the Harness reads
- * where it landed, and removes it and refuses when that is not TMPDIR (ADR-0076).
+ * Why this process's TMPDIR cannot hold the bash tool's whole output, or undefined when it can
+ * (ADR-0076). pi's `bash` writes a long command's whole output to a new file in this process's
+ * `os.tmpdir()` (`tool-ops.ts`), and the model reads it there with `read` or `bash`. So that folder
+ * must be the domain's TMPDIR, by its own name: not a link, which the domain could point elsewhere.
+ * And this uid must not write the folder above it, so the domain cannot rename the folder or put a
+ * link in its place (`/tmp` passes: `/` is root's). `tmp` is `os.tmpdir()`.
  */
-export async function createInTmp(children: ChildPolicy, name: string): Promise<{ path: string; file: FileHandle }> {
-  const dir = children.env.TMPDIR ?? tmpdir();
-  const path = join(dir, name);
-  const file = await open(
-    path,
-    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-    0o600,
-  );
-  let landed: string;
+export function harnessTmpFault(tmp: string, policy: ChildPolicy): string | undefined {
+  const domain = policy.env.TMPDIR;
+  const fix = "start the Harness container with one TMPDIR, a folder in a folder that its user cannot write (ADR-0076)";
+  let isLink: boolean;
   try {
-    landed = readlinkSync(`/proc/self/fd/${file.fd}`);
+    isLink = lstatSync(tmp).isSymbolicLink();
+  } catch (err) {
+    return `the Harness's TMPDIR ${tmp} is not there (${(err as Error).message}): ${fix}`;
+  }
+  if (isLink) return `the Harness's TMPDIR ${tmp} is a link, which the domain can point elsewhere: ${fix}`;
+  if (real(tmp) !== domain) {
+    return `the Harness's TMPDIR ${tmp} is not the domain's TMPDIR ${domain ?? "(none)"}: the model could not read a long command's whole output — ${fix}`;
+  }
+  const parent = dirname(real(tmp));
+  try {
+    accessSync(parent, constants.W_OK);
   } catch {
-    landed = path;
+    return undefined;
   }
-  if (dirname(landed) !== dir) {
-    await file.close();
-    await unlink(landed).catch(() => {});
-    throw new Error(`the folder ${dir} was moved while ${name} was made in it: the file is not written (ADR-0076)`);
-  }
-  return { path, file };
+  return `the Harness's TMPDIR ${tmp} is in ${parent}, which the Harness's user can write, so the domain could move TMPDIR and put a link in its place: ${fix}`;
 }
 
 /** A process the domain ran to its end, as `execFile` answers one. */

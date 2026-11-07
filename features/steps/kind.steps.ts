@@ -1354,7 +1354,7 @@ Then(
 );
 
 /** The six Working tools the default `workspace: "write"` leaves in place (ADR-0028). */
-const WORKING_TOOLS = ["read", "write", "edit", "bash", "grep", "glob"];
+const WORKING_TOOLS = ["read", "write", "edit", "bash", "grep", "find"];
 
 /**
  * What the Harness OFFERED the model for this turn, asserted off the provider's recorded request —

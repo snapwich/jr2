@@ -388,7 +388,7 @@ test("the Menu is fixed for a conversation: two Submissions with different Allow
   assert.equal(JSON.stringify(two.tools), JSON.stringify(one.tools), "the tools block is byte-identical");
   const names = one.tools.map((tool) => tool.function?.name);
   assert.ok(names.includes("mcp__jr2__dispute") && names.includes("mcp__jr2__finish"), `the whole Menu: ${names}`);
-  for (const working of ["read", "write", "edit", "bash", "grep", "glob"]) {
+  for (const working of ["read", "write", "edit", "bash", "grep", "find"]) {
     assert.ok(names.includes(working), `the Working tools ride along (missing: ${working})`);
   }
   assert.equal(systemText(two), systemText(one), "the system prompt — instructions and standing part — is too");
@@ -533,7 +533,7 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
   assert.equal((await settled(iid, admission, DECISIONER)).outcome, "aborted");
 
   // The Menu is the whole toolset: on every request the model saw its Menu and NOTHING else —
-  // no read/write/edit/bash/grep/glob was offered, so none was executable (ADR-0028).
+  // no read/write/edit/bash/grep/find was offered, so none was executable (ADR-0028).
   for (const call of provider.calls) {
     assert.deepEqual(
       (call.tools ?? []).map((tool) => tool.function?.name),
@@ -582,10 +582,11 @@ test("the Frame's cwd is re-read per Submission: two turns of one conversation w
   assert.ok(!afterSecond.includes("MARK_ALPHA"), "turn 2 did not stay rooted where turn 1 was");
 });
 
-test("a bash command killed by a signal reaches the model as an error naming the signal, never a pass (ADR-0061)", async () => {
-  // pi-agent-core 0.82.1 reports a signal death as `exitCode: code ?? 0`, so the model read a
-  // killed Playwright run — output stopped partway — as success. The wrapped tool (bash-tool.ts)
-  // is what the real turn loop hands pi; this is the canary for a pi bump that changes the seam.
+test("a bash command killed by a signal reaches the model as an error, never a pass (ADR-0061)", async () => {
+  // pi-agent-core 0.82.1 reported a signal death as `exitCode: code ?? 0`, so the model read a
+  // killed Playwright run — output stopped partway — as success. The tool is pi-coding-agent's
+  // `bash` with jr2's operations (`tool-ops.ts`), which the real turn loop hands pi; this is the
+  // canary for a pi bump that changes the seam.
   provider.reset([
     { toolCall: { id: "call_1", name: "bash", args: JSON.stringify({ command: "echo started; sh -c 'kill -9 $$'" }) } },
     { text: "The command was killed." },
@@ -596,7 +597,7 @@ test("a bash command killed by a signal reaches the model as an error naming the
   assert.equal((await settled(iid, admission)).outcome, "completed");
   const result = JSON.stringify(provider.calls[1]?.messages.at(-1) ?? {});
   assert.match(result, /started/);
-  assert.match(result, /Command killed by signal SIGKILL \(exit 137\)/);
+  assert.match(result, /Command exited with code 137/);
 });
 
 test("a guard kill during a bash call is told to that conversation: the pod's list names it in `told` (ADR-0061, ADR-0062)", async () => {

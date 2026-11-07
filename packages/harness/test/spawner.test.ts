@@ -10,15 +10,19 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { bashTool } from "../src/bash-tool.ts";
 import { runIn } from "../src/children.ts";
 import { Spawner, SpawnerGoneError } from "../src/spawner.ts";
+import { workingToolsFor } from "../src/working-tools.ts";
 import { deniedDir, testChildren } from "./support/children.ts";
 
 const children = testChildren();
 
 async function bash(command: string, cwd = children.env.TMPDIR!): Promise<string> {
-  const first = (await bashTool({ cwd, children }).execute("call-1", { command })).content[0];
+  const tool = workingToolsFor({ instructions: "test", model: "anthropic/claude-x" }, cwd, { children }).find(
+    (t) => t.name === "bash",
+  );
+  assert.ok(tool);
+  const first = (await tool.execute("call-1", { command })).content[0];
   assert.ok(first && first.type === "text");
   return first.text;
 }

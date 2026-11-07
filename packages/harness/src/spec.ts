@@ -293,7 +293,7 @@ export function mcpAdmissionFault(
  * half of the admission check, `cwd` alone. A missing `message` is an empty prompt, which is a
  * turn a model can still answer; a `cwd` that is not an absolute path is a turn that would root
  * its Working tools somewhere nobody named — `/work`, the parent of every checkout where grep and
- * glob hit the pristine clone beside the worktree, or, for a relative path, wherever this process
+ * find hit the pristine clone beside the worktree, or, for a relative path, wherever this process
  * happens to sit — and say nothing. That silence is what ADR-0057 was written for, so this is a
  * refusal, never a drop.
  */

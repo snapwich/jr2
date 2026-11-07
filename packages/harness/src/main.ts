@@ -15,6 +15,7 @@
 import "./module-paths-guard.ts";
 import { existsSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { harnessServer } from "./app.ts";
 import { attacher } from "./attach.ts";
 import {
@@ -32,6 +33,7 @@ import {
   SHELL_SOCKET,
   STANDINS_DIR,
   assertHarnessHome,
+  harnessTmpFault,
   takeStartEnv,
   type ChildPolicy,
 } from "./children.ts";
@@ -183,6 +185,10 @@ if (!menuOnly) {
     } catch (err) {
       refuse(err instanceof Error ? err.message : String(err));
     }
+    // pi's `bash` writes a long command's whole output in this process's TMPDIR, where the model
+    // reads it: the domain's TMPDIR, in a folder that the domain cannot move (ADR-0076).
+    const tmpFault = harnessTmpFault(tmpdir(), children);
+    if (tmpFault !== undefined) refuse(tmpFault);
   }
 }
 

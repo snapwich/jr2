@@ -178,7 +178,7 @@ test("an MCP tool call, then a pick: the call is a step and no pick, the pick de
     "edit",
     "bash",
     "grep",
-    "glob",
+    "find",
     "mcp__notes__echo",
     "mcp__notes__env",
     "mcp__notes__exit",
