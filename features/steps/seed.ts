@@ -30,6 +30,11 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { pushRemoteLogScript } from "../lib/model-evidence.ts";
 
@@ -733,18 +738,39 @@ export function lfsPointer(o: LfsObject): string {
 /** The files of one commit: a path, and the object whose pointer that file holds. */
 export type LfsCommit = Record<string, LfsObject>;
 
-/** What a repository of {@link lfsSeedRepo} holds: commits on `main`, and branches off its tip. */
-export type LfsRepoSpec = { main: readonly LfsCommit[]; branches?: Record<string, LfsCommit> };
+/**
+ * What a repository of {@link lfsSeedRepo} holds: commits on `main`, and branches off its tip. A branch
+ * of `branchServers` commits its own `.lfsconfig`, which names that store of the seed's LFS server in
+ * place of the repository's own. With `lfsconfig: false`, no commit has a `.lfsconfig`, so git-lfs
+ * finds the LFS server from the Repo's url.
+ */
+export type LfsRepoSpec = {
+  main: readonly LfsCommit[];
+  branches?: Record<string, LfsCommit>;
+  branchServers?: Record<string, string>;
+  lfsconfig?: boolean;
+};
+
+/** The `.lfsconfig` line that names the store `store` of the seed's LFS server. */
+const lfsconfigOf = (store: string) => `printf '[lfs]\\n\\turl = http://${LFS_HOST}/${store}/info/lfs\\n'`;
 
 /**
  * The script that makes an LFS repository `<srv>/<name>.git` from a work tree at `work`: a first
  * commit with `.gitattributes` (`*.bin` is stored with Git LFS) and `.lfsconfig` (the seed's LFS
  * server), then one commit on `main` for each entry of `spec.main`, and a branch off the tip for each
- * entry of `spec.branches`. Each file holds its pointer, written as text: the seed's git image has no
- * git-lfs, and a pointer is all a commit holds. With `owner`, the repository is given to that uid,
- * as sshd serves it to the user `git`.
+ * entry of `spec.branches`. Each file holds its pointer, written as text, so that the script needs no
+ * git-lfs. The seed's git image has git-lfs, and its clean filter keeps a pointer's text as it is.
+ * With `owner`, the repository is given to that uid, as sshd serves it to the user `git`. With
+ * `objects`, each file of that folder is an object, named by its oid, and it moves into the
+ * repository's own `lfs/objects/<aa>/<bb>/<oid>`, where a git-lfs-transfer server keeps it.
  */
-export function lfsRepoScript(srv: string, work: string, name: string, spec: LfsRepoSpec, owner?: number): string {
+export function lfsRepoScript(
+  srv: string,
+  work: string,
+  name: string,
+  spec: LfsRepoSpec,
+  opts: { owner?: number; objects?: string } = {},
+): string {
   assert.match(name, /^[a-z0-9][a-z0-9-]{0,80}$/, "an LFS repository is a plain lower-case label");
   const commit = (files: LfsCommit, message: string): string[] => [
     ...Object.entries(files).map(([file, o]) => {
@@ -754,26 +780,37 @@ export function lfsRepoScript(srv: string, work: string, name: string, spec: Lfs
     `git -C ${work} add -A`,
     `git -C ${work} -c user.email=e2e@jr2 -c user.name=e2e commit -qm '${message}'`,
   ];
+  const repo = `${srv}/${name}.git`;
   return [
-    `rm -rf ${work} ${srv}/${name}.git`,
+    `rm -rf ${work} ${repo}`,
     `git init -q -b main ${work}`,
     `printf '%s\\n' '*.bin filter=lfs diff=lfs merge=lfs -text' > ${work}/.gitattributes`,
-    `printf '[lfs]\\n\\turl = http://${LFS_HOST}/${name}/info/lfs\\n' > ${work}/.lfsconfig`,
+    ...(spec.lfsconfig === false ? [] : [`${lfsconfigOf(name)} > ${work}/.lfsconfig`]),
     `echo '# ${name}' > ${work}/README.md`,
     `git -C ${work} add -A`,
     `git -C ${work} -c user.email=e2e@jr2 -c user.name=e2e commit -qm init`,
     ...spec.main.flatMap((files, i) => commit(files, `main ${i + 1}`)),
     ...Object.entries(spec.branches ?? {}).flatMap(([branch, files]) => {
       assert.match(branch, /^[a-z0-9][a-z0-9-]{0,60}$/, "a branch is a plain lower-case label");
+      const store = spec.branchServers?.[branch];
+      if (store !== undefined) assert.match(store, /^[a-z0-9][a-z0-9-]{0,80}$/, "a store is a plain lower-case label");
       return [
         `git -C ${work} checkout -q -b ${branch} main`,
+        ...(store === undefined ? [] : [`${lfsconfigOf(store)} > ${work}/.lfsconfig`]),
         ...commit(files, branch),
         `git -C ${work} checkout -q main`,
       ];
     }),
-    `git clone -q --bare ${work} ${srv}/${name}.git`,
-    `git -C ${srv}/${name}.git update-server-info`,
-    ...(owner === undefined ? [] : [`chown -R ${owner}:${owner} ${srv}/${name}.git`]),
+    `git clone -q --bare ${work} ${repo}`,
+    `git -C ${repo} update-server-info`,
+    ...(opts.objects === undefined
+      ? []
+      : [
+          `for f in ${opts.objects}/*; do o=$(basename "$f"); d=${repo}/lfs/objects/$(echo "$o" | cut -c1-2)/$(echo "$o" | cut -c3-4); ` +
+            `mkdir -p "$d" && mv "$f" "$d/$o"; done`,
+          `rmdir ${opts.objects}`,
+        ]),
+    ...(opts.owner === undefined ? [] : [`chown -R ${opts.owner}:${opts.owner} ${repo}`]),
     `rm -rf ${work}`,
   ].join(" && ");
 }
@@ -782,25 +819,186 @@ export function lfsRepoScript(srv: string, work: string, name: string, spec: Lfs
 const SEED_GIT_UID = 1001;
 
 /**
- * An LFS repository of one scenario, beside `app.git`, whose `.lfsconfig` names the seed's LFS server.
- * Over `http` the cache clones it anonymously; over `ssh` it is `push.git`'s kind, which the deploy key
- * clones and pushes to. Answer its url and the sha of each commit on `main`, oldest first.
+ * An LFS repository of one scenario, beside `app.git`. Over `http` the cache clones it anonymously,
+ * and over `ssh` it is `push.git`'s kind, which the deploy key clones and pushes to. Both name the
+ * seed's LFS server in `.lfsconfig`. Over `pure-ssh` it is an ssh repository with no `.lfsconfig`:
+ * git-lfs then speaks the pure SSH protocol to the seed's sshd (`ensureLfsTransfer`), and the objects
+ * of {@link makeSeedLfsObjects} for `name` are in its own store. Answer its url and the sha of each
+ * commit on `main`, oldest first.
  */
 export async function lfsSeedRepo(
   name: string,
   spec: LfsRepoSpec,
-  over: "http" | "ssh" = "http",
+  over: "http" | "ssh" | "pure-ssh" = "http",
 ): Promise<{ url: string; main: string[] }> {
-  const out = await inSeed(
-    `${lfsRepoScript("/srv", `/tmp/lfs-${name}`, name, spec, over === "ssh" ? SEED_GIT_UID : undefined)} && ` +
-      `git -c safe.directory='*' -C /srv/${name}.git rev-list --reverse main`,
-  );
+  const pure = over === "pure-ssh";
+  const script = lfsRepoScript("/srv", `/tmp/lfs-${name}`, name, pure ? { ...spec, lfsconfig: false } : spec, {
+    ...(over === "http" ? {} : { owner: SEED_GIT_UID }),
+    ...(pure ? { objects: pendingObjects(name) } : {}),
+  });
+  const out = await inSeed(`${script} && git -c safe.directory='*' -C /srv/${name}.git rev-list --reverse main`);
   const main = out.trim().split("\n");
   assert.equal(main.length, spec.main.length + 1, `the repository has its commits: ${out}`);
   return {
-    url: over === "ssh" ? `ssh://git@${PUSH_HOST}/srv/${name}.git` : `http://${PUSH_HOST}/${name}.git`,
+    url: over === "http" ? `http://${PUSH_HOST}/${name}.git` : `ssh://git@${PUSH_HOST}/srv/${name}.git`,
     main,
   };
+}
+
+// --- The pure SSH protocol (ADR-0067) -----------------------------------------------------------------
+//
+// git-lfs 3.x speaks the pure SSH protocol: `ssh <host> git-lfs-transfer <path> <operation>`. The
+// seed's ssh seat gets a git-lfs-transfer server at run time: charmbracelet/git-lfs-transfer, the
+// server that Gitea and Soft Serve use, built on this host as a static binary and copied into the
+// `ssh` container. Thus the seed's manifest does not change, its pod does not roll, and its other
+// repositories are as before: each of them names an LFS server in `.lfsconfig`, or stores no file
+// with Git LFS. The seat has no git-lfs-authenticate, so a repository with no `.lfsconfig` has an
+// LFS server that speaks only the pure SSH protocol. A wrapper logs each session in
+// `/tmp/git-lfs-transfer.log` and then runs the server.
+
+/** The pinned server. Its module has one release. */
+const LFS_TRANSFER_MODULE = "github.com/charmbracelet/git-lfs-transfer@v0.1.0";
+/** Where the ssh seat runs the server from, and the wrapper on sshd's PATH. */
+const LFS_TRANSFER_REAL = "/usr/local/libexec/jr2-e2e/git-lfs-transfer";
+const LFS_TRANSFER_LOG = "/tmp/git-lfs-transfer.log";
+const LFS_TRANSFER_WRAPPER = [
+  "#!/bin/sh",
+  `echo "$1 $2" >> ${LFS_TRANSFER_LOG}`,
+  `exec ${LFS_TRANSFER_REAL} "$@"`,
+  "",
+].join("\n");
+
+/** Build the server for the kind node's arch, once on this host, into `features/.tmp/bin`. */
+async function lfsTransferBinary(): Promise<string> {
+  const arch = process.arch === "arm64" ? "arm64" : "amd64";
+  const dir = fileURLToPath(new URL("../.tmp/bin/", import.meta.url));
+  const bin = join(dir, `git-lfs-transfer-v0.1.0-${arch}`);
+  if (existsSync(bin)) return bin;
+  // Workers can build at the same time: each builds in its own folder and renames at the end.
+  const own = await mkdtemp(join(tmpdir(), "jr2-e2e-glt-"));
+  await exec("go", ["install", "-trimpath", "-ldflags=-s -w", LFS_TRANSFER_MODULE], {
+    env: { ...process.env, CGO_ENABLED: "0", GOOS: "linux", GOARCH: arch, GOBIN: own },
+    timeout: 600_000,
+  }).catch((err: unknown) => {
+    throw new Error(`go install ${LFS_TRANSFER_MODULE} failed (the @kind tier needs go): ${String(err)}`);
+  });
+  await mkdir(dir, { recursive: true });
+  // With GOOS and GOARCH not the host's, go install writes to GOBIN/<os>_<arch>.
+  const made = [join(own, "git-lfs-transfer"), join(own, `linux_${arch}`, "git-lfs-transfer")].find((f) =>
+    existsSync(f),
+  );
+  assert.ok(made, `go install wrote no git-lfs-transfer in ${own}`);
+  await rename(made, bin);
+  await rm(own, { recursive: true, force: true });
+  return bin;
+}
+
+let lfsTransferServed: Promise<void> | undefined;
+
+/** Make sure that the seed's ssh seat runs a git-lfs-transfer server and no git-lfs-authenticate. */
+export function ensureLfsTransfer(): Promise<void> {
+  lfsTransferServed ??= (async () => {
+    await ensureSeed();
+    const bin = await lfsTransferBinary();
+    const inSsh = (script: string, stdin?: Buffer) =>
+      new Promise<string>((resolve, reject) => {
+        const child = spawn(
+          "kubectl",
+          ["--namespace", NAMESPACE, "exec", "-i", "deployment/seed", "-c", "ssh", "--", "sh", "-ec", script],
+          { stdio: ["pipe", "pipe", "pipe"] },
+        );
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d: Buffer) => (out += d.toString()));
+        child.stderr.on("data", (d: Buffer) => (err += d.toString()));
+        child.on("error", reject);
+        child.on("close", (code) =>
+          code === 0 ? resolve(out) : reject(new Error(`kubectl exec in the seed's ssh seat exited ${code}: ${err}`)),
+        );
+        child.stdin.end(stdin ?? "");
+      });
+    // Each step writes a file of its own and renames it, so two workers can install at once.
+    await inSsh(
+      `mkdir -p ${dirname(LFS_TRANSFER_REAL)} && t=${LFS_TRANSFER_REAL}.$$ && cat > "$t" && chmod 755 "$t" && mv "$t" ${LFS_TRANSFER_REAL}`,
+      await readFile(bin),
+    );
+    await inSsh(
+      `t=/usr/bin/.git-lfs-transfer.$$ && cat > "$t" && chmod 755 "$t" && mv "$t" /usr/bin/git-lfs-transfer && ` +
+        `touch ${LFS_TRANSFER_LOG} && chmod 666 ${LFS_TRANSFER_LOG}`,
+      Buffer.from(LFS_TRANSFER_WRAPPER),
+    );
+    const found = await inSsh(
+      `for d in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do ls "$d" 2>/dev/null || true; done | grep '^git-lfs-' | sort -u`,
+    );
+    assert.equal(
+      found,
+      "git-lfs-transfer\n",
+      `the ssh seat has git-lfs-transfer and no other git-lfs server: ${found}`,
+    );
+  })().catch((err: unknown) => {
+    lfsTransferServed = undefined;
+    throw err;
+  });
+  return lfsTransferServed;
+}
+
+/** The folder in the seed where {@link makeSeedLfsObjects} keeps a repository's objects until it exists. */
+const pendingObjects = (name: string) => `/srv/.lfs-${name}`;
+
+/** Make objects of random bytes, one for each size, for the `pure-ssh` repository `name` of {@link lfsSeedRepo}. */
+export async function makeSeedLfsObjects(name: string, sizes: readonly number[]): Promise<LfsObject[]> {
+  assert.match(name, /^[a-z0-9][a-z0-9-]{0,80}$/, "an LFS repository is a plain lower-case label");
+  const dir = pendingObjects(name);
+  const out = await inSeed(
+    [
+      `rm -rf ${dir} && mkdir -p ${dir}`,
+      ...sizes.map(
+        (n) =>
+          `head -c ${n} /dev/urandom > ${dir}/new && o=$(sha256sum ${dir}/new | cut -c1-64) && mv ${dir}/new ${dir}/$o && echo "$o ${n}"`,
+      ),
+    ].join(" && "),
+  );
+  const objects = out
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const [oid, size] = line.split(" ");
+      return { oid: oid ?? "", size: Number(size) };
+    });
+  assert.equal(objects.length, sizes.length, `the seed made each object: ${out}`);
+  for (const o of objects) assert.match(o.oid, /^[0-9a-f]{64}$/);
+  return objects;
+}
+
+/** Does the store of the seed repository `name` hold this object, with its size? */
+export async function seedRepoHoldsLfs(name: string, o: LfsObject): Promise<boolean> {
+  assert.match(name, /^[a-z0-9][a-z0-9-]{0,80}$/);
+  assert.match(o.oid, /^[0-9a-f]{64}$/);
+  const f = `/srv/${name}.git/lfs/objects/${o.oid.slice(0, 2)}/${o.oid.slice(2, 4)}/${o.oid}`;
+  const out = await inSeed(`[ "$(stat -c %s ${f} 2>/dev/null)" = "${o.size}" ] && echo held || echo absent`);
+  return out.trim() === "held";
+}
+
+/** The operations of each git-lfs-transfer session on the seed repository `name`, oldest first. */
+export async function lfsTransferSessions(name: string): Promise<string[]> {
+  assert.match(name, /^[a-z0-9][a-z0-9-]{0,80}$/);
+  const { stdout } = await exec("kubectl", [
+    "--namespace",
+    NAMESPACE,
+    "exec",
+    "deployment/seed",
+    "-c",
+    "ssh",
+    "--",
+    "sh",
+    "-c",
+    `grep -F '/srv/${name}.git ' ${LFS_TRANSFER_LOG} || true`,
+  ]);
+  return stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => l.split(" ")[1] ?? "");
 }
 
 /** What a seed repository holds on a branch, or "" when it has none. */

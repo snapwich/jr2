@@ -21,10 +21,15 @@ import {
 } from "./kind.steps.ts";
 import {
   ensureLfsServer,
+  ensureLfsTransfer,
   lfsObjectNobodyHolds,
   lfsSeedRepo,
   lfsServerHolds,
+  lfsServerLog,
+  lfsTransferSessions,
   makeLfsObjects,
+  makeSeedLfsObjects,
+  seedRepoHoldsLfs,
   seedRepoTip,
   type LfsObject,
 } from "./seed.ts";
@@ -49,6 +54,16 @@ type LfsState = {
   out?: { first?: CutOut; second?: CutOut };
   times?: Record<string, number>;
   coldMiB?: number;
+  /** Does the LFS server of this repository hold the object? The seed's LFS server, by default. */
+  holds?: (o: LfsObject) => Promise<boolean>;
+  /** A branch whose own `.lfsconfig` names another store of the seed's LFS server, and that store. */
+  evil?: { branch: string; store: string; path: string; object: LfsObject };
+  /** The clone's git in the pod, as {@link cloneState} reads it: before the first cut, and after it. */
+  clone?: { before: string; after: string };
+  /** The LFS marks on the run's Sandbox, as each mark's `base` and `objects`. */
+  marks?: Array<{ base?: string; objects?: string[] }>;
+  /** What the Agent's checkout of the evil branch said. */
+  said?: string;
 };
 
 const states = new WeakMap<E2EWorld, LfsState>();
@@ -58,6 +73,9 @@ function lfsOf(world: E2EWorld): LfsState {
   assert.ok(s, "a step made this scenario's LFS repository");
   return s;
 }
+
+/** Does this scenario's LFS server hold the object? */
+const holdsOf = (s: LfsState) => s.holds ?? ((o: LfsObject) => lfsServerHolds(s.name, o));
 
 /** A repository name of this scenario: a label, unique across workers. */
 const nameFor = (what: string) => `lfs-${what}-${randomBytes(4).toString("hex")}`;
@@ -138,6 +156,69 @@ Given(
     const [base] = await makeLfsObjects(name, [128 * 1024]);
     const { url } = await lfsSeedRepo(name, { main: [{ "big.bin": base! }] }, "ssh");
     states.set(this, { name, url, branch: `up-${name.slice(-8)}`, base: { path: "big.bin", object: base! } });
+  },
+);
+
+Given(
+  "an LFS repository with two commits on main, and a branch whose .lfsconfig names another LFS server that holds its large file",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    await ensureLfsServer();
+    const name = nameFor("q18");
+    const store = `${name}-b`;
+    const [older, base] = await makeLfsObjects(name, [100 * 1024, 90 * 1024]);
+    const [x] = await makeLfsObjects(store, [80 * 1024]);
+    const evil = `evil-${name.slice(-8)}`;
+    const { url } = await lfsSeedRepo(name, {
+      main: [{ "big.bin": older! }, { "big.bin": base! }],
+      branches: { [evil]: { "secret.bin": x! } },
+      branchServers: { [evil]: store },
+    });
+    states.set(this, {
+      name,
+      url,
+      branch: `work-${name.slice(-8)}`,
+      base: { path: "big.bin", object: base! },
+      older: { path: "big.bin", object: older! },
+      evil: { branch: evil, store, path: "secret.bin", object: x! },
+    });
+  },
+);
+
+Given(
+  "an LFS repository over ssh, and a large file that only its LFS server holds",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    await ensureLfsServer();
+    const name = nameFor("held");
+    const [base, held] = await makeLfsObjects(name, [64 * 1024, 70_000]);
+    const { url } = await lfsSeedRepo(name, { main: [{ "big.bin": base! }] }, "ssh");
+    states.set(this, {
+      name,
+      url,
+      branch: `up-${name.slice(-8)}`,
+      base: { path: "big.bin", object: base! },
+      onBranch: { path: "held.bin", object: held! },
+    });
+  },
+);
+
+Given(
+  "an LFS repository over ssh whose LFS server speaks only the pure SSH protocol, with a large file on main",
+  { timeout: 900_000 },
+  async function (this: E2EWorld): Promise<void> {
+    await ensureLfsTransfer();
+    const name = nameFor("pure");
+    const [base] = await makeSeedLfsObjects(name, [128 * 1024]);
+    const { url } = await lfsSeedRepo(name, { main: [{ "big.bin": base! }] }, "pure-ssh");
+    assert.ok(await seedRepoHoldsLfs(name, base!), "the repository's own store holds the base's object");
+    states.set(this, {
+      name,
+      url,
+      branch: `up-${name.slice(-8)}`,
+      base: { path: "big.bin", object: base! },
+      holds: (o) => seedRepoHoldsLfs(name, o),
+    });
   },
 );
 
@@ -249,6 +330,26 @@ async function watchAsks(world: E2EWorld, stop: Promise<unknown>): Promise<AskSe
 const askSeconds = (asks: AskSeen[]): number[] =>
   asks.filter((a) => a.answeredSeenAt !== undefined).map((a) => (a.answeredSeenAt! - Date.parse(a.asked)) / 1000);
 
+/**
+ * The clone's git in the pod, as text that two reads compare: HEAD, each ref but the remote-tracking
+ * ones (a cut's fetch can move those), each Worktree, default/'s changes, the cut records, and
+ * whether the cut's folder is there.
+ */
+async function cloneState(world: E2EWorld): Promise<string> {
+  const git = "git -c safe.directory='*' -C /work/app/default";
+  return shell(
+    world,
+    [
+      `echo "HEAD $(${git} rev-parse HEAD) $(${git} symbolic-ref -q HEAD)"`,
+      `${git} for-each-ref --format='%(refname) %(objectname)' | grep -v '^refs/remotes/'`,
+      `${git} worktree list --porcelain`,
+      `${git} status --porcelain`,
+      `echo "records $(ls /work/app/default/.git/jr2-cuts 2>/dev/null | wc -l)"`,
+      `echo "folder $(test -e /work/app/lfs && echo yes || echo no)"`,
+    ].join("; "),
+  );
+}
+
 When(
   "the {string} workflow cuts the branch",
   { timeout: 2_400_000 },
@@ -271,6 +372,7 @@ When(
     t.runToAttachedSeconds = (attached - started) / 1000;
     t.readyToAttachedSeconds = (attached - ready) / 1000;
     s.read = { base: await shaInPod(this, `/work/app/default/${s.base!.path}`) };
+    const before = await cloneState(this);
     const go = Date.now();
     await sendGate(this, "go");
     const cut = gateWithin(this, 900_000);
@@ -282,6 +384,7 @@ When(
     t.cutWithAskSeconds = (Date.now() - go) / 1000;
     t.cutAskMarkToAnswerSeconds = Math.max(0, ...askSeconds(asks.filter((a) => Date.parse(a.asked) >= go)));
     s.read.cut = await shaInPod(this, `/work/app/lfs/${s.onBranch!.path}`);
+    s.clone = { before, after: await cloneState(this) };
     const look = Date.now();
     await sendGate(this, "look");
     const settled = await settledWithin(this, 900_000);
@@ -322,15 +425,90 @@ When(
         `head -c ${size} /dev/urandom > new.bin`,
         `git add new.bin`,
         `git -c user.name=e -c user.email=e@e commit -qm 'a new large file'`,
-        `echo "added-$(sha256sum new.bin | cut -c1-64)-pointer-$(git cat-file -p HEAD:new.bin | grep -c '^oid sha256:')"`,
+        `echo "added-$(sha256sum new.bin | cut -c1-64)-pointer-$(git cat-file -p HEAD:new.bin | grep -c '^oid sha256:')-base-$(sha256sum ${s.base!.path} | cut -c1-64)"`,
       ].join(" && "),
     });
     const said = await toolResultWith(this, "added-");
-    const m = said.match(/added-([0-9a-f]{64})-pointer-(\d+)/);
+    const m = said.match(/added-([0-9a-f]{64})-pointer-(\d+)-base-([0-9a-f]{64})/);
     assert.ok(m, `the Agent's commit said what it added: ${said}`);
     assert.equal(m[2], "1", "the commit holds the large file's pointer, so the clean filter ran");
+    s.read = { base: m[3] };
     s.onBranch = { path: "new.bin", object: { oid: m[1]!, size } };
-    assert.equal(await lfsServerHolds(s.name, s.onBranch.object), false, "the server lacks the object before the push");
+    assert.equal(await holdsOf(s)(s.onBranch.object), false, "the server lacks the object before the push");
+    await this.provider!.release("finished", {});
+    const settled = await settledWithin(this, 300_000);
+    assert.equal(settled.status, "done", JSON.stringify(settled));
+    s.out = settled.context.output as LfsState["out"];
+  },
+);
+
+/** The LFS marks on the run's Sandbox (ADR-0053): each mark's `base` and `objects`. */
+async function lfsMarks(world: E2EWorld): Promise<Array<{ base?: string; objects?: string[] }>> {
+  const out = await kubectl(world, ["get", "sandbox", "-l", `jr2.dev/run=${world.runId}`, "-o", "json"]);
+  type Item = { metadata: { annotations?: Record<string, string> } };
+  return (JSON.parse(out) as { items: Item[] }).items.flatMap((it) =>
+    Object.entries(it.metadata.annotations ?? {})
+      .filter(([k]) => k.startsWith("jr2.dev/lfs-"))
+      .map(([, v]) => JSON.parse(v) as { base?: string; objects?: string[] }),
+  );
+}
+
+When(
+  "the Agent names that branch as its base and checks it out in its Worktree",
+  { timeout: 600_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const s = lfsOf(this);
+    const evil = s.evil!;
+    await startWt(this, "lfs-agent", { repo: s.url, branch: s.branch });
+    // First an older commit of main, whose ask the cache agent answers, so that the Sandbox has a mark.
+    await this.provider!.release("bash", {
+      command: `git checkout -q --detach HEAD~1 && echo "older-$(sha256sum big.bin | cut -c1-64)"`,
+    });
+    s.read = { cut: (await toolResultWith(this, "older-")).match(/older-([0-9a-f]{64})/)?.[1] };
+    // The clone's jr2.base is what the attach recorded. The Agent can write it, and its branch's
+    // .lfsconfig names a server of the Agent's choice.
+    await this.provider!.release("bash", {
+      command: [
+        `git config jr2.base ${evil.branch}`,
+        `git fetch -q origin`,
+        `out=$(git checkout -q --detach origin/${evil.branch} 2>&1); rc=$?`,
+        `echo "evil-rc$rc"`,
+        `echo "$out" | tail -6`,
+      ].join("; "),
+    });
+    s.said = await toolResultWith(this, "evil-rc");
+    s.marks = await lfsMarks(this);
+    await this.provider!.release("finished", {});
+    const settled = await settledWithin(this, 300_000);
+    assert.equal(settled.status, "done", JSON.stringify(settled));
+  },
+);
+
+When(
+  "the Agent commits that file's pointer with no local copy, and the Machine pushes it",
+  { timeout: 600_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const s = lfsOf(this);
+    const o = s.onBranch!.object;
+    const at = `${o.oid.slice(0, 2)}/${o.oid.slice(2, 4)}/${o.oid}`;
+    await startWt(this, "lfs-push", { repo: s.url, branch: s.branch });
+    // The pointer goes in as it is: with no clean filter, so no store gets the object.
+    await this.provider!.release("bash", {
+      command: [
+        `printf 'version https://git-lfs.github.com/spec/v1\\noid sha256:${o.oid}\\nsize ${o.size}\\n' > ${s.onBranch!.path}`,
+        `blob=$(git hash-object -w --no-filters ${s.onBranch!.path})`,
+        `git update-index --add --cacheinfo 100644,$blob,${s.onBranch!.path}`,
+        `git -c user.name=e -c user.email=e@e commit -qm 'a pointer'`,
+        `echo "pointer-$(git cat-file -p HEAD:${s.onBranch!.path} | grep -c '^oid sha256:')-local-$(test -e /work/app/default/.git/lfs/objects/${at} && echo yes || echo no)-cache-$(ls /repos/*/lfs/objects/${at} 2>/dev/null | wc -l)"`,
+      ].join(" && "),
+    });
+    const said = await toolResultWith(this, "pointer-");
+    assert.match(
+      said,
+      /pointer-1-local-no-cache-0/,
+      `the commit holds the pointer, and no store in the pod holds the object: ${said}`,
+    );
+    assert.ok(await lfsServerHolds(s.name, o), "the LFS server holds the object");
     await this.provider!.release("finished", {});
     const settled = await settledWithin(this, 300_000);
     assert.equal(settled.status, "done", JSON.stringify(settled));
@@ -363,7 +541,15 @@ Then("the cut is refused, and its reason names the file", function (this: E2EWor
   assert.match(first?.reason ?? "", /the node cache cannot get the large file of [0-9a-f]{40}/, JSON.stringify(first));
   const named = `${s.onBranch!.path} (${s.onBranch!.object.oid.slice(0, 12)})`;
   assert.ok(first?.reason?.includes(named), `the reason names ${named}: ${first?.reason}`);
-  // A refused cut changes no git: the next cut, of the base, is ready.
+  // A refused cut changes no git: the clone is as it was before it, and the next cut, of the base, is ready.
+  assert.ok(s.clone, "the clone was read before and after the cut");
+  assert.equal(
+    s.clone.after,
+    s.clone.before,
+    "the refused cut left HEAD, the refs, the Worktrees and default/ as they were",
+  );
+  assert.match(s.clone.after, /^folder no$/m, "the refused cut made no folder");
+  assert.match(s.clone.after, /^records 0$/m, "the refused cut left no record");
   assert.equal(s.out?.second?.outcome, "ready", JSON.stringify(s.out));
 });
 
@@ -380,7 +566,7 @@ Then(
       ?.pushed;
     assert.equal(pushed?.outcome, "pushed", JSON.stringify(s.out));
     assert.equal(await seedRepoTip(s.name, s.branch), pushed.published, "the remote holds the pushed commit");
-    assert.ok(await lfsServerHolds(s.name, s.onBranch!.object), "the LFS server holds the new object");
+    assert.ok(await holdsOf(s)(s.onBranch!.object), "the LFS server holds the new object");
   },
 );
 
@@ -401,3 +587,47 @@ Then("the cold attach and the cut's ask are reported", async function (this: E2E
   writeFileSync(`.tmp/lfs-measure-${s.coldMiB}.json`, JSON.stringify(report, null, 2));
   console.log(`lfs measure: ${JSON.stringify(report)}`);
 });
+
+Then(
+  "the cache agent asked the Binding's base's LFS server, and the other LFS server got no request",
+  async function (this: E2EWorld): Promise<void> {
+    const s = lfsOf(this);
+    const evil = s.evil!;
+    assert.equal(s.read?.cut, s.older!.object.oid, "the older commit's large file came by an ask");
+    const asked = (s.marks ?? []).find((m) => m.objects?.some((o) => o.startsWith(evil.object.oid)));
+    assert.ok(asked, `an ask named the evil branch's object: ${JSON.stringify(s.marks)}`);
+    assert.equal(asked.base, "main", `the ask names the Binding's base, not the Agent's: ${JSON.stringify(asked)}`);
+    assert.match(s.said ?? "", /evil-rc[1-9]/, `the checkout of the evil branch failed: ${s.said}`);
+    assert.match(s.said ?? "", new RegExp(evil.path.replace(".", "\\.")), `git named the file: ${s.said}`);
+    const log = (await lfsServerLog()).split("\n");
+    assert.ok(
+      log.some((l) => l.startsWith(`POST /${s.name}/info/lfs/objects/batch`)),
+      "the cache agent asked the Binding's base's LFS server",
+    );
+    assert.deepEqual(
+      log.filter((l) => l.includes(`/${evil.store}/`)),
+      [],
+      "no request named the store that the evil branch's .lfsconfig names",
+    );
+  },
+);
+
+Then("the push is pushed, and the LFS server got no upload", async function (this: E2EWorld): Promise<void> {
+  const s = lfsOf(this);
+  const pushed = (s.out as { pushed?: { outcome?: string; published?: string; reason?: string } } | undefined)?.pushed;
+  assert.equal(pushed?.outcome, "pushed", JSON.stringify(s.out));
+  assert.equal(await seedRepoTip(s.name, s.branch), pushed.published, "the remote holds the pushed commit");
+  const puts = (await lfsServerLog()).split("\n").filter((l) => l.startsWith(`PUT /${s.name}/`));
+  assert.deepEqual(puts, [], "no upload");
+});
+
+Then(
+  "the attach got the base's large file, and the cache agent and the push spoke git-lfs-transfer",
+  async function (this: E2EWorld): Promise<void> {
+    const s = lfsOf(this);
+    assert.equal(s.read?.base, s.base!.object.oid, `the Worktree's ${s.base!.path} holds the object's bytes`);
+    const sessions = await lfsTransferSessions(s.name);
+    assert.ok(sessions.includes("download"), `a download session: ${JSON.stringify(sessions)}`);
+    assert.ok(sessions.includes("upload"), `an upload session: ${JSON.stringify(sessions)}`);
+  },
+);
