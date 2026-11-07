@@ -215,12 +215,14 @@ jr2 send <run id> --gate body.notPushed --event approve
 A Repo that keeps its large files with Git LFS needs no option. When the commits of a push have LFS pointers, the
 Sandbox Effector uploads their objects to the LFS server before it updates the branch:
 
-1. It asks the batch API of the LFS server which objects the server holds. An object that the server holds needs no
+1. It asks the batch API of the LFS server which objects the server holds. It asks as for a download. The server holds
+   an object when the answer gives the object a download action and no error. An object that the server holds needs no
    upload and no local copy.
 2. It reads each object that the server does not hold from the Agent's clone, else from the Repo cache. It checks each
    object against its oid.
 3. It uploads those objects with its own git-lfs.
-4. It asks the batch API again. The server must hold each object that it uploaded. Only then does it push the branch.
+4. It asks the batch API again, in the same way. The server must hold each object that it uploaded. Only then does it
+   push the branch.
 
 A signed or a squashed push keeps the pointers, so it uploads the same objects.
 
@@ -229,11 +231,16 @@ The LFS server is the first of `lfs.pushurl`, `lfs.url`, `remote.origin.lfspushu
 [Orchestrator](../reference/glossary.md#orchestrator) gives the Effector that base, so the Agent cannot choose the
 server. The server is an `https://` or `http://` server, or an ssh server on the host of an ssh push URL.
 
+An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or give an https server through
+`git-lfs-authenticate`. The Effector and its git-lfs try `git-lfs-transfer` first, as git-lfs does by default. When the
+server does not speak it, they use `git-lfs-authenticate`. Thus a server that speaks only one of the two takes the push.
+
 The upload uses the push credential. The token goes only to the origin of the push URL: its scheme, its host and its
 port. A URL on a different origin in the batch answer, such as the object store of GitHub, gets only the batch answer's
 headers. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the same rule for the clone.
 
-When an upload fails, the push is `rejected` with `stage` `upload`, and jr2 pushes nothing. See [Rules](#rules).
+When an upload fails, the push is `rejected` with `stage` `upload`, and jr2 pushes nothing. The branch does not move,
+but an object that went up stays on the server. See [Rules](#rules).
 
 ## Other options
 
@@ -326,37 +333,51 @@ ends `and <n> more` when there are more:
 - an object file that jr2 cannot read:
   `the LFS object of <file> could not be read (<cause>), and the server lacks it, so it cannot be uploaded`
 - jr2 cannot copy an object for git-lfs: `the LFS object of <file> could not be staged: <error>`
-- the batch answer refuses an object, or leaves it out: `the LFS object of <file> could not be uploaded: <why>` or
+- the batch answer leaves out an object:
   `the LFS object of <file> could not be uploaded: the server's batch answer left it out`
-- the LFS server refuses the batch request, for example a server on a different origin that needs a credential, or a
-  push credential that cannot write LFS objects:
-  `the LFS objects of <files> could not be uploaded: the LFS server answered the batch request <status>[: the server refused the credential][ (<message>)]`
-- the batch request gets no answer:
-  `the LFS objects of <files> could not be uploaded: the LFS server's batch request failed: <error>` or
-  `the LFS objects of <files> could not be uploaded: the LFS server's batch answer did not come: the timeout passed`
-- the batch answer is not one that jr2 can use: `the LFS objects of <files> could not be uploaded: <why>`. `<why>` is
-  `the LFS server's batch answer could not be read: <error>`,
-  `the LFS server's batch answer is not the batch API's JSON` or `the LFS server's batch url could not be read`.
-- jr2 cannot find the LFS server from the push URL or from `.lfsconfig`. The `reason` is one of these:
-  - `the LFS server could not be found from the push url`
-  - `the LFS server's scheme "<scheme>" is not one jr2 uploads over`
-  - `the LFS server is ssh, and the push has no ssh credential`
-  - `the LFS server's ssh url could not be read` or `the LFS server's ssh url is not one jr2 runs ssh to`
-  - `git-lfs-authenticate on the LFS server failed: <why>`, `git-lfs-authenticate on the LFS server gave no href` or
-    `git-lfs-authenticate on the LFS server gave an href that is not http(s)`
+- jr2 cannot ask the batch API which objects the server holds:
+  `the LFS objects of <files> could not be uploaded: <why>`. `<why>` is one of the texts below.
+- the check after git-lfs exits cannot ask the batch API:
+  `the upload of the LFS objects of <files> could not be confirmed: <why>`. `<why>` is one of the texts below.
+- the server does not hold each object after git-lfs exits:
+  `the LFS server does not hold the objects of <files> after the upload[ (<error>)][; git-lfs: <line>]`. `<error>` is
+  `the server answered <code>[ (<message>)]`, the server's error for the first of those objects.
 - jr2 cannot write the LFS settings of its scratch repository: `the LFS upload could not be configured`
-- git-lfs fails: `the LFS objects of <files> could not be uploaded[: <why>][; git-lfs: <line>]`. `<why>` is
-  `the timeout passed`, `this Effector holds no git-lfs at <program>`, `the remote refused the credential` or
-  `the remote's TLS certificate is not trusted`. `<line>` is the last line in which git-lfs tells of the failure.
-- the batch request after git-lfs exits fails: `the upload of the LFS objects of <files> could not be confirmed: <why>`
-- the server does not hold the objects after git-lfs exits:
-  `the LFS server does not hold the objects of <files> after the upload[; git-lfs: <line>]`
 - the base of the Binding is not in the Repo cache:
   `the LFS server could not be read: the Binding's base "<base>" is not in the node cache`
 - jr2 cannot list the LFS pointers of the commits:
   `the LFS pointers of the commits to publish could not be listed: <why>`
 - `.lfsconfig` names a server that jr2 does not upload to:
   `.lfsconfig at the Binding's base names <key> "<url>": jr2 uploads LFS objects only to an https or http server, or to an ssh server on the host of an ssh push url`
+- git-lfs fails: `the LFS objects of <files> could not be uploaded[: <why>][; git-lfs: <line>]`. `<line>` is the last
+  line in which git-lfs tells of the failure. `<why>` is one of these:
+  - `the timeout passed`
+  - `this Effector holds no git-lfs at <program>`
+  - `the remote refused the credential`
+  - `the remote's TLS certificate is not trusted`
+  - `a url on another origin asked for a credential, and jr2 sends the push token only to the push url's origin (scheme, host, port)`
+
+When jr2 cannot ask the batch API, `<why>` tells the cause:
+
+- The server refuses the batch request: `the LFS server answered the batch request <status>[: <rule>][ (<message>)]`.
+  For example, the push credential cannot write LFS objects. `<rule>` is `the server refused the credential` or
+  `jr2 sends the push token only to the push url's origin (scheme, host, port), and the LFS server is on another origin`.
+- The batch request gets no answer: `the LFS server's batch request failed: <error>` or
+  `the LFS server's batch answer did not come: the timeout passed`.
+- The batch answer is not one that jr2 can use: `the LFS server's batch answer could not be read: <error>`,
+  `the LFS server's batch answer is not the batch API's JSON` or `the LFS server's batch url could not be read`.
+- jr2 cannot find the LFS server from the push URL or from `.lfsconfig`:
+  `the LFS server could not be found from the push url` or
+  `the LFS server's scheme "<scheme>" is not one jr2 uploads over`.
+- The server is ssh, and jr2 cannot reach it: `the LFS server is ssh, and the push has no ssh credential`,
+  `the LFS server's ssh url could not be read` or `the LFS server's ssh url is not one jr2 runs ssh to`.
+- The server speaks `git-lfs-transfer`, and the session fails: `git-lfs-transfer on the LFS server: <error>` or
+  `git-lfs-transfer on the LFS server did not answer: the timeout passed`.
+- The server does not speak `git-lfs-transfer`, and `git-lfs-authenticate` fails too:
+  `<authenticate>; before it, git-lfs-transfer failed: <error>`. `<authenticate>` is
+  `git-lfs-authenticate on the LFS server failed: <error>`, `git-lfs-authenticate on the LFS server gave no href` or
+  `git-lfs-authenticate on the LFS server gave an href that is not http(s)`.
+- The timeout passed before the ssh server answered: `the LFS server did not answer: the timeout passed`.
 
 `push()` refuses a timeout that is not a positive duration:
 `timeout "<timeout>" is not a positive duration (like "30s", "5m")`

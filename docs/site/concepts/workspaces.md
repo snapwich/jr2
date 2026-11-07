@@ -156,9 +156,9 @@ its choice. [Architecture](architecture.md#large-files-in-the-repo-cache) tells 
 A large file uses the disk of `/work` more than one time. The clone keeps one copy of it in its own LFS store.
 `default/` and each Worktree that holds the file keep one more copy each.
 
-A `command` that names an Effect secret does not get the large files. It runs in the
-[Sandbox Effector](../reference/glossary.md#sandbox-effector), on its own copy of one commit, and in that copy each
-large file is its pointer. Thus do not give such a `command` the work of reading a large file. A `command` with no
+A `command` that names an [Effect secret](../reference/glossary.md#effect-secret) does not get the large files. It runs
+in the [Sandbox Effector](../reference/glossary.md#sandbox-effector), on its own copy of one commit, and in that copy
+each large file is its pointer. Thus such a `command` cannot read the contents of a large file. A `command` with no
 Effect secret, an Agent, and an `http` Effect with a file body read the Worktree, so they get the contents.
 
 The clone and each cut check out no submodule. The folder of a submodule stays empty. A Workspace that works in the code
@@ -205,12 +205,12 @@ Lost Sandbox has lost all of its work, because no commit was pushed.
 
 A Sandbox pod has two containers, and two more when the Machine needs them:
 
-| Container                                                         | What runs in it                                                                                                                                  |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The [Harness](../reference/glossary.md#harness) container         | The Harness, the Agent's Working tools, and a `command` that names no [Effect secret](../reference/glossary.md#effect-secret)                    |
-| The [Custodian](../reference/glossary.md#custodian)               | jr2's own container. It holds the pod's Held secrets, and the Harness's calls out of the pod go through it (see [Architecture](architecture.md)) |
-| The [User Container](../reference/glossary.md#user-container)     | Your own image, with its own entrypoint. Only when `user` names one.                                                                             |
-| The [Sandbox Effector](../reference/glossary.md#sandbox-effector) | A `push`, an `http` Effect with a Worktree file, and a `command` that names an Effect secret. Only when an Effect needs it.                      |
+| Container                                                     | What runs in it                                                                                                                                  |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The [Harness](../reference/glossary.md#harness) container     | The Harness, the Agent's Working tools, and a `command` that names no Effect secret                                                              |
+| The [Custodian](../reference/glossary.md#custodian)           | jr2's own container. It holds the pod's Held secrets, and the Harness's calls out of the pod go through it (see [Architecture](architecture.md)) |
+| The [User Container](../reference/glossary.md#user-container) | Your own image, with its own entrypoint. Only when `user` names one.                                                                             |
+| The Sandbox Effector                                          | A `push`, an `http` Effect with a Worktree file, and a `command` that names an Effect secret. Only when an Effect needs it.                      |
 
 ### The Sandbox Image
 
@@ -331,9 +331,8 @@ the Harness container does not lose the Workspace: the pod and `/work` stay.
   it chooses.
 - `jr2 up` refuses a Repo Slot name that starts with `.`, because `/work/.jr2/` is reserved for jr2.
 - A cut of the branch that `default/` holds is `refused`, and the reason names `/work/<slot>/default`.
-- An attach whose base has a large file that the Repo cache cannot get fails. The run faults, and the Sandbox stays. The
-  fault is
-  `Sandbox "<name>": the attach failed (500): the attach of slot "<slot>" failed at get the base's large files: the node cache cannot get <files> of <base>: <list>`.
+- An attach whose base has a large file that the Repo cache cannot get fails. The run faults, and the Sandbox stays.
+  [Give the cluster git credentials](../guides/give-the-cluster-git-credentials.md#rules) gives the text of the fault.
 - A cut whose large files the Repo cache cannot get, or cannot get in the time that the cut has, is `refused`. The
   reason names the files. [Cut a Worktree](../guides/cut-a-worktree.md#rules) gives the text and the form of `<list>`.
 - A `command` that names an Effect secret gets the pointer of each large file, not its contents.

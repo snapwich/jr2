@@ -83,8 +83,8 @@ The Size holds only memory and cpu. jr2 also sets these, and you cannot change t
 - `/dev/shm` in the `harness` container is 25% of the container's memory, and not less than `64Mi`. It counts in that
   memory. To get more, state a larger Size.
 - `/work` has a disk request of `10Gi`, with no limit. The disk is not part of the Size. A Git LFS file uses this disk
-  more than one time. The clone keeps one copy in its LFS store. `default/` and each Worktree that holds the file keep
-  one more copy each.
+  more than one time. The clone keeps one copy in its LFS store. `default/` and each
+  [Worktree](../reference/glossary.md#worktree) that holds the file keep one more copy each.
 
 ## Use the cpus
 
