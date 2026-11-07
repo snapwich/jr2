@@ -62,7 +62,7 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   content tag, with no intermediate, because the Harness arrives by volume at pod time
   ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) — while
   [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) makes a warm scenario's converge build nothing
-  (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the two seats that dial a Sandbox
+  (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the seats that dial a Service
   before anything else ever has — [ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md) has the
   diagnosis (a Sandbox CR at `phase: Ready` is not yet ROUTABLE, so an unretried first dial is a lost turn; the Menu
   read was a second instance of the same defect). Parallelism does not create those windows, it only samples them more

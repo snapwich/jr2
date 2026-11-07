@@ -20,6 +20,7 @@ import { pathToFileURL } from "node:url";
 import { custodianBootstrap, custodianScript } from "../src/custodian.ts";
 import { EMPTY_HELD, heldStandIn, leafStem, workspaceHeldPod, type HeldManifest } from "../src/held-secrets.ts";
 import { imageContextDigest } from "../src/images.ts";
+import { dialFetch } from "../src/dial.ts";
 import { kubeClient } from "../src/kube-client.ts";
 import { repoKey } from "../src/repo-identity.ts";
 import type { PlacementRoute } from "../src/parts.ts";
@@ -56,6 +57,7 @@ import {
   type PlacingWait,
   type ProvisionedRepo,
 } from "../src/workspace.ts";
+import { answers, neverOpens } from "./_fake-connection.ts";
 import { fakeKube, type FakeCall } from "./_fake-kube.ts";
 import { waitFor } from "./_fixtures.ts";
 
@@ -2360,9 +2362,16 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
     if (refusals-- > 0) throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } });
     return c.exec.harnessFetch(input, init);
   }) as typeof fetch;
-  const port = kubeSandbox({ ...provisionable, ...c.exec, harnessFetch: flaky });
+  const lines: string[] = [];
+  const port = kubeSandbox({ ...provisionable, ...c.exec, harnessFetch: flaky, log: (line) => lines.push(line) });
   const out = await port.attach({ name: "sb-r", repos: [{ slot: "app", url: APP_URL }] });
   assert.deepEqual(out.repos, { app: "/work/app" });
+  // The `@kind` tier's routability budget reads this line (features/steps/kind.steps.ts).
+  assert.equal(lines.length, 1, "a retry that cost something says so once");
+  assert.match(
+    lines[0]!,
+    /^jr2\.routability seat=attach attempts=3 ms=\d+ last=ECONNREFUSED url=http:\/\/sb-1\.default\.svc:8080\/attach$/,
+  );
 
   // A window that closes names the address it never reached.
   const never = kubeSandbox({
@@ -2376,6 +2385,54 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
   await assert.rejects(
     () => never.attach({ name: "sb-r", repos: [{ slot: "app", url: APP_URL }] }),
     /never reached its Harness at http:\/\/sb-1\.default\.svc:8080/,
+  );
+});
+
+test("an attach try whose connection does not open is given up after the connect bound and tried again, inside the window (ADR-0042)", async () => {
+  // Measured on kind: a SYN sent just as the Service came into service was never answered, and
+  // the global fetch waited its 10 s connect timeout before the retry. The default transport bounds
+  // the connect; this drives that transport with a connection that never opens, then one that answers.
+  const c = readySandbox("sb-d");
+  let made = 0;
+  const lines: string[] = [];
+  const port = kubeSandbox({
+    ...provisionable,
+    ...c.exec,
+    attachWindowMs: 5_000,
+    log: (line) => lines.push(line),
+    harnessFetch: dialFetch({
+      connectTimeoutMs: 100,
+      connect: () => {
+        made += 1;
+        return made === 1
+          ? neverOpens()
+          : answers(JSON.stringify({ repos: { app: "/work/app" }, bases: { app: "main" } }));
+      },
+    }),
+  });
+  const started = Date.now();
+  const out = await port.attach({ name: "sb-d", repos: [{ slot: "app", url: APP_URL }] });
+  const took = Date.now() - started;
+  assert.deepEqual(out.repos, { app: "/work/app" });
+  assert.equal(made, 2, "the second try is a new connection");
+  assert.ok(took >= 100 && took < 2_000, `the bound and one backoff, not a 10 s connect timeout (took ${took}ms)`);
+  assert.equal(lines.length, 1);
+  assert.match(
+    lines[0]!,
+    /^jr2\.routability seat=attach attempts=2 ms=\d+ last=ETIMEDOUT url=http:\/\/sb-1\.default\.svc:8080\/attach$/,
+  );
+
+  // A connection that never opens for the whole window still faults, and names the address.
+  const never = kubeSandbox({
+    ...provisionable,
+    ...c.exec,
+    attachWindowMs: 300,
+    log: () => {},
+    harnessFetch: dialFetch({ connectTimeoutMs: 100, connect: () => neverOpens() }),
+  });
+  await assert.rejects(
+    () => never.attach({ name: "sb-d", repos: [{ slot: "app", url: APP_URL }] }),
+    /the attach never reached its Harness at http:\/\/sb-1\.default\.svc:8080: connect ETIMEDOUT sb-1\.default\.svc:8080/,
   );
 });
 

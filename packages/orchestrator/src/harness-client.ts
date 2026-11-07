@@ -38,6 +38,7 @@
 // observability, though jr2 never reads it (the actor is stopped by then; see actor.ts).
 
 import { agentActorWith } from "./actor.ts";
+import { dialFetch, routabilityLine, transportCode, transportDetail } from "./dial.ts";
 import type {
   AgentAdmission,
   AgentAdmitOptions,
@@ -163,7 +164,9 @@ export type HarnessClientOptions = {
    * every call, the long-poll included. Absent only where no placement exists: an explicit-
    * `endpoint` run against the stub Harness, which checks nothing. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: global `fetch`, and `dialFetch()` for the
+   * admission, whose connect is bounded (ADR-0042) because it can be the first call to reach a
+   * Service. */
   fetch?: typeof fetch;
   /** Reconnect backoff floor/ceiling (capped exponential, jittered per rung — see `jittered`;
    * network failures only, an answered long-poll re-polls immediately). Defaults 250ms → 5s; tests
@@ -286,6 +289,7 @@ function isTimeout(reason: unknown): boolean {
 export function createHarnessClient(options: HarnessClientOptions): HarnessClient {
   const { baseUrl } = options;
   const fetchImpl = options.fetch ?? fetch;
+  const admitFetch = options.fetch ?? dialFetch();
   const backoffInitialMs = options.backoffInitialMs ?? 250;
   const backoffMaxMs = options.backoffMaxMs ?? 5_000;
   const admitWindowMs = options.admitWindowMs ?? 90_000;
@@ -307,6 +311,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
    * probe, and until it is, kube-proxy REJECTs — which arrives here as a refused connection.
    * Un-retried, that single blip lost the whole turn (the actor calls an admission failure a
    * terminal `agent.fault`), which is exactly the flake that kept the `@kind` tier serial.
+   * (A Workspace with no Repo Slot skips the attach, so its admission is the first call there too.)
+   * Each attempt's connect is bounded (`dialFetch`): a dropped SYN costs the bound, not 10 s.
    *
    * Only a NEVER-DELIVERED failure is re-sent. Admission is accept-and-queue (ADR-0027): a POST
    * the Harness received but could not answer has already queued a Submission, so re-sending it
@@ -334,7 +340,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
       attempts += 1;
       let res: Response;
       try {
-        res = await fetchImpl(url, init);
+        res = await admitFetch(url, init);
       } catch (err) {
         lastCode = transportCode(err);
         // A local abandon propagates untranslated, exactly as in `wait` — the stopped actor
@@ -1177,8 +1183,8 @@ const DRAINING = 503;
 /** A stream read worth retrying (server hiccup) — internal to the reconnect loop, never thrown out. */
 class ReconnectableError extends Error {}
 
-/** Errnos that mean no connection was ever established. `getaddrinfo`/`connect` say it by syscall;
- * undici's own connect timeout says it by code. Deliberately short — anything not on this list is
+/** Errnos that mean no connection was ever established. `getaddrinfo`/`connect` say it by syscall
+ * (as `dialFetch`'s bounded connect does); undici's own connect timeout says it by code. Deliberately short — anything not on this list is
  * treated as possibly-delivered (see `postAdmission`). */
 const NEVER_DELIVERED_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]);
 const NEVER_DELIVERED_SYSCALLS = new Set(["connect", "getaddrinfo"]);
@@ -1191,23 +1197,6 @@ const NEVER_DELIVERED_SYSCALLS = new Set(["connect", "getaddrinfo"]);
  * family — so the answer is only ever legible by walking down. Read structurally (syscall/code),
  * never by matching the message: the message is the part that changes between Node versions.
  */
-/**
- * The most specific thing a transport rejection says about itself. `fetch` reports every one of
- * them as the same three words — `fetch failed` — and that string, arriving as an `agent.fault`
- * reason or a log line, names nothing an operator can act on. The errno one level down
- * (`connect ECONNREFUSED 10.96.0.7:8080`, `getaddrinfo ENOTFOUND …`) is the whole diagnosis.
- */
-function transportDetail(err: unknown, depth = 0): string {
-  if (depth > 4 || typeof err !== "object" || err === null) return String(err);
-  const { message, cause, errors } = err as { message?: unknown; cause?: unknown; errors?: unknown };
-  const nested = Array.isArray(errors) ? errors[0] : cause;
-  if (nested !== undefined && nested !== null) {
-    const deeper = transportDetail(nested, depth + 1);
-    if (deeper) return deeper;
-  }
-  return typeof message === "string" ? message : String(err);
-}
-
 function neverDelivered(err: unknown, depth = 0): boolean {
   if (depth > 4 || typeof err !== "object" || err === null) return false;
   const { code, syscall, cause, errors } = err as {
@@ -1238,51 +1227,6 @@ function toSettlement(event: SubmissionSettledEvent): Settlement {
 async function errorDetail(res: Response): Promise<string> {
   const body = (await res.json().catch(() => undefined)) as { error?: unknown } | undefined;
   return typeof body?.error === "string" ? body.error : res.statusText || "no detail";
-}
-
-/**
- * The marker the `@kind` tier greps for, and therefore a CONTRACT — duplicated verbatim in
- * `@jr2/harness`'s Menu (the two packages share no runtime dependency) and matched in
- * `features/steps/kind.steps.ts`. Renaming it on one side does not break a build; it silently turns
- * the tier's routability budget into a check that passes because it matches nothing.
- */
-const ROUTABILITY_MARKER = "jr2.routability";
-
-/**
- * What a retry at a lifecycle edge COST, emitted once, only when there was a cost.
- *
- * ADR-0042 absorbs these retries (ADR-0016's principle: no event, no budget on the authoring
- * surface), and absorption is the right call — but a fault that is absorbed and never measured is
- * how "Ready is not routable" stayed invisible for three sessions. Absorbing and measuring are not
- * in conflict: this is a log line, not a run-feed event, so nothing about the workflow surface
- * changes and the `@kind` tier can still assert a budget on the window it currently only benefits
- * from. Scoped deliberately to the two hops ADR-0042 is about — `wait`'s reconnect is a live
- * stream re-attaching, not a Service coming into existence, and does not belong in this number.
- *
- * `attempts` and `ms` are BOTH here because they measure different refusals, and the tier's first
- * live reading proved it: 2 attempts costing 10667ms, which is one dropped SYN sitting on undici's
- * 10s connect timeout, not a ladder being climbed. A REJECT (kube-proxy with no ready backend)
- * spends attempts and almost no time; a DROP spends time and almost no attempts. `last` carries the
- * errno of the final failure so the line says WHICH without anyone having to do that arithmetic.
- */
-function routabilityLine(
-  seat: "admission" | "surface",
-  url: string,
-  attempts: number,
-  ms: number,
-  lastCode: string,
-): string {
-  return `${ROUTABILITY_MARKER} seat=${seat} attempts=${attempts} ms=${ms} last=${lastCode} url=${url}`;
-}
-
-/** The errno of a transport rejection, read structurally down the cause chain (`transportDetail`
- * gives the prose; this gives the one token worth aggregating on). */
-function transportCode(err: unknown, depth = 0): string {
-  if (depth > 4 || typeof err !== "object" || err === null) return "?";
-  const { code, cause, errors } = err as { code?: unknown; cause?: unknown; errors?: unknown };
-  if (typeof code === "string") return code;
-  const nested = Array.isArray(errors) ? errors[0] : cause;
-  return nested === undefined || nested === null ? "?" : transportCode(nested, depth + 1);
 }
 
 /**
