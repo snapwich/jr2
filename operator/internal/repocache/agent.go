@@ -119,6 +119,9 @@ type Agent struct {
 	CloneTimeout         time.Duration
 	FetchTimeout         time.Duration
 	OnDemandFetchTimeout time.Duration
+	// LFSTimeout bounds the `git lfs fetch` that serves the LFS asks of one
+	// Reconcile (ADR-0053); zero means defaultLFSTimeout.
+	LFSTimeout time.Duration
 	// Now is the clock; tests fix it.
 	Now func() time.Time
 }
@@ -136,7 +139,10 @@ type Agent struct {
 //     `jr2 status` sees a private repo's error before any run does (ADR-0048);
 //   - a cache → pin gc, then fetch when a pod on this node asks — by having
 //     been created, or by carrying an ask marked since the last attempt
-//     (ADR-0053) — when the refresh interval elapsed, or when the spec changed.
+//     (ADR-0053) — when the refresh interval elapsed, or when the spec changed;
+//   - then, with a pod on this node that mounts the cache, serve the LFS asks
+//     of those pods that are due (ADR-0053): get the asked objects into a
+//     present cache, or answer that the cache is absent.
 //
 // A clone, probe, or pin that fails returns an error so the queue retries with
 // backoff; a fetch that fails degrades the cache to stale and waits for the
@@ -176,11 +182,20 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 	}
 	if !present(dir) {
 		if wanted {
+			if err := a.serveLFS(ctx, &repo, key, dir, false); err != nil {
+				return ctrl.Result{}, err
+			}
 			return a.clone(ctx, &repo, key)
 		}
 		return a.probe(ctx, &repo)
 	}
-	return a.refresh(ctx, &repo, dir, asked)
+	result, err := a.refresh(ctx, &repo, dir, asked)
+	// After the refresh, also when it returns early: an LFS ask is not a reason
+	// to fetch git, and a git fetch that is not due does not hold the LFS ask.
+	if lfsErr := a.serveLFS(ctx, &repo, key, dir, true); lfsErr != nil && err == nil {
+		err = lfsErr
+	}
+	return result, err
 }
 
 // demand reports whether any pod on this node mounts the key's cache, and the
