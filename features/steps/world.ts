@@ -68,6 +68,8 @@ const MODEL_DIR = fileURLToPath(new URL("../model-instance/", import.meta.url));
 const MODEL_ENDPOINTS_DIR = fileURLToPath(new URL("../model-endpoints/", import.meta.url));
 /** How long one status read (`readRun`) may take. */
 const READ_RUN_MS = 30_000;
+/** How much of a run's feed `recordFeed` keeps: the last bytes, where an Effect's output settles. */
+const FEED_KEEP = 4 * 1024 * 1024;
 /** The lock on MODEL_DIR's one profile copy (`lib/model-lock.ts`): one profile per checkout at a time. */
 const MODEL_LOCK = fileURLToPath(new URL("../.tmp/model-endpoint.lock", import.meta.url));
 
@@ -261,8 +263,9 @@ export class E2EWorld {
   /** @model: the endpoint profile this scenario's instance converged against (ADR-0066) — what
    * names the model id the scorecard is keyed by, and the trial counts the claim steps use. */
   modelProfile?: ModelEndpointProfile;
-  /** @model: the one port-forward to this scenario's Orchestrator that every status read uses
-   * (`readRun`). Opened on the first read, closed in `cleanup`, opened again when it dies. */
+  /** The one port-forward to this scenario's Orchestrator that every status read (`readRun`, @model)
+   * and the feed (`recordFeed`, @kind) use. Opened on the first use, closed in `cleanup`, opened
+   * again when a read finds it dead. */
   private orchestrator?: Promise<{ url: string; token: string; close: () => void }>;
   /** Extra env for the `jr2` binary — @kind publishes the fake provider's address here, because a
    * deployment-varying endpoint rides env and never a committed literal (ADR-0019). */
@@ -282,6 +285,8 @@ export class E2EWorld {
   readonly serverEnv: Record<string, string> = {};
   /** What a scenario's own fixtures close in `cleanup` (a fake Instance Effector). */
   readonly closers: Array<() => Promise<void>> = [];
+  /** @kind: the run's feed as the Orchestrator sent it, from `recordFeed` on (SSE frames, raw). */
+  feed = "";
 
   /** Allocate a fresh, isolated instance folder. Called from the `Before` hook. */
   async setup(): Promise<void> {
@@ -474,6 +479,34 @@ export class E2EWorld {
         if (this.orchestrator === opened) await this.closeOrchestrator();
       }
     }
+  }
+
+  /**
+   * @kind: keep the run's feed (`GET /runs/:runId/events`, the Instance band) in `feed` until
+   * `cleanup`, for the failure dump. Its Effect lines carry each Effect's output (ADR-0067): a
+   * push's outcome, its reason and its stage. The feed replays none of them on attach, and the
+   * Sandbox Effector that made them is reaped with the Workspace, so no later read finds them. A
+   * read that fails writes its reason into `feed`, and the scenario goes on.
+   */
+  recordFeed(runId: string): void {
+    const stop = new AbortController();
+    this.closers.push(async () => stop.abort());
+    const keep = (text: string) => {
+      this.feed = (this.feed + text).slice(-FEED_KEEP);
+    };
+    void (async () => {
+      const target = await (this.orchestrator ??= this.openOrchestrator());
+      const res = await fetch(`${target.url}/runs/${encodeURIComponent(runId)}/events`, {
+        headers: { authorization: `Bearer ${target.token}`, accept: "text/event-stream" },
+        signal: stop.signal,
+      });
+      if (!res.ok || !res.body) return keep(`<the feed answered HTTP ${res.status}>\n`);
+      const decoder = new TextDecoder();
+      for await (const chunk of res.body) keep(decoder.decode(chunk, { stream: true }));
+      keep("<the feed ended>\n");
+    })().catch((err: unknown) => {
+      if (!stop.signal.aborted) keep(`<the feed failed: ${err instanceof Error ? err.message : String(err)}>\n`);
+    });
   }
 
   private async openOrchestrator(): Promise<{ url: string; token: string; close: () => void }> {

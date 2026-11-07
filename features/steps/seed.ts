@@ -306,6 +306,10 @@ async function seed(): Promise<void> {
   await kubectl(["apply", "-f", "-"], MANIFEST, /* tolerate */ /AlreadyExists/);
   await kubectl(["--namespace", NAMESPACE, "rollout", "status", "deployment/seed", "--timeout=300s"]);
   await kubectl(["--namespace", NAMESPACE, "rollout", "status", "deployment/echo", "--timeout=300s"]);
+  // The seed lives across runs. Before `pushRemoteBranch` wrote as `git`, it wrote objects as root
+  // (see `inSeed`): five root folders in `objects/` refused about one push of three objects in 17.
+  // Giving the whole remote back to its owner is idempotent, so each worker does it.
+  await inSeed(`chown -R "$(stat -c %u:%g /srv/push.git)" /srv/push.git`);
 }
 
 function kubectl(args: string[], stdin?: string, tolerate?: RegExp): Promise<void> {
@@ -370,20 +374,18 @@ export async function pushToSeed(branch: string): Promise<string> {
   return sha;
 }
 
-/** Run a script in the seed's write seat and answer its stdout. */
-async function inSeed(script: string): Promise<string> {
-  const { stdout } = await exec("kubectl", [
-    "--namespace",
-    NAMESPACE,
-    "exec",
-    "deployment/seed",
-    "-c",
-    "git",
-    "--",
-    "sh",
-    "-ec",
-    script,
-  ]);
+/**
+ * Run a script in the seed's write seat, as root, and answer its stdout. `asPushUser` runs it as
+ * the user `git` in the push remote's container instead: a script that writes to `push.git` runs
+ * so. sshd serves each push as `git`, and git puts each object it receives in `objects/<xx>/`. An
+ * object that root writes makes that folder root's when it is new, and each later push with an
+ * object there is `[remote rejected] (unable to migrate objects to permanent storage)`.
+ */
+async function inSeed(script: string, opts: { asPushUser?: boolean } = {}): Promise<string> {
+  const run = opts.asPushUser
+    ? ["ssh", "--", "su", "git", "-s", "/bin/sh", "-c", `set -e\n${script}`]
+    : ["git", "--", "sh", "-ec", script];
+  const { stdout } = await exec("kubectl", ["--namespace", NAMESPACE, "exec", "deployment/seed", "-c", ...run]);
   return stdout;
 }
 
@@ -463,14 +465,15 @@ export async function verifyOnPushRemote(commit: string): Promise<{ verified: bo
 /** A commit on a new branch of the push remote: a colleague's open pull request. */
 export async function pushRemoteBranch(branch: string): Promise<string> {
   assert.match(branch, /^[a-z0-9][a-z0-9/-]{0,60}$/, "a branch is a plain lower-case label");
+  // As the push remote's user: the commit's object, its ref and its log are `git`'s, as a push makes them.
   const out = await inSeed(
     [
       `cd /srv/push.git`,
-      `git -c safe.directory='*' -c user.email=e2e@jr2 -c user.name=e2e commit-tree -m 'a colleague' -p refs/heads/main 'refs/heads/main^{tree}' > /tmp/c.$$`,
-      `git -c safe.directory='*' update-ref refs/heads/${branch} $(cat /tmp/c.$$)`,
-      `chown -R "$(stat -c %u:%g /srv/push.git)" /srv/push.git/refs /srv/push.git/logs 2>/dev/null || true`,
+      `git -c user.email=e2e@jr2 -c user.name=e2e commit-tree -m 'a colleague' -p refs/heads/main 'refs/heads/main^{tree}' > /tmp/c.$$`,
+      `git update-ref refs/heads/${branch} $(cat /tmp/c.$$)`,
       `cat /tmp/c.$$; rm /tmp/c.$$`,
     ].join("\n"),
+    { asPushUser: true },
   );
   return out.trim();
 }
