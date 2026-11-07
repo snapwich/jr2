@@ -66,10 +66,12 @@ inherits a Workspace whose processes are gone, with no way to know why.
     repo code that it runs) wrote there would be in the system prompt of each later Agent: a coder could tell the
     reviewer to approve. So the Agents never read that folder as it is in `HOME`:
     - `jr2 up` records, for each Sandbox Image that it builds, the folder `<home>/.pi/agent`, when each folder of that
-      path is a real folder in the image and no link. `<home>` is the image's `HOME`, or its `USER`'s home in the
-      image's `/etc/passwd`. An image with no `USER` has none: its home is jr2's emptyDir (`/home/jr2`,
-      [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). A multi-platform image is read
-      for its first platform, from the registry. A registry ref that jr2 did not build has none.
+      path is a real folder in the image and no link, and the path has no empty, `.` or `..` part (`HOME=/home//u`): the
+      Orchestrator mounts only such a path, and it refuses the whole image map for one that is not. `<home>` is the
+      image's `HOME`, or its `USER`'s home in the image's `/etc/passwd`. An image with no `USER` has none: its home is
+      jr2's emptyDir (`/home/jr2`, [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). A
+      multi-platform image is read for its first platform, from the registry. A registry ref that jr2 did not build has
+      none.
     - The Sandbox pod mounts the Sandbox Image a second time, as an `image` volume, with that folder as its `subPath`,
       at the same path, read-only, in the Harness container. The files are the image's, at the path that pi expects, and
       the kernel refuses each write, each new file, each removal and each move there. The mount needs the record: a

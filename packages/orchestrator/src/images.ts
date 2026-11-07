@@ -146,8 +146,10 @@ export async function readImageRefs(path: string): Promise<ImageRefs> {
   return { harness, custodian, sandbox, sandboxUser, sandboxUserContext };
 }
 
-/** An absolute path with no `.`, `..` or empty part and no `/` at its end, and not `/` itself. */
-function isMountFolder(path: string): boolean {
+/** An absolute path with no `.`, `..` or empty part and no `/` at its end, and not `/` itself: a
+ * folder that a Sandbox pod mounts as the image user's context (ADR-0062). `jr2 up` records only
+ * such a folder, so the record that it writes is one that {@link readImageRefs} reads. */
+export function isMountFolder(path: string): boolean {
   return /^(\/[^/\0]+)+$/.test(path) && !path.split("/").some((part) => part === "." || part === "..");
 }
 

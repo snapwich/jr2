@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, readlink, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { KIT_VERSION } from "@jr2/orchestrator/internal";
+import { KIT_VERSION, readImageRefs } from "@jr2/orchestrator/internal";
 import {
   assertEmulation,
   buildSandboxImage,
@@ -41,6 +41,7 @@ import {
   firstTarEntry,
   foldersTo,
   imageHome,
+  userContextPath,
 } from "../src/build.ts";
 import { imageContextDigest } from "@jr2/orchestrator/internal";
 
@@ -954,6 +955,26 @@ test("imageHome: the image's HOME when its ENV sets one, else the USER's passwd 
   assert.equal(imageHome("4242", [], passwd), undefined, "a uid with no entry has no home");
   assert.equal(imageHome("web", [], passwd), undefined, "a home that is no absolute path");
   assert.equal(imageHome("node", [], ""), undefined);
+});
+
+test("userContextPath: a home with an empty, . or .. part gives none, so the record is one the Orchestrator reads (ADR-0062)", async () => {
+  const passwd = "node:x:1000:1000::/home/node:/bin/bash\n";
+  assert.deepEqual(userContextPath("node", [], passwd), { dir: "/home/node/.pi/agent" });
+  assert.deepEqual(userContextPath("node", ["HOME=/srv/app/"], passwd), { dir: "/srv/app/.pi/agent" });
+  assert.deepEqual(userContextPath("node", ["HOME=/"], passwd), { dir: "/.pi/agent" });
+  for (const home of ["/home//u", "/home/./u", "/home/u/..", "/home/x/../u", "//home/u"]) {
+    const fact = userContextPath("node", [`HOME=${home}`], passwd);
+    assert.ok("none" in fact, home);
+    assert.match(fact.none, /empty, \. or \.\. part/, home);
+  }
+  assert.deepEqual(userContextPath("", [], passwd), { none: "no USER, so the home is jr2's emptyDir" });
+  // Each folder that the CLI records, the Orchestrator reads: the map that `jr2 up` writes parses.
+  const dir = (userContextPath("node", ["HOME=/home/node"], passwd) as { dir: string }).dir;
+  const file = join(await mkdtemp(join(tmpdir(), "images-")), "images.json");
+  const map = { harness: "h", custodian: "c", sandbox: { s: "s" }, sandboxUserContext: { s: dir } };
+  await writeFile(file, JSON.stringify(map));
+  const refs = await readImageRefs(file);
+  assert.equal(refs.sandboxUserContext?.["s"], dir);
 });
 
 test("foldersTo: each folder from / to the image user's context folder", () => {

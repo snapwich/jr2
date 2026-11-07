@@ -271,8 +271,9 @@ Each Agent of the Workspace runs as the user of the image, and that user can wri
 `~/.pi/agent` as it is in the home: an Agent could write text there for the system prompt of each later Agent. `jr2 up`
 records the directory when the image has it, and the Sandbox pod mounts that directory of the image again, at the same
 path and read-only. The Agents read the image's files and cannot change them. A `~/.pi/agent` that an Agent makes gets
-no read. The directory must be a real directory in the image, and each directory above it too, not a link. `jr2 up`
-prints `user context:` for each Sandbox Image that it builds, with the directory or why there is none.
+no read. The directory must be a real directory in the image, and each directory above it too, not a link. Its path must
+have no empty, `.` or `..` part: a `HOME` such as `/home//u` gives no user context. `jr2 up` prints `user context:` for
+each Sandbox Image that it builds, with the directory or why there is none.
 
 When jr2 cannot read the project context, the Turn runs without it, and the Harness's log tells why.
 

@@ -37,7 +37,7 @@ import { cp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { contentHash, KIT_VERSION } from "@jr2/orchestrator/internal";
+import { contentHash, isMountFolder, KIT_VERSION } from "@jr2/orchestrator/internal";
 import { LABEL_INSTANCE } from "./deploy.ts";
 
 const exec = promisify(execFile);
@@ -1110,6 +1110,42 @@ export function imageHome(user: string, env: readonly string[], passwd: string):
   return home.replace(/\/+$/, "") || "/";
 }
 
+/**
+ * The image user's context folder by the image's `USER`, `ENV` and `/etc/passwd` (ADR-0062), or why
+ * it has none, before any folder in the image is read. The folder is one that the Orchestrator
+ * mounts ({@link isMountFolder}): a home with an empty, `.` or `..` part (`HOME=/home//u`) gives none,
+ * because the Orchestrator refuses the whole image map for one such folder.
+ */
+export function userContextPath(user: string, env: readonly string[], passwd: string): UserContextFact {
+  // ADR-0037's fallback seat runs with HOME=/home/jr2 on an emptyDir: the image has nothing there.
+  if (user === "") return { none: "no USER, so the home is jr2's emptyDir" };
+  const home = imageHome(user, env, passwd);
+  if (home === undefined) return { none: `no home for USER ${user} (no HOME, and no entry in /etc/passwd)` };
+  const dir = home === "/" ? `/${USER_CONTEXT_SUBDIR}` : `${home}/${USER_CONTEXT_SUBDIR}`;
+  if (!isMountFolder(dir))
+    return { none: `the home ${home} has an empty, . or .. part, and a mount needs a plain path` };
+  return { dir };
+}
+
+/**
+ * The image user's context folder `dir` when each folder of its path, from `/`, is a real folder in
+ * the image (`typeOf`: the type of a path there, `undefined` when it is not there). A link anywhere
+ * on the path, `~/.pi` among them, gives none, and says which: the mount's `subPath` must be a real
+ * folder, and the kubelet would follow a link out of the image's folder.
+ */
+export async function userContextFolders(
+  dir: string,
+  typeOf: (path: string) => Promise<"dir" | "link" | "file" | undefined>,
+): Promise<UserContextFact> {
+  for (const folder of foldersTo(dir)) {
+    const type = await typeOf(folder);
+    if (type === undefined) return { none: `the image has no ${dir}` };
+    if (type === "link") return { none: `${folder} is a link, and the mount needs a real folder` };
+    if (type !== "dir") return { none: `${folder} is not a folder` };
+  }
+  return { dir };
+}
+
 /** Each folder from `/` to `dir`, `/` left out: `/home/u/.pi/agent` → `/home`, `/home/u`, … */
 export function foldersTo(dir: string): string[] {
   const parts = dir.split("/").filter(Boolean);
@@ -1240,8 +1276,7 @@ export const pnpmDockerBuild: BuildPort = {
   },
 
   async imageUserContext(image, platforms, user) {
-    // ADR-0037's fallback seat runs with HOME=/home/jr2 on an emptyDir: the image has nothing there.
-    if (user === "") return { none: "no USER, so the home is jr2's emptyDir" };
+    if (user === "") return userContextPath(user, [], "");
     const platform = platforms.length > 1 ? ["--platform", platforms[0]!] : [];
     const { stdout } = await exec("docker", ["create", ...platform, "--entrypoint", "/jr2-not-run", image], BIG);
     const container = stdout.trim();
@@ -1259,16 +1294,9 @@ export const pnpmDockerBuild: BuildPort = {
         ({ stdout: tar }) => tarFileText(tar as Buffer),
         () => "",
       );
-      const home = imageHome(user, env, passwd);
-      if (home === undefined) return { none: `no home for USER ${user} (no HOME, and no entry in /etc/passwd)` };
-      const dir = home === "/" ? `/${USER_CONTEXT_SUBDIR}` : `${home}/${USER_CONTEXT_SUBDIR}`;
-      for (const folder of foldersTo(dir)) {
-        const type = await pathType(container, folder);
-        if (type === undefined) return { none: `the image has no ${dir}` };
-        if (type === "link") return { none: `${folder} is a link, and the mount needs a real folder` };
-        if (type !== "dir") return { none: `${folder} is not a folder` };
-      }
-      return { dir };
+      const path = userContextPath(user, env, passwd);
+      if ("none" in path) return path;
+      return await userContextFolders(path.dir, (folder) => pathType(container, folder));
     } finally {
       await exec("docker", ["rm", "-f", container]).catch(() => undefined);
     }
