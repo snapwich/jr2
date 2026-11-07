@@ -56,66 +56,73 @@ type BodyContext = BodyInput & { seeded?: CommandOutput; fault?: string };
 const seededOk = (output: CommandOutput): boolean =>
   "outcome" in output && output.outcome === "exited" && output.code === 0;
 
-export const body = jr2Setup({
-  types: {} as { context: BodyContext; input: BodyInput },
-  events: [finish],
-  actors: { cut: worktree(), seed: command(["sh", "-ec", SEED]), reader: agent(coder), fail: fail() },
-}).createMachine({
-  id: "contexted",
-  context: ({ input }) => input,
-  initial: "cutting",
-  on: { "workspace.lost": { target: ".lost" } },
-  states: {
-    cutting: {
-      invoke: {
-        src: "cut",
-        input: { path: CONTEXT_WORKTREE, branch: "ctx-e2e" },
-        onDone: [{ guard: ({ event }) => isReady(event.output), target: "seeding" }, { target: "notCut" }],
+/** The body with another command before the reader (`contexted-image`, `contexted-home`). */
+export const contextedBody = (seed: string) =>
+  jr2Setup({
+    types: {} as { context: BodyContext; input: BodyInput },
+    events: [finish],
+    actors: { cut: worktree(), seed: command(["sh", "-ec", seed]), reader: agent(coder), fail: fail() },
+  }).createMachine({
+    id: "contexted",
+    context: ({ input }) => input,
+    initial: "cutting",
+    on: { "workspace.lost": { target: ".lost" } },
+    states: {
+      cutting: {
+        invoke: {
+          src: "cut",
+          input: { path: CONTEXT_WORKTREE, branch: "ctx-e2e" },
+          onDone: [{ guard: ({ event }) => isReady(event.output), target: "seeding" }, { target: "notCut" }],
+        },
       },
-    },
-    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
-    seeding: {
-      invoke: {
-        src: "seed",
-        input: { worktree: CONTEXT_WORKTREE },
-        onDone: [
-          {
-            guard: ({ event }) => seededOk(event.output),
-            target: "reading",
-            actions: assign({ seeded: ({ event }) => event.output }),
+      notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
+      seeding: {
+        invoke: {
+          src: "seed",
+          input: { worktree: CONTEXT_WORKTREE },
+          onDone: [
+            {
+              guard: ({ event }) => seededOk(event.output),
+              target: "reading",
+              actions: assign({ seeded: ({ event }) => event.output }),
+            },
+            { target: "notSeeded", actions: assign({ seeded: ({ event }) => event.output }) },
+          ],
+        },
+      },
+      notSeeded: {
+        invoke: {
+          src: "fail",
+          input: ({ context }) => ({
+            reason: "the context files were not written",
+            detail: { seeded: context.seeded },
+          }),
+        },
+      },
+      reading: {
+        invoke: {
+          src: "reader",
+          // A continued conversation, so its id is `<runId>/body/reader` (ADR-0057).
+          input: () => ({ cwd: CONTEXT_WORKTREE, prompt: "read the rules", continue: true }),
+        },
+        on: {
+          finish: { target: "finished" },
+          "agent.fault": {
+            target: "faulted",
+            actions: assign({ fault: ({ event }) => (event as { reason?: string }).reason }),
           },
-          { target: "notSeeded", actions: assign({ seeded: ({ event }) => event.output }) },
-        ],
+        },
       },
-    },
-    notSeeded: {
-      invoke: {
-        src: "fail",
-        input: ({ context }) => ({ reason: "the context files were not written", detail: { seeded: context.seeded } }),
-      },
-    },
-    reading: {
-      invoke: {
-        src: "reader",
-        // A continued conversation, so its id is `<runId>/body/reader` (ADR-0057).
-        input: () => ({ cwd: CONTEXT_WORKTREE, prompt: "read the rules", continue: true }),
-      },
-      on: {
-        finish: { target: "finished" },
-        "agent.fault": {
-          target: "faulted",
-          actions: assign({ fault: ({ event }) => (event as { reason?: string }).reason }),
+      finished: { type: "final", output: ({ context }) => ({ outcome: "finished", seeded: context.seeded }) },
+      lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
+      faulted: {
+        invoke: {
+          src: "fail",
+          input: ({ context }) => ({ reason: "the reader's Turn could not go on", detail: { fault: context.fault } }),
         },
       },
     },
-    finished: { type: "final", output: ({ context }) => ({ outcome: "finished", seeded: context.seeded }) },
-    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
-    faulted: {
-      invoke: {
-        src: "fail",
-        input: ({ context }) => ({ reason: "the reader's Turn could not go on", detail: { fault: context.fault } }),
-      },
-    },
-  },
-  output: ({ event }) => (event as { output?: unknown }).output,
-});
+    output: ({ event }) => (event as { output?: unknown }).output,
+  });
+
+export const body = contextedBody(SEED);

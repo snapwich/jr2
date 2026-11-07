@@ -643,6 +643,38 @@ Feature: a workspace() run drives a real Sandbox on kind
       When the Agent in the Sandbox calls "finish" with summary "read the rules"
       Then the run's Sandbox is destroyed
 
+  Rule: the image user's context is read from a read-only mount of the Sandbox Image, and from nowhere else
+    ADR-0062, ADR-0076. Each Agent runs as the image's user and can write that user's home, so
+    `~/.pi/agent` as it is in the home would let one Agent write each later Agent's system prompt.
+    `jr2 up` records the folder when the image has it, the pod mounts that folder of the image
+    again, read-only, and tells the Harness (`JR2_USER_CONTEXT`). A command in the domain tries to
+    change the folder before the reader's first Turn (`contexted-image.ts`). An image with a `USER`
+    and no such folder gets no mount, and a folder that a command makes there is not read
+    (`contexted-home.ts`).
+
+    Scenario: an image's ~/.pi/agent reaches the model from a read-only mount, its auth.json never does, and the domain cannot change it
+      Given the kind instance is serving
+      When I start the "contexted-image" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the reader's system prompt holds the context file "/home/node/.pi/agent/AGENTS.md" with "CTX-IMAGE-RULE" in pi's frame
+      And the reader's system prompt holds "CTX-IMAGE-RULE" before "CTX-WORKTREE-RULE"
+      And the reader's system prompt lists the skill "img-skill" with "CTX-IMAGE-SKILL-DESC"
+      And no request to the model holds "CTX-AUTH-SECRET"
+      And the pod mounts "/home/node/.pi/agent" read-only from its own Sandbox Image, and the Harness reads the user context there
+      And each try of a command in the domain to change the image user's context failed on a read-only file system
+      When the Agent in the Sandbox calls "finish" with summary "read the rules"
+      Then the run's Sandbox is destroyed
+
+    Scenario: an image with a USER and no ~/.pi/agent gets no mount, and a ~/.pi/agent that the domain makes is not read
+      Given the kind instance is serving
+      When I start the "contexted-home" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the reader's system prompt holds the context file "/work/app/ctx/CLAUDE.md" with "CTX-WORKTREE-RULE" in pi's frame
+      And the reader's system prompt holds no text of "CTX-MADE-RULE"
+      And the domain made the image user's ~/.pi/agent, and the pod mounts none and tells the Harness none
+      When the Agent in the Sandbox calls "finish" with summary "read the rules"
+      Then the run's Sandbox is destroyed
+
   Rule: a Harness holds stand-ins, and only the Custodian puts the key on the wire
     ADR-0059, ADR-0076. Workspace code runs in the Harness container, so a key there is a key it can
     take away. The Harness holds a secret Stand-in, as a file under /run/jr2 that no confined child

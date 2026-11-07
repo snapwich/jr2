@@ -1,0 +1,1 @@
+CTX-IMAGE-RULE
