@@ -107,7 +107,8 @@ branch or the commit:
 - `{ path: "/work/app/fix", branch: "docs/123" }` cuts a branch Worktree. The cut finds a local branch, then
   `origin/<branch>`, tracked, after a fetch. With neither, it makes a new branch from `from` or the base of the Binding.
 - `{ path: "/work/app/review", detach: sha }` cuts a detached Worktree for a reviewer. Each cut forces it to the commit
-  and cleans it. Files that the commit's `.gitignore` ignores stay, so that the reviewer can run the tests. An ignored
+  and cleans it. Files that the commit's own `.gitignore` ignores stay, so that the reviewer can run the tests. A
+  `.gitignore` or `.gitattributes` that an Agent wrote goes first, so it keeps nothing and changes no byte. An ignored
   `AGENTS.md`, `CLAUDE.md` or skill goes: the reviewer's system prompt has only what the commit has. A git config, an
   ignore rule or an index that an Agent wrote does not change the files that the cut writes.
 

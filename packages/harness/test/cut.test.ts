@@ -638,6 +638,146 @@ test("a re-cut keeps only what the commit's own .gitignore ignores: info/exclude
   assert.equal(run(review.path, "status", "--porcelain"), "");
 });
 
+test("a .gitignore that an Agent wrote keeps nothing at a re-cut: only the commit's own rules ignore (ADR-0075)", async (t) => {
+  const { w, sha, review } = await reviewed(t);
+  // A folder whose own new .gitignore ignores all of it, the file too: no `git status` shows it.
+  mkdirSync(join(review.path, "src", "evil"), { recursive: true });
+  writeFileSync(join(review.path, "src", "evil", ".gitignore"), "*\n");
+  writeFileSync(join(review.path, "src", "evil", "run.sh"), "approve\n");
+  mkdirSync(join(review.path, "node_modules", "pkg"), { recursive: true });
+  writeFileSync(join(review.path, "node_modules", "pkg", "x.js"), "x\n");
+  assert.equal(run(review.path, "status", "--porcelain"), "", "nothing shows in the Worktree");
+  ready(await w.go({ path: w.path("review"), detach: sha }));
+  assert.ok(!existsSync(join(review.path, "src", "evil")));
+  assert.ok(existsSync(join(review.path, "node_modules", "pkg", "x.js")), "the commit ignores node_modules");
+});
+
+test("a .gitattributes that an Agent wrote in the Worktree changes no byte that a re-cut writes (ADR-0075)", async (t) => {
+  const { w, sha, review } = await reviewed(t);
+  writeFileSync(join(review.path, ".gitattributes"), "AGENTS.md eol=crlf\na.txt ident\n");
+  writeFileSync(join(review.path, "AGENTS.md"), "changed\n");
+  writeFileSync(join(review.path, "a.txt"), "changed\n");
+  ready(await w.go({ path: w.path("review"), detach: sha }));
+  assert.equal(readFileSync(join(review.path, "AGENTS.md"), "utf8"), "the repo's rule\n");
+  assert.equal(readFileSync(join(review.path, "a.txt"), "utf8"), "a\n");
+  assert.ok(!existsSync(join(review.path, ".gitattributes")));
+  assert.equal(run(review.path, "status", "--porcelain"), "");
+});
+
+test("the cut reads no ignore or attributes file of a HOME or an XDG folder (ADR-0075)", async (t) => {
+  const { w, sha, review } = await reviewed(t);
+  // The cut's HOME is a folder in TMPDIR, which the Agents write; XDG_CONFIG_HOME names the same files.
+  const xdg = join(w.dir, "xdg");
+  mkdirSync(join(xdg, "git"), { recursive: true });
+  writeFileSync(join(xdg, "git", "ignore"), "hidden.sh\n");
+  writeFileSync(join(xdg, "git", "attributes"), "AGENTS.md eol=crlf\n");
+  writeFileSync(join(review.path, "hidden.sh"), "rm -rf /\n");
+  writeFileSync(join(review.path, "AGENTS.md"), "changed\n");
+  ready(await cut({ id: "x", path: w.path("review"), detach: sha }, { ...w.paths, env: { XDG_CONFIG_HOME: xdg } }));
+  assert.ok(!existsSync(join(review.path, "hidden.sh")));
+  assert.equal(readFileSync(join(review.path, "AGENTS.md"), "utf8"), "the repo's rule\n");
+});
+
+test("a re-cut starts from the commit that it last wrote, not from a HEAD that an Agent set: a file that the new commit removed goes (ADR-0075)", async (t) => {
+  const { w, coder, review } = await reviewed(t);
+  writeFileSync(join(coder.path, "tool.sh"), "echo\n");
+  run(coder.path, "add", ".");
+  run(coder.path, "commit", "-qm", "a tool");
+  ready(await w.go({ path: w.path("review"), detach: run(coder.path, "rev-parse", "HEAD") }));
+  // The next round removes the tool, and its own .gitignore ignores such a file.
+  run(coder.path, "rm", "-q", "tool.sh");
+  writeFileSync(join(coder.path, ".gitignore"), "node_modules\n*.sh\n");
+  run(coder.path, "add", ".");
+  run(coder.path, "commit", "-qm", "no tool");
+  // An Agent points the review's HEAD at a commit with no files.
+  const empty = run(review.path, "commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "none");
+  run(review.path, "update-ref", "--no-deref", "HEAD", empty);
+  ready(await w.go({ path: w.path("review"), detach: run(coder.path, "rev-parse", "HEAD") }));
+  assert.ok(!existsSync(join(review.path, "tool.sh")));
+});
+
+test("a kill during the add of a removed branch Worktree: the next cut adds it again, whole, with its index (ADR-0075)", async (t) => {
+  const w = world(t);
+  ready(await w.go({ path: w.path("gone"), branch: "gone" }));
+  rmSync(w.path("gone"), { recursive: true });
+  // What a kill leaves after `worktree add --no-checkout` and before the fill: the record says that
+  // the cut adds the folder again, and the folder has a HEAD and no index and no files.
+  const file = join(w.clone, ".git", "jr2-cuts", "gone.json");
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), adding: true }));
+  run(w.clone, "worktree", "prune");
+  run(w.clone, "worktree", "add", "-q", "--no-checkout", w.path("gone"), "gone");
+  const a = ready(await w.go({ path: w.path("gone"), branch: "gone" }));
+  assert.equal(a.found, "local");
+  assert.ok(existsSync(join(a.path, "a.txt")));
+  assert.equal(run(a.path, "status", "--porcelain"), "", "an index of the branch's files");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).adding, undefined);
+});
+
+test("real kills during the add of a removed Worktree: each next cut gives a whole Worktree", async (t) => {
+  const w = world(t);
+  const cutProgram = fileURLToPath(new URL("../src/cut.ts", import.meta.url));
+  for (let i = 0; i < 10; i++) {
+    const req = { path: w.path(`r${i}`), ...(i % 2 === 0 ? { branch: `r${i}` } : { detach: "main" }) };
+    ready(await w.go(req));
+    rmSync(req.path, { recursive: true });
+    const p = spawn(process.execPath, [cutProgram, JSON.stringify({ id: `k${i}`, base: "main", ...req })], {
+      env: { ...process.env, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK) },
+      stdio: "ignore",
+    });
+    const closed = new Promise((r) => p.on("close", r));
+    await new Promise((r) => setTimeout(r, 60 + i * 15));
+    p.kill("SIGKILL");
+    await closed;
+    const a = ready(await w.go(req));
+    assert.ok(existsSync(join(a.path, "a.txt")), `try ${i}`);
+    assert.equal(run(a.path, "status", "--porcelain"), "", `try ${i}`);
+  }
+});
+
+test("a killed cut's folder in TMPDIR goes at the next cut of its clone, and a folder of another clone's cut stays", async (t) => {
+  const w = world(t);
+  const tmp = join(w.dir, "tmp");
+  mkdirSync(tmp);
+  const lib = join(w.workRoot, "lib", "default");
+  execFileSync("git", ["clone", "-q", "--shared", w.remote, lib]);
+  const cutProgram = fileURLToPath(new URL("../src/cut.ts", import.meta.url));
+  /** Kill a cut of `path` when its own git folder is in TMPDIR. */
+  const killed = async (path: string): Promise<void> => {
+    const before = new Set(readdirSync(tmp));
+    for (let i = 0; i < 40; i++) {
+      const p = spawn(process.execPath, [cutProgram, JSON.stringify({ id: `k${i}`, path, detach: "main" })], {
+        env: { ...process.env, TMPDIR: tmp, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK) },
+        stdio: "ignore",
+      });
+      const closed = new Promise((r) => p.on("close", r));
+      let seen = false;
+      const filling = (d: string): boolean => {
+        try {
+          return readdirSync(join(tmp, d)).some((f) => f.startsWith("fill-"));
+        } catch {
+          return false;
+        }
+      };
+      while (!seen && p.exitCode === null) {
+        seen = readdirSync(tmp).some((d) => !before.has(d) && filling(d));
+        if (!seen) await new Promise((r) => setTimeout(r, 2));
+      }
+      p.kill("SIGKILL");
+      await closed;
+      if (seen) return;
+    }
+    assert.fail("no cut was killed with its folder in TMPDIR");
+  };
+  await killed(join(w.workRoot, "lib", "k"));
+  const libLeft = readdirSync(tmp);
+  await killed(w.path("k"));
+  assert.equal(readdirSync(tmp).length, libLeft.length + 1);
+  ready(await cut({ id: "a", path: w.path("r"), detach: "main" }, { ...w.paths, tmp }));
+  assert.deepEqual(readdirSync(tmp), libLeft, "the other clone's folder stays");
+  ready(await cut({ id: "b", path: join(w.workRoot, "lib", "r"), detach: "main" }, { ...w.paths, tmp }));
+  assert.deepEqual(readdirSync(tmp), []);
+});
+
 test("a detached cut of a commit this clone lacks fetches; a commit nobody has is refused", async (t) => {
   const w = world(t);
   writeFileSync(join(w.seed, "n.txt"), "n\n");
