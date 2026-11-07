@@ -341,7 +341,14 @@ code from `/work`.
   - An Agent can still try to persuade another Agent through what that Agent reads: a file, a commit message, the output
     of a test. That is an attack on content, not a forged pick. The other Agent's model chooses each pick, and the
     Orchestrator judges it against that Turn's Allowed picks
-    ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)).
+    ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). The defenses against
+    that are practical, not a guarantee: the cut of a review Worktree
+    ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)) and the rules for the project context
+    ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)) stop one Agent from changing what another
+    reads by chance or with little work, not an Agent that sets out to do it. The Agents of one Workspace share `/work`,
+    the clone, one uid and one domain, and so one Agent's process can race a cut that runs in that domain. A Workflow
+    that needs more gives the review a Workspace of its own
+    ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)).
   - A confined child can spend only a held secret that its `workspace()` grants. Every Stand-in but the fetch Stand-in
     is secret, and the child's env holds only the granted ones (ADR-0059). So code in `/work` reaches a model key only
     when the author grants that key.
