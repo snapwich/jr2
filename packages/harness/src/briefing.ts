@@ -7,8 +7,9 @@
 // cache (tools → system → messages):
 //
 //   - The STANDING part is LAST in the system prompt, in its own delimited section: after the
-//     Agent's `instructions`, and after the project context of an Agent in a Worktree (the files
-//     and skills that pi finds there, `project-context.ts`), which is the repo's text, not jr2's.
+//     Agent's `instructions`, and after the project context of an Agent in `/work` (the files and
+//     skills that pi finds there, and the image user's context, `project-context.ts`), which is
+//     the repo's text, not jr2's.
 //     It is byte-stable for the seat: composed once from what this pod knows
 //     (its CPUs from the Downward API, its Size from the cgroup) and the definition's `workspace`
 //     access, with no clock, counter or Menu name in it.

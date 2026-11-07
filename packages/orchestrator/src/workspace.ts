@@ -731,9 +731,10 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
   /**
    * Which context files (`AGENTS.md`, `CLAUDE.md`) an Agent of this Workspace reads, by how far up
    * from its working directory the search goes:
-   * - `"worktree"` (default): up to the root of the Agent's Worktree (`/work/<slot>/<name>`). In
-   *   `/work` or in a slot's folder, the search reads that folder alone. So a file that another
-   *   Agent writes in `/work` or in `/work/<slot>` does not get into this Agent's prompt.
+   * - `"worktree"` (default): up to the root of the Agent's Worktree (`/work/<slot>/<name>`). So a
+   *   file that another Agent writes in `/work` or in `/work/<slot>` does not get into the prompt
+   *   of an Agent in a Worktree. An Agent whose working directory is `/work` or `/work/<slot>`
+   *   reads that folder alone, and so reads that folder's file with either value.
    * - `"workspace"`: up to `/work`. A `/work/AGENTS.md` or a `/work/<slot>/AGENTS.md` is then read
    *   by each Agent of the Workspace. Such a file is in no Worktree, so it is in no diff that a
    *   reviewer reads, and any Agent of the Workspace can write it into the prompt of each other
