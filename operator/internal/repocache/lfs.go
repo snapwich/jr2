@@ -9,10 +9,12 @@ package repocache
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -28,9 +30,12 @@ import (
 )
 
 const (
-	// defaultLFSTimeout bounds one `git lfs fetch` for the asks of one
-	// Reconcile (ADR-0053). The Orchestrator waits this long, plus a little,
-	// for the answer, so an asker gets git-lfs's words and not a time-out.
+	// defaultLFSTimeout is the budget of an LFS ask (ADR-0053), from its
+	// `at`. The Orchestrator waits this long after `at`, plus a little, for
+	// the answer. The agent stops git-lfs when the budget of the earliest ask
+	// that it serves runs out, so it answers before the Orchestrator stops
+	// waiting: the git refresh and the clone that come first spend the same
+	// budget.
 	defaultLFSTimeout = 10 * time.Minute
 	// lfsErrorLimit caps the git-lfs words that go into one answer item.
 	lfsErrorLimit = 1000
@@ -132,8 +137,9 @@ func (a *Agent) getLFS(ctx context.Context, repo *corev1alpha1.Repo, dir string,
 	failures := map[string]string{} // pod → why its ask cannot be served
 	env, credErr := a.credentials(ctx, repo)
 	type group struct {
-		objects []corev1alpha1.LFSObject
-		words   string
+		objects  []corev1alpha1.LFSObject
+		earliest time.Time // the `at` of the group's earliest ask
+		words    string
 	}
 	groups := map[string]*group{}
 	endpointOf := map[string]string{} // pod → LFS server
@@ -150,8 +156,11 @@ func (a *Agent) getLFS(ctx context.Context, repo *corev1alpha1.Repo, dir string,
 		endpointOf[d.pod] = endpoint
 		g := groups[endpoint]
 		if g == nil {
-			g = &group{}
+			g = &group{earliest: d.ask.At}
 			groups[endpoint] = g
+		}
+		if d.ask.At.Before(g.earliest) {
+			g.earliest = d.ask.At
 		}
 		for _, o := range d.ask.Objects {
 			if !slices.ContainsFunc(g.objects, func(x corev1alpha1.LFSObject) bool { return x.OID == o.OID }) && !a.hasLFS(dir, o.OID) {
@@ -159,11 +168,26 @@ func (a *Agent) getLFS(ctx context.Context, repo *corev1alpha1.Repo, dir string,
 			}
 		}
 	}
-	for endpoint, g := range groups {
+	budget := a.LFSTimeout
+	if budget <= 0 {
+		budget = defaultLFSTimeout
+	}
+	endpoints := slices.Sorted(maps.Keys(groups))
+	for _, endpoint := range endpoints {
+		g := groups[endpoint]
 		if len(g.objects) == 0 {
 			continue
 		}
-		g.words = a.fetchLFS(ctx, dir, env, endpoint, g.objects)
+		// The budget runs from the earliest ask's `at`, not from now, and
+		// never past one budget from now: a clock that is not in step with
+		// the Orchestrator's does not make the wait longer.
+		left := min(budget, g.earliest.Add(budget).Sub(a.clock()))
+		if left <= 0 {
+			g.words = fmt.Sprintf("the ask's budget of %s ran out before git-lfs could start", budget)
+			log.Info("LFS ask out of budget", "key", repo.Name, "objects", len(g.objects))
+			continue
+		}
+		g.words = a.fetchLFS(ctx, dir, env, endpoint, g.objects, left)
 		if g.words != "" {
 			log.Info("LFS fetch failed", "key", repo.Name, "objects", len(g.objects), "error", g.words)
 		} else {
@@ -203,10 +227,12 @@ func (a *Agent) getLFS(ctx context.Context, repo *corev1alpha1.Repo, dir string,
 // HEAD. The agent always gives git-lfs the server as `lfs.url`, so the
 // `.lfsconfig` at the cache's HEAD cannot override the base's.
 //
-// The base comes from inside a pod. The ask's parser refuses a leading `-`, a
-// NUL and a newline, and git resolves it after `--end-of-options`. A server
-// that `.lfsconfig` names must use http(s) or the Repo url's own scheme, so a
-// base cannot point the agent at a file on the node.
+// The base comes from inside a pod, so the agent trusts no part of it. The
+// ask's parser refuses a leading `-`, a NUL and a newline, and git resolves
+// the base after `--end-of-options`. git reads `.lfsconfig` with
+// `--no-includes`, so an `include.path` cannot make it read a file on the
+// node. lfsServerAllowed limits the server that `.lfsconfig` names, so a base
+// cannot point the agent at a path on the node or at another ssh host.
 func (a *Agent) lfsEndpoint(ctx context.Context, dir, repoURL, base string) (string, error) {
 	if strings.HasPrefix(base, "-") || strings.ContainsAny(base, "\x00\r\n") {
 		return "", fmt.Errorf("bad base %q", base)
@@ -227,12 +253,12 @@ func (a *Agent) lfsEndpoint(ctx context.Context, dir, repoURL, base string) (str
 		return derivedLFSURL(repoURL), nil
 	}
 	for _, k := range []string{"lfs.url", "remote.origin.lfsurl"} {
-		value, err := a.Git.Run(ctx, dir, nil, "config", "--blob", blob, "--get", k)
+		value, err := a.Git.Run(ctx, dir, nil, "config", "--no-includes", "--blob", blob, "--get", k)
 		if err != nil || value == "" {
 			continue
 		}
-		if !lfsSchemeAllowed(value, repoURL) {
-			return "", fmt.Errorf(".lfsconfig at %s names %s %q: the node cache accepts an http(s) LFS server, or one on the scheme of the Repo's url", name, k, value)
+		if !lfsServerAllowed(value, repoURL) {
+			return "", fmt.Errorf(".lfsconfig at %s names %s %q: the node cache accepts an http(s) LFS server, an ssh one on the host of the Repo's url, or a file one for a file Repo", name, k, value)
 		}
 		return value, nil
 	}
@@ -255,19 +281,78 @@ func derivedLFSURL(repoURL string) string {
 	return trimmed + ".git/info/lfs"
 }
 
-// lfsSchemeAllowed reports that an LFS server from `.lfsconfig` uses http(s)
-// or the Repo url's own scheme. A url with no scheme (`user@host:path`) is ssh.
-func lfsSchemeAllowed(lfsURL, repoURL string) bool {
-	scheme := urlScheme(lfsURL)
-	return scheme == "https" || scheme == "http" || scheme == urlScheme(repoURL)
+// lfsServerAllowed reports that the node cache may use an LFS server that
+// `.lfsconfig` names. The server's value comes from a pod, and the agent runs
+// git-lfs as root on the node with the Repo's credential, so:
+//
+//   - http(s) on any host is accepted: the credential helper answers only for
+//     the Repo url's origin, so another host gets no token;
+//   - ssh (`ssh://` or scp-like `[user@]host:path`) is accepted only on the
+//     host of an ssh Repo url, because git-lfs runs ssh with the Repo's key;
+//   - `file://` is accepted only for a file Repo url, as in tests;
+//   - a path (git-lfs reads it as a folder on the node), a `<helper>::` form,
+//     a leading `-` and every other scheme are refused.
+func lfsServerAllowed(lfsURL, repoURL string) bool {
+	if strings.HasPrefix(lfsURL, "-") || strings.ContainsAny(lfsURL, "\x00\r\n\t ") {
+		return false
+	}
+	scheme, host, ok := lfsURLParts(lfsURL)
+	if !ok {
+		return false
+	}
+	repoScheme, repoHost, repoOK := lfsURLParts(repoURL)
+	switch scheme {
+	case "http", "https":
+		return host != ""
+	case "ssh":
+		return repoOK && repoScheme == "ssh" && host != "" && strings.EqualFold(host, repoHost)
+	case "file":
+		return repoOK && repoScheme == "file"
+	}
+	return false
 }
 
-func urlScheme(raw string) string {
-	if i := strings.Index(raw, "://"); i > 0 {
-		return strings.ToLower(raw[:i])
+// lfsURLParts gives the scheme and the host of a git url: `<scheme>://...`,
+// or the scp-like `[user@]host:path`, which is ssh. A local path, a
+// `<helper>::<address>` and a host that is not a plain name give !ok.
+func lfsURLParts(raw string) (scheme, host string, ok bool) {
+	if i := strings.Index(raw, "://"); i >= 0 {
+		scheme = strings.ToLower(raw[:i])
+		if !schemeName.MatchString(scheme) {
+			return "", "", false
+		}
+		if scheme == "file" {
+			return scheme, "", true
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Hostname() == "" || strings.HasPrefix(u.Hostname(), "-") {
+			return "", "", false
+		}
+		if scheme == "ssh" && !hostName.MatchString(u.Hostname()) {
+			return "", "", false
+		}
+		return scheme, u.Hostname(), true
 	}
-	return "ssh"
+	// git's rule: a colon before any slash makes the url scp-like; else it is
+	// a path.
+	colon := strings.Index(raw, ":")
+	if colon <= 0 || strings.Contains(raw[:colon], "/") || strings.HasPrefix(raw[colon+1:], ":") {
+		return "", "", false
+	}
+	host = raw[:colon]
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if !hostName.MatchString(host) {
+		return "", "", false
+	}
+	return "ssh", host, true
 }
+
+var (
+	schemeName = regexp.MustCompile(`^[a-z][a-z0-9+.-]*$`)
+	hostName   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+)
 
 // fetchLFS gets objects into `<cache>/lfs/objects` with one `git lfs fetch`
 // and gives git-lfs's words when it fails, else "". git-lfs fetches what a
@@ -275,14 +360,18 @@ func urlScheme(raw string) string {
 // pointer for each object. It writes the pointers, the tree and the commit
 // into a temporary object directory that reads the cache's objects as an
 // alternate, and removes that directory after: the cache's object store gains
-// no object. git-lfs writes nothing in the cache but its own `lfs` folder
-// and, the first time, its `lfs.repositoryformatversion` key.
+// no object. In the cache, git-lfs writes its own `lfs` folder and some keys
+// of its own in the cache's config: `lfs.repositoryformatversion` and, after
+// a server asks for a credential, `lfs.<url>.access`. No hook and no global
+// config.
 //
-// The env holds the Repo's credential (a helper for the url's own origin) and
-// GIT_TERMINAL_PROMPT=0. The agent adds http.followRedirects=false for every
-// Repo. An LFS server on another host gets no token, and a download href gets
-// only the headers of the batch answer (ADR-0051).
-func (a *Agent) fetchLFS(ctx context.Context, dir string, env []string, endpoint string, objects []corev1alpha1.LFSObject) string {
+// The env holds the Repo's credential and GIT_TERMINAL_PROMPT=0. The
+// credential helper answers only for the Repo url's own scheme and host, and
+// git-lfs asks it again for each host, also after a redirect (git-lfs does not
+// read http.followRedirects). So the token goes to the origin only: an LFS
+// server or a download href on another host gets no token, only the headers
+// of the batch answer (ADR-0051). The fetch stops after `left`.
+func (a *Agent) fetchLFS(ctx context.Context, dir string, env []string, endpoint string, objects []corev1alpha1.LFSObject, left time.Duration) string {
 	scratch := a.Home
 	if scratch == "" {
 		scratch = os.TempDir()
@@ -338,21 +427,20 @@ func (a *Agent) fetchLFS(ctx context.Context, dir string, env []string, endpoint
 	if err != nil {
 		return commit
 	}
-	budget := a.LFSTimeout
-	if budget <= 0 {
-		budget = defaultLFSTimeout
-	}
-	fetchCtx, cancel := context.WithTimeout(ctx, budget)
+	fetchCtx, cancel := context.WithTimeout(ctx, left)
 	defer cancel()
 	out, err = a.Git.Run(fetchCtx, dir, env,
 		"-c", "lfs.url="+endpoint,
-		"-c", "http.followRedirects=false",
+		"-c", "http.followRedirects=false", // git's own rule; git-lfs does not read it
 		"-c", "lfs.fetchinclude=",
 		"-c", "lfs.fetchexclude=",
 		"lfs", "fetch", "origin", commit)
 	if err != nil {
 		if out == "" {
 			out = err.Error()
+		}
+		if fetchCtx.Err() != nil {
+			out = fmt.Sprintf("git lfs fetch stopped: the ask's budget ran out (%s)", strings.TrimSpace(out))
 		}
 		return out
 	}

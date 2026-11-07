@@ -128,6 +128,8 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
 - A fetch inside a pod is a remote round trip through the node agent, seconds rather than milliseconds. Every git
   command that fetches pays it; none that does not.
+- The cache agent serves a Repo's git asks and its LFS asks one at a time. While it downloads large files for one pod, a
+  fetch that another pod on that node asks for the same Repo can run out of its budget and land `stale`.
 - The Sandbox status grows a standing per-key Repo entry; the Custodian carries one loopback route for it; the
   Orchestrator gains a Sandbox-token route. No new credential, no new watch in the cache agent, no git knowledge in the
   operator beyond the timestamp comparison it already makes.

@@ -119,8 +119,9 @@ type Agent struct {
 	CloneTimeout         time.Duration
 	FetchTimeout         time.Duration
 	OnDemandFetchTimeout time.Duration
-	// LFSTimeout bounds the `git lfs fetch` that serves the LFS asks of one
-	// Reconcile (ADR-0053); zero means defaultLFSTimeout.
+	// LFSTimeout is the budget of an LFS ask, from the `at` of the earliest
+	// ask that one `git lfs fetch` serves (ADR-0053); zero means
+	// defaultLFSTimeout.
 	LFSTimeout time.Duration
 	// Now is the clock; tests fix it.
 	Now func() time.Time
@@ -181,13 +182,21 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 		return ctrl.Result{}, err
 	}
 	if !present(dir) {
+		// The LFS serve comes after the clone or the probe, because each of
+		// them writes this node's entry, and the LFS answer goes into it. A
+		// clone that worked serves the asks; a clone that failed answers each
+		// due pod that the cache is absent. After a probe no pod mounts the
+		// cache, so the serve only removes the items of pods that left.
+		var result ctrl.Result
 		if wanted {
-			if err := a.serveLFS(ctx, &repo, key, dir, false); err != nil {
-				return ctrl.Result{}, err
-			}
-			return a.clone(ctx, &repo, key)
+			result, err = a.clone(ctx, &repo, key)
+		} else {
+			result, err = a.probe(ctx, &repo)
 		}
-		return a.probe(ctx, &repo)
+		if lfsErr := a.serveLFS(ctx, &repo, key, dir, present(dir)); lfsErr != nil && err == nil {
+			err = lfsErr
+		}
+		return result, err
 	}
 	result, err := a.refresh(ctx, &repo, dir, asked)
 	// After the refresh, also when it returns early: an LFS ask is not a reason

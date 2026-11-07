@@ -146,11 +146,13 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   needs no declaration: the commit's `.gitattributes` says so. The cache keeps the LFS objects beside the bare
   repository, in its `lfs/objects`, and gets only the objects that a pod asks for (ADR-0053), never the whole history.
   The LFS server is the one that `.lfsconfig` names at the Binding's base, or else the one that git-lfs derives from the
-  url. The credential helper still answers only for the Repo's own origin, so an LFS server on another host gets no
-  token: a public one works, and a private one fails with git-lfs's error. A download href that the server's batch
-  answer returns gets only the headers in that answer, and may be on another host, as GitHub's object store is. The
-  server cannot change what a file holds, because git-lfs checks each object against its oid. An evicted cache takes its
-  LFS objects with it.
+  url. The base comes from a pod, so the cache accepts only an http(s) server, an ssh server on the host of an ssh
+  Repo's url, or a file server for a file Repo: never a path on the node, and the Repo's ssh key never goes to another
+  host. The credential helper still answers only for the Repo's own origin, so an LFS server on another host gets no
+  token, also after a redirect: a public one works, and a private one fails with git-lfs's error. A download href on
+  another host, as GitHub's object store is, gets only the headers in the server's batch answer. The server cannot
+  change what a file holds, because git-lfs checks each object against its oid. An evicted cache takes its LFS objects
+  with it.
 - **An entry may carry a push credential and a signing key** (ADR-0067), checked by shape when the config loads:
   `push?: { sshKey } | { token }`, the credential a `push()` to a Binding under the entry spends — absent, the clone
   credential pushes, and an entry with no credential admits a clone, never a push; a token goes Basic over https through

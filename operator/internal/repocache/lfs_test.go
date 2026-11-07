@@ -461,27 +461,175 @@ func TestDerivedLFSURL(t *testing.T) {
 	}
 }
 
-// An absent cache answers each due pod with an error that says so, before
-// the clone.
+// A cache that a clone could not make answers each due pod with an error that
+// says the cache is absent, also when the node had no entry before the clone.
 func TestAnAbsentCacheAnswersEachDuePodThatItIsAbsent(t *testing.T) {
-	git := &fakeGit{}
 	obj := corev1alpha1.LFSObject{OID: strings.Repeat("cd", 32), Size: 1}
-	a := newAgent(t, git,
-		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: true, Attempted: corev1alpha1.RepoAttemptProbe, ObservedGeneration: 1}),
-		asking("sb", askJSON(at1, "", obj)),
-	)
-	if _, err := reconcile1(t, a); err != nil {
+	for name, r := range map[string]*corev1alpha1.Repo{
+		"an entry": repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: true, Attempted: corev1alpha1.RepoAttemptProbe, ObservedGeneration: 1}),
+		"no entry": repo(1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			git := &fakeGit{fail: map[string]string{gitClone: "fatal: could not read from remote repository"}}
+			a := newAgent(t, git, r, asking("sb", askJSON(at1, "", obj)))
+			if _, err := reconcile1(t, a); err == nil {
+				t.Fatal("the failed clone returns its error")
+			}
+			it := items(t, a)
+			if len(it) != 1 || it[0].Asked != at1 || !strings.Contains(it[0].Error, "absent or still cloning") {
+				t.Fatalf("expected an error item that says the cache is absent, got %+v", it)
+			}
+			if e := entry(t, a); e.Present || !strings.Contains(e.LastError, "could not read") {
+				t.Fatalf("the clone's report stays, got %+v", e)
+			}
+		})
+	}
+}
+
+// After a clone that works, the same Reconcile serves the ask from the new
+// cache.
+func TestAClonedCacheServesTheAskInTheSameReconcile(t *testing.T) {
+	w := newLFSWorld(t)
+	obj := put(t, filepath.Join(w.server, ".git"), "after the clone\n")
+	if err := os.RemoveAll(w.cache); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.a.Create(context.Background(), asking("sb", askJSON(at1, "", obj))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconcile1(t, w.a); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	it := items(t, a)
-	if len(it) != 1 || it[0].Asked != at1 || !strings.Contains(it[0].Error, "absent or still cloning") {
-		t.Fatalf("expected an error item that says the cache is absent, got %+v", it)
+	if it := items(t, w.a); len(it) != 1 || it[0].Error != "" || !w.a.hasLFS(w.cache, obj.OID) {
+		t.Fatalf("the clone, then the ask, got %+v", it)
 	}
-	if !slices.Contains(git.subcommands(), gitClone) {
-		t.Fatalf("the clone still runs, got %v", git.calls)
+}
+
+// A probe (no pod mounts the cache) removes the items of pods that left.
+func TestAProbeRemovesTheItemsOfPodsThatLeft(t *testing.T) {
+	git := &fakeGit{fail: map[string]string{"ls-remote": "fatal: unable to access"}}
+	a := newAgent(t, git, repo(1, corev1alpha1.RepoNodeStatus{
+		Node: node, Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, ObservedGeneration: 1,
+		LFS: []corev1alpha1.RepoLFSAnswer{{Pod: "gone", Asked: at1, Attempted: ts(fixedNow)}},
+	}))
+	_, _ = reconcile1(t, a)
+	if e := entry(t, a); e.Present || len(e.LFS) != 0 {
+		t.Fatalf("the probe corrects the entry and the item of the gone pod goes, got %+v", e)
 	}
-	if e := entry(t, a); !e.Present || len(e.LFS) != 1 {
-		t.Fatalf("the clone's report keeps the LFS items, got %+v", e)
+}
+
+// The LFS budget runs from the earliest ask's `at`: an ask whose budget ran
+// out before git-lfs could start is answered with an error, and git-lfs does
+// not run.
+func TestTheLFSBudgetRunsFromTheAsk(t *testing.T) {
+	w := newLFSWorld(t)
+	obj := put(t, filepath.Join(w.server, ".git"), "late\n")
+	w.a.LFSTimeout = time.Minute
+	late := fixedNow.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+	if err := w.a.Create(context.Background(), asking("sb", askJSON(late, "", obj))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconcile1(t, w.a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if it := items(t, w.a); len(it) != 1 || !strings.Contains(it[0].Error, "budget") || w.git.lfsFetches() != 0 {
+		t.Fatalf("an ask out of budget gets an error and no git-lfs, got %+v (%d fetches)", it, w.git.lfsFetches())
+	}
+}
+
+// lfsServerAllowed refuses every LFS server that would make the agent read a
+// path on the node, or use an ssh Repo's key on another host.
+func TestLFSServerAllowed(t *testing.T) {
+	const scp, sshURL, httpsURL, fileURL = "git@github.com:acme/app.git", "ssh://git@github.com:22/acme/app.git", "https://github.com/acme/app.git", "file:///srv/app"
+	for _, c := range []struct {
+		lfs, repo string
+		ok        bool
+	}{
+		{"https://lfs.example.com/x", scp, true},
+		{"http://[::1]:8080/x", httpsURL, true},
+		{"https://github.com/acme/app.git/info/lfs", httpsURL, true},
+		{"git@github.com:acme/app.git", scp, true},
+		{"ssh://git@GitHub.com/acme/app.git", scp, true},
+		{"github.com:acme/app.git", sshURL, true},
+		{"file:///srv/other", fileURL, true},
+		{"/cache/other-key", scp, false},
+		{"./other", scp, false},
+		{"../other", sshURL, false},
+		{"other", scp, false},
+		{"ssh://attacker.example/x", scp, false},
+		{"attacker.example:x", sshURL, false},
+		{"git@attacker.example:x", scp, false},
+		{"git@github.com:acme/app.git", httpsURL, false},
+		{"file:///srv/other", scp, false},
+		{"file:///srv/other", httpsURL, false},
+		{"ext::sh -c touch% /tmp/x", scp, false},
+		{"github.com::x", scp, false},
+		{"-oProxyCommand=x:y", scp, false},
+		{"ssh://-oProxyCommand=x/y", scp, false},
+		{"git://github.com/acme/app.git", scp, false},
+		{"https://", scp, false},
+	} {
+		if got := lfsServerAllowed(c.lfs, c.repo); got != c.ok {
+			t.Errorf("lfsServerAllowed(%q, %q) = %v, want %v", c.lfs, c.repo, got, c.ok)
+		}
+	}
+}
+
+// For an ssh Repo, a base whose .lfsconfig names a path (another Repo's
+// cache on the node) or an ssh server on another host is refused: the object
+// does not land and git-lfs does not run.
+func TestAnSSHRepoRefusesALocalPathOrAnotherSSHHost(t *testing.T) {
+	requireGitLFS(t)
+	other := filepath.Join(t.TempDir(), "other-key")
+	gitT(t, "", "init", "-q", "--bare", other)
+	obj := put(t, other, "a file of another Repo\n")
+	for _, lfsURL := range []string{other, "ssh://other.example/acme/app.git"} {
+		t.Run(lfsURL, func(t *testing.T) {
+			src := filepath.Join(t.TempDir(), "src")
+			gitT(t, "", "init", "-q", "-b", "main", src)
+			if err := os.WriteFile(filepath.Join(src, ".lfsconfig"), []byte("[lfs]\n\turl = "+lfsURL+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitT(t, src, "add", ".lfsconfig")
+			gitT(t, src, "commit", "-q", "-m", "base")
+			r := repo(1, corev1alpha1.RepoNodeStatus{
+				Node: node, Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch,
+				ObservedGeneration: 1, LastAttempt: ts(fixedNow), LastFetched: ts(fixedNow),
+			})
+			r.Spec.URL = "git@example.com:acme/app.git"
+			git := &recGit{inner: ExecGit()}
+			a := newAgent(t, &fakeGit{}, r, asking("sb", askJSON(at1, "main", obj)))
+			a.Git = git
+			gitT(t, "", "clone", "-q", "--bare", "file://"+src, a.dir(key))
+			// The refresh's fetch from the ssh url fails here; the serve still runs.
+			_, _ = reconcile1(t, a)
+			it := items(t, a)
+			if len(it) != 1 || !strings.Contains(it[0].Error, "accepts") || a.hasLFS(a.dir(key), obj.OID) || git.lfsFetches() != 0 {
+				t.Fatalf("the server must be refused, got %+v (%d fetches)", it, git.lfsFetches())
+			}
+		})
+	}
+}
+
+// git reads .lfsconfig with no includes, so a committed include cannot make
+// the agent read a file on the node.
+func TestTheLFSConfigIsReadWithNoIncludes(t *testing.T) {
+	requireGitLFS(t)
+	node := filepath.Join(t.TempDir(), "node-file")
+	if err := os.WriteFile(node, []byte("[lfs]\n\turl = https://from-the-node.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "r")
+	gitT(t, "", "init", "-q", "-b", "main", dir)
+	if err := os.WriteFile(filepath.Join(dir, ".lfsconfig"), []byte("[include]\n\tpath = "+node+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "add", ".lfsconfig")
+	gitT(t, dir, "commit", "-q", "-m", "x")
+	a := &Agent{Git: ExecGit()}
+	got, err := a.lfsEndpoint(context.Background(), dir, repoURL, "main")
+	if err != nil || got != derivedLFSURL(repoURL) {
+		t.Fatalf("the include must not be read, got %q, %v", got, err)
 	}
 }
 
@@ -526,6 +674,7 @@ type lfsHost struct {
 	needAuth string // the Authorization a batch must carry; "" for a public server
 	hrefBase func() string
 	store    map[string]string // oid → content
+	redirect func() string     // when set, a batch answers 307 to this url
 }
 
 func newLFSHost(t *testing.T, hostName string) *lfsHost {
@@ -548,6 +697,11 @@ func (h *lfsHost) serve(w http.ResponseWriter, r *http.Request) {
 	h.paths = append(h.paths, r.URL.Path)
 	h.mu.Unlock()
 	if strings.HasSuffix(r.URL.Path, "/objects/batch") {
+		if h.redirect != nil && (h.needAuth == "" || r.Header.Get("Authorization") == h.needAuth) {
+			w.Header().Set("Location", h.redirect())
+			w.WriteHeader(http.StatusTemporaryRedirect)
+			return
+		}
 		if h.needAuth != "" && r.Header.Get("Authorization") != h.needAuth {
 			w.Header().Set("LFS-Authenticate", `Basic realm="lfs"`)
 			w.WriteHeader(http.StatusUnauthorized)
@@ -613,7 +767,8 @@ func (h *lfsHost) requests(suffix string) []http.Header {
 // download to a second host (localhost), as GitHub sends one to its object
 // store. The second host gets no token, only the answer's header. Then the
 // base's .lfsconfig names a private LFS server on the second host: it asks for
-// a credential and gets none.
+// a credential and gets none. Last, the origin's batch redirects to the second
+// host: git-lfs follows it, and the second host gets no token.
 func TestTheTokenGoesToTheOriginHostOnlyAndAnHrefGetsOnlyTheAnswersHeaders(t *testing.T) {
 	requireGitLFS(t)
 	origin := newLFSHost(t, "127.0.0.1")
@@ -713,6 +868,25 @@ func TestTheTokenGoesToTheOriginHostOnlyAndAnHrefGetsOnlyTheAnswersHeaders(t *te
 	for _, h := range otherBatches {
 		if h.Get("Authorization") != "" {
 			t.Fatalf("an LFS server on another host must get no token, got %v", h)
+		}
+	}
+
+	// The origin's batch redirects to the second host. Whatever git-lfs does
+	// with the redirect, the second host gets no token.
+	origin.redirect = func() string { return other.url + "/moved/info/lfs/objects/batch" }
+	if err := a.Get(context.Background(), client.ObjectKeyFromObject(pod), pod); err != nil {
+		t.Fatal(err)
+	}
+	pod.Annotations[corev1alpha1.LFSAnnotation(key)] = askJSON("2026-11-07T12:00:10Z", "", obj)
+	if err := a.Update(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	for _, h := range other.requests("/moved/info/lfs/objects/batch") {
+		if h.Get("Authorization") != "" {
+			t.Fatalf("a batch redirected to another host must get no token, got %v", h)
 		}
 	}
 }
