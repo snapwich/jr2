@@ -72,7 +72,8 @@ func LFSAnnotation(key string) string { return LFSAnnotationPrefix + key }
 // splits a longer list into several asks.
 const MaxLFSObjects = 256
 
-// maxLFSBase is the longest Binding base name an LFS ask can carry.
+// maxLFSBase is the longest Binding base name an LFS ask can carry, in bytes
+// of UTF-8 (`len`), as the Orchestrator counts it.
 const maxLFSBase = 255
 
 // LFSObject is one Git LFS object that an ask names: its oid (64 lowercase

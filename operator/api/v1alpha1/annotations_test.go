@@ -58,6 +58,15 @@ func TestParseLFSAsk(t *testing.T) {
 		t.Fatalf("an empty base is allowed, got %+v %v", ask, err)
 	}
 
+	// The limit is in BYTES of UTF-8, as the Orchestrator counts it (Buffer.byteLength): "é" is
+	// two bytes, so 127 of them and one ASCII letter are 255 bytes, and 128 of them are 256.
+	if _, err := ParseLFSAsk(lfsValue(at, strings.Repeat("\u00e9", 127)+"a", testOID+" 1")); err != nil {
+		t.Fatalf("a base of 255 bytes is allowed, got %v", err)
+	}
+	if _, err := ParseLFSAsk(lfsValue(at, strings.Repeat("\u00e9", 128), testOID+" 1")); err == nil {
+		t.Fatal("a base of 128 characters and 256 bytes must be refused")
+	}
+
 	full := make([]string, MaxLFSObjects)
 	for i := range full {
 		full[i] = testOID + " 1"

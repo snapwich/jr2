@@ -28,24 +28,27 @@
 //
 // An LFS ask (ADR-0053) takes the same route with an `lfs` part: the objects a smudge, a cut or an
 // attach needs, by oid and size. It writes its own mark, `jr2.dev/lfs-<key>`, and never the fetch's
-// `jr2.dev/asked-<key>`, so it causes no git fetch. Its line (one Sandbox and key) keeps the union
-// of the objects of every open LFS ask, up to LFS_MAX_OBJECTS: an ask whose objects a mark holds
-// joins its wait, an ask with new objects marks the union again with a later `at` (at most one
-// mark each second), and an ask that would take the union past the cap (or that names another
-// base) waits until the open mark lands. A mark lands when the Sandbox's status says
-// `lfs.answered` is at or after its `at`. The answer says only that the cache agent served the
-// mark, with git-lfs's words when an object is still missing; the asker reads the objects off its
-// own read-only mount. LFS lines have their own cap, and past it an ask waits for a line inside
-// its budget: a checkout fails only for an object that the cache cannot get, never because this
-// process was busy.
+// `jr2.dev/asked-<key>`, so it causes no git fetch. The mark's `base`, whose `.lfsconfig` picks the
+// LFS server, is the Binding's base that the Orchestrator recorded on the Sandbox CR
+// (`jr2.dev/base-<key>`), never a base that the pod sends (ADR-0051): so an Agent cannot point the
+// cache agent at an LFS server of its choice. Its line (one Sandbox and key) keeps the union of the
+// objects of every open LFS ask, up to LFS_MAX_OBJECTS: an ask whose objects a mark holds joins its
+// wait, an ask with new objects marks the union again with a later `at` (at most one mark each
+// second), and an ask that would take the union past the cap waits until the open mark lands. A
+// mark lands when the Sandbox's status says `lfs.answered` is at or after its `at`. The answer says
+// only that the cache agent served the mark, with git-lfs's words when an object is still missing;
+// the asker reads the objects off its own read-only mount. LFS lines have their own cap, and past
+// it an ask waits for a line inside its budget: a checkout fails only for an object that the cache
+// cannot get, never because this process was busy. For the same reason, a mark that the API server
+// refuses for a time (a 5xx, a 429, a dropped connection) is sent again inside the asks' budget.
 //
 // The mark is a merge patch through the Orchestrator's own client, and the wait is the one
 // Sandbox watch (ADR-0063): the watch event that carries the landing answers the ask. Both are
 // injectable, so the mapping is unit-testable against a fake API server; the kind e2e tier
 // exercises the real thing.
 
-import { SANDBOXES, kubeClient, type KubeClient } from "./kube-client.ts";
-import { askedAnnotation, lfsAnnotation } from "./names.ts";
+import { KubeError, SANDBOXES, kubeClient, type KubeClient } from "./kube-client.ts";
+import { askedAnnotation, baseAnnotation, lfsAnnotation } from "./names.ts";
 import { repoKeyOfIdentity } from "./repo-identity.ts";
 import { watchSandboxes, type SandboxObject, type SandboxRepoStatus, type SandboxWatch } from "./sandbox-watch.ts";
 
@@ -57,13 +60,14 @@ export type FetchAnswer = { fetched: string } | { stale: string; asOf: string | 
 /** One LFS object, as a pointer file names it. */
 export type LfsObject = { oid: string; size: number };
 
-/** The `lfs` part of an ask (ADR-0053): the objects to get, and the Binding's base name, whose
- * `.lfsconfig` names the LFS server. `base` may be empty: the default branch. */
-export type LfsAsk = { base: string; objects: LfsObject[] };
+/** The `lfs` part of an ask (ADR-0053): the objects to get. A pod may also send a `base`; it is
+ * ignored, because the Orchestrator names the base itself (ADR-0051). */
+export type LfsAsk = { objects: LfsObject[] };
 
 /** What an LFS ask settles as. `answered` is the `at` of the mark that the cache agent served;
  * `error` is git-lfs's words when an object is still missing, or this port's words when the wait
- * ran out (on the node cache, or for a free line past the Orchestrator's cap). The asker reads the objects off its own mount, so the answer lists none. */
+ * ran out (on the node cache, or for a free line past the Orchestrator's cap). The asker reads the
+ * objects off its own mount, so the answer lists none. */
 export type LfsAnswer = { lfs: { answered?: string; error?: string } };
 
 /** The most objects one ask, and one mark, can name. A longer list is split into several asks. */
@@ -71,19 +75,14 @@ export const LFS_MAX_OBJECTS = 256;
 
 /**
  * The `lfs` part of a fetch body, checked: the ask, or the words of a 400 that says what is wrong.
- * An oid is 64 lowercase hex characters, a size a safe integer of 0 or more, a base at most 255
- * bytes with no NUL, no newline and no leading `-` (the cache agent gives it to git).
+ * An oid is 64 lowercase hex characters, a size a safe integer of 0 or more. A `base` is accepted
+ * and not read: a runtime that started before this rule still sends one (ADR-0037).
  */
 export function parseLfsAsk(value: unknown): LfsAsk | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return "lfs must be an object: { base, objects: [{ oid, size }] }";
+    return "lfs must be an object: { objects: [{ oid, size }] }";
   }
-  const { base, objects } = value as { base?: unknown; objects?: unknown };
-  if (typeof base !== "string") return "lfs.base must be a string (empty for the default branch)";
-  // Bytes, as the operator's parser counts them: a mark it cannot parse would never land.
-  if (Buffer.byteLength(base, "utf8") > 255) return "lfs.base is longer than 255 bytes";
-  if (/[\0\n\r]/.test(base)) return "lfs.base must not hold a NUL or a newline";
-  if (base.startsWith("-")) return 'lfs.base must not start with "-"';
+  const { objects } = value as { objects?: unknown };
   if (!Array.isArray(objects)) return "lfs.objects must be an array of { oid, size }";
   if (objects.length === 0) return "lfs.objects is empty: an ask names 1 to 256 objects";
   if (objects.length > LFS_MAX_OBJECTS) {
@@ -100,7 +99,19 @@ export function parseLfsAsk(value: unknown): LfsAsk | string {
     }
     out.push({ oid, size });
   }
-  return { base, objects: out };
+  return { objects: out };
+}
+
+/**
+ * Why a base cannot go in a mark, or undefined when it can: at most 255 BYTES of UTF-8, as the
+ * operator's parser counts them (`len` in Go), with no NUL, no newline and no leading `-`, because
+ * the cache agent gives it to git. A mark that the operator cannot parse would never land.
+ */
+export function lfsBaseFault(base: string): string | undefined {
+  if (Buffer.byteLength(base, "utf8") > 255) return "is longer than 255 bytes";
+  if (/[\0\n\r]/.test(base)) return "holds a NUL or a newline";
+  if (base.startsWith("-")) return 'starts with "-"';
+  return undefined;
 }
 
 /** The ask a Sandbox may make: a fetch of one Repo it mounts (ADR-0053). */
@@ -138,6 +149,10 @@ const MAX_LFS_ASKS_PER_SANDBOX = 256;
 /** The shortest time between two marks of one line, as for a fetch mark (one each second): a pod
  * that sends new oids without a pause costs one write each second, not one each ask. */
 const LFS_MARK_GAP_MS = 1_000;
+/** The first wait before a mark that the API server refused for a time is sent again. It doubles
+ * up to {@link MARK_RETRY_MAX_MS}; the asks' own budget ends the tries. */
+const MARK_RETRY_MS = 500;
+const MARK_RETRY_MAX_MS = 8_000;
 /** Watch slack on top of it: the agent's verdict has to reach the Repo CR, the operator has to
  * compute the Sandbox entry from it, and the watch has to carry it here. The ADR's "nothing else owns a
  * timeout" holds — this is the agent's budget plus the round trip, not a second policy. */
@@ -163,6 +178,8 @@ export type KubeRepoFetchesOptions = {
   maxLfsLines?: number;
   /** The shortest time between two marks of one LFS line. Default {@link LFS_MARK_GAP_MS}. */
   lfsMarkGapMs?: number;
+  /** The first wait before a refused mark is sent again. Default {@link MARK_RETRY_MS}. */
+  markRetryMs?: number;
 };
 
 const TOO_MANY = "the orchestrator is holding too many fetches at once";
@@ -176,7 +193,6 @@ type LfsAsker = {
   sandbox: string;
   key: string;
   found: SandboxObject;
-  base: string;
   entries: string[];
   /** In the line's next mark, which has not gone out yet. */
   next: boolean;
@@ -192,6 +208,7 @@ type LfsLine = {
   name: string;
   sandbox: string;
   key: string;
+  /** The Binding's base, off the Sandbox CR: every mark of the line names it. */
   base: string;
   /** The objects of the open marks and of the next one, as `"<oid> <size>"`. Empty: no mark is open. */
   union: Set<string>;
@@ -206,8 +223,6 @@ type LfsLine = {
   /** The next mark, while it waits for the gap. */
   due?: ReturnType<typeof setTimeout>;
   askers: Set<LfsAsker>;
-  /** The marks go out one after another, so a later union never lands under an earlier one. */
-  chain: Promise<void>;
   unsubscribe: () => void;
 };
 
@@ -218,6 +233,7 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
   const maxInFlight = opts.maxInFlight ?? MAX_IN_FLIGHT;
   const maxLfsLines = opts.maxLfsLines ?? MAX_LFS_LINES;
   const lfsMarkGapMs = opts.lfsMarkGapMs ?? LFS_MARK_GAP_MS;
+  const markRetryMs = opts.markRetryMs ?? MARK_RETRY_MS;
   let client: KubeClient | undefined = opts.client;
   const kube = () => (client ??= kubeClient());
   let watch: SandboxWatch | undefined = opts.watch;
@@ -240,6 +256,9 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
   const lfsLines = new Map<string, LfsLine>();
   const lineQueue: LfsAsker[] = [];
   const lfsAsksOf = new Map<string, number>();
+  // The marks of one Sandbox and key go out one after another, also across lines: a line that closed
+  // can still have a mark in flight, and a later line's mark must not land under it.
+  const markChains = new Map<string, Promise<void>>();
 
   /** The scope check FIRST, against `spec.repos` — the keys this pod actually mounts. The ask
    * names the identity, so the key is derived here (repo-identity.ts) and never sent; a spelling
@@ -284,6 +303,10 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
 
     async fetchLfs(sandbox, identity, lfs) {
       const { key, found } = await scope(sandbox, identity);
+      // The Orchestrator's own record of the Binding's base. A base that the pod sent is not read.
+      const base = baseOf(found, key);
+      const fault = lfsBaseFault(base);
+      if (fault !== undefined) return { lfs: { error: `the Binding's base ${JSON.stringify(base)} ${fault}` } };
       const open = lfsAsksOf.get(sandbox) ?? 0;
       if (open >= MAX_LFS_ASKS_PER_SANDBOX) {
         return { lfs: { error: `Sandbox "${sandbox}" holds ${open} LFS asks open at once` } };
@@ -309,7 +332,6 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
           sandbox,
           key,
           found,
-          base: lfs.base,
           entries: [...new Set(lfs.objects.map((o) => `${o.oid} ${o.size}`))],
           next: false,
           settle: (answer) => end(() => resolve(answer)),
@@ -356,14 +378,13 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
       name: asker.name,
       sandbox: asker.sandbox,
       key: asker.key,
-      base: "",
+      base: baseOf(current, asker.key),
       union: new Set(),
       sent: new Set(),
       markAt: 0,
       lastAt: Math.max(lfsMarkAt(current, asker.key) ?? 0, lfsMarkAt(asker.found, asker.key) ?? 0),
       sentAt: -Infinity,
       askers: new Set(),
-      chain: Promise.resolve(),
       unsubscribe: () => {},
     };
     lfsLines.set(line.name, line);
@@ -393,7 +414,7 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
   /** Join the sent mark, join the next mark, or wait for room. Answers whether the ask has a mark. */
   function place(line: LfsLine, asker: LfsAsker, behind: boolean): boolean {
     const open = line.union.size > 0;
-    if (open && asker.base === line.base) {
+    if (open) {
       if (asker.entries.every((e) => line.sent.has(e))) {
         asker.at = line.markAt;
         return true;
@@ -405,12 +426,10 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
     }
     if (behind) return false;
     if (open) {
-      if (asker.base !== line.base) return false;
       let size = line.union.size;
       for (const e of asker.entries) if (!line.union.has(e)) size++;
       if (size > LFS_MAX_OBJECTS) return false;
     }
-    line.base = asker.base;
     for (const e of asker.entries) line.union.add(e);
     asker.next = true;
     schedule(line);
@@ -441,34 +460,54 @@ export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
       a.at = at;
     }
     const value = JSON.stringify({ at: new Date(at).toISOString(), base: line.base, objects: [...line.union] });
-    line.chain = line.chain
-      .then(() =>
-        kube().patch<SandboxObject>(SANDBOXES, opts.namespace, line.sandbox, {
-          metadata: { annotations: { [lfsAnnotation(line.key)]: value } },
-        }),
-      )
+    const chain = (markChains.get(line.name) ?? Promise.resolve())
+      .then(() => mark(line, at, value))
       // The merge patch answers the object as it stands afterwards: a landing on it answers now.
       .then(
         (marked) => land(line, marked),
         (err: unknown) => refused(line, at, err as Error),
       );
+    markChains.set(line.name, chain);
+    void chain.then(() => {
+      if (markChains.get(line.name) === chain) markChains.delete(line.name);
+    });
+  }
+
+  /** One mark's PATCH. A refusal for a time (a 5xx, a 429, no answer) is sent again with a wait that
+   * doubles, while the mark is still the latest of an open line with asks on it: the asks' budget
+   * ends the tries, and a later mark holds this one's objects. */
+  async function mark(line: LfsLine, at: number, value: string): Promise<SandboxObject> {
+    for (let wait = markRetryMs; ; wait = Math.min(wait * 2, MARK_RETRY_MAX_MS)) {
+      try {
+        return await kube().patch<SandboxObject>(SANDBOXES, opts.namespace, line.sandbox, {
+          metadata: { annotations: { [lfsAnnotation(line.key)]: value } },
+        });
+      } catch (err) {
+        const live = lfsLines.get(line.name) === line && line.markAt === at && line.askers.size > 0;
+        if (!transient(err) || !live) throw err;
+      }
+      await new Promise((r) => setTimeout(r, wait));
+    }
   }
 
   /** The mark `at` did not go. Its asks move to a later sent mark that holds their objects; the
    * rest are told why. A mark that went before it is on the CR and can still land, so its asks
-   * keep their wait. When it was the latest mark, the union closes and the asks that wait mark
-   * again. */
+   * keep their wait. When it was the latest mark, the union and the sent objects are again those of
+   * the asks that wait on a mark that went, so the next mark holds them too (it replaces the
+   * annotation, and its landing answers them), and the asks that wait for room mark again. */
   function refused(line: LfsLine, at: number, err: Error): void {
     if (lfsLines.get(line.name) !== line) return;
     const later = line.markAt > at;
     for (const a of [...line.askers]) {
       if (a.at !== at) continue;
-      if (later && a.base === line.base && a.entries.every((e) => line.sent.has(e))) a.at = line.markAt;
+      if (later && a.entries.every((e) => line.sent.has(e))) a.at = line.markAt;
       else a.fail(err);
     }
     if (later || lfsLines.get(line.name) !== line) return;
-    line.union.clear();
-    line.sent.clear();
+    const held = [...line.askers].filter((a) => a.at !== undefined);
+    line.sent = new Set(held.flatMap((a) => a.entries));
+    line.union = new Set(line.sent);
+    line.markAt = held.reduce((max, a) => Math.max(max, a.at!), 0);
     clearTimeout(line.due);
     line.due = undefined;
     for (const a of line.askers) a.next = false;
@@ -589,6 +628,17 @@ function askedAt(stamp: string): number {
  * the whole of what a degraded answer can offer (ADR-0053). */
 function fetchedOf(item: SandboxObject, key: string): string | null {
   return entryOf(item, key)?.fetched ?? null;
+}
+
+/** A refusal of the API server that can pass: a 5xx, a 429, or no answer at all. */
+function transient(err: unknown): boolean {
+  return !(err instanceof KubeError) || err.status >= 500 || err.status === 429;
+}
+
+/** The Binding's base that the Orchestrator recorded on the Sandbox CR for `key` (ADR-0051), or ""
+ * for the Repo's default branch: the cache agent then reads `.lfsconfig` at the cache's HEAD. */
+function baseOf(item: SandboxObject, key: string): string {
+  return item.metadata?.annotations?.[baseAnnotation(key)] ?? "";
 }
 
 /** The `at` of the LFS mark the Sandbox CR carries for `key`, in ms; `undefined` for none. */

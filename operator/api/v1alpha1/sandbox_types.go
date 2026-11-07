@@ -450,9 +450,10 @@ type SandboxLFSStatus struct {
 	// +optional
 	Answered string `json:"answered,omitempty"`
 
-	// Error is git-lfs's own words when an asked object is still not in the
-	// cache. It is set only when answered is at or after asked, because the
-	// words about an older ask are not an answer to this one.
+	// Error is git-lfs's own words when an object of the mark that answered
+	// names is still not in the cache. It goes with answered, also when
+	// answered is before asked: an ask that waits on that earlier mark is
+	// answered by it.
 	// +optional
 	Error string `json:"error,omitempty"`
 }

@@ -960,8 +960,9 @@ export function pushWith<const O extends PushOptions>(
     },
     build: (input, ambient, slot, pinned, extra, binding) => {
       const target = targetOf({ ambient, binding, input, slot });
-      // The Binding's base names the LFS server that the push uploads to (ADR-0051, ADR-0067).
-      const base = ambient.bases?.[target.repo];
+      // The Binding's base names the LFS server that the push uploads to (ADR-0051, ADR-0067). It is
+      // the run's own Binding's, never what the pod's attach reported: an Agent cannot choose it.
+      const base = ambient.bindingBases?.[target.repo];
       const ref = { ...repoRefOf(ambient, target.repo, target.path), ...(base ? { base } : {}) };
       const req = pushStartOf(parts, ref, target.branch, input as { sha?: string; message?: string }, extra?.pairs);
       if (pinned) req.push.pin = pinned;

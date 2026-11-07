@@ -50,14 +50,28 @@ type Entry = { key: string; asked?: string; fetched?: string; attempted?: string
  * standing status. Every status in `later` is published — one watch event each, in order — after
  * the port's mark lands, the way the operator answers an ask.
  */
-function cluster(t: TestContext, mounts: string[], initial?: Entry[], later: Entry[][] = []) {
+function cluster(
+  t: TestContext,
+  mounts: string[],
+  initial?: Entry[],
+  later: Entry[][] = [],
+  o: { annotations?: Record<string, string>; fetch?: (api: ReturnType<typeof fakeKube>) => typeof fetch } = {},
+) {
   const api = fakeKube();
   api.seed("sandboxes", {
-    metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } },
+    metadata: {
+      name: "sb-1",
+      labels: { "jr2.dev/run": "r" },
+      ...(o.annotations ? { annotations: o.annotations } : {}),
+    },
     spec: { repos: mounts.map((key) => ({ key })) },
     ...(initial ? { status: { repos: initial } } : {}),
   } as never);
-  const client = kubeClient({ baseUrl: "https://kube.test", fetch: api.fetch, token: async () => api.token });
+  const client = kubeClient({
+    baseUrl: "https://kube.test",
+    fetch: o.fetch ? o.fetch(api) : api.fetch,
+    token: async () => api.token,
+  });
   const watch = watchSandboxes(client, { namespace: "inst", backoffMs: 5 });
   t.after(() => watch.stop());
   const publish = (repos: Entry[]) => api.setStatus("sandboxes", "sb-1", { repos });
@@ -271,7 +285,7 @@ test("past the cap an ask is answered with the cache, and nothing is marked", as
 // after the ask's `at`, carried by a watch event.
 
 const OID = (n: number) => n.toString(16).padStart(64, "0");
-const objs = (...ns: number[]): LfsAsk => ({ base: "main", objects: ns.map((n) => ({ oid: OID(n), size: n })) });
+const objs = (...ns: number[]): LfsAsk => ({ objects: ns.map((n) => ({ oid: OID(n), size: n })) });
 const LFS_MARK = `jr2.dev/lfs-${APP.key}`;
 type LfsMark = { at: string; base: string; objects: string[] };
 
@@ -296,7 +310,8 @@ test("an LFS ask marks jr2.dev/lfs-<key> with the objects, and the landing answe
   const [body] = c.marks() as Array<{ metadata: { annotations: Record<string, string> } }>;
   assert.deepEqual(Object.keys(body!.metadata.annotations), [LFS_MARK]);
   const [mark] = lfsMarks(c);
-  assert.deepEqual(mark, { at: ASKED, base: "main", objects: [`${OID(1)} 1`, `${OID(2)} 2`] });
+  // No base on the CR: the Binding names none, so the cache agent reads `.lfsconfig` at its HEAD.
+  assert.deepEqual(mark, { at: ASKED, base: "", objects: [`${OID(1)} 1`, `${OID(2)} 2`] });
 
   // A landing for an EARLIER mark answers nothing.
   c.publish(served(BEFORE));
@@ -367,22 +382,38 @@ test("an LFS ask that would take the union past 256 objects waits until the open
   assert.deepEqual(await over, { lfs: { answered: two.at } });
 });
 
-test("an LFS ask for another base waits until the open mark lands", async (t) => {
-  // One mark names one base, whose .lfsconfig names the LFS server.
-  const c = cluster(t, [APP.key]);
+test("the mark names the Binding's base off the Sandbox CR, and a base that the pod sends changes nothing (ADR-0051)", async (t) => {
+  // The base's .lfsconfig picks the LFS server, so the Orchestrator names it: an Agent that sends
+  // another base cannot point the cache agent at an LFS server of its choice.
+  const c = cluster(t, [APP.key], undefined, [], { annotations: { [`jr2.dev/base-${APP.key}`]: "release/2.x" } });
   const port = c.port({ lfsBudgetMs: 60_000 });
-  const first = port.fetchLfs("sb-1", APP.identity, objs(1));
+  const pods = { ...objs(1), base: "attacker" } as LfsAsk;
+  const first = port.fetchLfs("sb-1", APP.identity, pods);
   await waitFor(() => c.marks().length === 1);
-  const other = port.fetchLfs("sb-1", APP.identity, { ...objs(1), base: "release" });
+  // A second ask with yet another base joins the same mark: there is one base per Sandbox and key.
+  const second = port.fetchLfs("sb-1", APP.identity, { ...objs(1), base: "" } as LfsAsk);
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(c.marks().length, 1);
-  c.publish(served(lfsMarks(c)[0]!.at));
-  await first;
-  await waitFor(() => c.marks().length === 2);
-  const two = lfsMarks(c)[1]!;
-  assert.equal(two.base, "release");
-  c.publish(served(two.at));
-  assert.deepEqual(await other, { lfs: { answered: two.at } });
+  const [mark] = lfsMarks(c);
+  assert.equal(mark!.base, "release/2.x");
+  c.publish(served(mark!.at));
+  assert.deepEqual(await first, { lfs: { answered: mark!.at } });
+  assert.deepEqual(await second, { lfs: { answered: mark!.at } });
+});
+
+test("a Binding base that the operator cannot parse is answered at once and marks nothing; its bytes count, not its characters", async (t) => {
+  const base = `jr2.dev/base-${APP.key}`;
+  // "é" is two bytes of UTF-8: 128 of them are 128 characters and 256 bytes.
+  const over = cluster(t, [APP.key], undefined, [], { annotations: { [base]: "\u00e9".repeat(128) } });
+  assert.deepEqual(await over.port().fetchLfs("sb-1", APP.identity, objs(1)), {
+    lfs: { error: `the Binding's base ${JSON.stringify("\u00e9".repeat(128))} is longer than 255 bytes` },
+  });
+  assert.equal(over.marks().length, 0);
+  // 127 of them and one ASCII letter are 255 bytes: the mark goes.
+  const at = cluster(t, [APP.key], undefined, [], { annotations: { [base]: `${"\u00e9".repeat(127)}a` } });
+  void at.port({ lfsBudgetMs: 50 }).fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => at.marks().length === 1);
+  assert.equal(lfsMarks(at)[0]!.base, `${"\u00e9".repeat(127)}a`);
 });
 
 test("an LFS ask's wait ends with its budget, said in its answer", async (t) => {
@@ -512,18 +543,82 @@ test("marks of one line go out at most once in the gap: asks in it share the nex
   assert.equal(c.marks().length, 2);
 });
 
-test("a refused re-mark fails its own asks only: an earlier mark on the CR can still land", async (t) => {
+test("a refused re-mark fails its own asks only: an earlier mark on the CR can still land, and the next mark holds its objects", async (t) => {
   const c = cluster(t, [APP.key]);
   const port = c.port({ lfsBudgetMs: 60_000 });
   const first = port.fetchLfs("sb-1", APP.identity, objs(1));
   await waitFor(() => c.marks().length === 1);
+  let refusing = true;
   c.api.refuse((call) =>
-    call.method === "PATCH" ? new Response(JSON.stringify({ message: "boom" }), { status: 500 }) : undefined,
+    refusing && call.method === "PATCH"
+      ? new Response(JSON.stringify({ message: "no", reason: "Invalid" }), { status: 422 })
+      : undefined,
   );
+  // A 422 does not pass: the ask is told at once.
+  await assert.rejects(port.fetchLfs("sb-1", APP.identity, objs(2)), /422/);
+  refusing = false;
+  // The first mark is still the one on the CR. The next mark replaces it, so it must hold the first
+  // ask's object too: its landing answers both.
+  const third = port.fetchLfs("sb-1", APP.identity, objs(3));
+  // The fake API server lists each call, the refused one too.
+  await waitFor(() => lfsMarks(c).length === 3);
+  const [one, , two] = lfsMarks(c);
+  assert.deepEqual(two!.objects, [`${OID(1)} 1`, `${OID(3)} 3`]);
+  assert.ok(Date.parse(two!.at) > Date.parse(one!.at));
+  c.publish(served(two!.at));
+  assert.deepEqual(await first, { lfs: { answered: two!.at } });
+  assert.deepEqual(await third, { lfs: { answered: two!.at } });
+});
+
+test("a mark that the API server refuses for a time (a 5xx) is sent again inside the ask's budget", async (t) => {
+  const c = cluster(t, [APP.key]);
+  let refusals = 2;
+  c.api.refuse((call) =>
+    call.method === "PATCH" && refusals-- > 0
+      ? new Response(JSON.stringify({ message: "etcdserver: request timed out" }), { status: 503 })
+      : undefined,
+  );
+  const asked = c.port({ lfsBudgetMs: 60_000, markRetryMs: 1 }).fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => lfsMarks(c).length === 3);
+  const mark = lfsMarks(c)[2]!;
+  assert.deepEqual(lfsMarks(c), [mark, mark, mark], "the same mark, sent again");
+  c.publish(served(mark.at));
+  assert.deepEqual(await asked, { lfs: { answered: mark.at } });
+});
+
+test("the marks of one Sandbox and key go out in order across lines: a closed line's mark never lands over a later one", async (t) => {
+  // The first PATCH hangs until released. Its ask runs out of budget, so its line closes; a new
+  // line's mark must wait for the hung one, or the hung one would replace it on the CR.
+  let release!: () => void;
+  const hung = new Promise<void>((r) => (release = r));
+  let first = true;
+  const order: string[] = [];
+  const c = cluster(t, [APP.key], undefined, [], {
+    fetch: (api) => async (input, init) => {
+      if (init?.method === "PATCH") {
+        const at = (JSON.parse(JSON.parse(String(init.body)).metadata.annotations[LFS_MARK]) as LfsMark).at;
+        if (first) {
+          first = false;
+          await hung;
+        }
+        order.push(at);
+      }
+      return api.fetch(input, init);
+    },
+  });
+  let now = Date.parse(ASKED);
+  const port = c.port({ lfsBudgetMs: 30, now: () => new Date(now) });
+  assert.deepEqual(await port.fetchLfs("sb-1", APP.identity, objs(1)), {
+    lfs: { error: "timed out waiting for the node cache" },
+  });
+  now += 1_000;
   const second = port.fetchLfs("sb-1", APP.identity, objs(2));
-  await assert.rejects(second);
-  c.publish(served(lfsMarks(c)[0]!.at));
-  assert.deepEqual(await first, { lfs: { answered: lfsMarks(c)[0]!.at } });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(order, [], "the new line's mark waits for the hung one");
+  release();
+  await waitFor(() => order.length === 2);
+  assert.ok(Date.parse(order[0]!) < Date.parse(order[1]!), "the later mark goes last");
+  await second;
 });
 
 test("a Sandbox past its own cap on open LFS asks is refused at once", async (t) => {

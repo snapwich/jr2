@@ -95,8 +95,9 @@ func TestLFSAsksReachThePod(t *testing.T) {
 
 // TestRepoStatusesLFS pins the `lfs` field of the per-key entry (ADR-0053).
 // `asked` is the Sandbox's own `at`; `answered` and `error` come from the item
-// for this Sandbox's Pod in its node's entry, and `error` only when the answer
-// is at or after the ask.
+// for this Sandbox's Pod in its node's entry. `error` belongs to the mark that
+// `answered` names, also when a later mark is open, because an ask that waits
+// on that earlier mark is answered by it.
 func TestRepoStatusesLFS(t *testing.T) {
 	const at = "2026-11-07T12:00:00.500Z"
 	synced := func(items ...corev1alpha1.RepoLFSAnswer) corev1alpha1.RepoNodeStatus {
@@ -125,12 +126,12 @@ func TestRepoStatusesLFS(t *testing.T) {
 			want: &corev1alpha1.SandboxLFSStatus{Asked: at},
 		},
 		{
-			name: "an older answer carries no error",
+			name: "an older answer carries its own error, for the asks that wait on it",
 			lfs:  lfsAskValue(t, at),
 			repos: askRepo(synced(corev1alpha1.RepoLFSAnswer{
 				Pod: "sb", Asked: "2026-11-07T12:00:00.499Z", Error: "object not found",
 			})),
-			want: &corev1alpha1.SandboxLFSStatus{Asked: at, Answered: "2026-11-07T12:00:00.499Z"},
+			want: &corev1alpha1.SandboxLFSStatus{Asked: at, Answered: "2026-11-07T12:00:00.499Z", Error: "object not found"},
 		},
 		{
 			name:  "an answer at the ask",

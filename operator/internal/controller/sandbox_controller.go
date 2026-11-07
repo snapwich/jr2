@@ -405,9 +405,12 @@ func repoStatuses(ctx context.Context, sandbox *corev1alpha1.Sandbox, node strin
 // (ADR-0053), or nil when the Sandbox carries no LFS ask for it. The answer is
 // the item for this Sandbox's Pod — the Pod has the Sandbox's name — in the
 // Repo's entry for the Pod's node. `answered` is reported whatever it says, so
-// a reader sees an older answer as older; `error` is scoped to the ask, as the
-// fetch's is, because git-lfs's words about an older ask are not an answer to
-// this one. A garbage annotation is treated as absent, loudly.
+// a reader sees an older answer as older, and `error` goes with it: git-lfs's
+// words are about the mark that `answered` names. The Orchestrator answers an
+// ask with them only when `answered` is at or after that ask's own mark, and
+// an ask that waits on an earlier mark while a later one is open is answered
+// by the earlier one, so it must get that mark's words. A garbage annotation is
+// treated as absent, loudly.
 func lfsStatus(ctx context.Context, sandbox *corev1alpha1.Sandbox, key, node string, repo *corev1alpha1.Repo) *corev1alpha1.SandboxLFSStatus {
 	raw, ok := sandbox.Annotations[corev1alpha1.LFSAnnotation(key)]
 	if !ok {
@@ -431,9 +434,7 @@ func lfsStatus(ctx context.Context, sandbox *corev1alpha1.Sandbox, key, node str
 			continue
 		}
 		status.Answered = item.Asked
-		if answered, err := time.Parse(time.RFC3339Nano, item.Asked); err == nil && !answered.Before(ask.At) {
-			status.Error = item.Error
-		}
+		status.Error = item.Error
 		break
 	}
 	return status

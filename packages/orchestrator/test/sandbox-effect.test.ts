@@ -189,9 +189,10 @@ test("a push: the start names the Workspace's repositories and Binding; the pinn
   assert.equal("syncReason" in result, false);
 });
 
-test("a push sends the Binding's base, where the LFS server is read from `.lfsconfig` (ADR-0051, ADR-0067)", async () => {
+test("a push sends the run's Binding base, where the LFS server is read from `.lfsconfig`, and never the base that the pod's attach reported (ADR-0051, ADR-0067)", async () => {
   const fake = new FakeEffector(["sandbox"]);
-  const h = { ...ws(), bases: { app: "release/2.x" } };
+  // `bases` is what the attach in the pod answered; `bindingBases` is the run's own Binding.
+  const h = { ...ws(), bases: { app: "attacker" }, bindingBases: { app: "release/2.x" } };
   const rig = await started(pushWith(port(fake), {}, new FakeSync().factory) as AnyEffect, undefined, undefined, h);
   await waitFor(() => fake.starts.length === 1);
   const req = fake.starts[0]!.req as PushStartRequest;

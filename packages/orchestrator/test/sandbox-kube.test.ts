@@ -2135,6 +2135,36 @@ test("provision ENSURES every Repo's resource — per key, identity and boundnes
   assert.equal(ensuredBeforeSecret, true, "ensured before any write — the Secret and the CR come after");
 });
 
+test("the CR records the Binding's base of each Repo whose Binding names one, the first slot's, for the LFS ask (ADR-0051)", async () => {
+  // The LFS ask names this base, never one that the pod sends: the pod cannot write its own CR.
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    ...exec,
+    credentials: [{ match: "*" }],
+  });
+  await port.provision({
+    name: "sb-base",
+    runId: "r",
+    workflow: "w",
+    route: [],
+    path: "ws",
+    repos: [
+      { slot: "app", url: "git@github.com:acme/app.git", ref: "release/2.x", perRun: false },
+      { slot: "same", url: "https://github.com/acme/app", ref: "main", perRun: true },
+      { slot: "ticket", url: "https://gitlab.com/x/y.git", perRun: true },
+    ],
+  });
+  const applied = crOf(calls);
+  assert.equal(applied.metadata.annotations[`jr2.dev/base-${repoKey("git@github.com:acme/app.git")}`], "release/2.x");
+  assert.equal(
+    Object.keys(applied.metadata.annotations).filter((k: string) => k.startsWith("jr2.dev/base-")).length,
+    1,
+    "a Binding with no base records none: the cache's HEAD is the default branch",
+  );
+});
+
 test("a port with NO Repo-resource port refuses to provision, naming what would otherwise happen", async () => {
   // Without it the CR names keys no resource backs, and the operator parks the Sandbox on
   // `RepoMissing` for the whole Ready budget — a hang with a cause nobody printed.

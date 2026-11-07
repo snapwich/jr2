@@ -122,6 +122,7 @@ import {
   ANNOTATION_HOLD,
   ANNOTATION_KEEPALIVE,
   ANNOTATION_WORKSPACE_PATH,
+  baseAnnotation,
   HOLD_HELD,
   HOLD_RELEASED,
   LABEL_SANDBOX_RUN,
@@ -825,7 +826,13 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           [LABEL_SANDBOX_WORKFLOW]: req.workflow,
           ...(req.path ? { [LABEL_SANDBOX_WORKSPACE]: workspaceLabel(req.path) } : {}),
         },
-        annotations: { ...(req.path ? { [ANNOTATION_WORKSPACE_PATH]: req.path } : {}), [ANNOTATION_HOLD]: HOLD_HELD },
+        // The Binding's base of each Repo that has one (ADR-0051): the LFS ask names it, so an Agent
+        // cannot choose the `.lfsconfig` that picks the LFS server. The pod cannot write this CR.
+        annotations: {
+          ...(req.path ? { [ANNOTATION_WORKSPACE_PATH]: req.path } : {}),
+          [ANNOTATION_HOLD]: HOLD_HELD,
+          ...Object.fromEntries(repos.flatMap((r) => (r.base !== undefined ? [[baseAnnotation(r.key), r.base]] : []))),
+        },
       },
       spec: {
         // The Sandbox Image, unmodified (ADR-0037) — the user's tools, its own USER and HOME, and
@@ -1101,7 +1108,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    * per-run url is the run's input; one no `git.credentials` entry admits is refused here, before
    * anything is read or applied, naming the list. A bound url is admitted without a match: it is
    * code the instance typechecked and deployed. Two slots spelling one repository collapse to one
-   * CR entry (first spelling wins) — one cache, however many slots borrow from it — and the
+   * CR entry (first spelling, and its base, wins) — one cache, however many slots borrow from it — and the
    * resource is BOUND when any of those slots is the Machine's: a per-run slot alone leaves it on
    * `jr2 gc`'s clock.
    */
@@ -1118,8 +1125,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         );
       }
       const seen = byKey.get(key);
-      if (seen === undefined) byKey.set(key, { key, url: repo.url, identity, bound: !repo.perRun });
-      else seen.bound ||= !repo.perRun;
+      if (seen === undefined) {
+        byKey.set(key, { key, url: repo.url, identity, bound: !repo.perRun, ...(repo.ref ? { base: repo.ref } : {}) });
+      } else seen.bound ||= !repo.perRun;
     }
     return [...byKey.values()];
   };
@@ -1340,7 +1348,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // `repoCloneError` names reaches the cache at the next run. After the image resolution, so
       // a refused image still costs nothing; before the CR and its token Secret, so neither exists
       // for a Sandbox whose Repo could not be recorded.
-      for (const repo of repos) await opts.repos.ensure(repo).catch(noOperator(req.name, "Repo"));
+      for (const { base: _base, ...repo } of repos) {
+        await opts.repos.ensure(repo).catch(noOperator(req.name, "Repo"));
+      }
 
       // The watch is started before the write (on first use), and it is level-based: whatever it
       // holds when the wait below subscribes is the first thing judged, so no event about this
@@ -1626,7 +1636,10 @@ export const repoMountPath = (key: string): string => `${REPOS_MOUNT}/${key}`;
 
 /** One Repo as the provision names it: the CR entry, plus what its resource records — the
  * identity, and whether a Machine's slot (not only the run's) binds it. */
-type FencedRepo = { key: string; url: string; identity: string; bound: boolean };
+/** One Repo of a Sandbox, by cache key. `base` is the Binding's base of the first slot that binds
+ * it, absent for the Repo's default branch: the Orchestrator's own record of where the Repo's
+ * `.lfsconfig` is read (ADR-0051), never a pod's word. */
+type FencedRepo = { key: string; url: string; identity: string; bound: boolean; base?: string };
 
 /** The operator's Ready reason when the cache agent could not clone onto the pod's node
  * (sandbox_controller.go) — the one Ready verdict a provision cannot wait out. */

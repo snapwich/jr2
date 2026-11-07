@@ -12,6 +12,7 @@ import { defineEvent } from "@jr2/agent-protocol";
 import { assign, fromPromise, setup, spawnChild, type AnyStateMachine } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
+import { ambientHandlesFor } from "../src/ambient.ts";
 import { customize } from "../src/customize.ts";
 import { open, partsOf, sandboxPartsOf, workspacePodsOf, type PlacementRoute } from "../src/parts.ts";
 import { fail, isFailure } from "../src/fail.ts";
@@ -1052,6 +1053,40 @@ test("slots resolve in declaration order; the handles are keyed by slot, in that
     ["docs", "app"],
     "declaration order, not alphabetical — through the persisted snapshot too",
   );
+});
+
+test("the ambient handles carry each slot's Binding base from the run's own Binding, not from the attach's answer (ADR-0051)", async () => {
+  // The push's LFS server is read at this base, so the base that the pod's attach answers is not it.
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const reader = jr2Setup({
+    types: {} as { context: { seen?: unknown }; input: unknown },
+    events: [],
+  }).createMachine({
+    id: "reader",
+    on: { "workspace.lost": ".done" },
+    context: {},
+    initial: "reading",
+    states: {
+      // A moment later, as an Agent's Turn reads them: the registrar starts beside the body.
+      reading: {
+        after: {
+          1: { target: "done", actions: assign({ seen: ({ self }) => ambientHandlesFor(self)?.bindingBases ?? null }) },
+        },
+      },
+      done: { type: "final", output: ({ context }) => context.seen },
+    },
+    output: ({ event }) => (event as { output?: unknown }).output,
+  });
+  host.register({
+    name: "bases",
+    machine: workspace(reader, { repos: { docs: { url: "https://example.test/handbook.git", ref: "v3" }, app: APP } }),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("bases");
+  await waitFor(() => host.status(runId) === undefined);
+  const out = (await host.read(runId))?.context as { output?: unknown };
+  assert.deepEqual(out.output, { docs: "v3" }, "a slot with no base on its Binding names none");
 });
 
 test("a Turn that frames no cwd under Repo Slots: a literal input is refused at build, a mapper's at its first Turn (ADR-0057, ADR-0075)", async () => {

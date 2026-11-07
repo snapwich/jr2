@@ -1694,6 +1694,15 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
                       : {}),
                     // Each slot's base: what the attach put `default/` on, sent with every cut.
                     ...(out.bases ? { bases: out.bases } : {}),
+                    // Each slot's Binding base, from the run's own Binding: the push's LFS server
+                    // is read at it (ADR-0051, ADR-0067), so nothing in the pod can choose it.
+                    ...(ctx.bindings && Object.values(ctx.bindings).some((b) => b.ref !== undefined)
+                      ? {
+                          bindingBases: Object.fromEntries(
+                            Object.entries(ctx.bindings).flatMap(([s, b]) => (b.ref !== undefined ? [[s, b.ref]] : [])),
+                          ),
+                        }
+                      : {}),
                   };
                 },
               }),

@@ -25,8 +25,12 @@ export type AmbientHandles = {
   repos: Record<string, string>;
   /** Every Repo Slot's Binding url, by slot (ADR-0051): where a push goes. */
   bindings?: Record<string, string>;
-  /** Each Repo Slot's Binding base, where the Binding names one: a cut with no `from` starts here. */
+  /** Each Repo Slot's base as the attach placed `default/` on it: a cut with no `from` starts here. */
   bases?: Record<string, string>;
+  /** Each Repo Slot's Binding base, where the run's Binding names one (ADR-0051), from the
+   * Orchestrator's own record, never from the pod: the push reads the LFS server from `.lfsconfig`
+   * at this base (ADR-0067). */
+  bindingBases?: Record<string, string>;
 };
 
 const byRef = new WeakMap<AnyActorRef, AmbientHandles>();

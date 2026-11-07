@@ -218,7 +218,8 @@ test("the fetch route takes an LFS ask: it checks the lfs part, keeps the scope,
   const { api, kube } = fakeCluster();
   const app = repoIdentity("https://example.test/app.git");
   api.seed("sandboxes", {
-    metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } },
+    // The Orchestrator's own record of the Binding's base, written when it made the CR (ADR-0051).
+    metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" }, annotations: { [`jr2.dev/base-${app.key}`]: "main" } },
     spec: { repos: [{ key: app.key }] },
   } as never);
   const { inst, dir } = await bootPublished(src, kube);
@@ -230,7 +231,7 @@ test("the fetch route takes an LFS ask: it checks the lfs part, keeps the scope,
       body: JSON.stringify(body),
     });
   const oid = "a".repeat(64);
-  const lfs = (part: Record<string, unknown>) => ({ identity: app.identity, lfs: { base: "", ...part } });
+  const lfs = (part: Record<string, unknown>) => ({ identity: app.identity, lfs: { ...part } });
   try {
     // Each bad part is a 400 that says what is wrong, and nothing is marked.
     const bad: Array<[unknown, RegExp]> = [
@@ -242,13 +243,6 @@ test("the fetch route takes an LFS ask: it checks the lfs part, keeps the scope,
       [lfs({ objects: [{ oid, size: "1" }] }), /size must be an integer/],
       [lfs({ objects: [] }), /1 to 256 objects/],
       [lfs({ objects: Array.from({ length: 257 }, () => ({ oid, size: 1 })) }), /at most 256/],
-      [lfs({ base: "-x", objects: [{ oid, size: 1 }] }), /must not start with "-"/],
-      [lfs({ base: "a\nb", objects: [{ oid, size: 1 }] }), /NUL or a newline/],
-      [lfs({ base: "a\u0000b", objects: [{ oid, size: 1 }] }), /NUL or a newline/],
-      [lfs({ base: "b".repeat(256), objects: [{ oid, size: 1 }] }), /longer than 255/],
-      // Bytes, not characters: the operator's parser counts bytes.
-      [lfs({ base: "\u00e9".repeat(200), objects: [{ oid, size: 1 }] }), /longer than 255 bytes/],
-      [{ identity: app.identity, lfs: { objects: [{ oid, size: 1 }] } }, /base must be a string/],
     ];
     for (const [body, words] of bad) {
       const res = await ask(body);
@@ -258,7 +252,8 @@ test("the fetch route takes an LFS ask: it checks the lfs part, keeps the scope,
     assert.ok(!api.calls.some((c) => c.method === "PATCH"), "a refused ask marks nothing");
 
     // The scope is the fetch's: another Sandbox's token is a 403, a Repo it does not mount a 404.
-    const good = lfs({ base: "main", objects: [{ oid, size: 3 }] });
+    // The pod's `base` is accepted and not read: the mark names the base off the CR.
+    const good = lfs({ base: "-not-read", objects: [{ oid, size: 3 }] });
     assert.equal((await ask(good, sandboxToken(Buffer.from(KEY_B64, "base64"), "sb-2"))).status, 403);
     assert.equal((await ask({ ...good, identity: "example.test/infra" })).status, 404);
 
