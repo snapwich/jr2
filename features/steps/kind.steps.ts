@@ -3039,6 +3039,8 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
             .join("\n") +
           "\n",
     ],
+    // Each request's whole body: a tool's RESULT is visible only here once the Sandbox is reaped.
+    ["provider-bodies.jsonl", calls.map((c) => c.raw.replace(/\n/g, " ")).join("\n") + "\n"],
     ["jr2-status.json", status],
     [
       "harness-history.json",
