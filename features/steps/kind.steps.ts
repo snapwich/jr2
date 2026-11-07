@@ -4291,8 +4291,10 @@ async function cutTraces(world: E2EWorld, name: string, branch: string): Promise
 const KILL_MARK = "/work/app/default/.git/killed-in-add";
 
 /**
- * A kill in the middle of `git worktree add`: the folder exists, and the admin entry has `locked` and
- * `index.lock`, which git holds through the checkout. The kill goes to the cut's process group, or to
+ * A kill in the middle of the cut: the folder and its admin entry exist, and the entry has no index
+ * yet. The cut adds the Worktree with no checkout (git holds `locked` through the add), then writes
+ * the files from a git folder of its own and gives the index to the entry last (ADR-0075), so the
+ * window is the add and that checkout of the repo's files. The kill goes to the cut's process group, or to
  * the Harness. The parent of the cut is the confined spawner (ADR-0076), not the Harness, so the script
  * finds the Harness by its title `jr2-harness` (its comm). The script waits inside the pod, because the
  * window is seconds, and it marks the file `armed` first, so that the step sends the cut only after the
@@ -4302,7 +4304,7 @@ const KILL_AT_CUT = (what: "cut" | "harness") => `
 : > /tmp/armed
 deadline=$(($(date +%s) + 120))
 admin=/work/app/default/.git/worktrees/run
-until [ -d /work/app/run ] && [ -e "$admin/locked" ] && [ -e "$admin/index.lock" ]; do
+until [ -d /work/app/run ] && [ -e "$admin/gitdir" ] && [ ! -e "$admin/index" ]; do
   [ "$(date +%s)" -lt "$deadline" ] || { echo no-cut; exit 3; }
 done
 for p in /proc/[0-9]*; do
@@ -4365,11 +4367,11 @@ async function killedCut(w: E2EWorld, m: string, what: "cut" | "harness"): Promi
   await openGate(w);
   await killDuringCut(w, what);
   await openGate(w);
-  assert.match(await shell(w, `ls ${KILL_MARK}`), /killed-in-add/, "the kill came in the middle of the add");
+  assert.match(await shell(w, `ls ${KILL_MARK}`), /killed-in-add/, "the kill came in the middle of the cut");
   if (what === "cut") {
     assert.match(
       await cutTraces(w, "run", branch),
-      /folder\nlisted\nlocked\nbranch\n"state":"cutting"/,
+      /folder\nlisted\n(?:locked\n)?branch\n"state":"cutting"/,
       "the kill left a partial Worktree and the cut's record",
     );
   } else {
