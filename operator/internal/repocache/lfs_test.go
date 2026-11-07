@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -25,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -196,7 +198,12 @@ func TestADueLFSAskLandsInTheCacheAndTheCacheGainsNoGitObject(t *testing.T) {
 	}
 	before := countFiles(t, filepath.Join(w.cache, "objects"))
 
-	if _, err := reconcile1(t, w.a); err != nil {
+	// Under umask 077, git-lfs writes 0600 files and 0700 folders, so only
+	// the agent's own change makes them readable by a pod's uid.
+	old := syscall.Umask(0o077)
+	_, err := reconcile1(t, w.a)
+	syscall.Umask(old)
+	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	got, err := os.ReadFile(lfsObjectPath(w.cache, obj.OID))
@@ -451,12 +458,124 @@ func TestDerivedLFSURL(t *testing.T) {
 		"https://github.com/acme/app.git":   "https://github.com/acme/app.git/info/lfs",
 		"https://github.com/acme/app":       "https://github.com/acme/app.git/info/lfs",
 		"https://github.com/acme/app/":      "https://github.com/acme/app.git/info/lfs",
+		"git://github.com/acme/app.git":     "https://github.com/acme/app.git/info/lfs",
+		"git://github.com/acme/app":         "https://github.com/acme/app.git/info/lfs",
+		"git://github.com:9418/acme/app/":   "https://github.com:9418/acme/app.git/info/lfs",
 		"ssh://git@github.com/acme/app.git": "ssh://git@github.com/acme/app.git",
 		"git@github.com:acme/app.git":       "git@github.com:acme/app.git",
 		"file:///srv/app":                   "file:///srv/app",
 	} {
 		if got := derivedLFSURL(in); got != want {
 			t.Errorf("derivedLFSURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// derivedLFSURL agrees with git-lfs's own derivation from a remote's url: the
+// same endpoint for http(s), git and file, and the same ssh host and path for
+// ssh (ADR-0051).
+func TestDerivedLFSURLIsWhatGitLFSDerives(t *testing.T) {
+	requireGitLFS(t)
+	dir := filepath.Join(t.TempDir(), "r")
+	gitT(t, "", "init", "-q", "--bare", dir)
+	env := func(args ...string) (endpoint, ssh string) {
+		t.Helper()
+		out := gitT(t, dir, append(args, "lfs", "env")...)
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if v, ok := strings.CutPrefix(line, "Endpoint="); ok && endpoint == "" {
+				endpoint = strings.TrimSuffix(v, " (auth=none)")
+			} else if v, ok := strings.CutPrefix(line, "SSH="); ok && ssh == "" {
+				ssh = v
+			}
+		}
+		return endpoint, ssh
+	}
+	for _, in := range []string{
+		"https://github.com/acme/app.git", "https://github.com/acme/app/", "http://127.0.0.1:8080/acme/app",
+		"git://github.com/acme/app.git", "git://github.com:9418/acme/app/",
+		"ssh://git@github.com/acme/app.git", "ssh://git@github.com:2222/acme/app", "git@github.com:acme/app.git",
+		"file:///srv/app.git",
+	} {
+		gitT(t, dir, "config", "remote.origin.url", in)
+		wantEndpoint, wantSSH := env()
+		gotEndpoint, gotSSH := env("-c", "lfs.url="+derivedLFSURL(in))
+		if wantSSH != "" {
+			// ssh: the same ask to git-lfs-authenticate; the https fallback
+			// differs, as derivedLFSURL says.
+			if gotSSH != wantSSH {
+				t.Errorf("%s: git-lfs asks ssh %q, the agent's lfs.url gives %q", in, wantSSH, gotSSH)
+			}
+			continue
+		}
+		if gotEndpoint != wantEndpoint || wantEndpoint == "" {
+			t.Errorf("%s: git-lfs derives %q, the agent's lfs.url gives %q", in, wantEndpoint, gotEndpoint)
+		}
+	}
+}
+
+// The `.lfsconfig` at the cache's HEAD cannot stop an ask with
+// lfs.fetchexclude or lfs.fetchinclude: the agent sets both to empty.
+func TestHEADsFetchExcludeDoesNotStopTheAsk(t *testing.T) {
+	w := newLFSWorld(t)
+	obj := put(t, filepath.Join(w.server, ".git"), "excluded?\n")
+	gitT(t, w.server, "checkout", "-q", "-B", "head", "main")
+	if err := os.WriteFile(filepath.Join(w.server, ".lfsconfig"), []byte("[lfs]\n\tfetchexclude = *\n\tfetchinclude = nothing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, w.server, "add", ".lfsconfig")
+	gitT(t, w.server, "commit", "-q", "-m", "head")
+	gitT(t, w.cache, "fetch", "-q", "file://"+w.server, "+refs/heads/*:refs/heads/*")
+	gitT(t, w.cache, "symbolic-ref", "HEAD", "refs/heads/head")
+	if err := w.a.Create(context.Background(), asking("sb", askJSON(at1, "main", obj))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconcile1(t, w.a); err != nil {
+		t.Fatal(err)
+	}
+	if it := items(t, w.a); len(it) != 1 || it[0].Error != "" || !w.a.hasLFS(w.cache, obj.OID) {
+		t.Fatalf("HEAD's fetchexclude must not stop the ask, got %+v", it)
+	}
+}
+
+// With no entry for this node in the Repo that the informer gives, a report
+// of a served pod returns an error, so the queue tries again soon. With no
+// pod served, there is nothing to wait for.
+func TestAnLFSReportWithNoEntryYetTriesAgain(t *testing.T) {
+	r := repo(1)
+	a := newAgent(t, &fakeGit{}, r)
+	served := []corev1alpha1.RepoLFSAnswer{{Pod: "sb", Asked: at1, Attempted: ts(fixedNow)}}
+	if err := a.reportLFS(context.Background(), r, served, map[string]bool{"sb": true}); !errors.Is(err, errNoEntryYet) {
+		t.Fatalf("expected errNoEntryYet, got %v", err)
+	}
+	if err := a.reportLFS(context.Background(), r, nil, map[string]bool{}); err != nil {
+		t.Fatalf("with no pod served, expected no error, got %v", err)
+	}
+}
+
+// The budget of one git-lfs run is the latest ask's: an older ask whose
+// budget ran out does not cut the budget of a newer ask in the same run.
+func TestAnOlderAskDoesNotCutTheBudgetOfANewerOne(t *testing.T) {
+	w := newLFSWorld(t)
+	obj := put(t, filepath.Join(w.server, ".git"), "shared\n")
+	w.a.LFSTimeout = time.Minute
+	old := fixedNow.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+	if err := w.a.Create(context.Background(), asking("old", askJSON(old, "", obj))); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.a.Create(context.Background(), asking("new", askJSON(at1, "", obj))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconcile1(t, w.a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	it := items(t, w.a)
+	if len(it) != 2 || w.git.lfsFetches() != 1 || !w.a.hasLFS(w.cache, obj.OID) {
+		t.Fatalf("one git-lfs run serves both asks, got %+v (%d fetches)", it, w.git.lfsFetches())
+	}
+	for _, item := range it {
+		if item.Error != "" {
+			t.Fatalf("the object landed, so no item has an error, got %+v", it)
 		}
 	}
 }
@@ -518,7 +637,7 @@ func TestAProbeRemovesTheItemsOfPodsThatLeft(t *testing.T) {
 	}
 }
 
-// The LFS budget runs from the earliest ask's `at`: an ask whose budget ran
+// The LFS budget runs from the ask's `at`: an ask whose budget ran
 // out before git-lfs could start is answered with an error, and git-lfs does
 // not run.
 func TestTheLFSBudgetRunsFromTheAsk(t *testing.T) {

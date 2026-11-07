@@ -119,7 +119,7 @@ type Agent struct {
 	CloneTimeout         time.Duration
 	FetchTimeout         time.Duration
 	OnDemandFetchTimeout time.Duration
-	// LFSTimeout is the budget of an LFS ask, from the `at` of the earliest
+	// LFSTimeout is the budget of an LFS ask, from the `at` of the latest
 	// ask that one `git lfs fetch` serves (ADR-0053); zero means
 	// defaultLFSTimeout.
 	LFSTimeout time.Duration

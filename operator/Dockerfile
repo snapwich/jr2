@@ -51,7 +51,9 @@ RUN apk add --no-cache git openssh-client ca-certificates
 WORKDIR /
 COPY --from=builder /workspace/manager /manager
 COPY --from=builder /workspace/git-lfs /usr/local/bin/git-lfs
-RUN git lfs version
+# `asyncpreemptoff` because in a multi-arch build this run can be the emulated one, and the emulator
+# mishandles Go's preemption signal (deploy/harness/Dockerfile); GODEBUG is the process's, not the binary's.
+RUN GODEBUG=asyncpreemptoff=1 git lfs version
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

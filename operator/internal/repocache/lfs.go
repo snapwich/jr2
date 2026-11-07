@@ -8,6 +8,7 @@ package repocache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -32,10 +33,11 @@ import (
 const (
 	// defaultLFSTimeout is the budget of an LFS ask (ADR-0053), from its
 	// `at`. The Orchestrator waits this long after `at`, plus a little, for
-	// the answer. The agent stops git-lfs when the budget of the earliest ask
-	// that it serves runs out, so it answers before the Orchestrator stops
-	// waiting: the git refresh and the clone that come first spend the same
-	// budget.
+	// the answer. The agent stops git-lfs when the budget of the latest ask
+	// that one git-lfs run serves runs out, so it answers that ask before its
+	// Orchestrator wait stops: the git refresh and the clone that come first
+	// spend the same budget. An older ask in the same run can time out at the
+	// Orchestrator first, but it does not cut the budget of the newer one.
 	defaultLFSTimeout = 10 * time.Minute
 	// lfsErrorLimit caps the git-lfs words that go into one answer item.
 	lfsErrorLimit = 1000
@@ -137,9 +139,9 @@ func (a *Agent) getLFS(ctx context.Context, repo *corev1alpha1.Repo, dir string,
 	failures := map[string]string{} // pod → why its ask cannot be served
 	env, credErr := a.credentials(ctx, repo)
 	type group struct {
-		objects  []corev1alpha1.LFSObject
-		earliest time.Time // the `at` of the group's earliest ask
-		words    string
+		objects []corev1alpha1.LFSObject
+		latest  time.Time // the `at` of the group's latest ask
+		words   string
 	}
 	groups := map[string]*group{}
 	endpointOf := map[string]string{} // pod → LFS server
@@ -156,11 +158,11 @@ func (a *Agent) getLFS(ctx context.Context, repo *corev1alpha1.Repo, dir string,
 		endpointOf[d.pod] = endpoint
 		g := groups[endpoint]
 		if g == nil {
-			g = &group{earliest: d.ask.At}
+			g = &group{latest: d.ask.At}
 			groups[endpoint] = g
 		}
-		if d.ask.At.Before(g.earliest) {
-			g.earliest = d.ask.At
+		if d.ask.At.After(g.latest) {
+			g.latest = d.ask.At
 		}
 		for _, o := range d.ask.Objects {
 			if !slices.ContainsFunc(g.objects, func(x corev1alpha1.LFSObject) bool { return x.OID == o.OID }) && !a.hasLFS(dir, o.OID) {
@@ -178,10 +180,12 @@ func (a *Agent) getLFS(ctx context.Context, repo *corev1alpha1.Repo, dir string,
 		if len(g.objects) == 0 {
 			continue
 		}
-		// The budget runs from the earliest ask's `at`, not from now, and
-		// never past one budget from now: a clock that is not in step with
-		// the Orchestrator's does not make the wait longer.
-		left := min(budget, g.earliest.Add(budget).Sub(a.clock()))
+		// The budget runs from the latest ask's `at`, not from now, and never
+		// past one budget from now: a clock that is not in step with the
+		// Orchestrator's does not make the wait longer. An older ask that
+		// waited behind a long git fetch does not cut the budget of a newer
+		// ask in the same run.
+		left := min(budget, g.latest.Add(budget).Sub(a.clock()))
 		if left <= 0 {
 			g.words = fmt.Sprintf("the ask's budget of %s ran out before git-lfs could start", budget)
 			log.Info("LFS ask out of budget", "key", repo.Name, "objects", len(g.objects))
@@ -265,13 +269,31 @@ func (a *Agent) lfsEndpoint(ctx context.Context, dir, repoURL, base string) (str
 	return derivedLFSURL(repoURL), nil
 }
 
-// derivedLFSURL is the LFS server that git-lfs derives from a Repo's url: for
-// http(s), the url with `.git/info/lfs` (or `/info/lfs` after a `.git`) added;
-// for any other url (ssh, file), the url itself, which git-lfs reads the same
-// way as the remote's url.
+// derivedLFSURL is the LFS server that git-lfs derives from a Repo's url
+// when no `.lfsconfig` names one. The agent gives it to git-lfs as `lfs.url`,
+// so that the `.lfsconfig` at the cache's HEAD cannot override it:
+//
+//   - http(s): the url with `.git/info/lfs` added, or `/info/lfs` after a
+//     `.git`;
+//   - git: the same, on https, which is git-lfs's default `lfs.gitprotocol`;
+//   - ssh (`ssh://` or scp-like) and file: the url itself. For file, git-lfs
+//     reads the url as it is. For ssh, git-lfs gets the same ssh host and
+//     path as from the remote's url, so git-lfs-authenticate and the ssh
+//     transfer get the same ask. One difference stays: when
+//     git-lfs-authenticate gives no href, git-lfs falls back to https on the
+//     ssh url's host and path, without the `.git/info/lfs` that it adds for
+//     the remote's url. An `lfs.url` cannot give the ssh path and that https
+//     path both.
 func derivedLFSURL(repoURL string) string {
 	u, err := url.Parse(repoURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil {
+		return repoURL
+	}
+	switch u.Scheme {
+	case "http", "https":
+	case "git":
+		repoURL = "https" + repoURL[len("git"):]
+	default:
 		return repoURL
 	}
 	trimmed := strings.TrimSuffix(repoURL, "/")
@@ -447,6 +469,10 @@ func (a *Agent) fetchLFS(ctx context.Context, dir string, env []string, endpoint
 	return ""
 }
 
+// errNoEntryYet is reportLFS's error when this node's entry is not in the
+// Repo that the informer gives yet.
+var errNoEntryYet = errors.New("no status entry for this node yet, so the LFS answer waits for the next try")
+
 // lfsObjectPath is where git-lfs keeps one object in a cache.
 func lfsObjectPath(dir, oid string) string {
 	return filepath.Join(dir, "lfs", "objects", oid[0:2], oid[2:4], oid)
@@ -501,9 +527,12 @@ func cutLFSWords(words string) string {
 
 // reportLFS writes the LFS items of this node's entry and only them: it puts
 // in an item for each served pod, removes the items of pods that no longer
-// mount the cache, and keeps every other field of the entry. With no entry
-// for this node, there is nothing to put the items in, and the agent writes
-// nothing: an entry needs the clone's or the probe's fields first.
+// mount the cache, and keeps every other field of the entry. It reads the
+// Repo through the informer's cache, which can lag the entry that a clone or
+// a probe wrote a moment before. So with no entry for this node and a pod
+// served, it returns an error: the queue then tries the Reconcile again soon
+// with backoff, not after a refresh interval. The objects are in the cache
+// by then, so the next serve runs no git-lfs for them.
 func (a *Agent) reportLFS(ctx context.Context, repo *corev1alpha1.Repo, served []corev1alpha1.RepoLFSAnswer, mounting map[string]bool) error {
 	key := client.ObjectKeyFromObject(repo)
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
@@ -520,7 +549,7 @@ func (a *Agent) reportLFS(ctx context.Context, repo *corev1alpha1.Repo, served [
 		}
 		if entry == nil {
 			if len(served) > 0 {
-				logf.FromContext(ctx).Info("No status entry for this node yet; the LFS answer waits", "key", repo.Name)
+				return errNoEntryYet
 			}
 			return nil
 		}
