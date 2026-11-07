@@ -126,7 +126,8 @@ export const PushStartShape = z.strictObject({
      * there before the branch moves (ADR-0067). Absent, the cache's HEAD. */
     base: z
       .string()
-      .max(255)
+      // 255 BYTES of UTF-8, as the Effector counts them, not 255 UTF-16 code units.
+      .refine((b) => Buffer.byteLength(b, "utf8") <= 255, "a base name is at most 255 bytes")
       .refine((b) => !b.startsWith("-") && !/[\0\r\n]/.test(b), "a base name has no leading -, NUL or newline")
       .optional(),
     /** Every pair the ledger holds for the Workspace's Repo Slot, oldest push first (ADR-0067):

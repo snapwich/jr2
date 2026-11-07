@@ -215,9 +215,16 @@ func putObject(t *testing.T, gitDir, oid string, body []byte) {
 // node cache, as the cache agent's fetch does. The push's base is main.
 func lfsConfigAtBase(t *testing.T, f *fixture, server string) {
 	t.Helper()
+	lfsConfigRawAtBase(t, f, "[lfs]\n\turl = "+server+"\n")
+}
+
+// lfsConfigRawAtBase commits raw as `.lfsconfig` on the remote's main, and brings it into the
+// node cache.
+func lfsConfigRawAtBase(t *testing.T, f *fixture, raw string) {
+	t.Helper()
 	seed := filepath.Join(f.pod.Root, "base-seed")
 	gittest.Git(t, f.pod.Root, "clone", "-q", f.pod.Remote, seed)
-	if err := os.WriteFile(filepath.Join(seed, ".lfsconfig"), []byte("[lfs]\n\turl = "+server+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(seed, ".lfsconfig"), []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gittest.Git(t, seed, "add", ".lfsconfig")
@@ -375,8 +382,115 @@ func TestAnObjectFileThatIsASymlinkIsNotFollowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := f.runner.Run(t.Context(), f.lfsRequest(false))
-	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || lfs.held(oid) != nil {
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || lfs.held(oid) != nil ||
+		!strings.Contains(out.Reason, "the Agent's file was refused") || !strings.Contains(out.Reason, "symlink") {
 		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+}
+
+// A hard link may be a file outside the git dir: the opener refuses it, and the reason says why.
+func TestAnObjectFileWithTwoLinksIsRefusedAndTheReasonSaysWhy(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	lfsConfigAtBase(t, f, srv.URL+"/lfs")
+	content := "linked twice\n"
+	_, oid := largeFile(t, f, "big.bin", content, true)
+	if err := os.Link(filepath.Join(f.pod.GitDir, lfsRel(oid)), filepath.Join(f.pod.Root, "second-link")); err != nil {
+		t.Fatal(err)
+	}
+	out := f.runner.Run(t.Context(), f.lfsRequest(false))
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || lfs.held(oid) != nil ||
+		!strings.Contains(out.Reason, "big.bin") || !strings.Contains(out.Reason, "hard links") {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+}
+
+// An include.path in the base's .lfsconfig is not followed: the Effector reads no other file as
+// config, so the lfs.url that the Agent writes in its own config is not the server.
+func TestAnIncludeInTheBasesLFSConfigIsNotFollowed(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	agentConfig := filepath.Join(f.pod.GitDir, "config")
+	// The include comes last, so, if git followed it, its lfs.url would be the value.
+	lfsConfigRawAtBase(t, f, "[lfs]\n\turl = "+srv.URL+"/lfs\n[include]\n\tpath = "+agentConfig+"\n")
+	gittest.Git(t, f.pod.GitDir, "--git-dir="+f.pod.GitDir, "config", "lfs.url", srv.URL+"/chosen-by-the-agent")
+	content := "the base names the server\n"
+	_, oid := largeFile(t, f, "big.bin", content, true)
+
+	out := f.runner.Run(t.Context(), f.lfsRequest(false))
+	if out.Outcome != wire.OutcomePushed || string(lfs.held(oid)) != content {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	for _, r := range lfs.requests() {
+		if !strings.HasPrefix(r.Path, "/lfs/") && !strings.HasPrefix(r.Path, "/up/") &&
+			!strings.HasPrefix(r.Path, "/verify/") {
+			t.Fatalf("a request went where the Agent's config said: %+v", r)
+		}
+	}
+}
+
+func TestASquashedPushUploadsTheSameObject(t *testing.T) {
+	f := lfsFixture(t, "ssh")
+	lfs := newLFSServer(t, f)
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	lfsConfigAtBase(t, f, srv.URL+"/lfs")
+	content := "squashed and large\n"
+	sha, oid := largeFile(t, f, "big.bin", content, true)
+	f.pod.Commit("more", map[string]string{"n.txt": "n\n"})
+	req := f.lfsRequest(true)
+	msg := "one squashed commit"
+	req.Push.Squash = &msg
+
+	out := f.runner.Run(t.Context(), req)
+	if out.Outcome != wire.OutcomePushed || out.Push.Published == sha {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if string(lfs.held(oid)) != content {
+		t.Fatalf("the server holds %q", lfs.held(oid))
+	}
+	if p := puts(lfs.requests()); len(p) != 1 || p[0].Branch == out.Push.Published {
+		t.Fatalf("PUTs: %+v", p)
+	}
+}
+
+// An ssh LFS server is accepted only on the host of an ssh push url, so the push's ssh key goes
+// to no other host (ADR-0051's LFS rule).
+func TestAnSSHLFSServerIsAcceptedOnlyOnThePushURLsHost(t *testing.T) {
+	ssh := &call{spec: &wire.PushSpec{URL: "git@github.com:ourorg/app.git"}}
+	sshURL := &call{spec: &wire.PushSpec{URL: "ssh://git@GitHub.com:22/ourorg/app.git"}}
+	https := &call{spec: &wire.PushSpec{URL: "https://github.com/ourorg/app.git"}}
+	for _, tc := range []struct {
+		c    *call
+		lfs  string
+		want bool
+	}{
+		{ssh, "ssh://git@github.com/ourorg/app.git", true},
+		{ssh, "git@GITHUB.com:ourorg/app.git", true},
+		{sshURL, "git@github.com:ourorg/app.git", true},
+		{ssh, "git+ssh://git@github.com/ourorg/app.git", true},
+		{ssh, "https://lfs.example/x", true},
+		{https, "https://lfs.example/x", true},
+		{ssh, "ssh://git@evil.example/x.git", false},
+		{ssh, "git@evil.example:x.git", false},
+		{sshURL, "ssh://git@evil.example/x.git", false},
+		{https, "ssh://git@github.com/ourorg/app.git", false},
+		{https, "git@github.com:ourorg/app.git", false},
+		{ssh, "ssh://-oProxyCommand=x/y", false},
+		{ssh, "-oProxyCommand=x:y", false},
+		{ssh, "ssh://git@github.com;x/y", false},
+		{ssh, "file:///work/x", false},
+		{ssh, "/work/x", false},
+		{ssh, "ext::sh -c x", false},
+		{ssh, "https://lfs.example/x y", false},
+	} {
+		if got := tc.c.lfsSchemeAllowed(tc.lfs); got != tc.want {
+			t.Errorf("push %s, LFS %q: got %v, want %v", tc.c.spec.URL, tc.lfs, got, tc.want)
+		}
 	}
 }
 
@@ -609,9 +723,16 @@ func TestParsePointerTakesOnlyAPointer(t *testing.T) {
 		strings.Replace(good, oid, strings.ToUpper(oid), 1),
 		strings.Replace(good, "spec/v1", "spec/v2", 1),
 		good + "extra\n",
+		strings.Replace(good, "\noid", "\next-x-foo sha256:"+oid+"\noid", 1),
+		strings.Replace(good, "\noid", "\next-0-foo sha256:short\noid", 1),
 	} {
 		if _, ok := parsePointer([]byte(bad)); ok {
 			t.Fatalf("%q read as a pointer", bad)
 		}
+	}
+	// The spec's extension lines come between the version and the oid.
+	ext := strings.Replace(good, "\noid", "\next-0-foo sha256:"+strings.Repeat("cd", 32)+"\noid", 1)
+	if o, ok := parsePointer([]byte(ext)); !ok || o.oid != oid || o.size != 12 {
+		t.Fatalf("an extension pointer: got %+v %v", o, ok)
 	}
 }

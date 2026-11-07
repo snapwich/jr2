@@ -238,12 +238,16 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   `committer`, or a signed push and its `sign` field), and the provision refuses it the same way for a slot the run or a
   `customize()` binds. `force` replaces what the remote holds. A Workspace with no Repo Slot has no branch to push, so a
   `push` there is refused, by `jr2 up` and at invoke (ADR-0051).
-- **A push uploads its large files first.** When the commits that a push publishes hold Git LFS pointers that the remote
-  lacks, the Effector uploads those objects before it updates the branch. It reads them as data from the Agent's
-  `.git/lfs/objects`, checks each one against its oid, and runs its own git-lfs in its own scratch repository. The
-  upload spends the push credential and follows ADR-0051's LFS rule: the token goes only to the Binding's own host, and
-  an upload href gets only the headers that the batch answer carries. An upload that fails is `rejected`, and nothing is
-  pushed. A signed or squashed copy keeps the pointers, so it uploads the same objects.
+- **A push uploads its large files first.** When the commits that a push publishes hold Git LFS pointers, the Effector
+  uploads their objects before it updates the branch; the batch answer tells which the server lacks. It reads each
+  object as data from the Agent's `.git/lfs/objects`, else from the node cache's `lfs/objects`, checks it against its
+  oid, and runs its own git-lfs in its own scratch repository. An object that neither store holds is `rejected`, naming
+  its file, also when the server holds it already, because git-lfs uploads by oid only from local storage. The server is
+  `lfs.url` or `remote.origin.lfsurl` of `.lfsconfig` at the Binding's base, never `lfs.pushurl`, else the one that
+  git-lfs derives from the push url. The upload spends the push credential and follows ADR-0051's LFS rule: an ssh
+  server only on the push url's host, the token only to the Binding's own host, and an upload href on another host gets
+  only the headers that the batch answer carries. An upload that fails is `rejected`, and nothing is pushed. A signed or
+  squashed copy keeps the pointers, so it uploads the same objects.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The

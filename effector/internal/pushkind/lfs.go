@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -164,22 +165,29 @@ func (c *call) lfsPointers(ctx context.Context, published string, held []string)
 
 var (
 	pointerVersion = regexp.MustCompile(`^version https://git-lfs\.github\.com/spec/v1$`)
+	pointerExt     = regexp.MustCompile(`^ext-[0-9]-[A-Za-z0-9]+ sha256:[0-9a-f]{64}$`)
 	pointerOid     = regexp.MustCompile(`^oid sha256:([0-9a-f]{64})$`)
 	pointerSize    = regexp.MustCompile(`^size (0|[1-9][0-9]{0,18})$`)
 )
 
-// parsePointer reads a Git LFS pointer: the version line, then the oid and the size, each line
-// ended by a newline. Any other blob is not a pointer.
+// parsePointer reads a Git LFS pointer: the version line, the extension lines that the spec
+// allows (`ext-<n>-<name> sha256:<oid>`, at most ten), then the oid and the size, each line ended
+// by a newline. Any other blob is not a pointer.
 func parsePointer(raw []byte) (lfsObject, bool) {
 	if !bytes.HasSuffix(raw, []byte("\n")) {
 		return lfsObject{}, false
 	}
 	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-	if len(lines) != 3 || !pointerVersion.MatchString(lines[0]) {
+	if len(lines) < 3 || len(lines) > 13 || !pointerVersion.MatchString(lines[0]) {
 		return lfsObject{}, false
 	}
-	oid := pointerOid.FindStringSubmatch(lines[1])
-	size := pointerSize.FindStringSubmatch(lines[2])
+	for _, ext := range lines[1 : len(lines)-2] {
+		if !pointerExt.MatchString(ext) {
+			return lfsObject{}, false
+		}
+	}
+	oid := pointerOid.FindStringSubmatch(lines[len(lines)-2])
+	size := pointerSize.FindStringSubmatch(lines[len(lines)-1])
 	if oid == nil || size == nil {
 		return lfsObject{}, false
 	}
@@ -197,7 +205,9 @@ func lfsRel(oid string) string {
 
 // stageLFS copies one object into the scratch repository's own store: from the Agent's store,
 // else from the node cache's, each checked against its oid and size. An object that neither
-// holds whole names its file.
+// holds whole names its file, and why the opener refused the Agent's file when it did. Such an
+// object is refused also when the server holds it already: `git-lfs push --object-id` reads
+// each object from local storage before it asks the server.
 func (c *call) stageLFS(o lfsObject) error {
 	dst := filepath.Join(c.repo.Dir, lfsRel(o.oid))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
@@ -218,8 +228,22 @@ func (c *call) stageLFS(o lfsObject) error {
 	case errors.As(agentErr, &mismatch), errors.As(cacheErr, &mismatch):
 		return fmt.Errorf("the LFS object of %s does not match its oid: %s", o.name(), mismatch.why)
 	}
-	return fmt.Errorf("the LFS object of %s is in neither the Agent's repository nor the node cache, so it "+
-		"cannot be uploaded", o.name())
+	why := ""
+	if refused := refusal(agentErr); refused != "" {
+		why = " (the Agent's file was refused: " + refused + ")"
+	}
+	return fmt.Errorf("the LFS object of %s is in neither the Agent's repository nor the node cache%s, so it "+
+		"cannot be uploaded", o.name(), why)
+}
+
+// refusal is why the opener refused the Agent's object file: a symlink, a FIFO, a file with more
+// than one hard link. A file that is not there is no refusal: "".
+func refusal(err error) string {
+	var refused *beneath.Refused
+	if !errors.As(err, &refused) || strings.Contains(refused.Reason, "does not exist") {
+		return ""
+	}
+	return refused.Reason
 }
 
 // lfsMismatch is an object file whose bytes are not the pointer's.
@@ -268,8 +292,9 @@ func (c *call) copyLFS(root, rel string, o lfsObject, dst string) error {
 // lfsEndpoint is the LFS server that `.lfsconfig` at the Binding's base names in the node cache:
 // `lfs.url`, else `remote.origin.lfsurl`. "" is none: git-lfs derives the server from the push
 // url. The base is resolved after `--end-of-options`, and the cache is the scratch repository's
-// alternate, so its blob is read there. A named server must use https or http, or the scheme of
-// the push url, so a base cannot send the upload to a file in the Effector's pod.
+// alternate, so its blob is read there. A named server must use https or http, or ssh on the
+// host of an ssh push url (ADR-0051's LFS rule): a base cannot send the upload to a file in the
+// Effector's pod, and the push's ssh key goes to no other host.
 func (c *call) lfsEndpoint(ctx context.Context) (string, error) {
 	name := c.spec.Base
 	if name == "" {
@@ -290,13 +315,15 @@ func (c *call) lfsEndpoint(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	for _, key := range []string{"lfs.url", "remote.origin.lfsurl"} {
-		value, err := c.repo.Line(ctx, "config", "--blob", blob, "--get", key)
+		// With no includes: an include.path in the base would make git read any file as config,
+		// the Agent's own config among them, or block on a FIFO.
+		value, err := c.repo.Line(ctx, "config", "--no-includes", "--blob", blob, "--get", key)
 		if err != nil || value == "" {
 			continue
 		}
 		if !c.lfsSchemeAllowed(value) {
 			return "", fmt.Errorf(".lfsconfig at the Binding's base names %s %q: jr2 uploads LFS objects only to an "+
-				"https or http server, or one on the push url's scheme", key, value)
+				"https or http server, or to an ssh server on the host of an ssh push url", key, value)
 		}
 		return value, nil
 	}
@@ -304,12 +331,64 @@ func (c *call) lfsEndpoint(ctx context.Context) (string, error) {
 }
 
 func (c *call) lfsSchemeAllowed(raw string) bool {
-	scheme := gitclean.Scheme(raw)
-	if scheme == gitclean.SchemeHTTPS || scheme == gitclean.SchemeHTTP {
-		return true
+	if strings.HasPrefix(raw, "-") || strings.ContainsAny(raw, "\x00\r\n\t ") {
+		return false
 	}
-	return scheme == gitclean.SchemeSSH && gitclean.Scheme(c.spec.URL) == gitclean.SchemeSSH
+	scheme, host, ok := lfsURLParts(raw)
+	if !ok {
+		return false
+	}
+	switch scheme {
+	case gitclean.SchemeHTTPS, gitclean.SchemeHTTP:
+		return host != ""
+	case gitclean.SchemeSSH:
+		pushScheme, pushHost, pushOK := lfsURLParts(c.spec.URL)
+		return pushOK && pushScheme == gitclean.SchemeSSH && strings.EqualFold(host, pushHost)
+	}
+	return false
 }
+
+// lfsURLParts gives the scheme and the host of a git url, as the cache agent reads an LFS server
+// (ADR-0051): `<scheme>://...`, with git+ssh as ssh, or the scp-like `[user@]host:path`, which is
+// ssh. A local path, a file url, a `<helper>::<address>` and an ssh host that is not a plain name
+// give !ok.
+func lfsURLParts(raw string) (scheme, host string, ok bool) {
+	if i := strings.Index(raw, "://"); i >= 0 {
+		scheme = strings.ToLower(raw[:i])
+		if scheme == "git+ssh" {
+			scheme = gitclean.SchemeSSH
+		}
+		if !schemeName.MatchString(scheme) || scheme == "file" {
+			return "", "", false
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Hostname() == "" || strings.HasPrefix(u.Hostname(), "-") {
+			return "", "", false
+		}
+		if scheme == gitclean.SchemeSSH && !hostName.MatchString(u.Hostname()) {
+			return "", "", false
+		}
+		return scheme, u.Hostname(), true
+	}
+	// git's rule: a colon before any slash makes the url scp-like; else it is a path.
+	colon := strings.Index(raw, ":")
+	if colon <= 0 || strings.Contains(raw[:colon], "/") || strings.HasPrefix(raw[colon+1:], ":") {
+		return "", "", false
+	}
+	host = raw[:colon]
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if !hostName.MatchString(host) {
+		return "", "", false
+	}
+	return gitclean.SchemeSSH, host, true
+}
+
+var (
+	schemeName = regexp.MustCompile(`^[a-z][a-z0-9+.-]*$`)
+	hostName   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+)
 
 // runLFS runs git-lfs `push --object-id` in the scratch repository, to the push url, with the
 // push's credential config (the helper or the ssh command, the CA file).
