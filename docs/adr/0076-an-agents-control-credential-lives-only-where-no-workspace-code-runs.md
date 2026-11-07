@@ -160,8 +160,10 @@ code from `/work`.
   Sandbox's uid can write a folder of the image is the image's, and jr2 cannot read it.
 
 - **The file tools reach what `bash` reaches.** Their I/O runs in the spawner, so the kernel applies the domain's rules
-  to them. A path under `/run/jr2`, or a symbolic link to one, fails with the error that an unreadable file gives. `~`
-  in a path is the domain's `HOME`, as it is for `bash`.
+  to them. A path under `/run/jr2`, or a symbolic link to one, fails with the error that an unreadable file gives:
+  Landlock does not stop `stat`, so pi's check that a file is there passes, and the open fails
+  (`EACCES: permission denied, open '<path>'`). `~` in a path is the domain's `HOME`, as it is for `bash`: pi expands
+  `~` to the `HOME` of the process that runs it, which is the Harness's, so jr2 expands it first.
 - **The project context is read in the domain.** pi-coding-agent's `loadProjectContextFiles` and `loadSkills` read an
   Agent's `AGENTS.md`, `CLAUDE.md` and skills in the process that calls them
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). So the Harness runs them in a child that the
@@ -169,16 +171,19 @@ code from `/work`.
   writes one line of JSON, and the Harness reads it as untrusted data, at most 256 KiB. An `AGENTS.md` that links to a
   file under `/run/jr2` fails at the open, in the domain, and pi goes on to the next name.
 - **The Harness process touches no path that the domain can write.** Each path in the Agent's files that the Harness
-  reads, lists or removes goes through the spawner. The file that holds the full output of a `bash` call is the
-  Harness's own. pi's `bash` makes it in the Harness process's `TMPDIR` and opens it by its path again to read it, so
-  the Harness's `TMPDIR` is `/run/jr2/output`: an emptyDir of the Harness container alone, where the domain reads a file
-  and writes, makes, removes, moves and links nothing. So no command can put a link or a FIFO in the place of that file.
-  The model reads the file by the path in the result, with `read` or `bash`. A Harness without that folder refuses to
-  serve. The domain keeps the `TMPDIR` that the container started with, so an image's own `TMPDIR` works as it works
-  outside jr2. The Harness process has its own `HOME`, `/run/jr2/home`, from its start (above), which does not exist and
-  which no process can make, because code in the Harness process reads files under `HOME`: node looks for modules in
-  `~/.node_modules`, the AWS SDK reads `~/.aws/config`, which can name a `credential_process` to run, and Google's
-  library reads `~/.config/gcloud`. The domain keeps the Workspace's `HOME`.
+  reads, lists or removes goes through the spawner. pi's Working tools look at a path in the Harness process: `read`
+  tries the variants of a name with `access`, and `write` and `edit` order their calls by the `realpath` of the file.
+  These tell only whether a name is there and where a link points, which `stat` in the domain tells too, and they read
+  no content. The file that holds the full output of a `bash` call is the Harness's own. pi's `bash` makes it in the
+  Harness process's `TMPDIR` and opens it by its path again to read it, so the Harness's `TMPDIR` is `/run/jr2/output`:
+  an emptyDir of the Harness container alone, where the domain reads a file and writes, makes, removes, moves and links
+  nothing. So no command can put a link or a FIFO in the place of that file. The model reads the file by the path in the
+  result, with `read` or `bash`. A Harness without that folder refuses to serve. The domain keeps the `TMPDIR` that the
+  container started with, so an image's own `TMPDIR` works as it works outside jr2. The Harness process has its own
+  `HOME`, `/run/jr2/home`, from its start (above), which does not exist and which no process can make, because code in
+  the Harness process reads files under `HOME`: node looks for modules in `~/.node_modules`, the AWS SDK reads
+  `~/.aws/config`, which can name a `credential_process` to run, and Google's library reads `~/.config/gcloud`. The
+  domain keeps the Workspace's `HOME`.
 - **One secret control Stand-in for each Sandbox.** Only the Harness process holds it, as a file under `/run/jr2`. It is
   in no env of the domain. The Custodian puts the Sandbox's control token in its place on the control routes (ADR-0059),
   and the real token never leaves the Custodian.

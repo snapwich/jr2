@@ -15,8 +15,10 @@ running `bash` call, anything the Agent left running from earlier calls (a dev s
 
 Layers, each a backstop for the one before:
 
-1. **A process killed by a signal is an error.** jr2's bash tool reads the shell's exit: a signal death, of the command
-   or of the shell, reports the signal and never exit 0. A Harness conformance test holds it (ADR-0027).
+1. **A process killed by a signal is an error.** jr2's shell for the `bash` Working tool reads the shell's exit: a
+   signal death, of the command or of the shell, is exit `128 + n` for signal `n`, and never exit 0. The model reads
+   pi's text for a failed command (`Command exited with code 137`), which does not name the signal. A Harness
+   conformance test holds it (ADR-0027).
 2. **`tini` is PID 1 in the Harness container**, shipped on `/opt/jr2`, so killed trees leave no zombies. Not
    `shareProcessNamespace` — ADR-0005 keeps it off for good.
 3. **The `bash` Working tool starts each command with `oom_score_adj=1000`**, inherited by its children. It needs no
