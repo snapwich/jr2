@@ -315,3 +315,13 @@ test("an image-only NODE_OPTIONS and LD_LIBRARY_PATH reach the domain's env and 
     [],
   );
 });
+
+test("runIn marks a process it starts with the oom_score_adj it is given, and its children inherit it (ADR-0061)", async () => {
+  const domain = testChildren();
+  // The mark lands after the start; a child forked after it inherits it.
+  const argv = ["sh", "-c", "sleep 0.5; cat /proc/self/oom_score_adj"];
+  const marked = await runIn(domain, argv, { cwd: "/", oomScoreAdj: 1000 });
+  assert.equal(marked.stdout.trim(), "1000");
+  const plain = await runIn(domain, argv, { cwd: "/" });
+  assert.notEqual(plain.stdout.trim(), "1000");
+});

@@ -26,7 +26,16 @@
 // serve (`probeLandlock`), and every process here starts through the spawner.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { accessSync, constants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -395,6 +404,9 @@ export function runIn(
     timeoutMs?: number;
     maxBuffer?: number;
     encoding?: BufferEncoding;
+    /** The process's `oom_score_adj`, written when it has started (ADR-0061): 1000 makes it the
+     * kernel's first choice at the memory limit, never the Harness. Best effort, as for `exec`. */
+    oomScoreAdj?: number;
   },
 ): Promise<RunResult> {
   const env: Record<string, string> = {};
@@ -442,6 +454,19 @@ export function runIn(
     if (opts.input !== undefined) {
       proc.write(opts.input);
       proc.end();
+    }
+    const adj = opts.oomScoreAdj;
+    if (adj !== undefined) {
+      proc.started.then(
+        (pid) => {
+          try {
+            writeFileSync(`/proc/${pid}/oom_score_adj`, String(adj));
+          } catch {
+            // Not Linux, or no /proc, or it has ended: nothing to mark.
+          }
+        },
+        () => {},
+      );
     }
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     if (opts.timeoutMs !== undefined) {

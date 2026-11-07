@@ -207,7 +207,8 @@ export type LoadOptions = {
  * Load the project context of `cwd` in the domain: the child, by the spawner, with this process's
  * node. Its env is HOME alone, the Harness's own (which the domain cannot reach), so the child's
  * node looks for modules in jr2's folders alone, and no `NODE_OPTIONS` of the image loads code
- * into it. With an image user's folder, the child is confined further: in that folder it reads only the names that pi's
+ * into it. Its `oom_score_adj` is 1000, as each process of the Agent's (ADR-0061). With an image
+ * user's folder, the child is confined further: in that folder it reads only the names that pi's
  * loaders read ({@link USER_CONTEXT_NAMES}), and writes nothing. The files are kept within the
  * scope's bound ({@link withinBound}). An abort answers `aborted`.
  */
@@ -240,6 +241,7 @@ export async function loadProjectContext(
     env: { HOME: HARNESS_HOME },
     timeoutMs: opts.timeoutMs ?? PROJECT_CONTEXT_TIMEOUT_MS,
     maxBuffer: maxBytes,
+    oomScoreAdj: 1000,
     ...(opts.signal ? { signal: opts.signal } : {}),
   });
   if (r.error?.name === "AbortError") return "aborted";

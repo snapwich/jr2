@@ -21,9 +21,11 @@ Layers, each a backstop for the one before:
    conformance test holds it (ADR-0027).
 2. **`tini` is PID 1 in the Harness container**, shipped on `/opt/jr2`, so killed trees leave no zombies. Not
    `shareProcessNamespace` — ADR-0005 keeps it off for good.
-3. **The `bash` Working tool starts each command with `oom_score_adj=1000`**, inherited by its children. It needs no
-   privilege, and on a node whose owner set the kubelet's `singleProcessOOMKill: true` the kernel then picks the Agent's
-   process, not the Harness.
+3. **The `bash` Working tool starts each command with `oom_score_adj=1000`**, inherited by its children. The Harness
+   gives the same mark to each other process that it starts for an Agent's work: a `command` Effect's process, and the
+   child that loads the project context ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), which
+   imports pi-coding-agent and reads files that the Agent writes. It needs no privilege, and on a node whose owner set
+   the kubelet's `singleProcessOOMKill: true` the kernel then picks the Agent's process, not the Harness.
 4. **The Harness guards its own cgroup.** Every 10–20 ms it reads anon + shmem from `memory.stat` against `memory.max`
    (never `memory.current`, which counts reclaimable page cache). Near the limit it kills all of the Agent's processes,
    checks usage again, clears `/dev/shm`, and the running `bash` call returns
