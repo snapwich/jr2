@@ -504,9 +504,13 @@ func ProbeMain(stdout, stderr io.Writer) int {
 // HarnessRulesMain is `effector harness-rules --deny <path> [--deny <path>]... [--read <path>]...`:
 // ForHarness's rules for root `/`, each argument ended by a NUL byte, in confine's own format (Args,
 // without the program), so the Harness puts them before `--` as they are. At least one `--deny` is
-// required. Each `--read` is a folder in a denied path that the domain may read. A path is resolved
-// to its real path here (realPath); a deny path that does not exist is still left out by the
-// carve-out, so a folder made there later gets no rule.
+// required. Each `--read` is a folder or file in a denied path that the domain may read. A deny path
+// is resolved to its real path here (realPath); a deny path that does not exist is still left out by
+// the carve-out, so a folder made there later gets no rule. A `--read` path must be its own real
+// path: one that a link is on, at its end or above it, is refused (exit 1), as an open with
+// O_NOFOLLOW refuses a link (ELOOP). The caller looked at that path before it asked, so a link there
+// now is a link that was put in its place, and a rule on the link's target would give a read that
+// the caller did not choose.
 func HarnessRulesMain(args []string, stdout, stderr io.Writer) int {
 	var deny, read []string
 	for i := 0; i < len(args); i++ {
@@ -527,6 +531,12 @@ func HarnessRulesMain(args []string, stdout, stderr io.Writer) int {
 		if args[i] == "--deny" {
 			deny = append(deny, real)
 		} else {
+			if clean := filepath.Clean(args[i+1]); real != clean {
+				_, _ = fmt.Fprintf(stderr,
+					"harness-rules: --read %s: a link is on the path (its real path is %s), and a read rule names no link: %v\n",
+					clean, real, syscall.ELOOP)
+				return 1
+			}
 			read = append(read, real)
 		}
 		i++

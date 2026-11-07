@@ -653,6 +653,40 @@ func TestHarnessRulesMainWritesConfinesFormat(t *testing.T) {
 	}
 }
 
+// A --read path that a link is on, at its end or above it, is refused: the caller looked at the
+// path before it asked, so a link there was put in its place (ELOOP). Its own real path is ruled.
+func TestHarnessRulesMainRefusesAReadThroughALink(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	must(t, err)
+	agent := filepath.Join(root, "agent")
+	must(t, os.MkdirAll(filepath.Join(agent, "skills"), 0o700))
+	must(t, os.WriteFile(filepath.Join(agent, "auth.json"), []byte("{}"), 0o600))
+	must(t, os.WriteFile(filepath.Join(agent, "AGENTS.md"), []byte("x"), 0o600))
+	must(t, os.Symlink(filepath.Join(agent, "auth.json"), filepath.Join(agent, "CLAUDE.md")))
+	must(t, os.Symlink(agent, filepath.Join(root, "via")))
+	var out, errs bytes.Buffer
+	for _, read := range []string{filepath.Join(agent, "CLAUDE.md"), filepath.Join(root, "via", "AGENTS.md")} {
+		out.Reset()
+		errs.Reset()
+		if code := HarnessRulesMain([]string{"--deny", agent, "--read", read}, &out, &errs); code != 1 ||
+			out.Len() != 0 || !strings.Contains(errs.String(), "a link is on the path") ||
+			!strings.Contains(errs.String(), "too many levels of symbolic links") {
+			t.Errorf("%s: exit %d, out %q, err %q", read, code, out.String(), errs.String())
+		}
+	}
+	out.Reset()
+	if code := HarnessRulesMain([]string{"--deny", agent, "--read", filepath.Join(agent, "AGENTS.md") + "/",
+		"--read", filepath.Join(agent, "skills")}, &out, &errs); code != 0 ||
+		!strings.Contains(out.String(), "--ro\x00"+filepath.Join(agent, "AGENTS.md")+"\x00") {
+		t.Fatalf("exit %d: %q %s", code, out.String(), errs.String())
+	}
+	// A deny path is still resolved through a link: it names what the domain may not reach.
+	out.Reset()
+	if code := HarnessRulesMain([]string{"--deny", filepath.Join(root, "via")}, &out, &errs); code != 0 {
+		t.Fatalf("deny through a link: exit %d: %s", code, errs.String())
+	}
+}
+
 // A missing denied path is resolved through the links above it, so a link on its way is followed.
 func TestRealPathFollowsALinkAboveAMissingPath(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
