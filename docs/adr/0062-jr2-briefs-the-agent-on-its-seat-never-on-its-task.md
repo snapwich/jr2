@@ -48,19 +48,42 @@ inherits a Workspace whose processes are gone, with no way to know why.
     share `/work` ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), so one
     Agent can still write in another's Worktree. A file that git does not ignore is then in that Worktree's diff or in
     its `git status`.
-  - **A context file or a skill that git ignores is left out,** in every Worktree and every folder. An ignored file is
-    in no diff and in no `git status`, and an Agent writes the rules that ignore it: the clone's shared `info/exclude`,
-    the global excludes in `HOME`, a `.gitignore`. The child that loads the project context asks git, in the domain,
-    with the git config that the Agents' own git reads (the domain's `HOME` and system file). In a folder whose chosen
-    file is ignored, the next name in pi's order loads in its place, so an ignored `AGENTS.override.md` does not hide
-    the repo's `AGENTS.md`. When git cannot say (an error, or a `core.worktree` that puts the folder outside git's own),
-    the file is left out. A folder in no repo has no ignore rule, and its file loads. A change to that config can only
-    make a file ignored, which loads less, or not ignored, which `git status` then shows. Each detached cut also removes
-    the ignored context files and skills of its Worktree
+  - **A context file or a skill loads as git shows it to a reviewer,** in every Worktree and every folder. An ignored
+    file is in no diff and in no `git status`, and an Agent writes the rules that ignore it: the clone's shared
+    `info/exclude`, the global excludes in `HOME`, a `.gitignore`. So an ignored file is left out. A tracked file loads
+    as the index has it, not as the work tree has it: git can hide a change of a tracked file from `git status` (an
+    assume-unchanged or skip-worktree bit, or a change of the same size whose stat data an Agent made the same as the
+    old file's), but not a change of the index, which `git status` shows as staged. So a coder's own change of a tracked
+    `AGENTS.md` reaches a later conversation when it is staged or committed, not before. A tracked link loads the
+    tracked file that it names, as the index has it. A file that git neither tracks nor ignores loads from the work
+    tree, and `git status` shows it as untracked. The child that loads the project context asks git, in the domain, with
+    the git config that the Agents' own git reads (the domain's `HOME` and system file), and with no replace ref. It
+    finds the top of the working directory's repo once, and asks git in that top with each file's path from the top
+    (`./<path>`). So the outer repo's rules judge a file in a nested repo, a name is never pathspec magic, and a file in
+    a linked folder is judged at the real path that the link names; a file outside the top is left out. A file in a
+    folder above the top, which the bound can reach, is judged by that folder's repo. In a folder whose chosen file is
+    left out, the next name in pi's order loads in its place, so an ignored `AGENTS.override.md` does not hide the
+    repo's `AGENTS.md`. When git cannot say (no git on the image's `PATH`, an error, a `.git` that names no repo, or a
+    `core.worktree` that puts the folder outside git's own), the file is left out. Only a folder with no `.git` in it or
+    in a folder above it is in no repo; it has no ignore rule, and its file loads from the work tree. A change to that
+    config can only make a file ignored, which loads less, or not ignored, which `git status` then shows. Each detached
+    cut also removes the ignored context files and skills of its Worktree
     ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), so that the folder holds what the
-    commit has and nothing that a later read of the folder finds. The limit is what an Agent does after the cut and
-    after the load: a file that loaded can be ignored later, and a commit in another Agent's Worktree makes a file
-    tracked.
+    commit has and nothing that a later read of the folder finds.
+  - **The limits of that rule.** It keeps one Agent from putting text in another Agent's system prompt by chance or with
+    little work. It is not a guarantee against an Agent that sets out to do it
+    ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)): a Workflow that needs more
+    gives the review a Workspace of its own. What stays:
+    - What an Agent does after the cut and after the load. A file that loaded can be ignored later, a commit in another
+      Agent's Worktree makes a file tracked, and a change during the load can race the questions to git.
+    - An untracked file shows in a plain `git status` only as its folder, and not at all when the Worktree's config sets
+      `status.showUntrackedFiles=no`. It shows in a diff of the commit only when it is committed.
+    - The body of a skill. The system prompt has a skill's name and description, from the index for a tracked skill. The
+      model reads the body with `read` when it uses the skill, from the work tree, as it reads any other file.
+    - The clone's objects. Each Agent can write the clone's object folder, and git does not check an object's content
+      against its id when it reads it (ADR-0075).
+    - An Agent that removes another Agent's `.git` file, or puts one that names no repo in its place: the folder is then
+      in no repo or one that git cannot judge. Each git command of the other Agent fails there, which it sees.
   - **The path sets the bound, and the Harness enforces it.** The bound comes from the working directory's path, not
     from a `.git` in a folder: the Agent can remove its Worktree's `.git` file or make one, and that moves no bound.
     pi's walk goes up to `/` and has no option to stop. So the Harness keeps only the files that the child names in a
@@ -402,7 +425,7 @@ inherits a Workspace whose processes are gone, with no way to know why.
   package root does not export pi's: a unit test compares the copy with the sections that pi's own system prompt builds
   at the pin, so a bump that moves the frame fails it.
 - Each conversation in a Worktree starts one node child per folder, about half a second before its first request. The
-  child runs two git commands for each context file and skill that it finds.
+  child runs one git command to find the repo's top, and up to three for each context file and skill that it finds.
 - `jr2 up` reads each Sandbox Image that it builds once more for the user context: a container that it creates and does
   not start, and one `docker cp` header for each folder of the path. Each Sandbox pod whose image has the folder mounts
   the image again, as a volume, at two paths.
