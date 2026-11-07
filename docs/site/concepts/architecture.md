@@ -224,9 +224,10 @@ asks for, never the full history. A checkout in the Sandbox asks for its large f
 Custodian, the Orchestrator, then the Repo cache. The Repo cache then gets them from the LFS server, with the clone
 credential. A large file in the cache goes when the cache of its Repo goes.
 
-The `.lfsconfig` file at the base of the Binding names the LFS server. The Orchestrator gives that base from the run's
-Binding, and ignores a base that the pod sends. When two Repo Slots bind one Repo on two bases, the first slot's base
-names the server. The Repo cache accepts only these servers:
+The `.lfsconfig` file at the base of the [Binding](../reference/glossary.md#binding) names the LFS server. The
+Orchestrator gives that base from the run's Binding, and ignores a base that the pod sends. When two
+[Repo Slots](../reference/glossary.md#repo-slot) bind one Repo on two bases, the first slot's base names the server. The
+Repo cache accepts only these servers:
 
 - an `https://` or `http://` server,
 - an ssh server on the host of an ssh Repo url, so that the ssh key never goes to a different host,

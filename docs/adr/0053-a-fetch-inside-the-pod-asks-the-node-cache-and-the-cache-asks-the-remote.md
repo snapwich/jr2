@@ -55,10 +55,11 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 - **Freshness degrades, absence does not, and the caller is told.** A remote fetch that fails or outruns the on-demand
   budget lets the program fall through to the objects the cache holds — ADR-0051's stance for attach — and writes one
   line to stderr, which git passes through verbatim:
-  `warning: jr2: remote fetch failed (<git's error>); serving the cache as of <lastFetched>`. The budget is the cache
-  agent's one on-demand number; the program's wait is that plus watch slack, and nothing else owns a timeout. A cut
-  reads that line too: its output carries the line in `stale`, and the cut uses what the clone holds. A branch name that
-  the clone does not hold is then `refused`, because the remote cannot confirm that it is new
+  `warning: jr2: remote fetch failed (<git's error>); serving the cache as of <lastFetched>`. A fetch's budget is the
+  cache agent's on-demand number for a fetch; the program's wait is that plus watch slack, and the program owns no
+  timeout of its own. An LFS ask has its own budget of ten minutes in the cache agent, and the Orchestrator waits that
+  plus watch slack. A cut reads that line too: its output carries the line in `stale`, and the cut uses what the clone
+  holds. A branch name that the clone does not hold is then `refused`, because the remote cannot confirm that it is new
   ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)).
 - **One fetch at a time in a clone.** All Worktrees of a clone share `refs/remotes/origin/*`, and git updates a ref only
   if it still holds the value that the fetch read. So two fetches that overlap on a moved remote can fail with
@@ -83,8 +84,9 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   alternate. A miss goes to jr2's standalone transfer agent, beside git-lfs on the volume. The agent asks for those
   objects by oid on the path that a fetch's ask takes (the Custodian, then the Orchestrator, then the cache agent),
   waits for the landing, and gives git-lfs a copy of each one. The cache agent downloads them with the Repo CR's
-  `secretRef` (ADR-0051). So any checkout works, of any commit, as it does in a clone with no LFS. An attach asks for
-  the objects of the Binding's base before it checks out `default/`, and a cut asks for its commit's
+  `secretRef` (ADR-0051). So any checkout works, of any commit, as it does in a clone with no LFS. One ask names 1 to
+  256 objects. An attach asks for the objects of the Binding's base before it checks out `default/`, and a cut asks for
+  its commit's. The cut's ask gets what is left of its Effect's `timeout`
   ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). An object that the remote cannot give
   and the cache does not hold fails git-lfs's checkout, with jr2's line on stderr. A cold attach can download for longer
   than one HTTP request may wait, so `POST /attach` answers 202 while the attach runs, and the Orchestrator asks again

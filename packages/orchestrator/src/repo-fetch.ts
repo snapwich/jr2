@@ -128,7 +128,7 @@ export interface RepoFetches {
  * failure of the fetch — a caller may ask only for the caches its own pod holds. */
 export class UnmountedRepoError extends Error {}
 
-/** The cache agent's one on-demand number — what the agent gives a fetch before it gives up. */
+/** The cache agent's on-demand number for a fetch — what the agent gives a fetch before it gives up. */
 const CACHE_BUDGET_MS = 60_000;
 /** The cache agent's LFS budget (`defaultLFSTimeout`): what it gives one batch of objects. */
 const LFS_BUDGET_MS = 600_000;
@@ -154,8 +154,8 @@ const LFS_MARK_GAP_MS = 1_000;
 const MARK_RETRY_MS = 500;
 const MARK_RETRY_MAX_MS = 8_000;
 /** Watch slack on top of it: the agent's verdict has to reach the Repo CR, the operator has to
- * compute the Sandbox entry from it, and the watch has to carry it here. The ADR's "nothing else owns a
- * timeout" holds — this is the agent's budget plus the round trip, not a second policy. */
+ * compute the Sandbox entry from it, and the watch has to carry it here. It is the agent's
+ * budget plus the round trip, not a second policy: this process owns no timeout of its own (ADR-0053). */
 const WATCH_SLACK_MS = 15_000;
 
 export type KubeRepoFetchesOptions = {

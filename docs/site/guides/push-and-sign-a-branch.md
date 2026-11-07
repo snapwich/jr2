@@ -230,9 +230,8 @@ The LFS server is the first of `lfs.pushurl`, `lfs.url`, `remote.origin.lfspushu
 server. The server is an `https://` or `http://` server, or an ssh server on the host of an ssh push URL.
 
 The upload uses the push credential. The token goes only to the origin of the push URL: its scheme, its host and its
-port. A URL in the batch answer on a different origin, such as the object store of GitHub, gets only the headers that
-the batch answer gives. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the same rule
-for the clone.
+port. A URL on a different origin in the batch answer, such as the object store of GitHub, gets only the batch answer's
+headers. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the same rule for the clone.
 
 When an upload fails, the push is `rejected` with `stage` `upload`, and jr2 pushes nothing. See [Rules](#rules).
 
@@ -317,7 +316,8 @@ A push settles `rejected`, with `stage` `start`, for each of these. Its `reason`
 - a detached Worktree: `<path> is detached: a push publishes the branch of a Worktree, and it holds none`
 
 A push settles `rejected`, with `stage` `upload`, for each of these. Its `reason` ends `; nothing was pushed`. `<file>`
-is the path of the file and the start of its oid, as `<path> (oid <oid>)`:
+is the path of the file and the start of its oid, as `<path> (oid <oid>)`. `<files>` names the first three files and
+ends `and <n> more` when there are more:
 
 - the server does not hold an object, and neither the Agent's clone nor the Repo cache holds it:
   `the LFS object of <file> is in neither the Agent's repository nor the node cache, and the server lacks it, so it cannot be uploaded`
@@ -327,8 +327,22 @@ is the path of the file and the start of its oid, as `<path> (oid <oid>)`:
   `the LFS object of <file> could not be read (<cause>), and the server lacks it, so it cannot be uploaded`
 - the batch answer refuses an object, or leaves it out: `the LFS object of <file> could not be uploaded: <why>` or
   `the LFS object of <file> could not be uploaded: the server's batch answer left it out`
+- the LFS server refuses the batch request, for example a server on a different origin that needs a credential, or a
+  push credential that cannot write LFS objects:
+  `the LFS objects of <files> could not be uploaded: the LFS server answered the batch request <status>[: the server refused the credential][ (<message>)]`
+- the batch request gets no answer:
+  `the LFS objects of <files> could not be uploaded: the LFS server's batch request failed: <error>` or
+  `the LFS objects of <files> could not be uploaded: the LFS server's batch answer did not come: the timeout passed`
+- git-lfs fails: `the LFS objects of <files> could not be uploaded[: <why>][; git-lfs: <line>]`. `<why>` is
+  `the timeout passed`, `this Effector holds no git-lfs at <program>`, `the remote refused the credential` or
+  `the remote's TLS certificate is not trusted`. `<line>` is the last line in which git-lfs tells of the failure.
+- the batch request after git-lfs exits fails: `the upload of the LFS objects of <files> could not be confirmed: <why>`
 - the server does not hold the objects after git-lfs exits:
   `the LFS server does not hold the objects of <files> after the upload`
+- the base of the Binding is not in the Repo cache:
+  `the LFS server could not be read: the Binding's base "<base>" is not in the node cache`
+- jr2 cannot list the LFS pointers of the commits:
+  `the LFS pointers of the commits to publish could not be listed: <why>`
 - `.lfsconfig` names a server that jr2 does not upload to:
   `.lfsconfig at the Binding's base names <key> "<url>": jr2 uploads LFS objects only to an https or http server, or to an ssh server on the host of an ssh push url`
 

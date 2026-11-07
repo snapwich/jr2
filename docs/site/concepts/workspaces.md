@@ -140,7 +140,8 @@ A Repo that keeps its large files with Git LFS needs nothing from your Machine o
 `.gitattributes` tells git which files are large. jr2's runtime has its own git-lfs, and the clone uses it. Each large
 file is checked out with its contents, not as its pointer:
 
-- The attach gets the large files of the base before it checks out `default/`.
+- The attach gets the large files of the base before it checks out `default/`. When the Repo cache cannot get one, the
+  attach fails, and the Workspace fails in `attaching`.
 - A cut gets the large files of its commit before it changes git. When the Repo cache cannot get one, the cut is
   `refused`, and the reason names the file.
 - Each other checkout in the Sandbox, such as a `git checkout` by an Agent, asks the Repo cache for the large files that
@@ -156,8 +157,8 @@ its choice. [Architecture](architecture.md#large-files-in-the-repo-cache) tells 
 A large file uses the disk of `/work` more than one time. The clone keeps one copy of it in its own LFS store, and each
 checkout of it, `default/` included, is one more copy.
 
-The clone and each cut check out no submodule. The folder of a submodule stays empty. To work in the code of a
-submodule, bind its Repo as a Repo Slot of its own, as the example binds `handbook` beside `app`.
+The clone and each cut check out no submodule. The folder of a submodule stays empty. A Workspace that works in the code
+of a submodule binds that Repo as a Repo Slot of its own. The example binds `handbook` beside `app` in this way.
 
 ## A Workspace with no Repo
 
@@ -326,7 +327,12 @@ the Harness container does not lose the Workspace: the pod and `/work` stay.
   it chooses.
 - `jr2 up` refuses a Repo Slot name that starts with `.`, because `/work/.jr2/` is reserved for jr2.
 - A cut of the branch that `default/` holds is `refused`, and the reason names `/work/<slot>/default`.
-- A cut whose large files the Repo cache cannot get in time is `refused`, and the reason names each file.
+- An attach whose base has a large file that the Repo cache cannot get fails, and the Workspace fails in `attaching`.
+  The error is
+  `the attach of slot "<slot>" failed at get the base's large files: the node cache cannot get <files> of <base>: <list>`.
+- A cut whose large files the Repo cache cannot get, or cannot get in the time that the cut has, is `refused`. The
+  reason names the files, as the attach error does. [Cut a Worktree](../guides/cut-a-worktree.md#rules) gives the form
+  of `<list>`.
 - A `push` whose large files the LFS server does not hold after the upload is `rejected`, and nothing is pushed.
 - With no Repo Slot, `jr2 up` refuses a `worktree()`, a `push`, and a `command` that names an Effect secret.
 - A Size has only `limits.memory` and `limits.cpu`. jr2 refuses `requests` and each other key.
