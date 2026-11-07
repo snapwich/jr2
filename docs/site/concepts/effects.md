@@ -137,6 +137,10 @@ With `pin`, the input also gives `{ sha }`. With `squash`, it also gives `{ mess
 After a signed or a squashed push, the commits on the remote are not the Agent's own commits. Then jr2 moves the Agent's
 branch to the published commits. The Agent's files, index and stash do not change. The default timeout is 5 minutes.
 
+When the commits hold Git LFS files, the push uploads them to the LFS server before it updates the branch. When an
+upload fails, the push is `rejected`, and jr2 pushes nothing
+([Push and sign a branch](../guides/push-and-sign-a-branch.md#push-large-files)).
+
 ### `worktree`
 
 [`worktree()`](../reference/authoring-surface/worktree.md) cuts a Worktree, or reads the one that a cut made at that

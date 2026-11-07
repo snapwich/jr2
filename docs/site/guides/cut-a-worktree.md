@@ -183,6 +183,16 @@ These settle as `refused`, and nothing changes. Route them to your last arm:
 A name that git or the push refuses also settles `refused`. The `reason` says why, for example
 `"<name>" is not a branch name`.
 
+A cut gets the Git LFS files of its commit before it changes git. When the Repo cache cannot get one, the cut settles
+`refused`, and nothing changes. The reason names each file, as `<path> (<oid>): <why>`. `<commit>` is the commit of the
+cut, and `<files>` is `the large file` or `<n> large files`:
+`the node cache cannot get <files> of <commit>: <path> (<oid>): <why>`. The ask for the files gets what is left of the
+`timeout` of the Effect, less one minute. A file that does not come in that time also makes the cut `refused`, with this
+text.
+
+A cut checks out no submodule. The folder of a submodule stays empty. To work in the code of a submodule, bind its Repo
+as a Repo Slot of its own ([Workspaces](../concepts/workspaces.md#large-files-and-submodules)).
+
 These are not `refused`, because no word of a run can cause them:
 
 - `createMachine` refuses an Effect's `onDone` with a guard on its last arm:

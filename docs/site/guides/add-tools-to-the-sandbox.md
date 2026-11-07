@@ -80,6 +80,7 @@ runtime at `/opt/jr2`, and starts the [Harness](../reference/glossary.md#harness
 - The `ENTRYPOINT` and the `CMD` of the image do not run. To run a process all the time, use a User Container (see
   [Run a service beside the Agent](#run-a-service-beside-the-agent)).
 - jr2 adds `/opt/jr2/bin` at the end of `PATH`. Thus a tool of the same name in your image comes first.
+- The image needs no git-lfs. jr2's runtime has its own, and each clone of a Repo uses it by its full path.
 - The `USER` and the `HOME` of the image stay as you set them. When an image that `jr2 up` built sets no `USER`, the pod
   runs as uid 1000, with `HOME=/home/jr2`.
 

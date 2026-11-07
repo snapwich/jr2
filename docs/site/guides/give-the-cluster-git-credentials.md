@@ -165,6 +165,16 @@ rules.
 `jr2 up` tells you to give the key that it makes read access, and its Secret has no `known_hosts`. A push over ssh needs
 write access and `known_hosts`. Thus, to push over ssh, make the Secret yourself.
 
+## Large files
+
+A Repo that keeps its large files with Git LFS needs no other entry. The Repo cache gets the large files with the clone
+credential, and a `push` uploads them with the push credential. The `.lfsconfig` at the base of the
+[Binding](../reference/glossary.md#binding) names the LFS server.
+
+The token goes only to the origin of the Repo url: its scheme, its host and its port. An LFS server on a different
+origin gets no token. A public server works, and a private server fails. An ssh key goes only to the host of the Repo
+url. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the full rule.
+
 ## Rules
 
 `jr2 up` prints each refusal after `error: `.

@@ -217,6 +217,34 @@ objects from that cache. A `git fetch origin` in the Sandbox asks the Repo cache
 fetches from the host of the Repo, with the clone credential of the cluster. Thus the Harness container needs no git
 credential to fetch.
 
+### Large files in the Repo cache
+
+The Repo cache also keeps the Git LFS objects of each Repo, beside its bare clone. It gets only the objects that a pod
+asks for, never the full history. A checkout in the Sandbox asks for its large files on the path of a fetch: the
+Custodian, the Orchestrator, then the Repo cache. The Repo cache then gets them from the LFS server, with the clone
+credential. A large file in the cache goes when the cache of its Repo goes.
+
+The `.lfsconfig` file at the base of the Binding names the LFS server. The Orchestrator gives that base from the run's
+Binding, and ignores a base that the pod sends. When two Repo Slots bind one Repo on two bases, the first slot's base
+names the server. The Repo cache accepts only these servers:
+
+- an `https://` or `http://` server,
+- an ssh server on the host of an ssh Repo url, so that the ssh key never goes to a different host,
+- a `file://` server for a `file://` Repo.
+
+The token goes only to the origin of the Repo: its scheme, its host and its port. Thus:
+
+- An LFS server on the origin of the Repo gets the token.
+- An LFS server on a different origin gets no token, also after a redirect. A public server works. A private server
+  fails with the error of git-lfs.
+- The batch answer of the LFS server gives a URL for each object. A URL on the origin of the Repo can get the token,
+  after a 401, as git-lfs gives it. A URL on a different origin, such as the object store of GitHub, gets only the
+  headers that the batch answer gives.
+
+The LFS server cannot change what a file holds, because git-lfs checks each object against its oid. A `push` uploads its
+large files with the push credential, by the same rules
+([Push and sign a branch](../guides/push-and-sign-a-branch.md#push-large-files)).
+
 ## Rules
 
 - An Instance has exactly one Orchestrator, and the Orchestrator always runs in the cluster.

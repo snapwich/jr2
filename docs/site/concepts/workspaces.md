@@ -134,6 +134,31 @@ an Agent that moves `HEAD` does not change what is pushed.
 jr2 has no Effect that removes a Worktree. To remove one, run `git worktree remove` in a `command`.
 [Cut a Worktree](../guides/cut-a-worktree.md) gives the procedure.
 
+## Large files and submodules
+
+A Repo that keeps its large files with Git LFS needs nothing from your Machine or your image. The commit's
+`.gitattributes` tells git which files are large. jr2's runtime has its own git-lfs, and the clone uses it. Each large
+file is checked out with its contents, not as its pointer:
+
+- The attach gets the large files of the base before it checks out `default/`.
+- A cut gets the large files of its commit before it changes git. When the Repo cache cannot get one, the cut is
+  `refused`, and the reason names the file.
+- Each other checkout in the Sandbox, such as a `git checkout` by an Agent, asks the Repo cache for the large files that
+  it needs.
+- A `push` uploads the large files of its commits to the LFS server before it updates the branch (see
+  [Push and sign a branch](../guides/push-and-sign-a-branch.md#push-large-files)).
+
+The `.lfsconfig` file at the base of the Binding names the LFS server. Without it, the server is the one that git-lfs
+gets from the Repo's url. The [Orchestrator](../reference/glossary.md#orchestrator) names that base from the run's
+Binding. It ignores a base that the pod sends. Thus an Agent cannot send the Repo cache or the push to an LFS server of
+its choice. [Architecture](architecture.md#large-files-in-the-repo-cache) tells which server gets the credential.
+
+A large file uses the disk of `/work` more than one time. The clone keeps one copy of it in its own LFS store, and each
+checkout of it, `default/` included, is one more copy.
+
+The clone and each cut check out no submodule. The folder of a submodule stays empty. To work in the code of a
+submodule, bind its Repo as a Repo Slot of its own, as the example binds `handbook` beside `app`.
+
 ## A Workspace with no Repo
 
 Some work has no Repo: get data, write a report from it, edit the report, and send it. For this work, leave `repos` out.
@@ -249,7 +274,8 @@ A Workspace goes through these states:
 
 1. `placing`: jr2 writes the Sandbox, and waits for a node.
 2. `provisioning`: the pod starts.
-3. `attaching`: the Harness clones each Repo Slot. With no Repo Slot, this state has nothing to do.
+3. `attaching`: the Harness clones each Repo Slot, and gets the large files of its base. With no Repo Slot, this state
+   has nothing to do.
 4. `running`: the body runs.
 5. `teardown`: the body is in a final state, and jr2 deletes the Sandbox.
 6. `failing`: the body invoked [`fail`](../reference/authoring-surface/fail.md), and jr2 deletes the Sandbox. Then the
@@ -274,10 +300,10 @@ the Workspaces of the run, unless you send it with `--keep` (see [`jr2 send`](..
 
 ## Lease and Continuity
 
-Nothing in the cluster stands for a run. Thus the [Orchestrator](../reference/glossary.md#orchestrator) must say that it
-still wants each Sandbox. The [Lease](../reference/glossary.md#lease) does this: about every 5 minutes, the Workspace
-writes an annotation on its Sandbox. It does this from the write of the Sandbox to its teardown, `placing` included.
-When the Lease stops for 30 minutes, the operator removes the Sandbox. Thus a Sandbox that nobody wants does not stay.
+Nothing in the cluster stands for a run. Thus the Orchestrator must say that it still wants each Sandbox. The
+[Lease](../reference/glossary.md#lease) does this: about every 5 minutes, the Workspace writes an annotation on its
+Sandbox. It does this from the write of the Sandbox to its teardown, `placing` included. When the Lease stops for 30
+minutes, the operator removes the Sandbox. Thus a Sandbox that nobody wants does not stay.
 
 [Continuity](../reference/glossary.md#continuity) asks a different question: is the Sandbox still the one that the body
 attached to? A Sandbox has one pod for its life. The work in `/work` is only in that pod. When a person or the cluster
@@ -300,6 +326,8 @@ the Harness container does not lose the Workspace: the pod and `/work` stay.
   it chooses.
 - `jr2 up` refuses a Repo Slot name that starts with `.`, because `/work/.jr2/` is reserved for jr2.
 - A cut of the branch that `default/` holds is `refused`, and the reason names `/work/<slot>/default`.
+- A cut whose large files the Repo cache cannot get in time is `refused`, and the reason names each file.
+- A `push` whose large files the LFS server does not hold after the upload is `rejected`, and nothing is pushed.
 - With no Repo Slot, `jr2 up` refuses a `worktree()`, a `push`, and a `command` that names an Effect secret.
 - A Size has only `limits.memory` and `limits.cpu`. jr2 refuses `requests` and each other key.
 - `jr2 up` refuses a Size that leaves the Harness container less than 256Mi of memory, or no cpu.
@@ -331,6 +359,8 @@ The guides and the Reference give the refusal text of each rule.
   Worktree, and the Workspace only clones
 - [ADR-0051](../reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md): a Repo is a slot
   on the `workspace()` and a cache on the node
+- [ADR-0053](../reference/decisions/0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md): a
+  fetch inside the pod, and a large file, ask the node cache
 - [ADR-0060](../reference/decisions/0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md): a Workspace states
   its Size, and jr2 reserves all of it
 - [ADR-0064](../reference/decisions/0064-a-workspace-waits-for-capacity.md): a Workspace waits for capacity

@@ -210,6 +210,32 @@ To push again, send `approve`:
 jr2 send <run id> --gate body.notPushed --event approve
 ```
 
+## Push large files
+
+A Repo that keeps its large files with Git LFS needs no option. When the commits of a push have LFS pointers, the
+Sandbox Effector uploads their objects to the LFS server before it updates the branch:
+
+1. It asks the batch API of the LFS server which objects the server holds. An object that the server holds needs no
+   upload and no local copy.
+2. It reads each object that the server does not hold from the Agent's clone, else from the Repo cache. It checks each
+   object against its oid.
+3. It uploads those objects with its own git-lfs.
+4. It asks the batch API again. The server must hold each object that it uploaded. Only then does it push the branch.
+
+A signed or a squashed push keeps the pointers, so it uploads the same objects.
+
+The LFS server is the first of `lfs.pushurl`, `lfs.url`, `remote.origin.lfspushurl` and `remote.origin.lfsurl` in the
+`.lfsconfig` at the base of the Binding. Without them, it is the server that git-lfs gets from the push URL. The
+[Orchestrator](../reference/glossary.md#orchestrator) gives the Effector that base, so the Agent cannot choose the
+server. The server is an `https://` or `http://` server, or an ssh server on the host of an ssh push URL.
+
+The upload uses the push credential. The token goes only to the origin of the push URL: its scheme, its host and its
+port. A URL in the batch answer on a different origin, such as the object store of GitHub, gets only the headers that
+the batch answer gives. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the same rule
+for the clone.
+
+When an upload fails, the push is `rejected` with `stage` `upload`, and jr2 pushes nothing. See [Rules](#rules).
+
 ## Other options
 
 - `pin: true`: push the commit that the input of the Effect names, `{ worktree, sha: "<full commit id>" }`. Use it for a
@@ -264,7 +290,7 @@ It checks only a Repo Slot that the Machine binds. It does not check a URL that 
 
 When the Secret of the signing key does not exist, `jr2 up` does not stop. It shows this warning:
 `warning: git.credentials "<match>": the Secret "<secret>" does not exist in namespace <namespace> — a push that needs it is refused at provision until it exists and jr2 up runs again (ADR-0051)`.
-Then the [Orchestrator](../reference/glossary.md#orchestrator) refuses the push when it makes the Sandbox:
+Then the Orchestrator refuses the push when it makes the Sandbox:
 `Sandbox "<name>" refuses the push of Repo Slot "<slot>" (<url>), and jr2 up placed no signing key for git.credentials entry "<match>" — its token's variable was not set, or a Secret it names did not exist, when jr2 up last ran; set it or create it, and run jr2 up again (ADR-0051)`
 
 When a `push` starts, it refuses:
@@ -290,6 +316,22 @@ A push settles `rejected`, with `stage` `start`, for each of these. Its `reason`
 - a Worktree of a different Repo Slot: `<path> is a Worktree of Repo Slot "<slot>", not of "<slot>"`
 - a detached Worktree: `<path> is detached: a push publishes the branch of a Worktree, and it holds none`
 
+A push settles `rejected`, with `stage` `upload`, for each of these. Its `reason` ends `; nothing was pushed`. `<file>`
+is the path of the file and the start of its oid, as `<path> (oid <oid>)`:
+
+- the server does not hold an object, and neither the Agent's clone nor the Repo cache holds it:
+  `the LFS object of <file> is in neither the Agent's repository nor the node cache, and the server lacks it, so it cannot be uploaded`
+- the bytes of an object do not agree with its pointer:
+  `the LFS object of <file> does not match its oid: <why>, and the server lacks it`
+- an object file that jr2 cannot read:
+  `the LFS object of <file> could not be read (<cause>), and the server lacks it, so it cannot be uploaded`
+- the batch answer refuses an object, or leaves it out: `the LFS object of <file> could not be uploaded: <why>` or
+  `the LFS object of <file> could not be uploaded: the server's batch answer left it out`
+- the server does not hold the objects after git-lfs exits:
+  `the LFS server does not hold the objects of <files> after the upload`
+- `.lfsconfig` names a server that jr2 does not upload to:
+  `.lfsconfig at the Binding's base names <key> "<url>": jr2 uploads LFS objects only to an https or http server, or to an ssh server on the host of an ssh push url`
+
 `push()` refuses a timeout that is not a positive duration:
 `timeout "<timeout>" is not a positive duration (like "30s", "5m")`
 
@@ -309,7 +351,7 @@ the push Secret of the entry, `jr2-git-push-<hash>`, as `jr2 up` shows it. It is
   [`PushOutput`](../reference/authoring-surface/type-pushoutput.md) and
   [`git.credentials[].sign`](../reference/config.md#git-credentials-sign).
 - [ADR-0067](../reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md):
-  the `push` Effect, signed copies and the sync of the branch.
+  the `push` Effect, signed copies, the sync of the branch and the upload of large files.
 - [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md): the Sandbox
   Effector and its image.
 - [ADR-0051](../reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md): the credential
