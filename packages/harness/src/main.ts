@@ -55,6 +55,7 @@ import {
 import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
 import { contextScopeOf, imageUserContext } from "./project-context.ts";
+import { OutputFolder } from "./output-folder.ts";
 import { unixFetch } from "./unix-fetch.ts";
 import { keepSendOver } from "./keep.ts";
 import { serveShells } from "./workspace-shell.ts";
@@ -247,6 +248,9 @@ const standing = standingBriefing(seatFacts(process.env));
 // The project context's reach (ADR-0062): the Workspace's bound on the context files
 // (`JR2_PROJECT_CONTEXT`, the `workspace()`'s `projectContext`), and the image user's context
 // folder, as the Sandbox Image holds it now, before any Agent runs.
+// The Harness's output folder (ADR-0076): each `bash` call prunes it when it ends.
+const output = new OutputFolder(OUTPUT_DIR);
+
 const userDir = children ? imageUserContext(children.env.HOME) : undefined;
 const projectContext = {
   scope: contextScopeOf(process.env.JR2_PROJECT_CONTEXT),
@@ -267,7 +271,7 @@ const harnessWire = harnessServer({
       menu,
       guard,
       standing,
-      ...(children ? { children } : {}),
+      ...(children ? { children, output } : {}),
       projectContext,
       mcp: {
         conversation: mcpHost.conversation(conversationKey(seat.agentName, seat.instanceId), seat.mcpTools),

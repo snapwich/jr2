@@ -184,12 +184,17 @@ code from `/work`.
   Harness process's `TMPDIR` and opens it by its path again to read it, so the Harness's `TMPDIR` is `/run/jr2/output`:
   an emptyDir of the Harness container alone, where the domain reads a file and writes, makes, removes, moves and links
   nothing. So no command can put a link or a FIFO in the place of that file. The model reads the file by the path in the
-  result, with `read` or `bash`. A Harness without that folder refuses to serve. The domain keeps the `TMPDIR` that the
-  container started with, so an image's own `TMPDIR` works as it works outside jr2. The Harness process has its own
-  `HOME`, `/run/jr2/home`, from its start (above), which does not exist and which no process can make, because code in
-  the Harness process reads files under `HOME`: node looks for modules in `~/.node_modules`, the AWS SDK reads
-  `~/.aws/config`, which can name a `credential_process` to run, and Google's library reads `~/.config/gcloud`. The
-  domain keeps the Workspace's `HOME`.
+  result, with `read` or `bash`. A Harness without that folder refuses to serve. Nothing of pi removes a file there, so
+  the Harness bounds the folder: when a `bash` call ends, it removes the oldest files until the folder holds at most 256
+  MiB. It keeps the newest file, and each file that a call in flight can still use (one changed after the oldest call in
+  flight started). So the folder holds at most 256 MiB, plus the newest file, plus the files of the calls in flight. A
+  model that reads a removed file gets the error of a missing file. The bound is not an emptyDir `sizeLimit`: the
+  kubelet evicts the pod when a disk-backed emptyDir passes its limit, which would lose the Workspace for one long
+  output. The domain keeps the `TMPDIR` that the container started with, so an image's own `TMPDIR` works as it works
+  outside jr2. The Harness process has its own `HOME`, `/run/jr2/home`, from its start (above), which does not exist and
+  which no process can make, because code in the Harness process reads files under `HOME`: node looks for modules in
+  `~/.node_modules`, the AWS SDK reads `~/.aws/config`, which can name a `credential_process` to run, and Google's
+  library reads `~/.config/gcloud`. The domain keeps the Workspace's `HOME`.
 - **One secret control Stand-in for each Sandbox.** Only the Harness process holds it, as a file under `/run/jr2`. It is
   in no env of the domain. The Custodian puts the Sandbox's control token in its place on the control routes (ADR-0059),
   and the real token never leaves the Custodian.

@@ -929,7 +929,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           { name: SHELL_VOLUME, emptyDir: {} },
           // The Harness's TMPDIR (ADR-0076): pi's `bash` keeps a long command's whole output
           // there and opens it by its path again. The Harness container ALONE, and its confined
-          // processes read there and write nothing, so none can put a link in a file's place.
+          // processes read there and write nothing, so none can put a link in a file's place. No
+          // `sizeLimit`: the kubelet would evict the pod past it. The Harness prunes the folder
+          // after each `bash` call (`output-folder.ts`).
           { name: OUTPUT_VOLUME, emptyDir: {} },
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,

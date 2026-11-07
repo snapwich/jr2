@@ -20,6 +20,7 @@ import type { TextContent } from "@earendil-works/pi-ai";
 import { runIn, type ChildPolicy, type RunResult } from "./children.ts";
 import type { EngineTool, EngineToolResult } from "./engine.ts";
 import type { GuardOwner, MemoryGuard } from "./memory-guard.ts";
+import type { OutputFolder } from "./output-folder.ts";
 import {
   createBashToolDefinition,
   createEditToolDefinition,
@@ -46,13 +47,19 @@ const MAX_LINES = 200;
  * (`spec.ts`, mirroring the Orchestrator's `AgentDefinition`): what an Agent may do is identity.
  * `guard` is the process's memory guard, which watches every `bash` call (ADR-0061); `owner` is
  * the conversation the tools serve (ADR-0062). `children` is the domain: where the tools start a
- * process and do their file I/O (ADR-0076). A Harness with none (the Instance Harness) gives Working
+ * process and do their file I/O (ADR-0076). `output` is the Harness's output folder, which each
+ * `bash` call prunes when it ends (`output-folder.ts`, ADR-0076). A Harness with none (the Instance Harness) gives Working
  * tools to no Agent, and says so.
  */
 export function workingToolsFor(
   definition: AgentDefinition,
   cwd: string,
-  opts: { guard?: MemoryGuard | undefined; owner?: GuardOwner | undefined; children?: ChildPolicy | undefined } = {},
+  opts: {
+    guard?: MemoryGuard | undefined;
+    owner?: GuardOwner | undefined;
+    children?: ChildPolicy | undefined;
+    output?: OutputFolder | undefined;
+  } = {},
 ): WorkingTool[] {
   if (definition.workspace === "none") return [];
   const children = opts.children;
@@ -70,10 +77,16 @@ export function workingToolsFor(
   );
   const write = engineTool(createWriteToolDefinition(cwd, { operations: writeOps(files) }), home);
   const edit = engineTool(createEditToolDefinition(cwd, { operations: editOps(files) }), home);
-  const bash = guarded(
-    engineTool(createBashToolDefinition(cwd, { operations: bashOps(children), exposeSessionEnvironment: false }), home),
-    opts.guard,
-    opts.owner,
+  const bash = pruning(
+    guarded(
+      engineTool(
+        createBashToolDefinition(cwd, { operations: bashOps(children), exposeSessionEnvironment: false }),
+        home,
+      ),
+      opts.guard,
+      opts.owner,
+    ),
+    opts.output,
   );
   const find = engineTool(createFindToolDefinition(cwd, { operations: findOps(children) }), home);
   const grep = grepTool(cwd, children);
@@ -142,6 +155,22 @@ function textOf(content: EngineToolResult["content"]): string {
     .filter((c): c is TextContent => c.type === "text")
     .map((c) => c.text)
     .join("\n");
+}
+
+/** `bash` that prunes the Harness's output folder when it ends (`output-folder.ts`, ADR-0076). */
+export function pruning(bash: EngineTool, output: OutputFolder | undefined): EngineTool {
+  if (output === undefined) return bash;
+  return {
+    ...bash,
+    async execute(toolCallId, params, signal) {
+      const end = output.call();
+      try {
+        return await bash.execute(toolCallId, params, signal);
+      } finally {
+        end();
+      }
+    },
+  };
 }
 
 /** The status lines of pi's `bash` that a memory kill makes: the exit code is the kill's. */

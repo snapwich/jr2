@@ -34,6 +34,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
+import type { OutputFolder } from "./output-folder.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { summaryLlmMessage } from "./pi-compaction.ts";
 import { RunawayError, TURN_OVER, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
@@ -116,6 +117,9 @@ export type TurnDeps = {
   /** The process's memory guard (ADR-0061), watching every `bash` call. `main.ts` passes the one
    * over this pod's cgroup; omitted, no guard watches. */
   guard?: MemoryGuard;
+  /** The Harness's output folder (ADR-0076), which each `bash` call prunes when it ends. `main.ts`
+   * passes the Sandbox's; omitted, nothing prunes. */
+  output?: OutputFolder;
   /** The Briefing's standing part for this pod (ADR-0062), composed once from its seat's facts so
    * every Turn sends the same bytes. `main.ts` passes the pod's; omitted, a seat that knows no
    * CPUs and no Size — a host run. */
@@ -555,6 +559,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         guard: deps.guard,
         owner: { agent: deps.agentName, instanceId: deps.instanceId },
         children: deps.children,
+        output: deps.output,
       }),
       ...(mcp ? mcpTools(mcp.conversation, mcpList) : []),
       ...(menuTools(menu) as EngineTool[]),
