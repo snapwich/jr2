@@ -647,20 +647,24 @@ Feature: a workspace() run drives a real Sandbox on kind
     ADR-0062, ADR-0076. Each Agent runs as the image's user and can write that user's home, so
     `~/.pi/agent` as it is in the home would let one Agent write each later Agent's system prompt.
     `jr2 up` records the folder when the image has it, the pod mounts that folder of the image
-    again, read-only, and tells the Harness (`JR2_USER_CONTEXT`). A command in the domain tries to
-    change the folder before the reader's first Turn (`contexted-image.ts`). An image with a `USER`
+    again, read-only, at its own path and at /run/jr2/user-context, and tells the Harness
+    (`JR2_USER_CONTEXT`). The Harness reads it under /run/jr2 alone. A command in the domain tries to
+    change the folder, and to put a folder of its own in its place, before the reader's first Turn
+    (`contexted-image.ts`). An image with a `USER`
     and no such folder gets no mount, and a folder that a command makes there is not read
     (`contexted-home.ts`).
 
-    Scenario: an image's ~/.pi/agent reaches the model from a read-only mount, its auth.json never does, and the domain cannot change it
+    Scenario: an image's ~/.pi/agent reaches the model from a read-only mount, its auth.json never does, and the domain cannot change it or put another folder in its place
       Given the kind instance is serving
       When I start the "contexted-image" workflow detached
       Then the run's Sandbox becomes Ready
       And the reader's system prompt holds the context file "/home/node/.pi/agent/AGENTS.md" with "CTX-IMAGE-RULE" in pi's frame
       And the reader's system prompt holds "CTX-IMAGE-RULE" before "CTX-WORKTREE-RULE"
-      And the reader's system prompt lists the skill "img-skill" with "CTX-IMAGE-SKILL-DESC"
+      And the reader's system prompt lists the skill "img-skill" with "CTX-IMAGE-SKILL-DESC" at "/home/node/.pi/agent/skills/img-skill/SKILL.md"
+      And the reader's system prompt holds no text of "CTX-FAKE-RULE"
+      And the reader's system prompt holds no text of "/run/jr2/user-context"
       And no request to the model holds "CTX-AUTH-SECRET"
-      And the pod mounts "/home/node/.pi/agent" read-only from its own Sandbox Image, and the Harness reads the user context there
+      And the pod mounts "/home/node/.pi/agent" read-only from its own Sandbox Image, there and under /run/jr2, and the Harness reads the user context under /run/jr2
       And each try of a command in the domain to change the image user's context failed on a read-only file system
       When the Agent in the Sandbox calls "finish" with summary "read the rules"
       Then the run's Sandbox is destroyed

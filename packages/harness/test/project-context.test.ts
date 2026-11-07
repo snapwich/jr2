@@ -8,8 +8,9 @@ import assert from "node:assert/strict";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -26,12 +27,13 @@ import {
   projectContexts,
   projectContextText,
   USER_CONTEXT_NAMES,
-  userContextChanged,
+  asImagePaths,
   userContextMount,
   withinBound,
   type ProjectContext,
   type UserContextMount,
 } from "../src/project-context.ts";
+import { runIn } from "../src/children.ts";
 import { deniedDir, testChildren } from "./support/children.ts";
 
 /** A Repo Slot's Worktree under a work root of its own: `<root>/work/app/default`. `root` stands
@@ -221,41 +223,59 @@ function userMount(): { root: string; dir: string; table: string } {
   return { root, dir, table };
 }
 
-test("userContextMount: only the announced folder, as a read-only mount at its own real path; none when none is announced", () => {
+test("userContextMount: a read-only mount at its own real path, when the pod announces the image's folder; none when none is announced", () => {
   const { root, dir, table } = userMount();
-  const at = (announced: string | undefined, t = table) => userContextMount(announced, () => t);
+  const image = "/home/u/.pi/agent";
+  const at = (announced: string | undefined, t = table, d = dir) => userContextMount(announced, () => t, d);
   assert.equal(at(undefined), undefined);
   assert.equal(at(""), undefined, "the pod announces none");
-  assert.deepEqual(at(dir), { dir, mountId: "4021", device: deviceOf(dir) });
+  assert.deepEqual(at(image), { dir, image });
   const fault = (r: ReturnType<typeof userContextMount>): string => {
     assert.ok(r !== undefined && "fault" in r, JSON.stringify(r));
     return r.fault;
   };
   assert.match(fault(at("home/.pi/agent")), /not an absolute folder/);
-  assert.match(fault(at(`${dir}/`)), /not an absolute folder/);
-  assert.match(fault(at(join(root, "nothing"))), /cannot be read: ENOENT/);
-  assert.match(fault(at(dir, "22 1 0:21 / / rw - overlay overlay rw")), /is no mount/);
-  assert.match(fault(at(dir, mountLine("4021", deviceOf(dir), dir, "rw,relatime"))), /not read-only/);
-  assert.match(fault(at(dir, mountLine("4021", "0:9999", dir))), /on device .*, not on its mount's 0:9999/);
+  assert.match(fault(at(`${image}/`)), /not an absolute folder/);
+  assert.match(fault(at("/home//u/.pi/agent")), /not an absolute folder/);
+  assert.match(fault(at(image, table, join(root, "nothing"))), /cannot be read: ENOENT/);
+  assert.match(fault(at(image, "22 1 0:21 / / rw - overlay overlay rw")), /is no mount/);
+  assert.match(fault(at(image, mountLine("4021", deviceOf(dir), dir, "rw,relatime"))), /not read-only/);
+  assert.match(fault(at(image, mountLine("4021", "0:9999", dir))), /on device .*, not on its mount's 0:9999/);
   symlinkSync(dir, join(root, "link"));
-  assert.match(fault(at(join(root, "link"), mountLine("4021", deviceOf(dir), join(root, "link")))), /own real path/);
+  assert.match(
+    fault(at(image, mountLine("4021", deviceOf(dir), join(root, "link")), join(root, "link"))),
+    /own real path/,
+  );
 });
 
-test("userContextChanged: the folder must stay the mount that the Harness saw at its start", () => {
-  const { root, dir, table } = userMount();
-  const m = userContextMount(dir, () => table) as UserContextMount;
-  assert.equal(
-    userContextChanged(m, () => table),
-    undefined,
+test("asImagePaths: a file and a skill of the mount are named at the image's folder, where the model reads them; others stay", () => {
+  const m = { dir: "/run/jr2/user-context", image: "/home/a&b/.pi/agent" };
+  const skills = [
+    "<location>/run/jr2/user-context/skills/deploy/SKILL.md</location>",
+    "<location>/work/app/fix/.pi/skills/x/SKILL.md</location>",
+  ].join("\n");
+  assert.deepEqual(
+    asImagePaths(
+      {
+        files: [
+          { path: "/run/jr2/user-context/AGENTS.md", content: "image" },
+          { path: "/work/app/fix/AGENTS.md", content: "repo" },
+        ],
+        skills,
+      },
+      m,
+    ),
+    {
+      files: [
+        { path: "/home/a&b/.pi/agent/AGENTS.md", content: "image" },
+        { path: "/work/app/fix/AGENTS.md", content: "repo" },
+      ],
+      skills: [
+        "<location>/home/a&amp;b/.pi/agent/skills/deploy/SKILL.md</location>",
+        "<location>/work/app/fix/.pi/skills/x/SKILL.md</location>",
+      ].join("\n"),
+    },
   );
-  // A mount over it, the newest at that point, is another mount.
-  const over = `${table}\n${mountLine("5000", deviceOf(dir), dir)}`;
-  assert.match(userContextChanged(m, () => over) ?? "", /is mount 5000, not 4021/);
-  // Its parent moved, and a folder that an Agent made is now at the path: the mount is elsewhere.
-  renameSync(join(root, "home u"), join(root, "moved"));
-  mkdirSync(dir, { recursive: true });
-  const moved = table.replace("home\\040u", "moved");
-  assert.match(userContextChanged(m, () => moved) ?? "", /is no mount/);
 });
 
 test("loadProjectContext: the image user's AGENTS.md and skills load first; the child reads nothing else in that folder", async () => {
@@ -276,12 +296,14 @@ test("loadProjectContext: the image user's AGENTS.md and skills load first; the 
   mkdirSync(join(userDir, "skills", "leak"), { recursive: true });
   symlinkSync(join(userDir, "auth.json"), join(userDir, "skills", "leak", "SKILL.md"));
   const children = testChildren({ work });
-  const ctx = loaded(await loadProjectContext(children, dir, { workRoot: work, userDir }));
+  const userContext = { dir: userDir, image: "/home/u/.pi/agent" };
+  const ctx = loaded(await loadProjectContext(children, dir, { workRoot: work, userContext }));
   assert.deepEqual(ctx.files, [
-    { path: join(userDir, "AGENTS.md"), content: "The image's rules.\n" },
+    { path: "/home/u/.pi/agent/AGENTS.md", content: "The image's rules.\n" },
     { path: join(dir, "AGENTS.md"), content: "The repo's rules.\n" },
   ]);
   assert.ok(ctx.skills.includes("<name>deploy</name>"), ctx.skills);
+  assert.ok(ctx.skills.includes("<location>/home/u/.pi/agent/skills/deploy/SKILL.md</location>"), ctx.skills);
   assert.ok(!JSON.stringify(ctx).includes(secret), "auth.json is nowhere in the project context");
   // Without the user folder, the same domain reads auth.json through the link: the further rules
   // are what keep it out.
@@ -296,8 +318,8 @@ test("loadProjectContext: the image user's AGENTS.md and skills load first; the 
   symlinkSync(join(userDir, "auth.json"), join(userDir, "AGENTS.md"));
   writeFileSync(join(userDir, "CLAUDE.md"), "The image's CLAUDE.md.\n");
   rmSync(join(dir, ".pi"), { recursive: true });
-  const linked = loaded(await loadProjectContext(children, dir, { workRoot: work, userDir }));
-  assert.deepEqual(linked.files[0], { path: join(userDir, "CLAUDE.md"), content: "The image's CLAUDE.md.\n" });
+  const linked = loaded(await loadProjectContext(children, dir, { workRoot: work, userContext }));
+  assert.deepEqual(linked.files[0], { path: "/home/u/.pi/agent/CLAUDE.md", content: "The image's CLAUDE.md.\n" });
   assert.ok(!JSON.stringify(linked).includes(secret));
   assert.deepEqual(USER_CONTEXT_NAMES, [
     "AGENTS.override.md",
@@ -390,48 +412,45 @@ test("projectContexts: each folder loads once, so a later change of AGENTS.md do
   assert.match(lines[0]!, /\(ADR-0062\)$/);
 });
 
-test("projectContexts: the image user's context only from its mount, checked before and after each load", async () => {
+test("projectContexts: the image user's context from its mount, first, at the image's paths", async () => {
   const { work, dir } = worktree();
   writeFileSync(join(dir, "AGENTS.md"), "The repo's rules.\n");
   const { dir: userDir, table } = userMount();
   writeFileSync(join(userDir, "AGENTS.md"), "The image's rules.\n");
-  const m = userContextMount(userDir, () => table) as UserContextMount;
-  const signal = new AbortController().signal;
-  const lines: string[] = [];
-  const log = (line: string) => lines.push(line);
-
-  const read = projectContexts(testChildren({ work }), log, { workRoot: work, userContext: m, mountinfo: () => table });
-  const text = await read(dir, signal);
+  const m = userContextMount("/home/u/.pi/agent", () => table, userDir) as UserContextMount;
+  const read = projectContexts(testChildren({ work }), () => assert.fail("no line"), {
+    workRoot: work,
+    userContext: m,
+  });
+  const text = await read(dir, new AbortController().signal);
   assert.ok(text.indexOf("The image's rules.") < text.indexOf("The repo's rules."), text);
-  assert.deepEqual(lines, []);
+  assert.ok(text.includes('<project_instructions path="/home/u/.pi/agent/AGENTS.md">'), text);
+  assert.ok(!text.includes(userDir), text);
+});
 
-  // No longer that mount before the load: the load reads no user context, and the log says why.
-  const gone = projectContexts(testChildren({ work }), log, {
-    workRoot: work,
-    userContext: m,
-    mountinfo: () => "22 1 0:21 / / rw - overlay overlay rw",
-  });
-  const without = await gone(dir, signal);
-  assert.match(without, /The repo's rules\./);
-  assert.doesNotMatch(without, /The image's rules\./);
-  assert.equal(lines.length, 1);
-  assert.match(
-    lines[0]!,
-    new RegExp(`^jr2 harness: no user context for ${dir}: ${userDir} is no mount \\(ADR-0062\\)$`),
-  );
-
-  // Changed during the load: the folder gives no project context.
-  let calls = 0;
-  const during = projectContexts(testChildren({ work }), log, {
-    workRoot: work,
-    userContext: m,
-    mountinfo: () => (calls++ === 0 ? table : `${table}\n${mountLine("5000", deviceOf(userDir), userDir)}`),
-  });
-  assert.equal(await during(dir, signal), "");
-  assert.match(
-    lines[1]!,
-    /no project context from .*: the image user's context changed during the load: the mount at .* is mount 5000, not 4021 \(ADR-0062\)$/,
-  );
+test("the domain reads the user context mount under the denied folder, and moves and writes nothing there", async () => {
+  const { work, dir } = worktree();
+  const run = deniedDir("run-");
+  const userDir = join(run, "user-context");
+  mkdirSync(join(userDir, "skills", "deploy"), { recursive: true });
+  writeFileSync(join(userDir, "AGENTS.md"), "The image's rules.\n");
+  writeFileSync(join(userDir, "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: Ship it.\n---\n");
+  const userContext = { dir: userDir, image: "/home/u/.pi/agent" };
+  const children = testChildren({ work, deny: [run], read: [userDir] });
+  const ctx = loaded(await loadProjectContext(children, dir, { workRoot: work, userContext }));
+  assert.deepEqual(ctx.files, [{ path: "/home/u/.pi/agent/AGENTS.md", content: "The image's rules.\n" }]);
+  assert.ok(ctx.skills.includes("<location>/home/u/.pi/agent/skills/deploy/SKILL.md</location>"), ctx.skills);
+  for (const argv of [
+    ["mv", userDir, join(run, "moved")],
+    ["mv", run, `${run}-moved`],
+    ["sh", "-c", `printf x > ${join(userDir, "AGENTS.md")}`],
+    ["mkdir", join(userDir, "new")],
+  ]) {
+    const r = await runIn(children, argv, { cwd: work, timeoutMs: 10_000 });
+    assert.notEqual(r.code, 0, `${argv.join(" ")}: ${r.stdout}${r.stderr}`);
+  }
+  assert.deepEqual(readdirSync(run), ["user-context"]);
+  assert.equal(readFileSync(join(userDir, "AGENTS.md"), "utf8"), "The image's rules.\n");
 });
 
 test("projectContexts: with no announced mount, a ~/.pi/agent in the domain's HOME is never read", async () => {

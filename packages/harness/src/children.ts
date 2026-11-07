@@ -10,7 +10,8 @@
 //
 // The rules are `confine.ForHarness`'s, which `effector harness-rules --deny /run/jr2 --read
 // /run/jr2/output` writes once at start: every right on every path except `/run/jr2`, and read alone
-// in `/run/jr2/output`. That folder holds the control Stand-in, each held secret's Stand-in, the
+// in `/run/jr2/output` (and in `/run/jr2/user-context`, when the pod mounts the image user's context
+// there, ADR-0062). That folder holds the control Stand-in, each held secret's Stand-in, the
 // Custodian's control socket's folder, and the Harness's conversations; its `output` folder holds
 // the whole output of a long `bash` call, which the model reads (`OUTPUT_DIR`). A confined process cannot ptrace one outside its domain, so `/proc/<harness>/environ`
 // and `/mem` stay closed.
@@ -62,6 +63,13 @@ export const CONVERSATIONS_DIR = `${RUNTIME_SECRETS}/conversations`;
  * put a link or a FIFO in the file's place. The model reads the file by the path that pi gives.
  */
 export const OUTPUT_DIR = `${RUNTIME_SECRETS}/output`;
+/**
+ * Where the pod mounts the image user's context folder (`~/.pi/agent`) a second time, read-only
+ * from the Sandbox Image (ADR-0062): the Harness and the child that loads the project context read
+ * it here alone. The domain reads it and changes nothing there, and it can move neither this folder
+ * nor a folder above it, as it can move `~/.pi` in its HOME.
+ */
+export const USER_CONTEXT_DIR = `${RUNTIME_SECRETS}/user-context`;
 /** Where the Harness of a Sandbox listens for a person's shell (`workspace-shell.ts`): in a folder
  * of the Harness container's alone under `/run/jr2`, where no process of the domain makes a file. */
 export const SHELL_SOCKET = `${RUNTIME_SECRETS}/shell/shell.sock`;

@@ -127,7 +127,7 @@ export type TurnDeps = {
   /** The project context's load (`project-context.ts`, ADR-0062): its scope (the Workspace's
    * `projectContext`) and the image user's context mount, which `main.ts` passes; where its failure
    * is said (default `console.error`, the pod log); and, for a test, another child entry, bounds,
-   * work root or mount table. */
+   * or work root. */
   projectContext?: ContextOptions & {
     log?: (line: string) => void;
   };

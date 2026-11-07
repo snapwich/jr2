@@ -6,11 +6,14 @@
 // Agent's instructions and the Briefing's standing part.
 //
 // The image user's context is read from one place only: the folder that the pod mounts read-only
-// from the Sandbox Image (`JR2_USER_CONTEXT`). Each Agent of the Workspace runs as the image's
-// user, so a folder in its HOME that the image's user owns is one that each Agent writes, and what
-// one Agent writes there would be in each later Agent's system prompt. The kernel refuses a write
-// to the mount. The Harness checks, at its start and around each load, that the path is still that
-// mount (`/proc/self/mountinfo`, and the device of the folder); else that load has no user context.
+// from the Sandbox Image at `/run/jr2/user-context` (`USER_CONTEXT_DIR`), when the pod announces the
+// image's folder (`JR2_USER_CONTEXT`). Each Agent of the Workspace runs as the image's user, so a
+// folder in its HOME that the image's user owns is one that each Agent writes, and what one Agent
+// writes there would be in each later Agent's system prompt. The pod mounts the image's folder in
+// the HOME too, read-only, but an Agent can move `~/.pi` and put a folder of its own in its place.
+// Under `/run/jr2`, the domain can move nothing. The Harness checks once, at its start, that the
+// folder is that read-only mount. The paths in the text are the image's (`~/.pi/agent/...`), where
+// the model reads a skill's file, as the image's author wrote them.
 //
 // pi reads the files in the process that calls it. Here that is a child in the domain
 // (`project-context-main.ts`), started by the spawner, never the Harness process: the Agent writes
@@ -33,7 +36,7 @@
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, normalize, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HARNESS_HOME, harnessRules, runIn, type ChildPolicy } from "./children.ts";
+import { HARNESS_HOME, harnessRules, runIn, USER_CONTEXT_DIR, type ChildPolicy } from "./children.ts";
 import type { AgentDefinition } from "./spec.ts";
 
 /** The child's entry, beside this module: `/opt/jr2/src/project-context-main.ts` in a pod. */
@@ -108,7 +111,8 @@ function foldersUpTo(cwd: string, bound: string): Set<string> {
 
 /**
  * The context files of `ctx` that are in a folder from `cwd` up to `bound`, or in the image user's
- * folder (`userDir`): the Harness's bound on pi's walk, which goes up to `/`. The order stays pi's.
+ * folder as the child read it (`userDir`): the Harness's bound on pi's walk, which goes up to `/`.
+ * The order stays pi's.
  */
 export function withinBound(ctx: ProjectContext, cwd: string, bound: string, userDir?: string): ProjectContext {
   const folders = foldersUpTo(cwd, bound);
@@ -120,14 +124,13 @@ export function withinBound(ctx: ProjectContext, cwd: string, bound: string, use
   };
 }
 
-/** The image user's context mount, as the Harness saw it at its start (ADR-0062). */
+/** The image user's context mount, as the Harness checked it at its start (ADR-0062). */
 export type UserContextMount = {
-  /** The folder: `<home>/.pi/agent` of the image's user, its own real path. */
+  /** Where the Harness and the child read it: {@link USER_CONTEXT_DIR}, a read-only mount. */
   dir: string;
-  /** The mount's ID in `/proc/self/mountinfo`. */
-  mountId: string;
-  /** Its device, `major:minor`, which the folder's `stat` gives too. */
-  device: string;
+  /** The same folder of the image as the model sees it, `<home>/.pi/agent` (`JR2_USER_CONTEXT`):
+   * the paths in the system prompt are here. */
+  image: string;
 };
 
 /** One line of `/proc/<pid>/mountinfo` (proc(5)): what this module reads of it. */
@@ -180,30 +183,48 @@ function mountAt(dir: string, mountinfo: string): MountLine | { fault: string } 
 }
 
 /**
- * The image user's context mount that the pod announces (`JR2_USER_CONTEXT`, ADR-0062), checked:
- * `undefined` for none (`""`, or no value), a fault when the folder is not a read-only mount at its
- * own real path. Call it once, at the start, before any Agent runs.
+ * The image user's context mount, when the pod announces the image's folder (`JR2_USER_CONTEXT`,
+ * ADR-0062): `undefined` for none (`""`, or no value), a fault when the announced value is not an
+ * absolute folder, or when `dir` is not a read-only mount at its own real path. Call it once, at
+ * the start, before the domain is made: the domain reads `dir`. No later check is needed: under
+ * `/run/jr2`, no process of the domain makes, moves or removes a folder, and none can unmount.
  */
 export function userContextMount(
   announced: string | undefined,
   mountinfo: () => string = readMountInfo,
+  dir: string = USER_CONTEXT_DIR,
 ): UserContextMount | { fault: string } | undefined {
   if (announced === undefined || announced === "") return undefined;
   if (!announced.startsWith("/") || announced.endsWith("/") || normalize(announced) !== announced) {
     return { fault: `${JSON.stringify(announced)} is not an absolute folder` };
   }
-  const at = mountAt(announced, mountinfo());
+  const at = mountAt(dir, mountinfo());
   if ("fault" in at) return at;
-  return { dir: announced, mountId: at.id, device: at.device };
+  return { dir, image: announced };
 }
 
-/** Why `m` is no longer the mount that the Harness saw at its start, or `undefined` when it is:
- * the same mount ID is the newest mount at the folder, read-only, and the folder is on its device. */
-export function userContextChanged(m: UserContextMount, mountinfo: () => string = readMountInfo): string | undefined {
-  const at = mountAt(m.dir, mountinfo());
-  if ("fault" in at) return at.fault;
-  if (at.id !== m.mountId) return `the mount at ${m.dir} is mount ${at.id}, not ${m.mountId}`;
-  return undefined;
+/** `text` with each XML special character escaped, as pi's `formatSkillsForPrompt` escapes a
+ * skill's location. */
+const escapeXml = (text: string): string =>
+  text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+/**
+ * `ctx` with the paths in the image user's folder as the model sees them: a context file in `m.dir`
+ * is named in `m.image`, and each skill location under `m.dir` is under `m.image`. The model reads a
+ * skill's file there with its own tools, from the image's folder in its HOME.
+ */
+export function asImagePaths(ctx: ProjectContext, m: UserContextMount): ProjectContext {
+  return {
+    files: ctx.files.map((f) =>
+      dirname(f.path) === m.dir ? { ...f, path: join(m.image, relative(m.dir, f.path)) } : f,
+    ),
+    skills: ctx.skills.split(`<location>${escapeXml(m.dir)}/`).join(`<location>${escapeXml(m.image)}/`),
+  };
 }
 
 /** The paths of {@link USER_CONTEXT_NAMES} in `userDir` that are there and are no link: each gets
@@ -271,8 +292,8 @@ export type LoadOptions = {
   scope?: ContextScope;
   /** Where the Repo Slots are. Default `/work` (ADR-0075); a test names its own folder. */
   workRoot?: string;
-  /** The image user's context folder, checked as a mount ({@link userContextMount}), or none. */
-  userDir?: string;
+  /** The image user's context mount ({@link userContextMount}), or none. */
+  userContext?: UserContextMount;
 };
 
 /**
@@ -290,7 +311,7 @@ export async function loadProjectContext(
   opts: LoadOptions = {},
 ): Promise<ProjectContext | { fault: string } | "aborted"> {
   const maxBytes = opts.maxBytes ?? PROJECT_CONTEXT_MAX_BYTES;
-  const userDir = opts.userDir;
+  const userDir = opts.userContext?.dir;
   const child = [process.execPath, opts.entry ?? PROJECT_CONTEXT_ENTRY, cwd, ...(userDir ? [userDir] : [])];
   let argv = child;
   if (userDir !== undefined) {
@@ -329,54 +350,33 @@ export async function loadProjectContext(
   const parsed = parseProjectContext(r.stdout);
   if ("fault" in parsed) return parsed;
   const workRoot = opts.workRoot ?? WORK_ROOT;
-  return withinBound(parsed, cwd, contextBound(cwd, opts.scope ?? "worktree", workRoot), userDir);
+  const kept = withinBound(parsed, cwd, contextBound(cwd, opts.scope ?? "worktree", workRoot), userDir);
+  return opts.userContext !== undefined ? asImagePaths(kept, opts.userContext) : kept;
 }
 
 /** What {@link projectContexts} loads with: {@link LoadOptions}, with the image user's context as
  * the mount that the Harness checked at its start. */
-export type ContextOptions = Omit<LoadOptions, "signal" | "userDir"> & {
-  /** The image user's context mount ({@link userContextMount}), or none. */
-  userContext?: UserContextMount;
-  /** This process's mounts. Default `/proc/self/mountinfo`; a test gives its own. */
-  mountinfo?: () => string;
-};
+export type ContextOptions = Omit<LoadOptions, "signal">;
 
 /**
  * The project context text for one conversation, by folder: each folder loads once, and its text
  * (or "" after a failure, which `log` says once) is the same on each later Submission. A load that
  * an abort stopped is not kept: no request carried it.
- *
- * The image user's context is read only while its folder is the mount that the Harness saw at its
- * start, checked before the load and after it. Changed before: the load reads no user context, and
- * `log` says why. Changed during the load: the folder gives no project context, as a failed load.
  */
 export function projectContexts(
   children: ChildPolicy,
   log: (line: string) => void,
   opts: ContextOptions = {},
 ): (cwd: string, signal: AbortSignal) => Promise<string> {
-  const { userContext, mountinfo, ...load } = opts;
-  const changed = (m: UserContextMount) => userContextChanged(m, mountinfo);
   const kept = new Map<string, string>();
   return async (cwd, signal) => {
     const held = kept.get(cwd);
     if (held !== undefined) return held;
-    let userDir: string | undefined;
-    if (userContext !== undefined) {
-      const why = changed(userContext);
-      if (why === undefined) userDir = userContext.dir;
-      else log(`jr2 harness: no user context for ${cwd}: ${why} (ADR-0062)`);
-    }
-    const loaded = await loadProjectContext(children, cwd, { ...load, ...(userDir ? { userDir } : {}), signal });
+    const loaded = await loadProjectContext(children, cwd, { ...opts, signal });
     if (loaded === "aborted") return "";
-    const after = userDir !== undefined && userContext !== undefined ? changed(userContext) : undefined;
     let text = "";
     if ("fault" in loaded) {
       log(`jr2 harness: no project context from ${cwd}: the child that loads it failed: ${loaded.fault} (ADR-0062)`);
-    } else if (after !== undefined) {
-      log(
-        `jr2 harness: no project context from ${cwd}: the image user's context changed during the load: ${after} (ADR-0062)`,
-      );
     } else {
       text = projectContextText(loaded);
     }

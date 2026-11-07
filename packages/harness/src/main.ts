@@ -33,6 +33,7 @@ import {
   STANDINS_DIR,
   assertHarnessHome,
   OUTPUT_DIR,
+  USER_CONTEXT_DIR,
   takeStartEnv,
   useOutputDir,
   type ChildPolicy,
@@ -153,6 +154,13 @@ const models = modelsFor(harness, process.env);
 // (ADR-0076). An empty value keeps them in memory alone (a test's Harness).
 const conversationsDir = process.env.JR2_CONVERSATIONS_DIR ?? CONVERSATIONS_DIR;
 
+// The image user's context (ADR-0062): the pod mounts the image's `~/.pi/agent` (`JR2_USER_CONTEXT`)
+// a second time, read-only, at /run/jr2/user-context, and the Harness reads it there alone. It is
+// checked now, once, before the domain is made: the domain reads it, and moves nothing there. No
+// announced folder, no user context: a `~/.pi/agent` that an Agent makes is never read. The Instance
+// Harness has no domain and no Workspace, so none.
+const userContext = menuOnly ? undefined : userContextMount(process.env.JR2_USER_CONTEXT);
+
 // The domain (ADR-0076): the one spawner, confined, and the env of each process in it. The Instance
 // Harness has none — a Menu-only Agent has no Working tools (ADR-0031).
 let children: ChildPolicy | undefined;
@@ -174,6 +182,9 @@ if (!menuOnly) {
       confiner,
       standIns,
       control,
+      // The domain reads the image user's context mount too, under /run/jr2: the child that loads
+      // the project context is in the domain (ADR-0062).
+      read: [OUTPUT_DIR, ...(userContext !== undefined && !("fault" in userContext) ? [USER_CONTEXT_DIR] : [])],
     });
   } catch (err) {
     refuse(`the Harness cannot start its domain: ${err instanceof Error ? err.message : String(err)}`);
@@ -249,16 +260,13 @@ const standing = standingBriefing(seatFacts(process.env));
 const output = new OutputFolder(OUTPUT_DIR);
 
 // The project context's reach (ADR-0062): the Workspace's bound on the context files
-// (`JR2_PROJECT_CONTEXT`, the `workspace()`'s `projectContext`), and the image user's context: the
-// folder that the pod mounts read-only from the Sandbox Image (`JR2_USER_CONTEXT`), checked as that
-// mount now, before any Agent runs. No announced mount, no user context: a `~/.pi/agent` that an
-// Agent makes is never read.
-const userContext = children ? userContextMount(process.env.JR2_USER_CONTEXT) : undefined;
+// (`JR2_PROJECT_CONTEXT`, the `workspace()`'s `projectContext`), and the image user's context mount,
+// checked above.
 if (userContext !== undefined && "fault" in userContext) {
   console.error(`jr2 harness: no user context: ${userContext.fault} (ADR-0062)`);
 } else if (userContext !== undefined) {
   console.error(
-    `jr2 harness: the image user's context in ${userContext.dir} is read, from a read-only mount (ADR-0062)`,
+    `jr2 harness: the image user's context in ${userContext.image} is read, from a read-only mount at ${userContext.dir} (ADR-0062)`,
   );
 }
 const projectContext = {

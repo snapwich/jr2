@@ -75,8 +75,10 @@ code from `/work`.
   The Stand-in itself never goes on the socket. Without the proof, the Harness starts nothing.
 - **The domain can do what the container's uid can do, except reach jr2's secrets.** The rules give every right on every
   path, with one exception: `/run/jr2`. There the domain can list the names in each folder, and do nothing else, except
-  read the files in `/run/jr2/output` (below). Landlock only narrows the Unix permissions, so a confined program can do
-  everything that the uid can do without Landlock, except:
+  read the files in `/run/jr2/output` (below) and in `/run/jr2/user-context`, the image user's context
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), which the pod also mounts at `~/.pi/agent`.
+  Landlock only narrows the Unix permissions, so a confined program can do everything that the uid can do without
+  Landlock, except:
   - reach the contents of `/run/jr2`: read, write, truncate, make, remove, move or link a file or a folder there.
     `/run/jr2` holds the control Stand-in, each held secret's Stand-in, the folder of the Custodian's control socket,
     the folder of the shell's socket, the Harness's conversations, and the Harness's output folder. Every path that jr2
@@ -170,17 +172,16 @@ code from `/work`.
   spawner starts, with the module check above as its first import and `HOME=/run/jr2/home` as its whole env. The child
   writes one line of JSON, and the Harness reads it as untrusted data, at most 256 KiB. An `AGENTS.md` that links to a
   file under `/run/jr2` fails at the open, in the domain, and pi goes on to the next name. When the Sandbox pod mounts
-  the image user's context folder (`~/.pi/agent`, read-only from the Sandbox Image, ADR-0062), the child is confined
-  further: `effector confine`, run in the domain, adds rules that deny that folder except the names that pi's loaders
-  read there (its context file and `skills/`), each only to read. Landlock adds a ruleset to the domain's, so the child
-  keeps no right that the domain does not have. A name that is a symbolic link gets no rule, so a read through it is a
-  read of the path that it names: a link to `auth.json` fails. The Harness computes these rules at each load, in its own
-  process: it lists the names with `lstat`, and `effector harness-rules` resolves each path. That folder is a read-only
-  mount, so no process of the domain makes, changes or removes a name there. `harness-rules` refuses a `--read` path
-  that a link is on (ELOOP), so a link there stops the child: no project context, and one line in the pod log. The
-  Harness's checks that the folder is still that mount (`realpath` and `stat` of its path) look at the folders above it,
-  `HOME` and `~/.pi`, which the domain can write. As pi's `realpath` below, they tell only where a link points and read
-  no content.
+  the image user's context folder (`~/.pi/agent`, read-only from the Sandbox Image, ADR-0062, a second time at
+  `/run/jr2/user-context`, where the child reads it), the child is confined further: `effector confine`, run in the
+  domain, adds rules that deny that folder except the names that pi's loaders read there (its context file and
+  `skills/`), each only to read. Landlock adds a ruleset to the domain's, so the child keeps no right that the domain
+  does not have. A name that is a symbolic link gets no rule, so a read through it is a read of the path that it names:
+  a link to `auth.json` fails. The Harness computes these rules at each load, in its own process: it lists the names
+  with `lstat`, and `effector harness-rules` resolves each path. That folder is a read-only mount, so no process of the
+  domain makes, changes or removes a name there. `harness-rules` refuses a `--read` path that a link is on (ELOOP), so a
+  link there stops the child: no project context, and one line in the pod log. The folder and each folder above it are
+  jr2's, so the Harness's `lstat` reads no path that the domain can write.
 - **The Harness process touches no path that the domain can write.** Each path in the Agent's files that the Harness
   reads, lists or removes goes through the spawner. pi's Working tools look at a path in the Harness process: `read`
   tries the variants of a name with `access`, and `write` and `edit` order their calls by the `realpath` of the file.

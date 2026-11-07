@@ -49,12 +49,16 @@ export const OUTPUT_VOLUME = "output";
  * (ADR-0062): `worktree` or `workspace`, the `workspace()`'s `projectContext`. */
 export const PROJECT_CONTEXT_ENV = "JR2_PROJECT_CONTEXT";
 
-/** The env var that tells the Harness of a Sandbox where the image user's context folder is
- * mounted read-only from the Sandbox Image (ADR-0062), or `""` when the pod mounts none. The
- * Harness reads that context from this mount alone. */
+/** The env var that tells the Harness of a Sandbox the image user's context folder (ADR-0062),
+ * `<home>/.pi/agent`, which the pod mounts read-only from the Sandbox Image, or `""` when the pod
+ * mounts none. The model sees the folder at this path. */
 export const USER_CONTEXT_ENV = "JR2_USER_CONTEXT";
 /** The volume of that mount: the Sandbox Image again, as an `image` volume. */
 export const USER_CONTEXT_VOLUME = "user-context";
+/** Where the pod mounts the same folder of the image a second time, read-only (ADR-0062): under
+ * `/run/jr2`, where no process that the Harness confines moves a folder, so none can put a folder of
+ * its own in its place. The Harness reads the user context here alone. */
+export const USER_CONTEXT_DIR = "/run/jr2/user-context";
 
 /** The harness config ConfigMap the stock Harness boots from (ADR-0018): what this instance can
  * REACH — the custom model provider minus its key, and the catalog providers' gateways (ADR-0059). No Agents ride it: a Machine carries its own

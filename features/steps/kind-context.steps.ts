@@ -64,16 +64,36 @@ Then(
   },
 );
 
+/** The system prompt lists the skill `name` with `description`, in pi's frame and place. */
+async function listsSkill(world: E2EWorld, name: string, description: string): Promise<string> {
+  const system = await readerSystem(world);
+  assert.ok(system.includes("<skills>\n"), system);
+  assert.ok(system.includes(`<name>${name}</name>`) && system.includes(description), system);
+  // The skills follow the files, and the Briefing's standing part is last (ADR-0062).
+  assert.ok(system.indexOf("</project_context>") < system.indexOf("<skills>"), system);
+  assert.ok(system.indexOf("</skills>") < system.indexOf("<jr2-briefing>"), system);
+  return system;
+}
+
 Then(
   "the reader's system prompt lists the skill {string} with {string}",
   { timeout: 360_000 },
   async function (this: E2EWorld, name: string, description: string): Promise<void> {
-    const system = await readerSystem(this);
-    assert.ok(system.includes("<skills>\n"), system);
-    assert.ok(system.includes(`<name>${name}</name>`) && system.includes(description), system);
-    // The skills follow the files, and the Briefing's standing part is last (ADR-0062).
-    assert.ok(system.indexOf("</project_context>") < system.indexOf("<skills>"), system);
-    assert.ok(system.indexOf("</skills>") < system.indexOf("<jr2-briefing>"), system);
+    await listsSkill(this, name, description);
+  },
+);
+
+Then(
+  "the reader's system prompt lists the skill {string} with {string} at {string}",
+  { timeout: 360_000 },
+  async function (this: E2EWorld, name: string, description: string, location: string): Promise<void> {
+    const system = await listsSkill(this, name, description);
+    assert.ok(
+      system.includes(
+        `<name>${name}</name>\n    <description>${description}</description>\n    <location>${location}</location>`,
+      ),
+      system,
+    );
   },
 );
 
@@ -158,7 +178,7 @@ async function harnessOf(world: E2EWorld): Promise<{ pod: string; spec: PodSpec[
 }
 
 Then(
-  "the pod mounts {string} read-only from its own Sandbox Image, and the Harness reads the user context there",
+  "the pod mounts {string} read-only from its own Sandbox Image, there and under \\/run\\/jr2, and the Harness reads the user context under \\/run\\/jr2",
   { timeout: 120_000 },
   async function (this: E2EWorld, dir: string): Promise<void> {
     const { pod, spec } = await harnessOf(this);
@@ -167,12 +187,20 @@ Then(
     const volume = spec.volumes?.find((v) => v.name === "user-context");
     assert.equal(volume?.image?.reference, harness.image, "the Sandbox Image again");
     assert.deepEqual(
-      harness.volumeMounts?.find((m) => m.name === "user-context"),
-      { name: "user-context", mountPath: dir, subPath: dir.slice(1), readOnly: true },
+      harness.volumeMounts?.filter((m) => m.name === "user-context"),
+      [dir, "/run/jr2/user-context"].map((mountPath) => ({
+        name: "user-context",
+        mountPath,
+        subPath: dir.slice(1),
+        readOnly: true,
+      })),
     );
     assert.equal(harness.env?.filter((e) => e.name === "JR2_USER_CONTEXT").at(-1)?.value, dir);
     const log = await kubectl(this, ["logs", `pod/${pod}`, "-c", "harness"]);
-    assert.ok(log.includes(`the image user's context in ${dir} is read, from a read-only mount`), log);
+    assert.ok(
+      log.includes(`the image user's context in ${dir} is read, from a read-only mount at /run/jr2/user-context`),
+      log,
+    );
     assert.doesNotMatch(log, /no project context|no user context/, log);
   },
 );
@@ -194,7 +222,11 @@ Then(
     assert.doesNotMatch(writes, /WROTE/, writes);
     assert.equal(writes.match(/Read-only file system/g)?.length, 4, writes);
     assert.match(writes, /^home:\/home\/node$/m, writes);
-    // The image's files, as the image has them.
+    // The move of `~/.pi` and a folder of the command's own at `~/.pi/agent`: done, or refused by an
+    // overlay file system that does not move an image's folder. Either way, the reader's prompt has
+    // the image's rule (the steps before).
+    assert.match(writes, /^MOVED$|EXDEV/m, writes);
+    // The image's files, as the image has them, where the Harness reads them.
     const rule = await kubectl(this, [
       "exec",
       `pod/${pod}`,
@@ -202,7 +234,7 @@ Then(
       "harness",
       "--",
       "cat",
-      "/home/node/.pi/agent/AGENTS.md",
+      "/run/jr2/user-context/AGENTS.md",
     ]);
     assert.equal(rule.trim(), "CTX-IMAGE-RULE");
   },

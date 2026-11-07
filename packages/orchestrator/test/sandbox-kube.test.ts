@@ -629,8 +629,12 @@ test("an image whose record names a user context folder gets it mounted read-onl
     "the Sandbox Image again, the same ref",
   );
   assert.deepEqual(
-    spec.volumeMounts.find((m: { name: string }) => m.name === "user-context"),
-    { name: "user-context", mountPath: dir, subPath: "home/node/.pi/agent", readOnly: true },
+    spec.volumeMounts.filter((m: { name: string }) => m.name === "user-context"),
+    [
+      { name: "user-context", mountPath: dir, subPath: "home/node/.pi/agent", readOnly: true },
+      { name: "user-context", mountPath: "/run/jr2/user-context", subPath: "home/node/.pi/agent", readOnly: true },
+    ],
+    "at the image's path, where the model reads it, and under /run/jr2, where the Harness reads it",
   );
   const announced = spec.env.filter((e: { name: string }) => e.name === "JR2_USER_CONTEXT");
   assert.equal(announced.at(-1).value, dir, "jr2's entry is last, after harness.env's");

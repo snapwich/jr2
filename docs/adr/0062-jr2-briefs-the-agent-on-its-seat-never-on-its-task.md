@@ -74,18 +74,23 @@ inherits a Workspace whose processes are gone, with no way to know why.
       jr2's emptyDir (`/home/jr2`, [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). A
       multi-platform image is read for its first platform, from the registry. A registry ref that jr2 did not build has
       none.
-    - The Sandbox pod mounts the Sandbox Image a second time, as an `image` volume, with that folder as its `subPath`,
-      at the same path, read-only, in the Harness container. The files are the image's, at the path that pi expects, and
-      the kernel refuses each write, each new file, each removal and each move there. The mount needs the record: a
-      `subPath` that the image does not have stops the container.
+    - The Sandbox pod mounts the Sandbox Image again, as an `image` volume, with that folder as its `subPath`,
+      read-only, in the Harness container, twice. At the same path: the files that the model reads there (a skill's
+      file) are the image's, and the kernel refuses each write, each new file, each removal and each move in it. And at
+      `/run/jr2/user-context`: an Agent can move `~/.pi`, the folder above the first mount, and put a folder of its own
+      at `~/.pi/agent`, but under `/run/jr2` the domain moves, makes and removes nothing
+      ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). The mounts need the
+      record: a `subPath` that the image does not have stops the container.
     - The pod tells the Harness the folder (`JR2_USER_CONTEXT`, after `harness.env`, `""` for none). The Harness reads
-      the user context from that mount alone: with none, it reads none, also when an Agent makes a `~/.pi/agent`. At its
-      start, it checks that the folder is its own real path and a read-only mount (`/proc/self/mountinfo`), and notes
-      the mount and its device. Before each load and after it, it checks that the folder is still that mount, the newest
-      at that path, on that device. Before: if not, the load reads no user context, and the pod log has one line. After:
-      if not, the folder gives no project context, as a child that fails does. An Agent cannot unmount it or mount over
-      it; the check is for the folder above it, which can move when the home is on a file system that lets it. A move
-      and a move back within one load is not seen.
+      the user context from `/run/jr2/user-context` alone: with no folder told, it reads none, also when an Agent makes
+      a `~/.pi/agent`. At its start, before it makes the domain, it checks that `/run/jr2/user-context` is its own real
+      path and a read-only mount (`/proc/self/mountinfo`, and the folder's device). If not, no Agent reads a user
+      context, and the pod log has one line. No later check is needed: no process of the domain can unmount it, mount
+      over it, or move it or a folder above it. The domain reads that folder, so that the child in the domain can. In
+      the system prompt, each path in that folder is named in the image's folder (`~/.pi/agent/...`), where the model
+      reads a skill's file as the image's author wrote it. Between a move of `~/.pi` and the model's `read`, that path
+      can name an Agent's file: the read of a skill's file is then a read of a file in the Workspace, as any other read
+      is.
     - The child that reads it is confined further: in that folder it reads only the names that pi's loaders read there,
       so not `auth.json`, `settings.json` or `models.json` (ADR-0076). The image's author put a link there, if there is
       one, and a read through it is a read of the path that it names, which the rules do not allow.
@@ -337,6 +342,10 @@ inherits a Workspace whose processes are gone, with no way to know why.
   folder that no process of the domain writes is one more place in the Harness container, and the Harness reads the
   image's folder in the Harness process to copy it, where a link the image has is followed. The mount is the image's own
   files, and the kernel keeps them read-only.
+- **The mount at `~/.pi/agent` alone, checked before and after each load.** Rejected: the folder above it, `~/.pi`, is
+  the Agent's, so an Agent could move it, put a folder of its own at `~/.pi/agent` and move it back within one load
+  (about half a second), and no check saw it. A second mount under `/run/jr2` has no folder above it that the domain can
+  move.
 - **A shared, writable user context** (`userContext: "shared"`, the folder in `HOME` as it is). Not now: no Workflow
   needs Agents that leave rules to each other there. A Workflow that does would name it, and its pod would have no
   mount.
@@ -386,7 +395,7 @@ inherits a Workspace whose processes are gone, with no way to know why.
 - Each conversation in a Worktree starts one node child per folder, about half a second before its first request.
 - `jr2 up` reads each Sandbox Image that it builds once more for the user context: a container that it creates and does
   not start, and one `docker cp` header for each folder of the path. Each Sandbox pod whose image has the folder mounts
-  the image twice.
+  the image again, as a volume, at two paths.
 - Each admission into a Workspace costs one more request to its Harness, `GET /memory-kills`. The first read from a
   Harness that fails is said in one line of the Orchestrator's log.
 - The no-signal nudge stays a re-prompt within a Turn (ADR-0016); it is not a notice.

@@ -114,6 +114,7 @@ import {
   OUTPUT_DIR,
   OUTPUT_VOLUME,
   PROJECT_CONTEXT_ENV,
+  USER_CONTEXT_DIR,
   USER_CONTEXT_ENV,
   USER_CONTEXT_VOLUME,
   HELD_MOUNT,
@@ -971,18 +972,18 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           { name: SHELL_VOLUME, mountPath: SHELL_DIR },
           { name: OUTPUT_VOLUME, mountPath: OUTPUT_DIR },
           ...seat.homeMount,
-          // At its own path, read-only: the same files, and no Agent of the Workspace writes what
-          // each Agent reads into its system prompt. The Harness reads the user context from this
-          // mount alone (`JR2_USER_CONTEXT`).
+          // Twice, read-only. At its own path (`JR2_USER_CONTEXT`): the files that the model reads
+          // there, a skill's among them, are the image's, and no Agent writes them. And under
+          // /run/jr2: an Agent can move `~/.pi` in its HOME and put a folder of its own in its
+          // place, and under /run/jr2 it moves nothing. The Harness reads the user context there
+          // alone (ADR-0062).
           ...(seat.userContext !== undefined
-            ? [
-                {
-                  name: USER_CONTEXT_VOLUME,
-                  mountPath: seat.userContext,
-                  subPath: seat.userContext.slice(1),
-                  readOnly: true,
-                },
-              ]
+            ? [seat.userContext, USER_CONTEXT_DIR].map((mountPath) => ({
+                name: USER_CONTEXT_VOLUME,
+                mountPath,
+                subPath: seat.userContext!.slice(1),
+                readOnly: true,
+              }))
             : []),
           ...custodian.harnessMounts,
         ],
