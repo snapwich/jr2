@@ -1,32 +1,37 @@
 // The attach (ADR-0063): the post-Ready step that puts a Workspace's Repos into `/work`
 // (ADR-0004, ADR-0051), run HERE, in the Harness container, on `POST /attach`. It was a shell
-// script the Orchestrator ran over `kubectl exec`; the effect is unchanged, step for step — per
-// Repo Slot, in declaration order:
+// script the Orchestrator ran over `kubectl exec`. Per Repo Slot, in declaration order:
 //
 //   1. `mkdir <work>/<slot>` and stamp ADR-0005's default ACL on it (`work-acl`), BEFORE the clone
 //      fills it: a default ACL is inherited at creation, never retrofitted.
-//   2. `git clone --shared /repos/<key> <slot>/default` — pod-local, borrowing objects from the
-//      node's read-only cache.
-//   3. Place `default/` on the Binding's base, once. A Machine cuts every
-//      other Worktree with `worktree()` (cut.ts).
-//   4. origin's fetch url → the node cache program (ADR-0053), its push url → the real remote
+//   2. `git clone --shared --no-checkout /repos/<key> <slot>/default` — pod-local, borrowing objects
+//      from the node's read-only cache. Nothing is checked out yet.
+//   3. origin's fetch url → the node cache program (ADR-0053), its push url → the real remote
 //      (ADR-0005), `protocol.ext.allow user`, and `gc.auto=0` with `maintenance.auto=false`.
+//   4. Git LFS (ADR-0053): git-lfs's filter and jr2's transfer agent in the clone's config, by
+//      absolute path on the runtime volume, and git-lfs's four hooks where the clone has none.
+//   5. Ask the node cache for the large files of the Binding's base (`jr2-lfs fetch`), and then
+//      place `default/` on the base, one time. A Machine cuts every other Worktree with
+//      `worktree()` (cut.ts).
 //
 // Every step is guarded or naturally idempotent, so a second attach (a restarted Orchestrator,
 // ADR-0012) finds everything present and answers the same paths. As a child of the Harness it
 // inherits the process's `umask 002` (startup.ts), which the exec'd script had to set itself.
-// Each step runs git directly — no shell — so a hostile ref or url is an argument, never syntax,
+// Each step runs its program directly, so a hostile ref or url is an argument, never syntax (the
+// one shell, which writes a hook, gets the path and the text as arguments),
 // and a failure names its slot, its step, and git's own stderr. Each step runs in the domain, with
 // its env (`children.ts`, ADR-0076): a second attach runs git in a clone whose `.git/config` an
 // Agent can write, and a filter or a hook there runs in git's process. The slot's folder is made in
 // the domain too: the Harness process makes nothing under `/work`.
 
 import { runIn, type ChildPolicy, type RunResult } from "./children.ts";
+import { describeMissing, largeFilesMissing } from "./cut.ts";
 import type { AttachRequest, AttachResponse, AttachSlot } from "./wire.ts";
 
 /** Where the attach reads and writes, as the operator composes the pod (ADR-0004, ADR-0037,
- * ADR-0051): the work volume, the node caches' mount, and the runtime volume. */
-export type AttachPaths = { workRoot: string; reposMount: string; runtime: string };
+ * ADR-0051): the work volume, the node caches' mount, and the runtime volume. `gitLfs` and `jr2Lfs`
+ * are the two LFS programs (ADR-0053); each is under `<runtime>/bin` when it is not given. */
+export type AttachPaths = { workRoot: string; reposMount: string; runtime: string; gitLfs?: string; jr2Lfs?: string };
 
 /** The pod's paths. Seams for the tests only; the operator mounts exactly these. */
 export const POD_PATHS: AttachPaths = { workRoot: "/work", reposMount: "/repos", runtime: "/opt/jr2" };
@@ -85,11 +90,9 @@ async function attach(req: AttachRequest, paths: AttachPaths, env: Env): Promise
     // On a filesystem without POSIX ACLs the helper warns and exits 0, degrading to the umask.
     await run("stamp the work ACL", s.slot, `${paths.runtime}/bin/work-acl`, [slotDir], env);
     if (!(await exists(env, `${dflt}/.git`))) {
-      await git("git clone --shared", s.slot, ["clone", "--shared", "--", cache, dflt]);
+      // `--no-checkout`: the base's large files come first (step 5), so that the checkout smudges each.
+      await git("git clone --shared", s.slot, ["clone", "--shared", "--no-checkout", "--", cache, dflt]);
     }
-    // A guard, so that a second attach changes nothing: an Agent's edit in `default/`, or a fetch that
-    // moved the remote-tracking refs, is no reason for a checkout here (SandboxPort: idempotent).
-    bases[s.slot] = await placeDefault(dflt, s, env);
     // Fetch/push split (ADR-0005). The FETCH url is a command, not a path (ADR-0053): git's
     // built-in `ext::` transport runs the program on the runtime volume, which asks the node cache
     // to fetch the remote, waits for the landing, then serves the cache — so every fetch inside the
@@ -107,8 +110,73 @@ async function attach(req: AttachRequest, paths: AttachPaths, env: Env): Promise
     // what another Worktree needs. Every git in the pod reads the clone's config.
     await git("turn off gc", s.slot, ["-C", dflt, "config", "gc.auto", "0"]);
     await git("turn off maintenance", s.slot, ["-C", dflt, "config", "maintenance.auto", "false"]);
+    for (const [key, value] of lfsConfig(paths)) {
+      await git(`set ${key}`, s.slot, ["-C", dflt, "config", key, value]);
+    }
+    await writeHooks(dflt, s.slot, paths, env);
+    // A guard, so that a second attach changes nothing: an Agent's edit in `default/`, or a fetch that
+    // moved the remote-tracking refs, is no reason for a checkout here (SandboxPort: idempotent).
+    bases[s.slot] = await placeDefault(dflt, s, paths, env);
   }
   return { repos, bases };
+}
+
+/** The two LFS programs on the runtime volume (ADR-0053). */
+export function lfsPrograms(paths: AttachPaths): { gitLfs: string; jr2Lfs: string } {
+  return {
+    gitLfs: paths.gitLfs ?? `${paths.runtime}/bin/git-lfs`,
+    jr2Lfs: paths.jr2Lfs ?? `${paths.runtime}/bin/jr2-lfs`,
+  };
+}
+
+/**
+ * The clone's LFS config (ADR-0053): git-lfs's filter and jr2's transfer agent, each by absolute
+ * path, because no seat has `/opt/jr2/bin` on PATH for certain (the User Container gets no PATH from
+ * jr2). This is what `git lfs install` writes, in the clone's own config: nothing global or system.
+ * The agent is standalone: git-lfs asks it, and no LFS server, for each object that neither store
+ * holds. It serves downloads only (`direction`): the push of a large file is the push Effect's
+ * (ADR-0067), and git-lfs does not start the agent for an upload.
+ */
+function lfsConfig(paths: AttachPaths): Array<[string, string]> {
+  const { gitLfs, jr2Lfs } = lfsPrograms(paths);
+  return [
+    ["filter.lfs.process", `${gitLfs} filter-process`],
+    ["filter.lfs.clean", `${gitLfs} clean -- %f`],
+    ["filter.lfs.smudge", `${gitLfs} smudge -- %f`],
+    ["filter.lfs.required", "true"],
+    ["lfs.standalonetransferagent", "jr2"],
+    ["lfs.customtransfer.jr2.path", jr2Lfs],
+    ["lfs.customtransfer.jr2.args", "transfer"],
+    ["lfs.customtransfer.jr2.concurrent", "true"],
+    ["lfs.customtransfer.jr2.direction", "download"],
+  ];
+}
+
+/** The hooks that git-lfs writes for itself, which call `git lfs` on PATH. */
+const LFS_HOOKS = ["post-checkout", "post-commit", "post-merge", "pre-push"] as const;
+
+/**
+ * git-lfs's four hooks, each calling git-lfs by absolute path, written only where the clone has no
+ * such hook. git-lfs writes its own hook where none exists, and that hook calls `git lfs` on PATH,
+ * which fails in a seat with no git-lfs on PATH. git-lfs keeps a hook that exists, so a hook that a
+ * user wrote stays. No `core.hooksPath` is set. Each file is written to a temp name and then moved,
+ * so a kill leaves no half hook; a second attach finds the hook and writes nothing.
+ */
+async function writeHooks(dflt: string, slot: string, paths: AttachPaths, env: Env): Promise<void> {
+  const { gitLfs } = lfsPrograms(paths);
+  const hooks = `${dflt}/.git/hooks`;
+  await run("make the hooks folder", slot, "mkdir", ["-p", "--", hooks], env);
+  for (const hook of LFS_HOOKS) {
+    const body = `#!/bin/sh\nexec ${shellQuote(gitLfs)} ${hook} "$@"\n`;
+    await run(`write the ${hook} hook`, slot, "sh", ["-c", WRITE_IF_ABSENT, "sh", `${hooks}/${hook}`, body], env);
+  }
+}
+
+/** `$1` gets the text `$2`, only when `$1` is not there (a link that names nothing counts as there). */
+const WRITE_IF_ABSENT = `[ -e "$1" ] || [ -L "$1" ] || { printf '%s' "$2" > "$1.jr2-tmp" && chmod 755 "$1.jr2-tmp" && mv -f "$1.jr2-tmp" "$1"; }`;
+
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -119,22 +187,72 @@ async function attach(req: AttachRequest, paths: AttachPaths, env: Env): Promise
  * Another branch: that branch, attached and tracked. A tag or a commit: detached there. In the last
  * two, the local default branch goes: it holds no work, nothing holds it, and it would freeze at the
  * clone, so a cut of it finds `origin/<default>` and tracks it.
+ *
+ * The clone has no checkout yet. The base's large files come first, then a forced checkout, so a kill
+ * at any step before `jr2.base` is written leaves a clone that the next attach places again. No
+ * hook runs in this checkout: git-lfs's hooks are for the people and Agents that work in the clone.
  */
-async function placeDefault(dflt: string, s: AttachSlot, env: Env): Promise<string> {
+async function placeDefault(dflt: string, s: AttachSlot, paths: AttachPaths, env: Env): Promise<string> {
   const placed = await exec("git", ["-C", dflt, "config", "--local", "jr2.base"], env);
   if (placed.code === 0 && placed.stdout.trim() !== "") return placed.stdout.trim();
   const git = (step: string, args: string[]) => runGit(step, s.slot, ["-C", dflt, ...args], env);
+  const checkout = (args: string[]) =>
+    git("check out the base", ["-c", "core.hooksPath=/dev/null", "checkout", ...args]);
   const head = await exec("git", ["-C", dflt, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], env);
   const dfltBranch = head.stdout.trim().replace(/^origin\//, "");
   const base = s.ref ?? dfltBranch;
-  if (base !== dfltBranch) {
-    const tracked = await exec("git", ["-C", dflt, "rev-parse", "--verify", "-q", `refs/remotes/origin/${base}`], env);
-    if (tracked.code === 0) await git("check out the base", ["checkout", "--track", "-b", base, `origin/${base}`]);
-    else await git("check out the base", ["checkout", "--detach", await baseOf(dflt, base, env)]);
-    if (dfltBranch !== "") await git("drop the frozen default branch", ["branch", "-D", "--", dfltBranch]);
+  const tracked =
+    base !== dfltBranch &&
+    (await exec("git", ["-C", dflt, "rev-parse", "--verify", "-q", `refs/remotes/origin/${base}`], env)).code === 0;
+  const commit = base === dfltBranch ? "HEAD" : tracked ? `refs/remotes/origin/${base}` : await baseOf(dflt, base, env);
+  await askLargeFiles(dflt, s, base, commit, paths, env);
+  if (base === dfltBranch) await checkout(["-f"]);
+  else if (tracked) await checkout(["-f", "-B", base, "--track", `origin/${base}`]);
+  else await checkout(["-f", "--detach", commit]);
+  if (base !== dfltBranch && dfltBranch !== "") {
+    const frozen = await exec("git", ["-C", dflt, "rev-parse", "--verify", "-q", `refs/heads/${dfltBranch}`], env);
+    if (frozen.code === 0) await git("drop the frozen default branch", ["branch", "-D", "--", dfltBranch]);
   }
   await git("record the base", ["config", "--local", "jr2.base", base]);
   return base;
+}
+
+/**
+ * Ask the node cache for the Git LFS objects of the base's commit (ADR-0053), before the checkout
+ * smudges them: `jr2-lfs fetch` asks for each object that no store holds, waits for the landing, and
+ * names each file whose object is still missing. A commit with no LFS file makes no ask. A commit
+ * that does not resolve makes no ask either: the checkout then fails in git's own words.
+ */
+async function askLargeFiles(
+  dflt: string,
+  s: AttachSlot,
+  base: string,
+  commit: string,
+  paths: AttachPaths,
+  env: Env,
+): Promise<void> {
+  const sha = await exec("git", ["-C", dflt, "rev-parse", "--verify", "-q", `${commit}^{commit}`], env);
+  if (sha.code !== 0) return;
+  const step = "get the base's large files";
+  const { jr2Lfs } = lfsPrograms(paths);
+  const r = await exec(jr2Lfs, ["fetch", "--identity", s.identity, "--base", base, "--", sha.stdout.trim()], env, dflt);
+  if (r.code !== 0) {
+    const said = r.stderr.trim() || r.stdout.trim() || r.error?.message || `exited ${r.code}`;
+    throw new AttachFault(`the attach of slot "${s.slot}" failed at ${step}: ${said}`, s.slot);
+  }
+  const missing = largeFilesMissing(r.stdout);
+  if (missing === undefined) {
+    throw new AttachFault(
+      `the attach of slot "${s.slot}" failed at ${step}: jr2-lfs printed no result: ${r.stdout.trim().slice(0, 400)}`,
+      s.slot,
+    );
+  }
+  if (missing.length > 0) {
+    throw new AttachFault(
+      `the attach of slot "${s.slot}" failed at ${step}: ${describeMissing(missing, base)}`,
+      s.slot,
+    );
+  }
 }
 
 /**
@@ -222,7 +340,8 @@ type ExecResult = RunResult;
 /** How a step starts: the domain, and the env the step runs with. */
 type Env = { children: ChildPolicy; env: NodeJS.ProcessEnv };
 
-function exec(file: string, args: string[], env: Env): Promise<ExecResult> {
+function exec(file: string, args: string[], env: Env, cwd = "/"): Promise<ExecResult> {
   // From `/`: each step names its paths, and the Harness's own folder is no repository of the step's.
-  return runIn(env.children, [file, ...args], { cwd: "/", env: env.env, maxBuffer: 8 * 1024 * 1024 });
+  // jr2-lfs is the exception: it reads the clone that it runs in.
+  return runIn(env.children, [file, ...args], { cwd, env: env.env, maxBuffer: 8 * 1024 * 1024 });
 }

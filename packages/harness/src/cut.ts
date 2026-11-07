@@ -16,8 +16,14 @@
 //     answers the first answer's `found`, so a cut that a restart sent twice never reads as resumed work.
 //   - The Orchestrator sends the base on each cut: an Agent's checkout in `default/` cannot move it. A
 //     name resolves by refs/remotes/origin first (the local `main` is frozen at the clone), then a tag.
-//   - No hook and no filter runs: a cleared environment and sync.ts's config, with each filter that
-//     the clone names turned off.
+//   - No hook runs, and no filter of the clone's config: a cleared environment and sync.ts's config,
+//     with each filter that the clone names turned off. jr2's own LFS filter and transfer agent are
+//     set by `-c`, by the absolute paths of the runtime volume, so the Agent's config cannot choose
+//     the program (ADR-0053).
+//   - A cut gets its commit's large files first (ADR-0075). After the fetch and before git changes
+//     anything, `jr2-lfs fetch <commit>` asks the node cache for each LFS object that no store holds.
+//     A file whose object the cache cannot get makes the cut `refused`, naming the file. A remote that
+//     is down with every object held is `ready` with `stale`. No submodule is fetched or checked out.
 //   - The lock is a flock on a descriptor no child inherits, so nothing that outlives this process
 //     can hold it. Node has no flock: a small program takes it on our descriptor, then exits.
 //   - The fetch lock (jr2-upload-pack, ADR-0075) is a second lock with one rule: a fetch waits only
@@ -61,11 +67,24 @@ export type CutAnswer =
     }
   | { outcome: "refused"; reason: string };
 
-/** The seams of the tests. `lock`: the program that takes a flock on its stdin. `env`: added to the
- * cleared environment. `staleWindowMs`: how long a warned fetch answers for the next cuts. */
-export type CutPaths = { workRoot: string; lock: readonly string[]; env?: NodeJS.ProcessEnv; staleWindowMs?: number };
+/** The seams of the tests. `lock`: the program that takes a flock on its stdin. `gitLfs` and
+ * `jr2Lfs`: the two LFS programs (ADR-0053). `env`: added to the cleared environment.
+ * `staleWindowMs`: how long a warned fetch answers for the next cuts. */
+export type CutPaths = {
+  workRoot: string;
+  lock: readonly string[];
+  gitLfs: string;
+  jr2Lfs: string;
+  env?: NodeJS.ProcessEnv;
+  staleWindowMs?: number;
+};
 
-export const POD_CUT_PATHS: CutPaths = { workRoot: "/work", lock: ["/opt/jr2/bin/cut-lock"] };
+export const POD_CUT_PATHS: CutPaths = {
+  workRoot: "/work",
+  lock: ["/opt/jr2/bin/cut-lock"],
+  gitLfs: "/opt/jr2/bin/git-lfs",
+  jr2Lfs: "/opt/jr2/bin/jr2-lfs",
+};
 
 // --- The shared rules ------------------------------------------------------------------------------
 
@@ -121,11 +140,30 @@ const CLEAN = [
   "checkout.guess=false",
 ];
 
+/** jr2's own LFS filter and transfer agent, by `-c` after the clone's filters are turned off, so that
+ * no key of the Agent's config chooses the program that a checkout starts (ADR-0053). The keys are the
+ * attach's (attach.ts), and `lfs.storage` keeps git-lfs's store in the clone. */
+function lfsPins(paths: CutPaths, clone: string): string[] {
+  return [
+    ["filter.lfs.process", `${paths.gitLfs} filter-process`],
+    ["filter.lfs.clean", `${paths.gitLfs} clean -- %f`],
+    ["filter.lfs.smudge", `${paths.gitLfs} smudge -- %f`],
+    ["filter.lfs.required", "true"],
+    ["lfs.standalonetransferagent", "jr2"],
+    ["lfs.customtransfer.jr2.path", paths.jr2Lfs],
+    ["lfs.customtransfer.jr2.args", "transfer"],
+    ["lfs.customtransfer.jr2.concurrent", "true"],
+    ["lfs.customtransfer.jr2.direction", "download"],
+    ["lfs.storage", `${clone}/.git/lfs`],
+  ].flatMap(([k, v]) => ["-c", `${k}=${v}`]);
+}
+
 type Git = { code: number; out: string; err: string };
 type Runner = (cwd: string, args: readonly string[]) => Promise<Git>;
 
-function runner(paths: CutPaths, home: string, filters: { args: string[] }): Runner {
-  const env: NodeJS.ProcessEnv = {
+/** The cleared environment of each program that the cut starts. */
+function cutEnv(paths: CutPaths, home: string): NodeJS.ProcessEnv {
+  return {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: home,
     LC_ALL: "C",
@@ -136,6 +174,10 @@ function runner(paths: CutPaths, home: string, filters: { args: string[] }): Run
     ...(process.env.JR2_CUSTODIAN_URL ? { JR2_CUSTODIAN_URL: process.env.JR2_CUSTODIAN_URL } : {}),
     ...paths.env,
   };
+}
+
+function runner(paths: CutPaths, home: string, filters: { args: string[] }): Runner {
+  const env = cutEnv(paths, home);
   return (cwd, args) =>
     new Promise((resolve) => {
       execFile(
@@ -152,18 +194,31 @@ function runner(paths: CutPaths, home: string, filters: { args: string[] }): Run
 
 /** Each filter the clone's config names, turned off (`-c filter.x.smudge=`). */
 async function filtersOf(git: Runner, clone: string): Promise<string[]> {
-  const listed = await git(clone, ["config", "--local", "--name-only", "--get-regexp", "^filter\\."]);
-  const names = new Set(listed.out.split("\n").flatMap((l) => l.match(/^filter\.(.+)\.[^.]+$/)?.[1] ?? []));
-  return [...names].flatMap((n) => [
+  // No `--local`: that reads the one file and not what it includes. The global and the system config
+  // are cleared, so this is the clone's config and its includes.
+  const listed = await git(clone, ["config", "--name-only", "--get-regexp", "^(filter|lfs\\.extension)\\."]);
+  const lines = listed.out.split("\n");
+  const names = new Set(lines.flatMap((l) => l.match(/^filter\.(.+)\.[^.]+$/)?.[1] ?? []));
+  // A git-lfs extension is a program that git-lfs starts for a pointer that names it.
+  const extensions = new Set(lines.flatMap((l) => l.match(/^lfs\.extension\.(.+)\.[^.]+$/)?.[1] ?? []));
+  const off = [...extensions].flatMap((n) => [
     "-c",
-    `filter.${n}.smudge=`,
+    `lfs.extension.${n}.clean=false`,
     "-c",
-    `filter.${n}.clean=`,
-    "-c",
-    `filter.${n}.process=`,
-    "-c",
-    `filter.${n}.required=false`,
+    `lfs.extension.${n}.smudge=false`,
   ]);
+  return off.concat(
+    [...names].flatMap((n) => [
+      "-c",
+      `filter.${n}.smudge=`,
+      "-c",
+      `filter.${n}.clean=`,
+      "-c",
+      `filter.${n}.process=`,
+      "-c",
+      `filter.${n}.required=false`,
+    ]),
+  );
 }
 
 const exists = (path: string): Promise<boolean> =>
@@ -224,7 +279,13 @@ type CutRecord = {
   made: { folder?: boolean; branch?: boolean; upstream?: boolean };
 };
 
-type Clone = { clone: string; records: string; git: Runner };
+type Clone = {
+  clone: string;
+  records: string;
+  git: Runner;
+  /** Ask for the large files of a commit: the words of a refusal, or undefined when each is held. */
+  largeFiles: (commit: string) => Promise<string | undefined>;
+};
 
 const recordFile = (c: Clone, path: string): string => join(c.records, `${path.split("/").pop()!}.json`);
 
@@ -383,6 +444,69 @@ async function fetched(c: Clone, paths: CutPaths): Promise<string | undefined> {
   }
 }
 
+// --- The large files ------------------------------------------------------------------------------------
+
+/** One LFS file of a commit whose object no store holds, as `jr2-lfs fetch` prints it. */
+export type MissingFile = { path: string; oid: string; reason: string };
+
+/** The `missing` list of `jr2-lfs fetch`'s one JSON line, or undefined when the output is not one. */
+export function largeFilesMissing(stdout: string): MissingFile[] | undefined {
+  const line = stdout.trim().split("\n").pop() ?? "";
+  try {
+    const parsed = JSON.parse(line) as { missing?: unknown } | null;
+    return Array.isArray(parsed?.missing) ? (parsed.missing as MissingFile[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** At most this many files are named when large files cannot be had. */
+const NAMED_FILES = 5;
+
+/** The words for large files that cannot be had: each file (at most a few) and the cache's reason. */
+export function describeMissing(missing: readonly MissingFile[], of: string): string {
+  const named = missing
+    .slice(0, NAMED_FILES)
+    .map((m) => `${m.path} (${String(m.oid).slice(0, 12)}): ${m.reason}`)
+    .join("; ");
+  const more = missing.length > NAMED_FILES ? `; and ${missing.length - NAMED_FILES} more` : "";
+  const files = missing.length === 1 ? "the large file" : `${missing.length} large files`;
+  return `the node cache cannot get ${files} of ${of}: ${named}${more}`;
+}
+
+/**
+ * Ask the node cache for the LFS objects of `commit` (ADR-0053, ADR-0075): `jr2-lfs fetch` asks for
+ * each object that no store holds, waits for the landing, and names each file whose object is still
+ * missing. A commit with no LFS file makes no ask. jr2-lfs runs no program of the clone's config. It
+ * gets `safe.directory` by env, because the cleared environment reads no global config.
+ */
+async function askLargeFiles(
+  paths: CutPaths,
+  home: string,
+  clone: string,
+  commit: string,
+  base: string | undefined,
+): Promise<string | undefined> {
+  const env: NodeJS.ProcessEnv = {
+    ...cutEnv(paths, home),
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: "*",
+  };
+  const args = ["fetch", ...(base !== undefined ? ["--base", base] : []), "--", commit];
+  const r = await new Promise<Git>((resolve) => {
+    execFile(paths.jr2Lfs, args, { cwd: clone, env, maxBuffer: 16 << 20 }, (error, stdout, stderr) => {
+      const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
+      resolve({ code, out: stdout.trim(), err: stderr.trim() || (error?.message ?? "") });
+    });
+  });
+  if (r.code !== 0) return `cannot ask for the large files of ${commit}: ${r.err || r.out || `exit ${r.code}`}`;
+  const missing = largeFilesMissing(r.out);
+  if (missing === undefined)
+    return `jr2-lfs printed no result for the large files of ${commit}: ${r.out.slice(0, 200)}`;
+  return missing.length > 0 ? describeMissing(missing, commit) : undefined;
+}
+
 // --- The cut --------------------------------------------------------------------------------------------
 
 const refused = (reason: string): CutAnswer => ({ outcome: "refused", reason: reason.slice(0, 1024) });
@@ -407,8 +531,9 @@ export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> 
   try {
     const filters = { args: [] as string[] };
     const git = runner(paths, home, filters);
-    filters.args = await filtersOf(git, clone);
-    const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git };
+    filters.args = [...(await filtersOf(git, clone)), ...lfsPins(paths, clone)];
+    const largeFiles = (commit: string) => askLargeFiles(paths, home, clone, commit, req.base);
+    const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git, largeFiles };
     return await locked(clone, paths, async () => {
       await recover(c);
       return cutLocked(req, slot, c, paths);
@@ -516,6 +641,8 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
   if (req.detach !== undefined) {
     const sha = await commitOf(c, req.detach);
     if (sha === undefined) return refused(`no commit "${req.detach}" in this clone`);
+    const lfs = await c.largeFiles(sha);
+    if (lfs !== undefined) return refused(lfs);
     if (!(await exists(req.path))) {
       const add = await addAgain(c, req.path, ["--detach", sha]);
       if (add.code !== 0) return refused(add.err);
@@ -537,6 +664,8 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
   if (head === undefined) return refused(`the branch ${branch} of ${req.path} is gone`);
   if (!(await exists(req.path))) {
     // An Agent removed the folder. The branch keeps the commits, and only they come back.
+    const lfs = await c.largeFiles(head);
+    if (lfs !== undefined) return refused(lfs);
     const add = await addAgain(c, req.path, [branch]);
     if (add.code !== 0) return refused(add.err);
     await writeRecord(c, { ...rec, id: req.id, found: "local" });
@@ -557,6 +686,8 @@ async function firstDetach(req: CutRequest, c: Clone, paths: CutPaths, ready: Re
   if (sha === undefined) {
     return refused(`no commit "${req.detach}" in this clone${stale ? `, and the fetch said: ${stale}` : ""}`);
   }
+  const lfs = await c.largeFiles(sha);
+  if (lfs !== undefined) return refused(lfs);
   const rec: CutRecord = {
     state: "cutting",
     id: req.id,
@@ -600,6 +731,8 @@ async function firstBranch(req: CutRequest, c: Clone, paths: CutPaths, ready: Re
   const start =
     local ?? remote ?? (named !== undefined ? await commitOf(c, named) : await refOf(c, "refs/remotes/origin/HEAD"));
   if (start === undefined) return refused(`no commit "${named ?? "origin/HEAD"}" in this clone`);
+  const lfs = await c.largeFiles(start);
+  if (lfs !== undefined) return refused(lfs);
 
   const rec: CutRecord = {
     state: "cutting",
@@ -657,6 +790,8 @@ if (
     ...POD_CUT_PATHS,
     ...(process.env.JR2_CUT_LOCK ? { lock: JSON.parse(process.env.JR2_CUT_LOCK) as string[] } : {}),
     ...(process.env.JR2_CUT_WORK ? { workRoot: process.env.JR2_CUT_WORK } : {}),
+    ...(process.env.JR2_CUT_GIT_LFS ? { gitLfs: process.env.JR2_CUT_GIT_LFS } : {}),
+    ...(process.env.JR2_CUT_JR2_LFS ? { jr2Lfs: process.env.JR2_CUT_JR2_LFS } : {}),
     ...(process.env.JR2_CUT_STALE_MS ? { staleWindowMs: Number(process.env.JR2_CUT_STALE_MS) } : {}),
   });
 }
