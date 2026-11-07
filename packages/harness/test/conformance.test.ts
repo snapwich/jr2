@@ -8,7 +8,7 @@
 
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -33,7 +33,8 @@ import { runSubmissionFor } from "../src/turn.ts";
 import { MemoryGuard } from "../src/memory-guard.ts";
 import type { HistoryView, MemoryKillsResponse, Notice, Settlement, StreamEvent } from "../src/wire.ts";
 import { startAnthropicGateway, type AnthropicGateway } from "./support/anthropic-gateway.ts";
-import { testChildren } from "./support/children.ts";
+import { deniedDir, testChildren } from "./support/children.ts";
+import type { ChildPolicy } from "../src/children.ts";
 import { unixFetch } from "../src/unix-fetch.ts";
 import {
   CONTROL_STAND_IN,
@@ -127,6 +128,15 @@ let sweptApp: Hono;
 /** The same composition with a memory guard that fires as a `bash` call starts (ADR-0061): a
  * scripted cgroup and recorded effects, so nothing is really killed. */
 let guardedApp: Hono;
+/** The same composition with a work root of its own (ADR-0075), so a Frame's cwd in
+ * `<contextWork>/<slot>/<folder>` is a Repo Slot's Worktree and gets its project context (ADR-0062).
+ * Its domain is also denied `contextHeld`, which stands for a file under `/run/jr2`. */
+let contextApp: Hono;
+/** The same, with a child entry that does not exist: each project context load fails. */
+let failingContextApp: Hono;
+let contextWork: string;
+let contextHeld: string;
+const contextLog: string[] = [];
 const firing = { on: false };
 const firingGuard = new MemoryGuard(
   { limit: () => 2 * 1024 ** 3, usage: () => (firing.on ? 1.95 * 1024 ** 3 : 100 * 1024 ** 2) },
@@ -189,6 +199,8 @@ before(async () => {
     retries?: "harness";
     guard?: MemoryGuard;
     sweepWaitMs?: number;
+    children?: ChildPolicy;
+    projectContext?: { workRoot?: string; entry?: string; log?: (line: string) => void };
   };
   const serverWith = (seams?: Seams, conversationsDir?: string, registry = models): HarnessServer =>
     harnessServer({
@@ -245,6 +257,18 @@ before(async () => {
   retryApp = appWith({ retries: "harness" });
   sweptApp = appWith({ sweepWaitMs: 10_000 });
   guardedApp = appWith({ guard: firingGuard });
+  contextWork = await mkdtemp(join(tmpdir(), "conf-work-"));
+  contextHeld = deniedDir("held-");
+  const contextChildren = testChildren({ tmp: tmpdir(), work: contextWork, deny: [contextHeld] });
+  const contextSeams = { log: (line: string) => void contextLog.push(line) };
+  contextApp = appWith({
+    children: contextChildren,
+    projectContext: { workRoot: contextWork, log: contextSeams.log },
+  });
+  failingContextApp = appWith({
+    children: contextChildren,
+    projectContext: { workRoot: contextWork, log: contextSeams.log, entry: join(contextWork, "no-such-entry.mjs") },
+  });
   const openRouter = modelsFor(
     { provider: { ...harness.provider!, baseUrl: `${provider.url.replace(/\/v1$/, "")}/openrouter.ai/v1` } },
     {},
@@ -449,6 +473,89 @@ test("the Briefing: the standing part follows the instructions; the Turn part na
   assert.ok(turn.includes(`Working directory: ${cwd}`), turn);
   assert.match(turn, /killed at its memory limit \(peak 1\.9Gi of 2Gi\) during `tester`'s Turn/);
   assert.match(turn, /This conversation is new; earlier context is gone \(the last one was lost\)/);
+});
+
+test("the project context: a Worktree's AGENTS.md and .pi/skills are in the system prompt between the instructions and the standing part, the same bytes on each Submission; a Menu-only Agent reads none (ADR-0062)", async () => {
+  const dir = join(contextWork, "app", "default");
+  await mkdir(join(dir, ".pi", "skills", "release-notes"), { recursive: true });
+  await writeFile(join(dir, "AGENTS.md"), "Run `node --test` before you pick.\n");
+  await writeFile(
+    join(dir, ".pi", "skills", "release-notes", "SKILL.md"),
+    "---\nname: release-notes\ndescription: Write the release notes.\n---\nThe steps.\n",
+  );
+  provider.reset([{ text: "Looked." }, { text: "Looked again." }, { text: "Decided." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/project-context";
+
+  const first = await admit(iid, "Look around.", undefined, AGENT, contextApp, { cwd: dir });
+  assert.equal((await settled(iid, first, AGENT, contextApp)).outcome, "completed");
+  // A change to AGENTS.md during the conversation does not move the system prompt: the provider's
+  // prefix cache holds (ADR-0029).
+  await writeFile(join(dir, "AGENTS.md"), "Other rules.\n");
+  const second = await admit(iid, "Look again.", undefined, AGENT, contextApp, { cwd: dir });
+  assert.equal((await settled(iid, second, AGENT, contextApp)).outcome, "completed");
+
+  const [one, two] = provider.calls;
+  const system = systemText(one);
+  assert.ok(
+    system.startsWith(
+      `${definitions[AGENT]!.instructions}\n\n<project_context>\nProject-specific instructions and guidelines:\n\n` +
+        `<project_instructions path="${join(dir, "AGENTS.md")}">\nRun \`node --test\` before you pick.\n\n</project_instructions>\n</project_context>\n\n<skills>\n`,
+    ),
+    system,
+  );
+  assert.ok(system.includes(`<location>${join(dir, ".pi", "skills", "release-notes", "SKILL.md")}</location>`), system);
+  // The Briefing's standing part is last, where a model obeys it (ADR-0029).
+  assert.match(system, /<\/skills>\n\n<jr2-briefing>\n[\s\S]*<\/jr2-briefing>$/);
+  assert.equal(systemText(two), system, "byte-equal on the next Submission");
+  assert.doesNotMatch(JSON.stringify(two), /Other rules/);
+
+  // A Menu-only Agent in the same folder has no files, so it reads no project context.
+  const decided = await admit("conf/project-context-menu-only", "Decide.", undefined, DECISIONER, contextApp, {
+    cwd: dir,
+  });
+  assert.equal((await settled("conf/project-context-menu-only", decided, DECISIONER, contextApp)).outcome, "completed");
+  assert.doesNotMatch(systemText(provider.calls[2]), /project_context|<skills>|node --test/);
+});
+
+test("the project context: an AGENTS.md that links to a file under /run/jr2 fails in the domain, and its content is nowhere in what the provider gets (ADR-0062, ADR-0076)", async () => {
+  const secret = "held-stand-in-5d2e81";
+  await writeFile(join(contextHeld, "standin"), `${secret}\n`);
+  const dir = join(contextWork, "app", "leak");
+  await mkdir(dir, { recursive: true });
+  await symlink(join(contextHeld, "standin"), join(dir, "AGENTS.md"));
+  provider.reset([{ text: "Looked." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/project-context-link";
+
+  const admission = await admit(iid, "Look around.", undefined, AGENT, contextApp, { cwd: dir });
+  assert.equal((await settled(iid, admission, AGENT, contextApp)).outcome, "completed");
+  assert.equal(provider.calls.length, 1);
+  assert.doesNotMatch(systemText(provider.calls[0]), /project_context/);
+  assert.ok(!JSON.stringify(provider.calls).includes(secret), "the held file's content is in no request");
+});
+
+test("the project context: a child that fails gives none, the pod log says so once, and the Turn runs (ADR-0062)", async () => {
+  const dir = join(contextWork, "app", "failing");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "AGENTS.md"), "Rules that do not load.\n");
+  provider.reset([{ text: "Looked." }, { text: "Looked again." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/project-context-failing";
+  const mark = contextLog.length;
+
+  const first = await admit(iid, "Look around.", undefined, AGENT, failingContextApp, { cwd: dir });
+  assert.equal((await settled(iid, first, AGENT, failingContextApp)).outcome, "completed");
+  const second = await admit(iid, "Look again.", undefined, AGENT, failingContextApp, { cwd: dir });
+  assert.equal((await settled(iid, second, AGENT, failingContextApp)).outcome, "completed");
+  assert.ok(systemText(provider.calls[0]).startsWith(`${definitions[AGENT]!.instructions}\n\n<jr2-briefing>\n`));
+  assert.equal(systemText(provider.calls[1]), systemText(provider.calls[0]));
+  const lines = contextLog.slice(mark);
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(
+    lines[0]!,
+    new RegExp(`^jr2 harness: no project context from ${dir}: the child that loads it failed: it exited 1`),
+  );
 });
 
 test("an older Orchestrator's surface still runs: its `accepts` is the tools and the Allowed picks (ADR-0029 skew)", async () => {

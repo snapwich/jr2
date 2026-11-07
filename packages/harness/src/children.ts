@@ -1,6 +1,7 @@
 // The Harness's children (ADR-0076, ADR-0077): how the Harness of a Sandbox starts each process
 // that a model drives or that runs Workspace code — each `bash` call, each search tool, jr2's own
-// git for the attach and the sync, and each `command` Effect placed here (the cut among them) — and
+// git for the attach and the sync, each `command` Effect placed here (the cut among them), and the
+// child that reads an Agent's project context (`project-context.ts`) — and
 // where the file tools do their I/O. All of it runs in ONE Landlock domain, which the Harness is not
 // in: the Harness starts the spawner once (`spawner.ts`), confined by the Effector's confiner on the
 // runtime volume, and asks it for each process and each file op:

@@ -139,7 +139,7 @@ and only `fixing` sets a Dial. The checker's Turn has no `cwd`, because it has n
 - **Harness**: runs the Turn
 - **model provider**: the model of the Agent
 - Orchestrator → Harness: the definition, the Frame and the Dials
-- Harness → model provider: the instructions, the prompt and the Briefing
+- Harness → model provider: the instructions, the project context, the prompt and the Briefing
 - zero or more times
   - model provider → Harness: a Working tool call
   - Harness → model provider: its result
@@ -168,8 +168,9 @@ route on it.
 
 ## Continue a conversation
 
-Without `continue`, each Turn starts a new conversation. The model knows only the instructions, the prompt and the
-Briefing. Thus the prompt must give all that the Agent needs to know.
+Without `continue`, each Turn starts a new conversation. The model knows only the instructions, the
+[project context](#the-project-context), the prompt and the Briefing. Thus the prompt must give all that the Agent needs
+to know.
 
 With `continue: true`, the Turn continues the one conversation of this Agent in this Machine instance. Each state of the
 Machine that invokes the Agent with `continue: true` uses the same conversation. A Turn without `continue` does not join
@@ -209,10 +210,11 @@ model never reads it, and a Turn never continues from it. `jr2 logs` and the bot
 The Briefing is the text that jr2 itself gives the model. It tells facts that a correct Agent needs and cannot find for
 itself. It tells nothing about the task: the prompt tells the task. It has two parts:
 
-- **The standing part** comes after the instructions, and it is the same on each Turn. It tells how the Agent acts on
-  the run: with a pick from its Menu. It also tells the CPUs and the [Size](../reference/glossary.md#size) of the
-  Sandbox, or that a Menu-only Agent has no Working tools. To an Agent with MCP tools, it tells that a call of an MCP
-  tool acts on a service outside the workflow, is not a pick, and does not end the Turn.
+- **The standing part** is last in the system prompt, after the instructions and the project context, and it is the same
+  on each Turn. It tells how the Agent acts on the run: with a pick from its Menu. It also tells the CPUs and the
+  [Size](../reference/glossary.md#size) of the Sandbox, or that a Menu-only Agent has no Working tools. To an Agent with
+  MCP tools, it tells that a call of an MCP tool acts on a service outside the workflow, is not a pick, and does not end
+  the Turn.
 - **The Turn part** comes after the prompt. It tells the directory of the Turn, its
   [Allowed picks](../reference/glossary.md#allowed-picks), the notices, and the [Steering messages](#steering-messages).
   [The Menu](the-menu.md) tells what the Allowed picks are. When they change during the Turn, the Harness tells them to
@@ -234,6 +236,25 @@ Turn the stop cut.
 
 You cannot turn the Briefing off. It contains only facts that make the Agent work better. An `instructions` that tells
 the same fact again does no harm.
+
+## The project context
+
+The [project context](../reference/glossary.md#project-context) is the text of the repo that an Agent works in. An Agent
+with Working tools whose directory is in a clone or a [Worktree](../reference/glossary.md#worktree) of a
+[Repo Slot](../reference/glossary.md#repo-slot) (`/work/<slot>/<folder>`) gets it:
+
+- the context files, `AGENTS.md` or `CLAUDE.md`, in the directory of the Turn and in each directory above it, the
+  outermost first;
+- the skills in `.pi/skills/<name>/SKILL.md` of that directory: their names, their descriptions and where they are. The
+  model reads a skill's file with `read` when its task agrees with the description.
+
+They go in the system prompt between the instructions and the standing part of the Briefing. jr2 reads them once for
+each conversation and directory, at its first Turn there. A change to `AGENTS.md` during a conversation thus gets to the
+next conversation. A Menu-only Agent, and an Agent in a Workspace with no Repo Slot, get no project context.
+
+jr2 reads the files with the rights of the Agent's own processes. A link from `AGENTS.md` to a file that the Agent
+cannot read gives no text. When jr2 cannot read the project context, the Turn runs without it, and the Harness's log
+tells why.
 
 ## Steering messages
 
@@ -347,7 +368,8 @@ gets it from [`harness.provider.contextWindow`](../reference/config.md#harness-p
 - [ADR-0024](../reference/decisions/0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md): a Turn ends with the
   state that asked for it
 - [ADR-0016](../reference/decisions/0016-agent-turn-mechanics-are-internal.md): jr2 owns the mechanics of a Turn
-- [ADR-0062](../reference/decisions/0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md): the Briefing
+- [ADR-0062](../reference/decisions/0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md): the Briefing and the
+  project context
 - [ADR-0002](../reference/decisions/0002-duplex-streaming-actor.md): Steering messages
 - [ADR-0079](../reference/decisions/0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md):
   the MCP tools of an Agent

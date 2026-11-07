@@ -1,11 +1,12 @@
 # jr2 briefs the Agent on its seat, never on its task
 
 The model saw two sources of text: the Agent's `instructions` (identity, ADR-0018) and the Frame's prompt (the Machine
-state's, ADR-0057). jr2 itself spoke only after a failure — the no-signal nudge — so an Agent had no way to learn facts
-only the mechanism knows. ADR-0057 opens with that failure: a weak model never learned its working directory, wrote
-outside the worktree and still called `finish`. ADR-0060 adds more such facts: `os.cpus()` reports the node, not the
-Sandbox's CPUs. ADR-0061 adds events: a kernel memory kill ends a conversation, and the next Agent inherits a Workspace
-whose processes are gone, with no way to know why.
+state's, ADR-0057). The repo that an Agent works in said nothing, although a repo can hold an `AGENTS.md` for each
+coding agent that works in it. jr2 itself spoke only after a failure — the no-signal nudge — so an Agent had no way to
+learn facts only the mechanism knows. ADR-0057 opens with that failure: a weak model never learned its working
+directory, wrote outside the worktree and still called `finish`. ADR-0060 adds more such facts: `os.cpus()` reports the
+node, not the Sandbox's CPUs. ADR-0061 adds events: a kernel memory kill ends a conversation, and the next Agent
+inherits a Workspace whose processes are gone, with no way to know why.
 
 ## Decision
 
@@ -14,15 +15,35 @@ whose processes are gone, with no way to know why.
   working directory, that a Menu-only Agent has no Working tools, and what happened to the last Turn. Nothing about the
   task — that is the Frame's — and nothing about style or care — that is identity's. Stand-ins are left out: the only
   change that knowing could cause is an attempt to go around the Custodian.
-- **Two parts, placed by how often they change.** The standing part is the same on every Turn of a seat; it follows
-  `instructions` in the system prompt, in its own delimited section, and is byte-stable (no timestamps, no counters, no
-  Menu names). The Turn part follows the Frame's prompt in a delimited block: the working directory, the notices, a
-  **pick's briefing** for each Allowed pick that has one (jr2's text on the pick's parameter, which the Orchestrator's
-  surface marks on the pick: the Chart briefing of [ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md), said only
-  on a Turn that may make that pick), and the Turn's Allowed picks
-  ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). So the Briefing never
-  breaks the provider's prompt cache — the Turn part sits in the newest message, which is uncached anyway, and stays
-  unchanged in the history after.
+- **Two parts, placed by how often they change.** The standing part is the same on every Turn of a seat; it is last in
+  the system prompt, after `instructions` and the project context (below), in its own delimited section, and is
+  byte-stable (no timestamps, no counters, no Menu names). The Turn part follows the Frame's prompt in a delimited
+  block: the working directory, the notices, a **pick's briefing** for each Allowed pick that has one (jr2's text on the
+  pick's parameter, which the Orchestrator's surface marks on the pick: the Chart briefing of
+  [ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md), said only on a Turn that may make that pick), and the Turn's
+  Allowed picks ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). So the
+  Briefing never breaks the provider's prompt cache — the Turn part sits in the newest message, which is uncached
+  anyway, and stays unchanged in the history after.
+- **An Agent in a Worktree reads its repo's project context, which is not the Briefing.** The project context is the
+  context files (`AGENTS.md`, `CLAUDE.md`) that pi-coding-agent's `loadProjectContextFiles` finds from the Turn's
+  working directory up to `/`, and the skills that its `loadSkills` finds in `<cwd>/.pi/skills`, as
+  `formatSkillsForPrompt` lists them. The system prompt is the `instructions`, then the project context in pi's frame
+  (its `project_context` section for the files, then its `skills` section), then the standing part. The Briefing stays
+  jr2's own text, is read last, and does not mention the project context.
+  - **Who gets it.** An Agent with Working tools whose working directory is in a Repo Slot's clone or Worktree
+    (`/work/<slot>/<folder>`, [ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). A Menu-only
+    Agent has no files, and an Agent of a Workspace with no Repo Slot works in `/work`, which no repo frames: neither
+    gets one.
+  - **No user-level context.** pi's user folder (`~/.pi/agent`) is a folder that does not exist, so only what the repo
+    and the folders above it hold loads. Context from the Sandbox Image is a later decision.
+  - **Loaded once for each conversation and folder,** at the first Submission there, and kept in memory: the system
+    prompt is the same bytes on each later Submission, so the provider's prefix cache holds
+    ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). A change to
+    `AGENTS.md` during a conversation reaches its next conversation. A Harness restart loads it again.
+  - **Read in the domain.** pi reads the files in the process that calls it, so a child in the domain calls it, never
+    the Harness process ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). A
+    child that fails, runs too long or writes too much gives no project context and one line in the pod log, and the
+    Turn goes on.
 - **How the Agent acts on the workflow is one standing statement**, true whether a pick ends the Turn or keeps it open
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): "You act on the workflow by picking from
   your Menu: a call to one of the workflow's tools that the newest "Allowed now" lists. Each pick's answer says if your
@@ -249,6 +270,18 @@ whose processes are gone, with no way to know why.
   differently or not at all.
 - **An author switch** (`agent({ briefing: false })`, or notices only). Rejected: under the rule, each fact is one a
   correct Agent needs; the switch only lets the ADR-0057 failure back in.
+- **No project context** (jr2 before pi-coding-agent). Rejected: a repo's `AGENTS.md` is where its rules for each coding
+  agent are, and an Agent that never reads them works against them. The rule above is for jr2's own text; the repo's
+  text is the repo's, as the Frame's prompt is the Machine's.
+- **The project context after the standing part, or in the Turn part.** Rejected: a model obeys what it read last, so
+  the Briefing is last. In the Turn part, a file that the Agent changes would move the newest message on each Turn, and
+  a repo's rules are not news.
+- **pi's whole system prompt** (`buildSystemPrompt`). Rejected: its preamble, its tool snippets and its rules are for
+  pi's own CLI. jr2 takes only the two sections, in pi's frame, and its own text stays jr2's.
+- **Load it in the Harness process.** Rejected: the Agent writes its Worktree, so an `AGENTS.md` that links to a file
+  under `/run/jr2` would put the control Stand-in in the prompt.
+- **Load it again at each Submission.** Rejected: an Agent that edits `AGENTS.md` would move the system prompt, and the
+  provider's prefix cache would miss on each later request.
 - **Everything in the system prompt.** Rejected: per-Turn content there breaks the prompt cache on every Turn.
 - **Finished text from the Orchestrator.** Rejected: wording split across two processes, and untestable where the turn
   loop is tested.
@@ -273,6 +306,10 @@ whose processes are gone, with no way to know why.
 ## Consequences
 
 - ADR-0060's CPU fact and ADR-0061's memory-limit notice are the Briefing's first users.
+- The project context changes what the model reads, so the `@model` tier must pass on it
+  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). A pi bump can change
+  which files load and their frame: conformance sees the frame.
+- Each conversation in a Worktree starts one node child per folder, about half a second before its first request.
 - Each admission into a Workspace costs one more request to its Harness, `GET /memory-kills`. The first read from a
   Harness that fails is said in one line of the Orchestrator's log.
 - The no-signal nudge stays a re-prompt within a Turn (ADR-0016); it is not a notice.

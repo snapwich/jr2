@@ -340,6 +340,12 @@ parameter needs one (a Chart).
 _Avoid_: system prompt (the Turn part is not in it), preamble, header, instructions (identity's word), nudge (a
 re-prompt of an open Turn)
 
+**Project context**:
+The repo's own text to an Agent in a Worktree: the context files (`AGENTS.md`, `CLAUDE.md`) from its working directory
+up to `/`, and the skills in `.pi/skills`, as pi finds them. It is in the system prompt after the `instructions` and
+before the Briefing's standing part, and it is the same for the whole conversation. A Menu-only Agent has none.
+_Avoid_: Briefing (jr2's own text), instructions (identity's word), memory
+
 **Working tools**:
 The file and shell tools that the Harness runs in its own container: what an Agent may do, as its Menu is what it may
 say. Every program that they run, and their file I/O, is confined, so it cannot reach what the Harness itself holds. The

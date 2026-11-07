@@ -149,8 +149,10 @@ code from `/work`.
     `JR2_HARNESS_ENV_NAMES` the effector starts nothing.
 
   At its start, before it loads any other module, the Harness refuses to run when a folder where node looks for a module
-  is outside `/opt/jr2` and `/run/jr2`, and it checks that its `HOME` is `/run/jr2/home`. A change of `HOME` after node
-  started is too late, so the Harness never makes one.
+  is outside `/opt/jr2` and `/run/jr2`, and it checks that its `HOME` is `/run/jr2/home`. One folder is trusted where it
+  is: node's own `<prefix>/lib/node`, beside node's binary, because a process that can write there can also replace
+  node. In a pod it is `/opt/jr2/lib/node`. A change of `HOME` after node started is too late, so the Harness never
+  makes one.
 
   A name of jr2's env that names a credential file which the Harness process reads (`AWS_CONFIG_FILE`,
   `GOOGLE_APPLICATION_CREDENTIALS`, and the others) is the admin's choice. `jr2 up` refuses such a path in a folder that
@@ -160,6 +162,12 @@ code from `/work`.
 - **The file tools reach what `bash` reaches.** Their I/O runs in the spawner, so the kernel applies the domain's rules
   to them. A path under `/run/jr2`, or a symbolic link to one, fails with the error that an unreadable file gives. `~`
   in a path is the domain's `HOME`, as it is for `bash`.
+- **The project context is read in the domain.** pi-coding-agent's `loadProjectContextFiles` and `loadSkills` read an
+  Agent's `AGENTS.md`, `CLAUDE.md` and skills in the process that calls them
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). So the Harness runs them in a child that the
+  spawner starts, with the module check above as its first import and `HOME=/run/jr2/home` as its whole env. The child
+  writes one line of JSON, and the Harness reads it as untrusted data, at most 256 KiB. An `AGENTS.md` that links to a
+  file under `/run/jr2` fails at the open, in the domain, and pi goes on to the next name.
 - **The Harness process touches no path that the domain can write.** Each path in the Agent's files that the Harness
   reads, lists or removes goes through the spawner. The file that holds the full output of a `bash` call is the
   Harness's own. pi's `bash` makes it in the Harness process's `TMPDIR` and opens it by its path again to read it, so

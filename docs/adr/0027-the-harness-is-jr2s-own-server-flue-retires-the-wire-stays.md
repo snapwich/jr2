@@ -102,7 +102,9 @@ tools, whose text the model reads. Compaction is pi-coding-agent's, over jr2's e
 
   The Harness also imports pi's Compaction from `@earendil-works/pi-coding-agent` (ADR-0036), at the exact pin of its
   siblings: pi-coding-agent pins pi-agent-core and pi-ai, so the four pins move together. `pi-compaction.ts` is the one
-  module that imports it.
+  module that imports it. A child in the domain also imports pi's project context loaders (`loadProjectContextFiles`,
+  `loadSkills`, `formatSkillsForPrompt`): `project-context-main.ts`, which the Harness process never imports
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)).
 
   A second engine is a second adapter. One module chooses the Harness's adapter (`engine-choice.ts`), and the Turn names
   no adapter: a test rig can pass another (`TurnDeps.engineAdapter`). So a second engine changes `engine-choice.ts`, not
@@ -243,7 +245,8 @@ tools, whose text the model reads. Compaction is pi-coding-agent's, over jr2's e
   deliberate kit change gated by the conformance suite, and the breaking surface is now the `Agent` loop's hooks and
   pi-ai's provider adapters — not a code generator, a CLI build, and a process-global registry. What pi removed jr2 now
   owns, so a bump cannot move it: the Working tools keep their text. Compaction is pi-coding-agent's, so a bump can move
-  its cut, its summary text and its rule; the conformance suite and `@model` are its canaries.
+  its cut, its summary text and its rule; the conformance suite and `@model` are its canaries. So are the project
+  context's loaders: a bump can move which files load and the frame of the skills.
 - **Migration is phased behind the wire.** Because both ends speak the same protocol, the image swap and the
   Orchestrator client swap are independent commits, each leaving every tier green; an old Orchestrator drives the new
   image and vice versa. `@flue/*` leaves the repo when the last pin (the retired contract tier) is deleted.
