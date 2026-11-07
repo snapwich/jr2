@@ -59,18 +59,25 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
   writes a record before it changes git, so `refused` changes nothing and the next cut in the clone repairs a killed
   cut. It never removes a folder that its record does not name. A re-cut that disagrees with the first cut is `refused`.
   Cuts of one clone are serialized by a lock.
-- **A detached cut is forced from its own record** and cleaned with `-ffd`. Ignored files stay, because a reviewer runs
-  the tests (ADR-0028). Two things that git keeps through `checkout -f` and `clean -ffd` go too, because each puts text
-  in the reviewer's system prompt that is in no diff
-  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), and the Workspace's Agents write the clone's
-  `info/exclude` and the Worktree's index:
-  - each context file and skill that pi reads (`AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`,
-    and what is in a `.pi/skills` folder) in any folder of the Worktree, also when an ignore rule holds it
-    (`clean -ffdx` with those pathspecs). A tracked file stays. git does not go into a nested repo that is ignored.
-  - a skip-worktree bit, which keeps a changed tracked file through a forced checkout. The cut clears the bits, and
-    checks out with no sparse checkout.
+- **A cut writes a Worktree's files from a git folder of its own.** The cut runs as the uid of the Workspace's Agents,
+  so they write the clone's config and `info/` folder, and each Worktree's config, index and HEAD. Each of these changes
+  what a checkout writes, and none is in a diff
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)): a filter that a config file names (also in
+  an include, a conditional include, or a Worktree's own config), `info/attributes`, `core.worktree`, a sparse checkout,
+  a skip-worktree or assume-unchanged bit, and an index whose stat data an Agent made the same as a changed file's. So
+  the cut checks out from a git folder that it makes for that cut, which takes only the clone's objects, and then gives
+  that index to the Worktree. A cut refuses a Worktree whose `.git` names another admin folder, and one whose own git
+  works in another folder (a `core.worktree`): each later git of an Agent there would read that other folder.
+- **A detached cut is forced from its own record** and cleaned with `-ffd`, from the same git folder. A file that the
+  new commit removed goes. Ignored files stay when the commit's own `.gitignore` files ignore them, because a reviewer
+  runs the tests (ADR-0028). A rule in the clone's `info/exclude` or in an Agent's config keeps nothing. Each context
+  file and skill that pi reads (`AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`, and what is in
+  a `.pi/skills` folder) in any folder of the Worktree goes also when the commit ignores it (`clean -ffdx` with those
+  pathspecs), because an ignored context file is in no diff. A tracked file stays. git does not go into a nested repo
+  that is ignored.
 
-  Only a detached cut: a branch Worktree that a cut made is given back as it is (`held`), with the work in it.
+  Only a detached cut is forced and cleaned: a branch Worktree that a cut made is given back as it is (`held`), with the
+  work in it.
 
 - **A cut needs a Repo Slot.** `jr2 up` and the invoke refuse `worktree()` under a Workspace with no Repo Slot, as they
   refuse a `push` (ADR-0051).
@@ -283,6 +290,10 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   handbook with no sign, and a read-only slot is a reason for this design.
 - **`cwd` defaults to `/work`.** Rejected, as ADR-0057 rejected it.
 - **A bad path goes to `onError`.** Rejected by ADR-0067: an Agent's param can cause it.
+- **Check out in the Worktree's own git, with each filter that the clone's config names turned off.** Rejected. A filter
+  in a Worktree's own config, in an include or in a conditional include for a branch is not in that list, and a config
+  that an Agent changes between the list and the checkout is not either. The list does not stop a `core.worktree`, a
+  skip-worktree bit or an index whose stat data matches a changed file. The cut's own git folder reads none of these.
 
 ## Consequences
 
@@ -296,6 +307,12 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
 - The fetch lock's holder ends as an orphan, so PID 1 must reap it. A User Container whose PID 1 does not reap keeps one
   more zombie for each fetch there: 50 fetches left 50, beside the 52 that git leaves by itself with no jr2 program.
 - A kill in the short `update-ref` step leaves a stale ref lock, and no cut removes it. So that name stays `refused`.
+- The cut's own git folder is in the domain's `TMPDIR`, and the Agents run as the same uid in the same domain. So an
+  Agent's process that runs during a cut can write that folder: a race with one cut, not a file put there before it. A
+  domain for each Agent ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md))
+  closes it.
+- Each re-cut of a detached Worktree writes each file of the commit again, because the cut does not trust the stat data
+  of the Worktree's index.
 - Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a
   Pool in one clone. They share the one Harness and `/work`. Only the Harness process holds the control credential, and
   each process it starts in `/work` runs confined, so no Agent's code can act as another Agent
