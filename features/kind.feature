@@ -606,6 +606,43 @@ Feature: a workspace() run drives a real Sandbox on kind
       When the Agent reads the full output's file
       Then the model was shown the first line of the full output
 
+  Rule: an Agent reads its project context in the domain, up to the Workspace's bound
+    ADR-0062, ADR-0076. A child in the domain loads the context files and the skills with
+    pi-coding-agent, and the Harness keeps only the files from the Turn's folder up to the bound: the
+    Worktree's root by default, `/work` under `projectContext: "workspace"`, never above `/work`. A
+    command writes the files before the reader's first Turn (`_contexted.ts`): the Worktree's
+    CLAUDE.md and a skill, an AGENTS.md beside it that links to the control Stand-in, and files in
+    the slot's folder, in `/work` and in jr2's fallback home. Each step reads the system prompt of
+    the reader's first request, as the scripted model received it.
+
+    Scenario: under the default bound, the Worktree's context file and skill reach the model, and nothing of /work, the slot's folder, jr2's home or a link to /run/jr2 does
+      Given the kind instance is serving
+      When I start the "contexted" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the reader's system prompt holds the context file "/work/app/ctx/CLAUDE.md" with "CTX-WORKTREE-RULE" in pi's frame
+      And the reader's system prompt lists the skill "ctx-skill" with "CTX-SKILL-DESC"
+      And the reader's system prompt names no context file "/work/app/ctx/AGENTS.md"
+      And the reader's system prompt holds no text of "CTX-WORK-RULE"
+      And the reader's system prompt holds no text of "CTX-SLOT-RULE"
+      And the reader's system prompt holds no text of "CTX-HOME-RULE"
+      And the domain wrote jr2's fallback home, and the Harness logged no failure to load a project context
+      When the Agent in the Sandbox calls "finish" with summary "read the rules"
+      Then the run's Sandbox is destroyed
+
+    Scenario: under projectContext "workspace", the files of /work and of the slot's folder reach the model too, outermost first
+      Given the kind instance is serving
+      When I start the "contexted-shared" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the reader's system prompt holds the context file "/work/AGENTS.md" with "CTX-WORK-RULE" in pi's frame
+      And the reader's system prompt holds the context file "/work/app/AGENTS.md" with "CTX-SLOT-RULE" in pi's frame
+      And the reader's system prompt holds "CTX-WORK-RULE" before "CTX-SLOT-RULE" before "CTX-WORKTREE-RULE"
+      And the reader's system prompt lists the skill "ctx-skill" with "CTX-SKILL-DESC"
+      And the reader's system prompt names no context file "/work/app/ctx/AGENTS.md"
+      And the reader's system prompt holds no text of "CTX-HOME-RULE"
+      And the domain wrote jr2's fallback home, and the Harness logged no failure to load a project context
+      When the Agent in the Sandbox calls "finish" with summary "read the rules"
+      Then the run's Sandbox is destroyed
+
   Rule: a Harness holds stand-ins, and only the Custodian puts the key on the wire
     ADR-0059, ADR-0076. Workspace code runs in the Harness container, so a key there is a key it can
     take away. The Harness holds a secret Stand-in, as a file under /run/jr2 that no confined child
