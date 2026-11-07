@@ -29,7 +29,7 @@ import {
   type PiToolDefinition,
 } from "./pi-tools.ts";
 import type { AgentDefinition } from "./spec.ts";
-import { bashOps, editOps, findOps, readOps, writeOps } from "./tool-ops.ts";
+import { bashOps, editOps, findOps, ImageOmitted, readOps, writeOps } from "./tool-ops.ts";
 
 /** A Working tool, in the shape the engine runs (`engine.ts`). */
 export type WorkingTool = EngineTool;
@@ -64,7 +64,10 @@ export function workingToolsFor(
   }
   const files = children.spawner;
   const home = children.env.HOME ?? "/";
-  const read = engineTool(createReadToolDefinition(cwd, { operations: readOps(files) }), home);
+  // No resize: pi's resize decodes the whole image in this process (ADR-0061).
+  const read = omitting(
+    engineTool(createReadToolDefinition(cwd, { operations: readOps(files), autoResizeImages: false }), home),
+  );
   const write = engineTool(createWriteToolDefinition(cwd, { operations: writeOps(files) }), home);
   const edit = engineTool(createEditToolDefinition(cwd, { operations: editOps(files) }), home);
   const bash = guarded(
@@ -115,6 +118,21 @@ function engineTool(definition: PiToolDefinition, home: string): EngineTool {
       const content = result.content as EngineToolResult["content"];
       if (result.isError) throw new Error(textOf(content));
       return { content };
+    },
+  };
+}
+
+/** `read` with a BMP's answer: the text alone, and no image (`ImageOmitted`). */
+function omitting(read: EngineTool): EngineTool {
+  return {
+    ...read,
+    async execute(toolCallId, params, signal) {
+      try {
+        return await read.execute(toolCallId, params, signal);
+      } catch (err) {
+        if (err instanceof ImageOmitted) return { content: [{ type: "text", text: err.message }] };
+        throw err;
+      }
     },
   };
 }

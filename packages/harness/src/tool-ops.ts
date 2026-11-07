@@ -65,8 +65,24 @@ async function writeContent(files: FileOps, path: string, content: string): Prom
 }
 
 /**
+ * An image that `read` does not send: a BMP. pi converts a BMP to PNG with photon, which decodes the
+ * whole image in this process, so a small file that holds a large image could take the Harness's
+ * memory past the container's limit, where the memory guard (ADR-0061) protects only the domain.
+ * `read` answers it with the text that the model read before (`omitting` in `working-tools.ts`).
+ */
+export class ImageOmitted extends Error {
+  readonly mimeType: string;
+  constructor(mimeType: string) {
+    super(`Read image file [${mimeType}]\n[Image omitted: configure an imageProcessor to convert BMP images.]`);
+    this.mimeType = mimeType;
+  }
+}
+
+/**
  * `read`'s operations. The image sniff reads the file once, in the domain, and the read that comes
- * next for the same path takes those bytes: one read of the file for each call.
+ * next for the same path takes those bytes: one read of the file for each call. A PNG, a JPEG, a
+ * GIF or a WebP goes to the model as its bytes, with no decode in this process (`read` is made with
+ * `autoResizeImages: false`). A BMP is omitted (`ImageOmitted`).
  */
 export function readOps(files: FileOps): ReadOperations {
   let sniffed: { path: string; data: Buffer } | undefined;
@@ -79,8 +95,10 @@ export function readOps(files: FileOps): ReadOperations {
     access: (path) => access(files, path),
     detectImageMimeType: async (path) => {
       const data = await readContent(files, path);
+      const mimeType = detectSupportedImageMimeType(data.subarray(0, IMAGE_SNIFF_BYTES));
+      if (mimeType === "image/bmp") throw new ImageOmitted(mimeType);
       sniffed = { path, data };
-      return detectSupportedImageMimeType(data.subarray(0, IMAGE_SNIFF_BYTES));
+      return mimeType;
     },
   };
 }

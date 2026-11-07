@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { crc32, createDeflate } from "node:zlib";
 import type { EngineTool } from "../src/engine.ts";
 import type { GuardOwner, GuardWatch } from "../src/memory-guard.ts";
 import { workingToolsFor } from "../src/working-tools.ts";
@@ -145,6 +146,76 @@ test("read sends an image as an image, from bytes read in the domain; a link to 
   );
   assert.match((result.content[0] as { text: string }).text, /^Read image file \[image\/png\]/);
   assert.match(await failure(read!, { path: "to-secret.png" }), /^EACCES: permission denied, open '/);
+});
+
+/** A PNG of `side` x `side` grey pixels, all zero: a few hundred KB that decode to side² × 4 bytes. */
+async function pngBomb(side: number): Promise<Buffer> {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([head, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(side, 0);
+  ihdr.writeUInt32BE(side, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 0; // greyscale
+  const deflate = createDeflate({ level: 9 });
+  const parts: Buffer[] = [];
+  deflate.on("data", (d: Buffer) => parts.push(d));
+  const done = new Promise((resolve) => deflate.on("end", resolve));
+  const row = Buffer.alloc(side + 1);
+  for (let y = 0; y < side; y++) {
+    if (!deflate.write(row)) await new Promise((resolve) => deflate.once("drain", resolve));
+  }
+  deflate.end();
+  await done;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", Buffer.concat(parts)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+// ADR-0061: the memory guard protects the domain, not the Harness process. So `read` decodes no
+// image in this process: pi's resize and its BMP conversion would decode the whole image here, and
+// a small file can hold a large image. An image goes to the model as its bytes, with no resize and
+// no dimension note, and a BMP is omitted, as before the upstream tools.
+test("read decodes no image in the Harness: a PNG bomb is sent as its bytes, and a BMP is omitted (ADR-0061)", async () => {
+  const dir = mkdtempSync(join(base, "jr2-tool-ops-"));
+  const bomb = await pngBomb(10_000);
+  assert.ok(bomb.length < 1024 * 1024, `the file is small: ${bomb.length} bytes`);
+  writeFileSync(join(dir, "bomb.png"), bomb);
+  const bmp = Buffer.alloc(58);
+  bmp.write("BM", 0, "ascii");
+  bmp.writeUInt32LE(58, 2);
+  bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14);
+  bmp.writeInt32LE(1, 18);
+  bmp.writeInt32LE(1, 22);
+  bmp.writeUInt16LE(1, 26);
+  bmp.writeUInt16LE(24, 28);
+  writeFileSync(join(dir, "dot.bmp"), bmp);
+  const { read } = toolsIn(dir);
+  const before = process.resourceUsage().maxRSS;
+  const result = await read!.execute("call-1", { path: "bomb.png" } as never);
+  const grew = (process.resourceUsage().maxRSS - before) * 1024;
+  assert.deepEqual(result.content, [
+    { type: "text", text: "Read image file [image/png]" },
+    { type: "image", data: bomb.toString("base64"), mimeType: "image/png" },
+  ]);
+  assert.ok(grew < 100 * 1024 * 1024, `the Harness's peak memory grew ${Math.round(grew / 1024 / 1024)} MB`);
+  const omitted = await read!.execute("call-2", { path: "dot.bmp" } as never);
+  assert.deepEqual(omitted.content, [
+    {
+      type: "text",
+      text: "Read image file [image/bmp]\n[Image omitted: configure an imageProcessor to convert BMP images.]",
+    },
+  ]);
 });
 
 test("two parallel edits of one file run one after the other, and both land", async () => {

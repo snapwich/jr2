@@ -40,6 +40,13 @@ Layers, each a backstop for the one before:
    Orchestrator reads it from the Sandbox watch, and a last end `OOMKilled` that no notice told yet tells the next Agent
    (ADR-0062).
 
+The guard kills the Agent's processes, never the Harness, so the Harness process does no work on the Agent's files whose
+memory grows with what a file holds. The `read` Working tool sends an image as its bytes: it decodes, resizes and
+converts none in the Harness process. A small file can hold a large image (a 300 KB PNG decodes to 400 MB), and pi's
+resize and its BMP conversion decode the whole image in the process that calls them. So jr2 turns pi's resize off, and a
+BMP is omitted with a text that says so
+([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)).
+
 The guard is best-effort and says so: a fast enough spike beats any poll. The lab won 35/35 on arm64 at 50 ms, 6/6 on
 amd64 at 10 ms (0.8% of a core), and only half on amd64 at 50 ms; it fired at 90–96% of the limit. Layer 5 covers what
 it misses.
