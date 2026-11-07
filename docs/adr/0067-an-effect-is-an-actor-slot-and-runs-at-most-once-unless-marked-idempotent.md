@@ -246,8 +246,10 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   `lfs.url` or `remote.origin.lfsurl` of `.lfsconfig` at the Binding's base, never `lfs.pushurl`, else the one that
   git-lfs derives from the push url. The upload spends the push credential and follows ADR-0051's LFS rule: an ssh
   server only on the push url's host, the token only to the Binding's own host, and an upload href on another host gets
-  only the headers that the batch answer carries. An upload that fails is `rejected`, and nothing is pushed. A signed or
-  squashed copy keeps the pointers, so it uploads the same objects.
+  only the headers that the batch answer carries. A pointer is each blob that git-lfs reads as one, so a pointer that is
+  not in the canonical form also gets its object uploaded. An upload that fails is `rejected`, and nothing is pushed;
+  its output shows no query of a url, because an upload href can carry its credential there. A signed or squashed copy
+  keeps the pointers, so it uploads the same objects.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The

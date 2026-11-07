@@ -49,6 +49,9 @@ const DefaultGitLFS = "/opt/jr2/bin/git-lfs"
 // lfsPointerMax is the largest blob that git-lfs reads as a pointer.
 const lfsPointerMax = 1024
 
+// lfsBatchChunk is how many small blobs one `cat-file --batch` reads: at most about 1 MiB.
+const lfsBatchChunk = 1024
+
 // stageUpload is the stage of an output whose LFS upload failed.
 const stageUpload = "upload"
 
@@ -129,31 +132,35 @@ func (c *call) lfsPointers(ctx context.Context, published string, held []string)
 	if len(small) == 0 {
 		return nil, nil
 	}
-	body, err := c.repo.Git(ctx, strings.NewReader(strings.Join(small, "\n")+"\n"), "cat-file", "--batch")
-	if err != nil {
-		return nil, errors.New(tail(stderrOf(err)))
-	}
+	// The bytes are read in chunks, so that a push of very many small files holds at most one
+	// chunk of their bytes.
 	byOid := map[string]lfsObject{}
-	for len(body) > 0 {
-		header, rest, ok := bytes.Cut(body, []byte("\n"))
-		if !ok {
-			break
+	for chunk := range slices.Chunk(small, lfsBatchChunk) {
+		body, err := c.repo.Git(ctx, strings.NewReader(strings.Join(chunk, "\n")+"\n"), "cat-file", "--batch")
+		if err != nil {
+			return nil, errors.New(tail(stderrOf(err)))
 		}
-		f := strings.Fields(string(header))
-		if len(f) != 3 {
-			break
-		}
-		n, err := strconv.Atoi(f[2])
-		if err != nil || n < 0 || n+1 > len(rest) {
-			break
-		}
-		if o, ok := parsePointer(rest[:n]); ok {
-			o.path = paths[f[0]]
-			if prev, seen := byOid[o.oid]; !seen || o.path < prev.path {
-				byOid[o.oid] = o
+		for len(body) > 0 {
+			header, rest, ok := bytes.Cut(body, []byte("\n"))
+			if !ok {
+				break
 			}
+			f := strings.Fields(string(header))
+			if len(f) != 3 {
+				break
+			}
+			n, err := strconv.Atoi(f[2])
+			if err != nil || n < 0 || n+1 > len(rest) {
+				break
+			}
+			if o, ok := parsePointer(rest[:n]); ok {
+				o.path = paths[f[0]]
+				if prev, seen := byOid[o.oid]; !seen || o.path < prev.path {
+					byOid[o.oid] = o
+				}
+			}
+			body = rest[n+1:]
 		}
-		body = rest[n+1:]
 	}
 	out := make([]lfsObject, 0, len(byOid))
 	for _, o := range byOid {
@@ -164,35 +171,47 @@ func (c *call) lfsPointers(ctx context.Context, published string, held []string)
 }
 
 var (
-	pointerVersion = regexp.MustCompile(`^version https://git-lfs\.github\.com/spec/v1$`)
-	pointerExt     = regexp.MustCompile(`^ext-[0-9]-[A-Za-z0-9]+ sha256:[0-9a-f]{64}$`)
-	pointerOid     = regexp.MustCompile(`^oid sha256:([0-9a-f]{64})$`)
-	pointerSize    = regexp.MustCompile(`^size (0|[1-9][0-9]{0,18})$`)
+	pointerExt = regexp.MustCompile(`^ext-[0-9]-[A-Za-z0-9_]+$`)
+	pointerSha = regexp.MustCompile(`^sha256:([0-9a-f]{64})$`)
+	// pointerVersions are the versions that git-lfs reads as the pointer spec's v1.
+	pointerVersions = []string{"https://git-lfs.github.com/spec/v1", "https://hawser.github.com/spec/v1",
+		"http://git-media.io/v/2"}
+	pointerKeys = []string{"version", "oid", "size"}
 )
 
-// parsePointer reads a Git LFS pointer: the version line, the extension lines that the spec
-// allows (`ext-<n>-<name> sha256:<oid>`, at most ten), then the oid and the size, each line ended
-// by a newline. Any other blob is not a pointer.
+// parsePointer reads a Git LFS pointer as git-lfs reads it, so that each blob that a checkout
+// smudges is a pointer here too: space at the start and the end is ignored, a line ends at a
+// newline with an optional carriage return, an empty line is skipped, and the size is a decimal
+// that ParseInt reads ("012" and "+12" are 12). The keys are the version, the oid and the size,
+// in that order, with extension lines (`ext-<n>-<name> sha256:<oid>`) where a key is expected.
+// Any other blob is not a pointer.
 func parsePointer(raw []byte) (lfsObject, bool) {
-	if !bytes.HasSuffix(raw, []byte("\n")) {
-		return lfsObject{}, false
-	}
-	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-	if len(lines) < 3 || len(lines) > 13 || !pointerVersion.MatchString(lines[0]) {
-		return lfsObject{}, false
-	}
-	for _, ext := range lines[1 : len(lines)-2] {
-		if !pointerExt.MatchString(ext) {
+	values := map[string]string{}
+	next := 0
+	for line := range strings.SplitSeq(string(bytes.TrimSpace(raw)), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, " ")
+		if !ok || next == len(pointerKeys) {
 			return lfsObject{}, false
 		}
+		if key != pointerKeys[next] {
+			if !pointerExt.MatchString(key) || !pointerSha.MatchString(value) {
+				return lfsObject{}, false
+			}
+			continue
+		}
+		values[key] = value
+		next++
 	}
-	oid := pointerOid.FindStringSubmatch(lines[len(lines)-2])
-	size := pointerSize.FindStringSubmatch(lines[len(lines)-1])
-	if oid == nil || size == nil {
+	if next != len(pointerKeys) || !slices.Contains(pointerVersions, values["version"]) {
 		return lfsObject{}, false
 	}
-	n, err := strconv.ParseInt(size[1], 10, 64)
-	if err != nil {
+	oid := pointerSha.FindStringSubmatch(values["oid"])
+	n, err := strconv.ParseInt(values["size"], 10, 64)
+	if oid == nil || err != nil || n < 0 {
 		return lfsObject{}, false
 	}
 	return lfsObject{oid: oid[1], size: n}, true
@@ -353,8 +372,8 @@ func (c *call) lfsSchemeAllowed(raw string) bool {
 // ssh. A local path, a file url, a `<helper>::<address>` and an ssh host that is not a plain name
 // give !ok.
 func lfsURLParts(raw string) (scheme, host string, ok bool) {
-	if i := strings.Index(raw, "://"); i >= 0 {
-		scheme = strings.ToLower(raw[:i])
+	if before, _, found := strings.Cut(raw, "://"); found {
+		scheme = strings.ToLower(before)
 		if scheme == "git+ssh" {
 			scheme = gitclean.SchemeSSH
 		}
@@ -426,7 +445,7 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 	if err == nil {
 		return nil
 	}
-	words := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+	words := withoutQueries(strings.TrimSpace(stdout.String() + "\n" + stderr.String()))
 	reason := "the LFS objects of " + namesOf(objects) + " could not be uploaded"
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -443,6 +462,16 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 		}
 	}
 	return ptr(rejected(stageUpload, reason+"; nothing was pushed", tail(words)))
+}
+
+// urlQuery is the query and the fragment of a url in git-lfs's words.
+var urlQuery = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"'<>]*)[?#][^\s"'<>]*`)
+
+// withoutQueries removes the query and the fragment of each url in git-lfs's words. An upload
+// href can carry its credential in its query (a presigned url), and the scrubber does not know
+// that value, so the Agent must not read it.
+func withoutQueries(words string) string {
+	return urlQuery.ReplaceAllString(words, "$1?…")
 }
 
 // lastLine is the last line of git-lfs's words that is not its progress, at most 300 bytes: its

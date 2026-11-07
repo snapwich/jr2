@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/snapwich/jr2/effector/internal/gitclean"
 	"github.com/snapwich/jr2/effector/internal/gittest"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/secrets"
@@ -710,29 +711,219 @@ func TestAnLFSServerOnAnotherHostGetsNoToken(t *testing.T) {
 	}
 }
 
-func TestParsePointerTakesOnlyAPointer(t *testing.T) {
-	oid := strings.Repeat("ab", 32)
-	good := "version https://git-lfs.github.com/spec/v1\noid sha256:" + oid + "\nsize 12\n"
-	if o, ok := parsePointer([]byte(good)); !ok || o.oid != oid || o.size != 12 {
-		t.Fatalf("got %+v %v", o, ok)
+// pointerForms are blobs that git-lfs reads as pointers, or does not, as git-lfs 3.4.1 does.
+func pointerForms(oid string) []struct {
+	name, form string
+	ok         bool
+} {
+	v := "version https://git-lfs.github.com/spec/v1"
+	o := "oid sha256:" + oid
+	return []struct {
+		name, form string
+		ok         bool
+	}{
+		{"canonical", v + "\n" + o + "\nsize 12\n", true},
+		{"no final newline", v + "\n" + o + "\nsize 12", true},
+		{"crlf", v + "\r\n" + o + "\r\nsize 12\r\n", true},
+		{"a leading zero", v + "\n" + o + "\nsize 012\n", true},
+		{"a plus", v + "\n" + o + "\nsize +12\n", true},
+		{"blank lines and spaces", "\n\n  " + v + "\n\n" + o + "\n\nsize 12 \n\n", true},
+		{"hawser", "version https://hawser.github.com/spec/v1\n" + o + "\nsize 12\n", true},
+		{"git-media", "version http://git-media.io/v/2\n" + o + "\nsize 12\n", true},
+		{"an extension", v + "\next-0-foo sha256:" + strings.Repeat("cd", 32) + "\n" + o + "\nsize 12\n", true},
+		{"an extension after the oid", v + "\n" + o + "\next-0-foo sha256:" + oid + "\nsize 12\n", true},
+		{"an uppercase oid", v + "\n" + strings.ToUpper(o) + "\nsize 12\n", false},
+		{"an extra line", v + "\n" + o + "\nsize 12\nextra x\n", false},
+		{"a bad extension", v + "\next-0-foo bad\n" + o + "\nsize 12\n", false},
+		{"a negative size", v + "\n" + o + "\nsize -1\n", false},
+		{"keys out of order", v + "\nsize 12\n" + o + "\n", false},
+		{"no size", v + "\n" + o + "\n", false},
+		{"two spaces", v + "\noid  sha256:" + oid + "\nsize 12\n", false},
+		{"a tab", v + "\t" + o + "\nsize 12\n", false},
+		{"carriage returns only", v + "\r" + o + "\rsize 12\r", false},
+		{"another version", "version https://git-lfs.github.com/spec/v2\n" + o + "\nsize 12\n", false},
+		{"a size too large", v + "\n" + o + "\nsize 99999999999999999999\n", false},
 	}
-	for _, bad := range []string{
-		strings.TrimSuffix(good, "\n"),
-		strings.Replace(good, "size 12", "size -1", 1),
-		strings.Replace(good, "size 12", "size 012", 1),
-		strings.Replace(good, oid, strings.ToUpper(oid), 1),
-		strings.Replace(good, "spec/v1", "spec/v2", 1),
-		good + "extra\n",
-		strings.Replace(good, "\noid", "\next-x-foo sha256:"+oid+"\noid", 1),
-		strings.Replace(good, "\noid", "\next-0-foo sha256:short\noid", 1),
-	} {
-		if _, ok := parsePointer([]byte(bad)); ok {
-			t.Fatalf("%q read as a pointer", bad)
+}
+
+func TestParsePointerReadsWhatGitLFSReads(t *testing.T) {
+	oid := strings.Repeat("ab", 32)
+	program, _ := exec.LookPath("git-lfs")
+	for _, tc := range pointerForms(oid) {
+		o, ok := parsePointer([]byte(tc.form))
+		if ok != tc.ok || (ok && (o.oid != oid || o.size != 12)) {
+			t.Errorf("%s: got %+v %v", tc.name, o, ok)
+		}
+		if program == "" {
+			continue
+		}
+		cmd := exec.Command(program, "pointer", "--check", "--stdin")
+		cmd.Stdin = strings.NewReader(tc.form)
+		if gitLFS := cmd.Run() == nil; gitLFS != ok {
+			t.Errorf("%s: git-lfs reads it as a pointer: %v; parsePointer: %v", tc.name, gitLFS, ok)
 		}
 	}
-	// The spec's extension lines come between the version and the oid.
-	ext := strings.Replace(good, "\noid", "\next-0-foo sha256:"+strings.Repeat("cd", 32)+"\noid", 1)
-	if o, ok := parsePointer([]byte(ext)); !ok || o.oid != oid || o.size != 12 {
-		t.Fatalf("an extension pointer: got %+v %v", o, ok)
+}
+
+// A pointer that git-lfs reads but that is not in the canonical form is still a pointer: its
+// object must be uploaded, or the push is rejected.
+func TestANonCanonicalPointerWhoseObjectNoStoreHoldsIsRejected(t *testing.T) {
+	for _, form := range []string{
+		"version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d",
+		"version https://git-lfs.github.com/spec/v1\r\noid sha256:%s\r\nsize %d\r\n",
+	} {
+		f := lfsFixture(t, "")
+		lfs := newLFSServer(t, f)
+		srv := httptest.NewServer(lfs)
+		t.Cleanup(srv.Close)
+		lfsConfigAtBase(t, f, srv.URL+"/lfs")
+		before := remoteRef(f)
+		content := "never stored anywhere\n"
+		sum := sha256.Sum256([]byte(content))
+		oid := hex.EncodeToString(sum[:])
+		f.pod.Commit("odd pointer", map[string]string{"big.bin": fmt.Sprintf(form, oid, len(content))})
+		out := f.runner.Run(t.Context(), f.lfsRequest(false))
+		if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || !strings.Contains(out.Reason, "big.bin") {
+			t.Fatalf("%q: got %+v %+v", form, out, out.Push)
+		}
+		if remoteRef(f) != before || len(lfs.requests()) != 0 {
+			t.Fatalf("%q: the branch moved, or the LFS server was asked", form)
+		}
+	}
+}
+
+// An upload href can carry its credential in its query (a presigned url). When the upload fails,
+// the output that the Agent reads holds no part of that query.
+func TestAFailedHrefsQueryIsNotInTheOutput(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	// git-lfs names the href, query and all, in its error line for a 400 (after its retries).
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	t.Cleanup(bad.Close)
+	lfs.hrefs = bad.URL + "/obj?X-Amz-Signature=PRESIGNED-SECRET-123&x="
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	lfsConfigAtBase(t, f, srv.URL+"/lfs")
+	before := remoteRef(f)
+	largeFile(t, f, "big.bin", "presigned\n", true)
+	out := f.runner.Run(t.Context(), f.lfsRequest(false))
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if strings.Contains(out.Reason+out.Push.Detail, "PRESIGNED-SECRET-123") || !strings.Contains(out.Reason, "/obj?…") {
+		t.Fatalf("the href's query is in the output: %q %q", out.Reason, out.Push.Detail)
+	}
+	if remoteRef(f) != before {
+		t.Fatal("the branch moved")
+	}
+}
+
+func TestWithoutQueriesKeepsTheURLsPath(t *testing.T) {
+	got := withoutQueries(`Server error: https://store.test/obj?sig=S3CR3T&x=1 from "http://a.test/b#frag" and https://c.test/d`)
+	want := `Server error: https://store.test/obj?… from "http://a.test/b?…" and https://c.test/d`
+	if got != want {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// sshTools is a program folder with git and sh from the host, and an ssh that logs each call and
+// serves git's and git-lfs's remote commands on this host. git-lfs-authenticate sends git-lfs to
+// href with one header.
+func sshTools(t *testing.T, href string) (logFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"git", "sh"} {
+		p, err := exec.LookPath(name)
+		if err != nil {
+			t.Skip("no " + name)
+		}
+		if err := os.Symlink(p, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	logFile = filepath.Join(t.TempDir(), "ssh.log")
+	script := fmt.Sprintf(`#!%[3]s
+echo "ARGV: $*" >> %[1]q
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -F|-i|-o|-p|-l|-c|-E|-S|-O|-b|-e|-D|-L|-R|-W|-J|-Q|-m) shift 2;;
+    --) shift; break;;
+    -*) shift;;
+    *) break;;
+  esac
+done
+host="$1"; shift
+cmd="$*"
+case "$cmd" in
+  git-lfs-transfer*) echo "git-lfs-transfer: command not found" >&2; exit 127;;
+  git-lfs-authenticate*) printf '{"href":"%[2]s","header":{"%[4]s":"from-authenticate"}}\n'; exit 0;;
+  git-receive-pack*|git-upload-pack*) exec sh -c "$cmd";;
+esac
+echo "unknown command" >&2
+exit 1
+`, logFile, href, bash, hrefHeader)
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := gitclean.Path
+	gitclean.Path = dir
+	t.Cleanup(func() { gitclean.Path = old })
+	return logFile
+}
+
+// An ssh push uploads through the call's own ssh command: the push key, the known hosts, batch
+// mode, to the push url's host. The batch gets the header that git-lfs-authenticate gave.
+func TestAnSSHPushUploadsThroughTheCallsSSHCommand(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	log := sshTools(t, srv.URL+"/lfs")
+	dir := filepath.Join(f.runner.GitRoot, "push")
+	for name, body := range map[string]string{secrets.PushKeyFile: "a fake key\n", secrets.KnownHostsFile: ""} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o400); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.runner.Config.Git[0].Push = &secrets.GitAuth{SSHKey: "push"}
+	before := remoteRef(f)
+	content := "over ssh\n"
+	sha, oid := largeFile(t, f, "big.bin", content, true)
+	req := f.lfsRequest(false)
+	req.Push.URL = "ssh://git@lfs-host.test" + f.pod.Remote
+	out := f.runner.Run(t.Context(), req)
+	raw, _ := os.ReadFile(log)
+	if out.Outcome != wire.OutcomePushed || out.Push.Published != sha {
+		t.Fatalf("got %+v %+v; ssh log:\n%s", out, out.Push, raw)
+	}
+	if string(lfs.held(oid)) != content {
+		t.Fatalf("the server holds %q", lfs.held(oid))
+	}
+	if p := puts(lfs.requests()); len(p) != 1 || p[0].Branch != before {
+		t.Fatalf("PUTs %+v (before %s)", p, before)
+	}
+	for _, r := range lfs.requests() {
+		if strings.HasSuffix(r.Path, "/objects/batch") && r.Header != "from-authenticate" {
+			t.Errorf("the batch did not get git-lfs-authenticate's header: %+v", r)
+		}
+	}
+	sawLFS := false
+	for l := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+		if !strings.Contains(l, "/push-key ") || !strings.Contains(l, filepath.Join(dir, secrets.KnownHostsFile)) || !strings.Contains(l, "StrictHostKeyChecking=yes") ||
+			!strings.Contains(l, "BatchMode=yes") || !strings.Contains(l, "git@lfs-host.test") {
+			t.Errorf("an ssh call without the call's command: %s", l)
+		}
+		if strings.Contains(l, "git-lfs-") {
+			sawLFS = true
+		}
+	}
+	if !sawLFS {
+		t.Error("git-lfs never used ssh")
 	}
 }
