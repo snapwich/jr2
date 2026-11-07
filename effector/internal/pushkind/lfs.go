@@ -5,19 +5,27 @@ package pushkind
 //
 //  1. It lists the pointers: each blob of `rev-list --objects <published> --not <held>` that is
 //     at most 1024 bytes and parses as a pointer. A push with no pointer runs no git-lfs.
-//  2. It reads each object as DATA: from the Agent's `<git dir>/lfs/objects`, opened beneath the
-//     git dir with no symlink (package beneath), else from the node cache's `lfs/objects`. It
-//     checks each one against its oid (sha256) and its size, and copies it into the call's own
-//     scratch repository. git never runs with the Agent's repository as its repository, and
-//     nothing of the Agent's config is read.
-//  3. It runs jr2's own git-lfs (GitLFS) as `push --object-id` in the scratch repository, to the
-//     push url. The LFS server is `lfs.url`, else `remote.origin.lfsurl`, of `.lfsconfig` at the
-//     Binding's base in the node cache; else git-lfs derives it from the push url.
+//  2. It asks the LFS server's batch API which objects the server lacks (lfsbatch.go). An object
+//     that the server holds is not uploaded, and needs no local copy. An object that the answer
+//     refuses or leaves out is `rejected` at once.
+//  3. It reads each object that the server lacks as DATA: from the Agent's
+//     `<git dir>/lfs/objects`, opened beneath the git dir with no symlink (package beneath), else
+//     from the node cache's `lfs/objects`. It checks each one against its oid (sha256) and its
+//     size, and copies it into the call's own scratch repository. git never runs with the
+//     Agent's repository as its repository, and nothing of the Agent's config is read.
+//  4. It runs jr2's own git-lfs (GitLFS) as `push --object-id` in the scratch repository, to the
+//     push url.
+//  5. It asks the batch API again: the server must hold each object that was uploaded. git-lfs's
+//     exit code alone does not say so: a PUT or a verify that answers 422 makes it exit 0.
 //
-// The credential is the push's own: an https token goes only through the host-scoped helper, so
-// an LFS server or an upload href on another host gets no token, and an href gets only the
-// headers of the batch answer (ADR-0051). An upload that fails is `rejected` at stage `upload`,
-// and nothing is pushed.
+// The LFS server is the first of `lfs.pushurl`, `lfs.url`, `remote.origin.lfspushurl` and
+// `remote.origin.lfsurl` of `.lfsconfig` at the Binding's base in the node cache, as git-lfs
+// chooses for an upload; else git-lfs derives it from the push url.
+//
+// The credential is the push's own: an https token goes only through the origin-scoped helper,
+// so an LFS server or an upload href on another origin gets no token, and an href there gets only
+// the headers of the batch answer (ADR-0051). An upload that fails is `rejected` at stage
+// `upload`, and nothing is pushed.
 
 import (
 	"bytes"
@@ -70,7 +78,7 @@ func (o lfsObject) name() string {
 }
 
 // uploadLFS uploads the LFS objects of what published adds to held. A nil output means that the
-// push goes on: every object is uploaded, or there is none.
+// push goes on: the server holds every object, or there is none.
 func (c *call) uploadLFS(ctx context.Context, published string, held []string) *wire.Output {
 	objects, err := c.lfsPointers(ctx, published, held)
 	if err != nil {
@@ -84,12 +92,61 @@ func (c *call) uploadLFS(ctx context.Context, published string, held []string) *
 	if err != nil {
 		return ptr(rejected(stageUpload, err.Error()+"; nothing was pushed", ""))
 	}
+	api, err := c.lfsAPIFor(ctx, endpoint)
+	if err != nil {
+		return ptr(rejected(stageUpload, withoutQueries(err.Error())+"; nothing was pushed", ""))
+	}
+	states, err := c.lfsStates(ctx, api, objects)
+	if err != nil {
+		return ptr(rejected(stageUpload, "the LFS objects of "+namesOf(objects)+" could not be uploaded: "+
+			err.Error()+"; nothing was pushed", ""))
+	}
+	var need []lfsObject
 	for _, o := range objects {
+		s, ok := states[o.oid]
+		switch {
+		case !ok:
+			return ptr(rejected(stageUpload, "the LFS object of "+o.name()+" could not be uploaded: the server's "+
+				"batch answer left it out; nothing was pushed", ""))
+		case s.why != "":
+			return ptr(rejected(stageUpload, "the LFS object of "+o.name()+" could not be uploaded: "+s.why+
+				"; nothing was pushed", ""))
+		case !s.held:
+			need = append(need, o)
+		}
+	}
+	if len(need) == 0 {
+		return nil
+	}
+	for _, o := range need {
 		if err := c.stageLFS(o); err != nil {
 			return ptr(rejected(stageUpload, err.Error()+"; nothing was pushed", ""))
 		}
 	}
-	return c.runLFS(ctx, endpoint, objects)
+	words, out := c.runLFS(ctx, endpoint, need)
+	if out != nil {
+		return out
+	}
+	// git-lfs exited 0. The server must hold each object now: ask it.
+	after, err := c.lfsStates(ctx, api, need)
+	if err != nil {
+		return ptr(rejected(stageUpload, "the upload of the LFS objects of "+namesOf(need)+" could not be "+
+			"confirmed: "+err.Error()+"; nothing was pushed", tail(words)))
+	}
+	var lacking []lfsObject
+	for _, o := range need {
+		if !after[o.oid].held {
+			lacking = append(lacking, o)
+		}
+	}
+	if len(lacking) == 0 {
+		return nil
+	}
+	reason := "the LFS server does not hold the objects of " + namesOf(lacking) + " after the upload"
+	if last := lastLine(words); last != "" {
+		reason += "; git-lfs: " + last
+	}
+	return ptr(rejected(stageUpload, reason+"; nothing was pushed", tail(words)))
 }
 
 // lfsPointers lists the pointer blobs that published adds to held, one per oid, sorted by path.
@@ -222,15 +279,14 @@ func lfsRel(oid string) string {
 	return filepath.Join("lfs", "objects", oid[0:2], oid[2:4], oid)
 }
 
-// stageLFS copies one object into the scratch repository's own store: from the Agent's store,
-// else from the node cache's, each checked against its oid and size. An object that neither
-// holds whole names its file, and why the opener refused the Agent's file when it did. Such an
-// object is refused also when the server holds it already: `git-lfs push --object-id` reads
-// each object from local storage before it asks the server.
+// stageLFS copies one object that the server lacks into the scratch repository's own store:
+// from the Agent's store, else from the node cache's, each checked against its oid and size. An
+// object that neither holds whole names its file and the cause: a file whose bytes are not the
+// pointer's, the opener's refusal of the Agent's file, or the error that the read gave.
 func (c *call) stageLFS(o lfsObject) error {
 	dst := filepath.Join(c.repo.Dir, lfsRel(o.oid))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
+		return fmt.Errorf("the LFS object of %s could not be staged: %w", o.name(), err)
 	}
 	agentErr := c.copyLFS(c.r.WorkRoot, c.spec.Repo.GitDir, o, dst)
 	if agentErr == nil {
@@ -245,24 +301,39 @@ func (c *call) stageLFS(o lfsObject) error {
 	var mismatch *lfsMismatch
 	switch {
 	case errors.As(agentErr, &mismatch), errors.As(cacheErr, &mismatch):
-		return fmt.Errorf("the LFS object of %s does not match its oid: %s", o.name(), mismatch.why)
+		return fmt.Errorf("the LFS object of %s does not match its oid: %s, and the server lacks it", o.name(),
+			mismatch.why)
 	}
-	why := ""
-	if refused := refusal(agentErr); refused != "" {
-		why = " (the Agent's file was refused: " + refused + ")"
+	var causes []string
+	if why := readCause(agentErr); why != "" {
+		causes = append(causes, "the Agent's file: "+why)
 	}
-	return fmt.Errorf("the LFS object of %s is in neither the Agent's repository nor the node cache%s, so it "+
-		"cannot be uploaded", o.name(), why)
+	if why := readCause(cacheErr); why != "" {
+		causes = append(causes, "the node cache's file: "+why)
+	}
+	if len(causes) > 0 {
+		return fmt.Errorf("the LFS object of %s could not be read (%s), and the server lacks it, so it cannot be "+
+			"uploaded", o.name(), strings.Join(causes, "; "))
+	}
+	return fmt.Errorf("the LFS object of %s is in neither the Agent's repository nor the node cache, and the "+
+		"server lacks it, so it cannot be uploaded", o.name())
 }
 
-// refusal is why the opener refused the Agent's object file: a symlink, a FIFO, a file with more
-// than one hard link. A file that is not there is no refusal: "".
-func refusal(err error) string {
+// readCause is why a store's object file could not be read, or "" when the file is not there: the
+// opener's refusal (a symlink, a FIFO, a file with more than one hard link), or an I/O error such
+// as a permission or a full disk.
+func readCause(err error) string {
 	var refused *beneath.Refused
-	if !errors.As(err, &refused) || strings.Contains(refused.Reason, "does not exist") {
+	switch {
+	case err == nil, errors.Is(err, os.ErrNotExist):
 		return ""
+	case errors.As(err, &refused):
+		if strings.Contains(refused.Reason, "does not exist") {
+			return ""
+		}
+		return "refused: " + refused.Reason
 	}
-	return refused.Reason
+	return err.Error()
 }
 
 // lfsMismatch is an object file whose bytes are not the pointer's.
@@ -308,12 +379,15 @@ func (c *call) copyLFS(root, rel string, o lfsObject, dst string) error {
 	return os.Rename(tmp.Name(), dst)
 }
 
-// lfsEndpoint is the LFS server that `.lfsconfig` at the Binding's base names in the node cache:
-// `lfs.url`, else `remote.origin.lfsurl`. "" is none: git-lfs derives the server from the push
-// url. The base is resolved after `--end-of-options`, and the cache is the scratch repository's
-// alternate, so its blob is read there. A named server must use https or http, or ssh on the
-// host of an ssh push url (ADR-0051's LFS rule): a base cannot send the upload to a file in the
-// Effector's pod, and the push's ssh key goes to no other host.
+// lfsEndpoint is the LFS server that `.lfsconfig` at the Binding's base names in the node cache,
+// as git-lfs chooses the server of an upload: `lfs.pushurl`, `lfs.url`,
+// `remote.origin.lfspushurl`, then `remote.origin.lfsurl`. A push url is honored because a
+// repository that names one reads from a server that may take no upload, a mirror. "" is none:
+// git-lfs derives the server from the push url. The base is resolved after `--end-of-options`,
+// and the cache is the scratch repository's alternate, so its blob is read there. A named server
+// must use https or http, or ssh on the host of an ssh push url (ADR-0051's LFS rule): a base
+// cannot send the upload to a file in the Effector's pod, and the push's ssh key goes to no other
+// host.
 func (c *call) lfsEndpoint(ctx context.Context) (string, error) {
 	name := c.spec.Base
 	if name == "" {
@@ -333,7 +407,7 @@ func (c *call) lfsEndpoint(ctx context.Context) (string, error) {
 	if _, err := c.repo.Line(ctx, "rev-parse", "--verify", "--quiet", "--end-of-options", blob); err != nil {
 		return "", nil
 	}
-	for _, key := range []string{"lfs.url", "remote.origin.lfsurl"} {
+	for _, key := range []string{"lfs.pushurl", "lfs.url", "remote.origin.lfspushurl", "remote.origin.lfsurl"} {
 		// With no includes: an include.path in the base would make git read any file as config,
 		// the Agent's own config among them, or block on a FIFO.
 		value, err := c.repo.Line(ctx, "config", "--no-includes", "--blob", blob, "--get", key)
@@ -410,8 +484,10 @@ var (
 )
 
 // runLFS runs git-lfs `push --object-id` in the scratch repository, to the push url, with the
-// push's credential config (the helper or the ssh command, the CA file).
-func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject) *wire.Output {
+// push's credential config (the helper or the ssh command, the CA file). It answers git-lfs's
+// words with no query of a url, and an output when git-lfs failed. An exit of 0 is not proof that
+// the server holds the objects: the caller asks the server.
+func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject) (string, *wire.Output) {
 	repo := c.repo
 	settings := [][2]string{
 		// A lock is not the push's business: git-lfs asks the server about none.
@@ -422,7 +498,7 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 	}
 	for _, kv := range settings {
 		if _, err := repo.Git(ctx, nil, "config", kv[0], kv[1]); err != nil {
-			return ptr(rejected(stageUpload, "the LFS upload could not be configured; nothing was pushed",
+			return "", ptr(rejected(stageUpload, "the LFS upload could not be configured; nothing was pushed",
 				tail(stderrOf(err))))
 		}
 	}
@@ -442,10 +518,10 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.WaitDelay = time.Second
 	err := reaper.Run(ctx, cmd)
-	if err == nil {
-		return nil
-	}
 	words := withoutQueries(strings.TrimSpace(stdout.String() + "\n" + stderr.String()))
+	if err == nil {
+		return words, nil
+	}
 	reason := "the LFS objects of " + namesOf(objects) + " could not be uploaded"
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -461,7 +537,7 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 			reason += "; git-lfs: " + last
 		}
 	}
-	return ptr(rejected(stageUpload, reason+"; nothing was pushed", tail(words)))
+	return words, ptr(rejected(stageUpload, reason+"; nothing was pushed", tail(words)))
 }
 
 // urlQuery is the query and the fragment of a url in git-lfs's words.
@@ -474,14 +550,21 @@ func withoutQueries(words string) string {
 	return urlQuery.ReplaceAllString(words, "$1?…")
 }
 
-// lastLine is the last line of git-lfs's words that is not its progress, at most 300 bytes: its
-// summary of the failure.
+// lastLine is git-lfs's summary of a failure, at most 300 bytes: the last line that says
+// "failed" or "error", else the last line that is not its progress.
 func lastLine(words string) string {
-	last := ""
+	last, failed := "", ""
 	for line := range strings.FieldsFuncSeq(words, func(r rune) bool { return r == '\n' || r == '\r' }) {
-		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "Uploading LFS objects") {
-			last = line
+		if line = strings.TrimSpace(line); line == "" || strings.HasPrefix(line, "Uploading LFS objects") {
+			continue
 		}
+		last = line
+		if l := strings.ToLower(line); strings.Contains(l, "failed") || strings.Contains(l, "error") {
+			failed = line
+		}
+	}
+	if failed != "" {
+		last = failed
 	}
 	if len(last) > 300 {
 		last = last[:300] + "…"

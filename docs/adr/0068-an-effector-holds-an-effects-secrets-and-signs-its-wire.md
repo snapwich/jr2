@@ -480,6 +480,11 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 - **A node with no Landlock runs no Sandbox** (ADR-0077). A Sandbox placed there fails at provision, naming the node;
   the fix is a kernel with `landlock` in its LSM list. The home cluster's nodes are arm64, so the Effector binary and
   the Kit images need `linux/arm64` builds there.
+- **A field added to the wire skews with a live Sandbox.** Go decodes with unknown fields disallowed, and a live Sandbox
+  keeps the runtime it started with ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)).
+  So after a `jr2 up` that adds a request field, as the push start's `pairs` and `base` are, the Orchestrator sends that
+  field to an Effector that started before it, and that Effector refuses the request until its Sandbox starts again. jr2
+  accepts this and has no wire versioning: the refusal is a failed Effect, never a wrong push.
 - An `unknown` outcome is the Machine's to route. jr2 sends an `http` call again only when the author marked it
   `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
 - The Effector's Go tests run Landlock for real on the host's kernel: a child that reads the key, an unnamed secret or

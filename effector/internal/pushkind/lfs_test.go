@@ -34,7 +34,9 @@ type lfsRequest struct {
 }
 
 // lfsServer is a Git LFS server for one test: the batch API (upload, with a verify action), the
-// PUT of each object and its verify. It records every request, and holds what was uploaded.
+// PUT of each object and its verify. It records every request. An object that a PUT sends is
+// held only after its verify passes, as a server that verifies keeps an unverified object out of
+// its store.
 type lfsServer struct {
 	t       *testing.T
 	mu      sync.Mutex
@@ -50,6 +52,14 @@ type lfsServer struct {
 	// test ends.
 	refuse bool
 	hold   chan struct{}
+	// putStatus and verifyStatus, when not 0, are what every PUT and every verify answer, and
+	// nothing is stored.
+	putStatus, verifyStatus int
+	// omit leaves every object out of each batch answer.
+	omit bool
+	// hrefWant is the Authorization that a PUT and a verify need; "" needs none.
+	hrefWant string
+	pending  map[string][]byte
 }
 
 const hrefHeader = "X-Jr2-Href-Header"
@@ -114,6 +124,9 @@ func (s *lfsServer) batch(w http.ResponseWriter, r *http.Request, base string) {
 	}
 	header := map[string]string{hrefHeader: "from-the-answer"}
 	for _, o := range req.Objects {
+		if s.omit {
+			continue
+		}
 		obj := object{Oid: o.Oid, Size: o.Size}
 		switch {
 		case s.refuse:
@@ -132,7 +145,20 @@ func (s *lfsServer) batch(w http.ResponseWriter, r *http.Request, base string) {
 
 // href answers a PUT or a verify that a batch answer named.
 func (s *lfsServer) href(w http.ResponseWriter, r *http.Request) {
+	if s.hrefWant != "" && r.Header.Get("Authorization") != s.hrefWant {
+		w.Header().Set("WWW-Authenticate", `Basic realm="lfs"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	oid := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 	switch {
+	case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/up/") && s.putStatus != 0:
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(s.putStatus)
+		_, _ = w.Write([]byte(`{"message":"refused by the test"}`))
+	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/verify/") && s.verifyStatus != 0:
+		w.WriteHeader(s.verifyStatus)
+		_, _ = w.Write([]byte(`{"message":"not verified"}`))
 	case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/up/"):
 		if s.hold != nil {
 			<-s.hold
@@ -142,17 +168,26 @@ func (s *lfsServer) href(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		oid := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		sum := sha256.Sum256(body)
 		if hex.EncodeToString(sum[:]) != oid {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			return
 		}
 		s.mu.Lock()
-		s.objects[oid] = body
+		s.pending[oid] = body
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/verify/"):
+		s.mu.Lock()
+		body, ok := s.pending[oid]
+		if ok {
+			s.objects[oid] = body
+		}
+		s.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -173,7 +208,8 @@ func (s *lfsServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func newLFSServer(t *testing.T, f *fixture) *lfsServer {
-	return &lfsServer{t: t, objects: map[string][]byte{}, branch: func() string { return remoteRef(f) }}
+	return &lfsServer{t: t, objects: map[string][]byte{}, pending: map[string][]byte{},
+		branch: func() string { return remoteRef(f) }}
 }
 
 // lfsFixture is a push fixture whose runner has a real git-lfs; it skips without one.
@@ -336,9 +372,45 @@ func TestAnObjectTheAgentLacksIsRejectedAndTheBranchDoesNotMove(t *testing.T) {
 	if remoteRef(f) != before {
 		t.Fatal("the branch moved")
 	}
-	if len(lfs.requests()) != 0 {
-		t.Fatalf("the LFS server was asked: %+v", lfs.requests())
+	// The server was asked first (it may hold the object), and nothing went up.
+	if p := puts(lfs.requests()); len(p) != 0 || len(lfs.requests()) == 0 {
+		t.Fatalf("the LFS server saw: %+v", lfs.requests())
 	}
+}
+
+// An object that no local store holds is not refused when the server holds it already: the batch
+// answer gives it no action, so nothing is uploaded and the branch moves.
+func TestAnObjectNoStoreHoldsIsPushedWhenTheServerHoldsIt(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	lfsConfigAtBase(t, f, srv.URL+"/lfs")
+	content := "held by the server only\n"
+	_, oid := largeFile(t, f, "assets/held.bin", content, false)
+	lfs.objects[oid] = []byte(content)
+	// A second file the Agent holds and the server lacks still goes up.
+	putObject(t, f.pod.GitDir, sum256("new\n"), []byte("new\n"))
+	sha := f.pod.Commit("add new", map[string]string{"new.bin": pointerOf("new\n")})
+
+	out := f.runner.Run(t.Context(), f.lfsRequest(false))
+	if out.Outcome != wire.OutcomePushed || out.Push.Published != sha {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	p := puts(lfs.requests())
+	if len(p) != 1 || p[0].Path != "/up/"+sum256("new\n") {
+		t.Fatalf("PUTs: %+v", p)
+	}
+}
+
+func sum256(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+func pointerOf(content string) string {
+	return fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", sum256(content),
+		len(content))
 }
 
 func TestACorruptedObjectIsRejected(t *testing.T) {
@@ -384,7 +456,7 @@ func TestAnObjectFileThatIsASymlinkIsNotFollowed(t *testing.T) {
 	}
 	out := f.runner.Run(t.Context(), f.lfsRequest(false))
 	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || lfs.held(oid) != nil ||
-		!strings.Contains(out.Reason, "the Agent's file was refused") || !strings.Contains(out.Reason, "symlink") {
+		!strings.Contains(out.Reason, "the Agent's file: refused") || !strings.Contains(out.Reason, "symlink") {
 		t.Fatalf("got %+v %+v", out, out.Push)
 	}
 }
@@ -508,11 +580,115 @@ func TestAServerThatRefusesTheUploadIsRejectedAndTheBranchDoesNotMove(t *testing
 	out := f.runner.Run(t.Context(), f.lfsRequest(false))
 	t.Logf("%s | %s", out.Reason, out.Push.Detail)
 	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || !strings.Contains(out.Reason, "big.bin") ||
-		!strings.Contains(out.Push.Detail, "this server takes no upload") {
+		!strings.Contains(out.Reason, "this server takes no upload") {
 		t.Fatalf("got %+v %+v", out, out.Push)
 	}
 	if remoteRef(f) != before {
 		t.Fatal("the branch moved")
+	}
+}
+
+// git-lfs exits 0 when a PUT or a verify answers 422 ("Uploading failed due to unsupported
+// Content-Type header(s)"). The Effector asks the server after the upload, so the push is
+// rejected and the branch does not move.
+func TestAnUploadThatTheServerAnswers422IsRejectedAndTheBranchDoesNotMove(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		put, verify int
+	}{{"put", http.StatusUnprocessableEntity, 0}, {"verify", 0, http.StatusUnprocessableEntity},
+		{"put 403", http.StatusForbidden, 0}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := lfsFixture(t, "")
+			lfs := newLFSServer(t, f)
+			lfs.putStatus, lfs.verifyStatus = tc.put, tc.verify
+			srv := httptest.NewServer(lfs)
+			t.Cleanup(srv.Close)
+			lfsConfigAtBase(t, f, srv.URL+"/lfs")
+			before := remoteRef(f)
+			_, oid := largeFile(t, f, "big.bin", "refused after the batch\n", true)
+
+			out := f.runner.Run(t.Context(), f.lfsRequest(false))
+			t.Logf("%s | %s", out.Reason, out.Push.Detail)
+			if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" ||
+				!strings.Contains(out.Reason, "big.bin") || !strings.Contains(out.Reason, "nothing was pushed") {
+				t.Fatalf("got %+v %+v", out, out.Push)
+			}
+			if remoteRef(f) != before || lfs.held(oid) != nil {
+				t.Fatal("the branch moved, or the server holds the object")
+			}
+			if len(puts(lfs.requests())) == 0 {
+				t.Fatal("no PUT was sent")
+			}
+		})
+	}
+}
+
+// A batch answer that leaves an object out is rejected at once, not after the push's timeout.
+func TestABatchAnswerThatLeavesAnObjectOutIsRejectedAtOnce(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	lfs.omit = true
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	lfsConfigAtBase(t, f, srv.URL+"/lfs")
+	before := remoteRef(f)
+	largeFile(t, f, "big.bin", "left out\n", true)
+
+	req := f.lfsRequest(false)
+	req.TimeoutMs = 60_000
+	start := time.Now()
+	out := f.runner.Run(t.Context(), req)
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || !strings.Contains(out.Reason, "big.bin") ||
+		!strings.Contains(out.Reason, "left it out") {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if took := time.Since(start); took > 20*time.Second {
+		t.Fatalf("the push waited %s", took)
+	}
+	if remoteRef(f) != before || len(puts(lfs.requests())) != 0 {
+		t.Fatal("the branch moved, or an object went up")
+	}
+}
+
+// A store's file that cannot be read names the real cause, not "in neither store".
+func TestAnObjectFileThatCannotBeReadNamesTheCause(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file of mode 000")
+	}
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	lfsConfigAtBase(t, f, srv.URL+"/lfs")
+	_, oid := largeFile(t, f, "big.bin", "unreadable\n", true)
+	file := filepath.Join(f.pod.GitDir, lfsRel(oid))
+	if err := os.Chmod(file, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(file, 0o644) })
+	out := f.runner.Run(t.Context(), f.lfsRequest(false))
+	if out.Outcome != wire.OutcomeRejected || !strings.Contains(out.Reason, "cannot be read") ||
+		strings.Contains(out.Reason, "in neither") {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+}
+
+// `lfs.pushurl` at the base is the server of an upload, before `lfs.url`, as git-lfs chooses.
+func TestTheBasesLFSPushURLIsTheUploadsServer(t *testing.T) {
+	f := lfsFixture(t, "")
+	read := newLFSServer(t, f)
+	readSrv := httptest.NewServer(read)
+	t.Cleanup(readSrv.Close)
+	write := newLFSServer(t, f)
+	writeSrv := httptest.NewServer(write)
+	t.Cleanup(writeSrv.Close)
+	lfsConfigRawAtBase(t, f, "[lfs]\n\turl = "+readSrv.URL+"/lfs\n\tpushurl = "+writeSrv.URL+"/lfs\n")
+	content := "to the push server\n"
+	_, oid := largeFile(t, f, "big.bin", content, true)
+	out := f.runner.Run(t.Context(), f.lfsRequest(false))
+	if out.Outcome != wire.OutcomePushed || string(write.held(oid)) != content || len(read.requests()) != 0 {
+		t.Fatalf("got %+v %+v; read server saw %+v", out, out.Push, read.requests())
 	}
 }
 
@@ -583,8 +759,11 @@ func TestAPushWithNoPointerStartsNoGitLFS(t *testing.T) {
 // One TLS server is the Binding's host: git's smart HTTP, and the LFS server that git-lfs derives
 // from the push url, each of which needs the token. The batch answer sends each href to a second
 // TLS server, on another port, so another origin.
-func TestAnHTTPSTokenGoesToTheBindingsHostOnlyAndAnHrefGetsOnlyTheAnswersHeaders(t *testing.T) {
-	f := lfsFixture(t, "")
+// httpsLFS is a git and LFS server on https, for f's remote: git needs the push token, and the
+// batch API, under /info/lfs/, is lfs. The runner trusts its certificate and holds the token.
+// It answers the server and the Basic Authorization of the token.
+func httpsLFS(t *testing.T, f *fixture, lfs *lfsServer) (*httptest.Server, string) {
+	t.Helper()
 	backend := ""
 	for _, dir := range []string{"/usr/lib/git-core", "/usr/libexec/git-core"} {
 		if _, err := os.Stat(filepath.Join(dir, "git-http-backend")); err == nil {
@@ -595,23 +774,13 @@ func TestAnHTTPSTokenGoesToTheBindingsHostOnlyAndAnHrefGetsOnlyTheAnswersHeaders
 		t.Skip("no git-http-backend")
 	}
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte(HelperUser+":"+token))
-	lfs := newLFSServer(t, f)
-	// The same LFS server answers on a second listener: another origin, which the hrefs name.
-	other := httptest.NewTLSServer(lfs)
-	t.Cleanup(other.Close)
-	lfs.want, lfs.hrefs = want, other.URL
 	git := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + filepath.Dir(f.pod.Remote),
 		"GIT_HTTP_EXPORT_ALL=1", "REMOTE_USER=bot", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}}
-	var mu sync.Mutex
-	var gitAuth []string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/info/lfs/") {
 			lfs.ServeHTTP(w, r)
 			return
 		}
-		mu.Lock()
-		gitAuth = append(gitAuth, r.Header.Get("Authorization"))
-		mu.Unlock()
 		if r.Header.Get("Authorization") != want {
 			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
 			w.WriteHeader(http.StatusUnauthorized)
@@ -629,6 +798,17 @@ func TestAnHTTPSTokenGoesToTheBindingsHostOnlyAndAnHrefGetsOnlyTheAnswersHeaders
 	}
 	f.runner.CAFile = ca
 	f.runner.Scrubber = scrub.New(map[string]string{"git:push/token": token})
+	return srv, want
+}
+
+func TestAnHTTPSTokenGoesToTheBindingsHostOnlyAndAnHrefGetsOnlyTheAnswersHeaders(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	// The same LFS server answers on a second listener: another origin, which the hrefs name.
+	other := httptest.NewTLSServer(lfs)
+	t.Cleanup(other.Close)
+	srv, want := httpsLFS(t, f, lfs)
+	lfs.want, lfs.hrefs = want, other.URL
 	content := "over https\n"
 	sha, oid := largeFile(t, f, "big.bin", content, true)
 
@@ -675,6 +855,30 @@ func TestAnHTTPSTokenGoesToTheBindingsHostOnlyAndAnHrefGetsOnlyTheAnswersHeaders
 
 // A private LFS server that `.lfsconfig` names on another host gets no token: the upload fails
 // with git-lfs's words, and nothing is pushed.
+// An href on the push url's own origin (scheme, host, port) gets the token after a 401, as
+// git-lfs asks the helper for it; the helper answers that origin alone (ADR-0051).
+func TestAnHrefOnTheBindingsOriginGetsTheTokenAfterA401(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	srv, want := httpsLFS(t, f, lfs)
+	lfs.want, lfs.hrefWant, lfs.hrefs = want, want, srv.URL+"/info/lfs"
+	content := "an href on the same origin\n"
+	sha, oid := largeFile(t, f, "big.bin", content, true)
+	req := f.request(false, nil)
+	req.Push.URL = srv.URL + "/" + filepath.Base(f.pod.Remote)
+	out := f.runner.Run(t.Context(), req)
+	if out.Outcome != wire.OutcomePushed || out.Push.Published != sha || string(lfs.held(oid)) != content {
+		t.Fatalf("got %+v %+v; the server saw %+v", out, out.Push, lfs.requests())
+	}
+	put := false
+	for _, r := range puts(lfs.requests()) {
+		put = put || r.Auth == want
+	}
+	if !put {
+		t.Fatalf("no PUT carried the token: %+v", lfs.requests())
+	}
+}
+
 func TestAnLFSServerOnAnotherHostGetsNoToken(t *testing.T) {
 	f := lfsFixture(t, "")
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte(HelperUser+":"+token))
@@ -786,8 +990,8 @@ func TestANonCanonicalPointerWhoseObjectNoStoreHoldsIsRejected(t *testing.T) {
 		if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || !strings.Contains(out.Reason, "big.bin") {
 			t.Fatalf("%q: got %+v %+v", form, out, out.Push)
 		}
-		if remoteRef(f) != before || len(lfs.requests()) != 0 {
-			t.Fatalf("%q: the branch moved, or the LFS server was asked", form)
+		if remoteRef(f) != before || len(puts(lfs.requests())) != 0 {
+			t.Fatalf("%q: the branch moved, or an object went up", form)
 		}
 	}
 }

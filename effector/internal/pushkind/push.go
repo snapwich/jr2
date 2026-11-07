@@ -127,6 +127,9 @@ type call struct {
 	// sshLog is where ssh's own stderr goes, beside git's (ADR-0068): the line ssh ends on — "No
 	// user exists for uid", a refused connection, a host key — is what a reason names.
 	sshLog string
+	// sshCommand is the call's ssh command, as core.sshCommand holds it: the LFS batch's
+	// git-lfs-authenticate runs it too.
+	sshCommand string
 	// agentGroup is the process group of the gpg-agent this call started: the call stops it and
 	// waits for it to end before the push settles and releases the Lock's `gpg` class (ADR-0068).
 	agentGroup int
@@ -360,6 +363,7 @@ func (c *call) configure(ctx context.Context) error {
 		if _, err := repo.Git(ctx, nil, "config", "core.sshCommand", cmd); err != nil {
 			return err
 		}
+		c.sshCommand = cmd
 	}
 	return nil
 }
