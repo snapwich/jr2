@@ -46,12 +46,21 @@ inherits a Workspace whose processes are gone, with no way to know why.
     rule; ADR-0002 keeps a peer's word from being an order (`peer-not-order`). An author who wants rules that each Agent
     of the Workspace shares chooses `"workspace"` and accepts that. Neither value is a wall: the Agents of one Workspace
     share `/work` ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), so one
-    Agent can still write in another's Worktree. A write to a file that is not ignored is then in that Worktree's diff.
-    An ignored context file is in no diff (an Agent writes the clone's shared `info/exclude`), so each detached cut
-    removes the ignored context files and skills of its Worktree
-    ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)): a reviewer's system prompt has only
-    what the commit under review has, and what an Agent writes after the cut. A branch Worktree is given back as it is,
-    so an ignored context file that another Agent writes there reaches its Agent, in no diff.
+    Agent can still write in another's Worktree. A file that git does not ignore is then in that Worktree's diff or in
+    its `git status`.
+  - **A context file or a skill that git ignores is left out,** in every Worktree and every folder. An ignored file is
+    in no diff and in no `git status`, and an Agent writes the rules that ignore it: the clone's shared `info/exclude`,
+    the global excludes in `HOME`, a `.gitignore`. The child that loads the project context asks git, in the domain,
+    with the git config that the Agents' own git reads (the domain's `HOME` and system file). In a folder whose chosen
+    file is ignored, the next name in pi's order loads in its place, so an ignored `AGENTS.override.md` does not hide
+    the repo's `AGENTS.md`. When git cannot say (an error, or a `core.worktree` that puts the folder outside git's own),
+    the file is left out. A folder in no repo has no ignore rule, and its file loads. A change to that config can only
+    make a file ignored, which loads less, or not ignored, which `git status` then shows. Each detached cut also removes
+    the ignored context files and skills of its Worktree
+    ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), so that the folder holds what the
+    commit has and nothing that a later read of the folder finds. The limit is what an Agent does after the cut and
+    after the load: a file that loaded can be ignored later, and a commit in another Agent's Worktree makes a file
+    tracked.
   - **The path sets the bound, and the Harness enforces it.** The bound comes from the working directory's path, not
     from a `.git` in a folder: the Agent can remove its Worktree's `.git` file or make one, and that moves no bound.
     pi's walk goes up to `/` and has no option to stop. So the Harness keeps only the files that the child names in a
@@ -392,7 +401,8 @@ inherits a Workspace whose processes are gone, with no way to know why.
   which files load and their frame. jr2 writes the frame itself (`projectContextText`), as a copy of pi's, because the
   package root does not export pi's: a unit test compares the copy with the sections that pi's own system prompt builds
   at the pin, so a bump that moves the frame fails it.
-- Each conversation in a Worktree starts one node child per folder, about half a second before its first request.
+- Each conversation in a Worktree starts one node child per folder, about half a second before its first request. The
+  child runs two git commands for each context file and skill that it finds.
 - `jr2 up` reads each Sandbox Image that it builds once more for the user context: a container that it creates and does
   not start, and one `docker cp` header for each folder of the path. Each Sandbox pod whose image has the folder mounts
   the image again, as a volume, at two paths.

@@ -263,6 +263,10 @@ jr2 reads no context file above `/work`. The project context goes in the system 
 standing part of the Briefing. jr2 reads it once for each conversation and directory, at its first Turn there. A change
 to `AGENTS.md` during a conversation thus gets to the next conversation. A Menu-only Agent gets no project context.
 
+jr2 leaves out a context file or a skill that git ignores, because no diff and no `git status` shows it: another Agent
+could put text in the prompt that no reviewer sees. In that directory, the next name in the list above is read in its
+place. A new file that git does not ignore is read, and `git status` shows it.
+
 jr2 reads the files with the rights of the Agent's own processes. A link from `AGENTS.md` to a file that the Agent
 cannot read gives no text. In `~/.pi/agent`, jr2 reads only the context file and `skills/`, and not a file such as
 `auth.json`.

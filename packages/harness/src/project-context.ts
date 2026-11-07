@@ -24,6 +24,9 @@
 // the shape, gives no project context, as a child that fails or does not end in time does. The Turn
 // goes on without it, and the pod log has one line.
 //
+// A context file or a skill that git ignores is in no diff and in no `git status`, so the child
+// leaves it out, in every Worktree, by the rules that the Agents' own git reads (ADR-0062).
+//
 // The bound is the Harness's, not pi's: pi's walk goes up to `/`, and it has no option to stop. So
 // the Harness keeps only the files that the child names in a folder from the working directory up
 // to the bound (`contextBound`), and drops the rest. The walk reads the folders above in the domain,
@@ -282,6 +285,21 @@ export function parseProjectContext(stdout: string): ProjectContext | { fault: s
   return { files: out, skills };
 }
 
+/** The env name that carries the domain's git config names to the child (`project-context-main.ts`):
+ * the child asks git whether a file is ignored as the Agents' own git would. */
+export const CONTEXT_GIT_ENV = "JR2_CONTEXT_GIT_ENV";
+
+/** The names of the domain's env that say which config files its git reads: `HOME` (the global
+ * config and excludes), `XDG_CONFIG_HOME`, and the global and system files. */
+const GIT_CONFIG_NAMES = ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"];
+
+/** The domain env's git config names, as data for the child. */
+export function gitConfigEnv(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of GIT_CONFIG_NAMES) if (env[name] !== undefined) out[name] = env[name]!;
+  return out;
+}
+
 export type LoadOptions = {
   signal?: AbortSignal;
   /** The child's entry. Default {@link PROJECT_CONTEXT_ENTRY}; a test names another. */
@@ -298,9 +316,10 @@ export type LoadOptions = {
 
 /**
  * Load the project context of `cwd` in the domain: the child, by the spawner, with this process's
- * node. Its env is HOME alone, the Harness's own (which the domain cannot reach), so the child's
- * node looks for modules in jr2's folders alone, and no `NODE_OPTIONS` of the image loads code
- * into it. Its `oom_score_adj` is 1000, as each process of the Agent's (ADR-0061). With an image
+ * node. Its env is HOME, the Harness's own (which the domain cannot reach), so the child's node
+ * looks for modules in jr2's folders alone, and no `NODE_OPTIONS` of the image loads code into it;
+ * and, as data for its git alone, the domain's git config names ({@link CONTEXT_GIT_ENV}): the
+ * child leaves out each context file and skill that git ignores (ADR-0062). Its `oom_score_adj` is 1000, as each process of the Agent's (ADR-0061). With an image
  * user's folder, the child is confined further: in that folder it reads only the names that pi's
  * loaders read ({@link USER_CONTEXT_NAMES}), and writes nothing. The files are kept within the
  * scope's bound ({@link withinBound}). An abort answers `aborted`.
@@ -331,7 +350,7 @@ export async function loadProjectContext(
   }
   const r = await runIn(children, argv, {
     cwd,
-    env: { HOME: HARNESS_HOME },
+    env: { HOME: HARNESS_HOME, [CONTEXT_GIT_ENV]: JSON.stringify(gitConfigEnv(children.env)) },
     timeoutMs: opts.timeoutMs ?? PROJECT_CONTEXT_TIMEOUT_MS,
     maxBuffer: maxBytes,
     oomScoreAdj: 1000,

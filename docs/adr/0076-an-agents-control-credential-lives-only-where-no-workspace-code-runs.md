@@ -169,19 +169,20 @@ code from `/work`.
 - **The project context is read in the domain.** pi-coding-agent's `loadProjectContextFiles` and `loadSkills` read an
   Agent's `AGENTS.md`, `CLAUDE.md` and skills in the process that calls them
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). So the Harness runs them in a child that the
-  spawner starts, with the module check above as its first import and `HOME=/run/jr2/home` as its whole env. The child
-  writes one line of JSON, and the Harness reads it as untrusted data, at most 256 KiB. An `AGENTS.md` that links to a
-  file under `/run/jr2` fails at the open, in the domain, and pi goes on to the next name. When the Sandbox pod mounts
-  the image user's context folder (`~/.pi/agent`, read-only from the Sandbox Image, ADR-0062, a second time at
-  `/run/jr2/user-context`, where the child reads it), the child is confined further: `effector confine`, run in the
-  domain, adds rules that deny that folder except the names that pi's loaders read there (its context file and
-  `skills/`), each only to read. Landlock adds a ruleset to the domain's, so the child keeps no right that the domain
-  does not have. A name that is a symbolic link gets no rule, so a read through it is a read of the path that it names:
-  a link to `auth.json` fails. The Harness computes these rules at each load, in its own process: it lists the names
-  with `lstat`, and `effector harness-rules` resolves each path. That folder is a read-only mount, so no process of the
-  domain makes, changes or removes a name there. `harness-rules` refuses a `--read` path that a link is on (ELOOP), so a
-  link there stops the child: no project context, and one line in the pod log. The folder and each folder above it are
-  jr2's, so the Harness's `lstat` reads no path that the domain can write.
+  spawner starts, with the module check above as its first import and an env of two names: `HOME=/run/jr2/home`, and the
+  names of the domain's git config files, as data that only its git reads. The child writes one line of JSON, and the
+  Harness reads it as untrusted data, at most 256 KiB. An `AGENTS.md` that links to a file under `/run/jr2` fails at the
+  open, in the domain, and pi goes on to the next name. When the Sandbox pod mounts the image user's context folder
+  (`~/.pi/agent`, read-only from the Sandbox Image, ADR-0062, a second time at `/run/jr2/user-context`, where the child
+  reads it), the child is confined further: `effector confine`, run in the domain, adds rules that deny that folder
+  except the names that pi's loaders read there (its context file and `skills/`), each only to read. Landlock adds a
+  ruleset to the domain's, so the child keeps no right that the domain does not have. A name that is a symbolic link
+  gets no rule, so a read through it is a read of the path that it names: a link to `auth.json` fails. The Harness
+  computes these rules at each load, in its own process: it lists the names with `lstat`, and `effector harness-rules`
+  resolves each path. That folder is a read-only mount, so no process of the domain makes, changes or removes a name
+  there. `harness-rules` refuses a `--read` path that a link is on (ELOOP), so a link there stops the child: no project
+  context, and one line in the pod log. The folder and each folder above it are jr2's, so the Harness's `lstat` reads no
+  path that the domain can write.
 - **The Harness process touches no path that the domain can write.** Each path in the Agent's files that the Harness
   reads, lists or removes goes through the spawner. pi's Working tools look at a path in the Harness process: `read`
   tries the variants of a name with `access`, and `write` and `edit` order their calls by the `realpath` of the file.
