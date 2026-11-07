@@ -76,14 +76,19 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   human `exec`'d into the Harness container already had it.
 - **A large file is fetched as a commit is.** A Repo that stores files with Git LFS needs nothing from the Machine or
   the image. The attach writes git-lfs's filter into the clone's config by absolute path, to a static git-lfs on the
-  runtime volume, with no `git lfs install`. A smudge reads the cache's `lfs/objects` through the clone's alternate. A
-  miss goes to jr2's standalone transfer agent, beside git-lfs on the volume. The agent asks for those objects by oid on
-  the path that a fetch's ask takes (the Custodian, then the Orchestrator, then the cache agent), waits for the landing,
-  and gives git-lfs a copy of each one. The cache agent downloads them with the Repo CR's `secretRef` (ADR-0051). So any
-  checkout works, of any commit, as it does in a clone with no LFS. An attach asks for the objects of the Binding's base
-  before it checks out `default/`, and a cut asks for its commit's
+  runtime volume, with no `git lfs install`. It also writes git-lfs's four hooks (`post-checkout`, `post-commit`,
+  `post-merge`, `pre-push`), each calling that git-lfs by absolute path, where the clone has no such hook: git-lfs
+  writes a missing hook itself, and its hook calls `git lfs` on PATH, which fails in a seat with no git-lfs on PATH. A
+  hook that is there stays, so a user's own hook is kept. A smudge reads the cache's `lfs/objects` through the clone's
+  alternate. A miss goes to jr2's standalone transfer agent, beside git-lfs on the volume. The agent asks for those
+  objects by oid on the path that a fetch's ask takes (the Custodian, then the Orchestrator, then the cache agent),
+  waits for the landing, and gives git-lfs a copy of each one. The cache agent downloads them with the Repo CR's
+  `secretRef` (ADR-0051). So any checkout works, of any commit, as it does in a clone with no LFS. An attach asks for
+  the objects of the Binding's base before it checks out `default/`, and a cut asks for its commit's
   ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). An object that the remote cannot give
-  and the cache does not hold fails git-lfs's checkout, with jr2's line on stderr.
+  and the cache does not hold fails git-lfs's checkout, with jr2's line on stderr. A cold attach can download for longer
+  than one HTTP request may wait, so `POST /attach` answers 202 while the attach runs, and the Orchestrator asks again
+  with the same body until it ends.
 - **Names.** `fetch` is what an Agent, a human, and a cache do; `refresh` is what the interval does and stays on
   `refreshInterval`; an _ask_ is the mark, the word the agent and the operator already use. The url carries the Repo's
   identity, never the cache key — a key is a derived directory name, never chosen by a human (ADR-0004), and not the

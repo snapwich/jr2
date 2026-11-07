@@ -301,6 +301,11 @@ export type AttachResponse = { repos: Record<string, string>; bases: Record<stri
  * failed — `slot` names the Repo Slot, and `error` carries the step and git's own stderr. */
 export type AttachError = { error: string; slot?: string };
 
+/** What `POST /attach` answers (202) when the attach still runs after one poll's wait: a cold attach
+ * can download large files for longer than a request may wait (undici's 300 s for the headers). The
+ * Orchestrator sends the same body again, and that request waits on the same attach. */
+export type AttachPending = { attaching: true };
+
 // --- the exec (a `command` Effect, ADR-0067) ----------------------------------------------------
 // A `command` Effect runs in the Harness container of its Workspace's Sandbox, named by its
 // Effect's id: one id runs once, whoever asks again. Same bearer as every Harness route (ADR-0058).

@@ -2409,6 +2409,47 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
   );
 });
 
+test("an attach that the Harness answers 202 is asked again with the same body until it ends; a later fault says the Harness was lost (ADR-0063)", async () => {
+  // A cold attach downloads its large files (ADR-0053) for longer than undici's 300 s for headers,
+  // so the Harness answers 202 while it runs, and no request waits that long.
+  const c = readySandbox("sb-p");
+  const bodies: string[] = [];
+  let pending = 2;
+  const polled = (async (input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(String(init?.body));
+    if (pending-- > 0) return Response.json({ attaching: true }, { status: 202 });
+    return c.exec.harnessFetch(input, init);
+  }) as typeof fetch;
+  const port = kubeSandbox({ ...provisionable, ...c.exec, harnessFetch: polled });
+  const out = await port.attach({ name: "sb-p", repos: [{ slot: "app", url: APP_URL }] });
+  assert.deepEqual(out.repos, { app: "/work/app" });
+  assert.equal(bodies.length, 3);
+  assert.equal(new Set(bodies).size, 1, "the same body each time");
+
+  // The Harness answered, then went: the words do not say that the attach never reached it.
+  let answered = false;
+  const lost = kubeSandbox({
+    ...provisionable,
+    ...c.exec,
+    attachWindowMs: 0,
+    harnessFetch: (async () => {
+      if (!answered) {
+        answered = true;
+        return Response.json({ attaching: true }, { status: 202 });
+      }
+      throw new TypeError("fetch failed");
+    }) as typeof fetch,
+  });
+  await assert.rejects(
+    () => lost.attach({ name: "sb-p", repos: [{ slot: "app", url: APP_URL }] }),
+    (err: Error) => {
+      assert.match(err.message, /the attach lost its Harness at/);
+      assert.doesNotMatch(err.message, /never reached/);
+      return true;
+    },
+  );
+});
+
 test("a failed attach carries the Harness's own words — the slot, the step, git's stderr — and is not re-sent", async () => {
   const c = cluster([], () =>
     Response.json(

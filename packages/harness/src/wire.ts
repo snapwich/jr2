@@ -357,6 +357,11 @@ export type AttachResponse = { repos: Record<string, string>; bases: Record<stri
  * failed — `slot` names the Repo Slot, and `error` carries the step and git's own stderr. */
 export type AttachError = { error: string; slot?: string };
 
+/** What `POST /attach` answers (202) when the attach still runs after one poll's wait: a cold attach
+ * can download large files for longer than a request may wait (undici's 300 s for the headers). The
+ * Orchestrator sends the same body again, and that request waits on the same attach (ADR-0063). */
+export type AttachPending = { attaching: true };
+
 // --- the sync (ADR-0067) ------------------------------------------------------------------------
 // After a push whose published commit is not the Agent's own — signed copies of its commits, or
 // one squashed commit, signed or not — the sync moves the Agent's branch to it, here, in the

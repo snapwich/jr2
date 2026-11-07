@@ -1192,25 +1192,36 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       "content-type": "application/json",
       authorization: `Bearer ${harnessToken(opts.signingKey, name)}`,
     };
-    const until = Date.now() + attachWindowMs;
+    // The window for a Harness that does not answer, counted again after each answer.
+    let until = Date.now() + attachWindowMs;
+    let reached = false;
     let backoff = 250;
     for (;;) {
       let res: Response;
+      let text: string;
       try {
         res = await harnessFetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+        text = await res.text();
       } catch (err) {
         // Ready is not routable (ADR-0042): the EndpointSlice behind the Service is programmed after
-        // the pod passes its probe, and the attach is now the first thing that dials it.
+        // the pod passes its probe, and the attach is now the first thing that dials it. After an
+        // answer, a fault is a Harness that restarted: the next request attaches again.
         if (Date.now() >= until) {
           throw new Error(
-            `Sandbox "${name}": the attach never reached its Harness at ${endpoint}: ${(err as Error).message}`,
+            `Sandbox "${name}": the attach ${reached ? "lost" : "never reached"} its Harness at ${endpoint}: ` +
+              (err as Error).message,
           );
         }
         await sleep(backoff);
         backoff = Math.min(backoff * 2, 5_000);
         continue;
       }
-      const text = await res.text();
+      reached = true;
+      until = Date.now() + attachWindowMs;
+      backoff = 250;
+      // 202: the attach still runs, past one poll's wait (a cold attach gets its large files,
+      // ADR-0053). The same body again waits on it, so no request waits as long as undici's 300 s.
+      if (res.status === 202) continue;
       if (res.ok) return JSON.parse(text) as AttachResponse;
       // The Harness's own words: the slot, the step, and git's stderr.
       let error = text;

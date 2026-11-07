@@ -685,6 +685,52 @@ test("a failed attach is 500 with the slot and git's own words", async () => {
   });
 });
 
+test("an attach that outlasts one poll answers 202, and the same body again waits on the same attach (ADR-0063)", async () => {
+  // A cold attach downloads its large files (ADR-0053) for longer than undici waits for headers.
+  let runs = 0;
+  let finish!: (r: { repos: Record<string, string>; bases: Record<string, string> }) => void;
+  const { app } = scripted({
+    attachPollMs: 10,
+    attach: () => (runs++, new Promise((r) => (finish = r))),
+  });
+  const first = await app.request("/attach", attachInit({ slots: [SLOT] }));
+  assert.equal(first.status, 202);
+  assert.deepEqual(await first.json(), { attaching: true });
+  const second = app.request("/attach", attachInit({ slots: [SLOT] }));
+  finish({ repos: { app: "/work/app" }, bases: { app: "main" } });
+  const res = await second;
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { repos: { app: "/work/app" }, bases: { app: "main" } });
+  assert.equal(runs, 1, "the second request joined the attach that ran");
+
+  // Its answer went to a request, so the next request attaches again (idempotent: it finds all there).
+  const again = app.request("/attach", attachInit({ slots: [SLOT] }));
+  await new Promise((r) => setTimeout(r, 1));
+  finish({ repos: { app: "/work/app" }, bases: { app: "main" } });
+  assert.equal((await again).status, 200);
+  assert.equal(runs, 2);
+});
+
+test("an attach that ends between two polls keeps its answer, a failure too, for the next request", async () => {
+  const { AttachFault } = await import("../src/attach.ts");
+  let runs = 0;
+  let fail!: (e: Error) => void;
+  const { app } = scripted({
+    attachPollMs: 10,
+    attach: () => (runs++, new Promise((_, reject) => (fail = reject))),
+  });
+  assert.equal((await app.request("/attach", attachInit({ slots: [SLOT] }))).status, 202);
+  fail(new AttachFault('the attach of slot "app" failed at get the base\'s large files: big.bin', "app"));
+  await new Promise((r) => setTimeout(r, 5));
+  const res = await app.request("/attach", attachInit({ slots: [SLOT] }));
+  assert.equal(res.status, 500);
+  assert.deepEqual(await res.json(), {
+    error: 'the attach of slot "app" failed at get the base\'s large files: big.bin',
+    slot: "app",
+  });
+  assert.equal(runs, 1);
+});
+
 // ---- POST /sync (ADR-0067) ---------------------------------------------------------------------
 
 test("the sync hands a valid body to the syncer and answers its report; a malformed one is 400; the Instance Harness refuses it", async () => {
