@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 // Command jr2-lfs is jr2's program for Git LFS inside a Sandbox (ADR-0053):
 //
 //	jr2-lfs transfer
-//	jr2-lfs fetch [--identity I] [--base B] <commit>
+//	jr2-lfs fetch [--identity I] [--base B] [--budget D] <commit>
 //
 // `transfer` is the standalone transfer agent that git-lfs starts for a
 // smudge that the node cache cannot serve. `fetch` is the attach's and the

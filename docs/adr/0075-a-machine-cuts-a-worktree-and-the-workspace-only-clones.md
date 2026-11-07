@@ -66,8 +66,11 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
 - **A cut gets its commit's large files first.** After the fetch and before it changes git, a cut asks the node cache
   for each Git LFS object of its commit
   ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). An object that the
-  cache does not hold and cannot get makes the cut `refused`, and the reason names the file. With a remote that is down
-  and every object held, the cut is `ready` with `stale`.
+  cache does not hold and cannot get makes the cut `refused`, and the reason names the file. The ask gets what is left
+  of the Effect's `timeout` less one minute for the checkout, so an object that does not come in time also makes the cut
+  `refused`, naming the file, and never ends the Effect at its `timeout`. With `worktree()`'s default of `"10m"` and a
+  fetch that spends its two budgets, the ask has 6.5 minutes. With a remote that is down and every object held, the cut
+  is `ready` with `stale`.
 - **A cut checks out no submodule.** A submodule's folder stays empty. A Machine that works in a submodule's code binds
   that Repo as its own Repo Slot.
 - **v1 has no kit removal.** The docs give a `command` that runs `git worktree remove`.

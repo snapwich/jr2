@@ -41,7 +41,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
 /** The input of one cut. `id` is the Effect's id. `base` is where a new branch starts with no `from`:
- * the Binding's own ref, which no run can name, so the branch rule does not hold it. */
+ * the Binding's own ref, which no run can name, so the branch rule does not hold it. `timeoutMs` is the
+ * Effect's timeout, which the Harness counts from the start of this process: the ask for the large
+ * files gets the part of it that is left (`CUT_LFS_MARGIN_MS`). */
 export type CutRequest = {
   id: string;
   path: string;
@@ -50,6 +52,7 @@ export type CutRequest = {
   detach?: string;
   expect?: "new" | "existing";
   base?: string;
+  timeoutMs?: number;
 };
 
 /** What a cut found at the path or under the name. */
@@ -545,6 +548,16 @@ export function describeMissing(missing: readonly MissingFile[], of: string): st
 }
 
 /**
+ * What the cut keeps of its Effect's timeout after the ask for the large files: the checkout that
+ * copies them out of the cache, and the answer. The ask gets the rest, so a cut whose large files do
+ * not come in time ends `refused`, naming the files, and not at the Effect's timeout (ADR-0075).
+ * With `worktree()`'s default of 10 minutes, a fetch that spends its two budgets (2 × 75 s) leaves the
+ * ask 10 min − 150 s − 60 s = 6.5 minutes. The node cache's own LFS budget is 10 minutes, so an
+ * object that comes later is in the cache for the next cut.
+ */
+export const CUT_LFS_MARGIN_MS = 60_000;
+
+/**
  * Ask the node cache for the LFS objects of `commit` (ADR-0053, ADR-0075): `jr2-lfs fetch` asks for
  * each object that no store holds, waits for the landing, and names each file whose object is still
  * missing. A commit with no LFS file makes no ask. jr2-lfs runs no program of the clone's config. It
@@ -556,6 +569,7 @@ async function askLargeFiles(
   clone: string,
   commit: string,
   base: string | undefined,
+  budgetMs: number | undefined,
 ): Promise<string | undefined> {
   const env: NodeJS.ProcessEnv = {
     ...cutEnv(paths, home),
@@ -563,7 +577,13 @@ async function askLargeFiles(
     GIT_CONFIG_KEY_0: "safe.directory",
     GIT_CONFIG_VALUE_0: "*",
   };
-  const args = ["fetch", ...(base !== undefined ? ["--base", base] : []), "--", commit];
+  const args = [
+    "fetch",
+    ...(base !== undefined ? ["--base", base] : []),
+    ...(budgetMs !== undefined ? ["--budget", `${Math.max(0, Math.floor(budgetMs))}ms`] : []),
+    "--",
+    commit,
+  ];
   const r = await new Promise<Git>((resolve) => {
     execFile(paths.jr2Lfs, args, { cwd: clone, env, maxBuffer: 16 << 20 }, (error, stdout, stderr) => {
       const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
@@ -583,6 +603,7 @@ const refused = (reason: string): CutAnswer => ({ outcome: "refused", reason: re
 
 /** The cut, in this process. */
 export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> {
+  const started = Date.now();
   const bad = pathFault(req.path, paths.workRoot);
   if (bad !== undefined) return refused(bad);
   if ((req.branch === undefined) === (req.detach === undefined)) return refused("a cut names a branch or a commit");
@@ -602,7 +623,10 @@ export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> 
     const filters = { args: [] as string[] };
     const git = runner(paths, home, filters);
     filters.args = [...(await filtersOf(git, clone)), ...lfsPins(paths, clone)];
-    const largeFiles = (commit: string) => askLargeFiles(paths, home, clone, commit, req.base);
+    // The ask's budget is what is left of the Effect's timeout, counted from here, less the margin.
+    const ends = typeof req.timeoutMs === "number" ? started + req.timeoutMs - CUT_LFS_MARGIN_MS : undefined;
+    const largeFiles = (commit: string) =>
+      askLargeFiles(paths, home, clone, commit, req.base, ends === undefined ? undefined : ends - Date.now());
     const filtersIn = async (worktree: string) => [...(await filtersOf(git, worktree)), ...lfsPins(paths, clone)];
     const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git, largeFiles, filtersIn };
     return await locked(clone, paths, async () => {

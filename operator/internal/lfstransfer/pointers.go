@@ -39,6 +39,11 @@ type treeEntry struct {
 // to run the second way.
 var checkAttrSource = true
 
+// maxAttributesSize is the largest .gitattributes file that git reads: git
+// ignores a larger one (git 2.40, ATTR_MAX_FILE_SIZE), so the program ignores
+// it too. A test makes it smaller.
+var maxAttributesSize int64 = 100 << 20
+
 // listPointers gives the LFS pointers in the tree of commit: the blobs that
 // are pointer-shaped AND whose `filter` attribute is `lfs` in that commit.
 // `git lfs ls-files` lists every pointer-shaped blob, whatever the attributes
@@ -53,7 +58,7 @@ func listPointers(dir, commit string) ([]Pointer, error) {
 	}
 	var attrs []string
 	for _, e := range entries {
-		if path.Base(e.path) == ".gitattributes" {
+		if path.Base(e.path) == ".gitattributes" && e.size <= maxAttributesSize {
 			attrs = append(attrs, e.oid)
 		}
 	}

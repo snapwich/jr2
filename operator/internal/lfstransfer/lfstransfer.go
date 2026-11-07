@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 // It has two subcommands:
 //
 //	jr2-lfs transfer
-//	jr2-lfs fetch [--identity I] [--base B] <commit>
+//	jr2-lfs fetch [--identity I] [--base B] [--budget D] <commit>
 //
 // `transfer` is jr2's standalone transfer agent. git-lfs starts it when a
 // smudge needs an object that neither the clone's store nor the node cache's
@@ -40,7 +40,7 @@ import (
 
 // Usage is the text the program prints when its arguments are wrong.
 const Usage = `usage: jr2-lfs transfer
-       jr2-lfs fetch [--identity I] [--base B] <commit>
+       jr2-lfs fetch [--identity I] [--base B] [--budget D] <commit>
 `
 
 // Options is everything the program reads from the world. Every field has a

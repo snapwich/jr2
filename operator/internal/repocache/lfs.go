@@ -290,7 +290,7 @@ func derivedLFSURL(repoURL string) string {
 		return repoURL
 	}
 	switch u.Scheme {
-	case "http", "https":
+	case schemeHTTP, schemeHTTPS:
 	case "git":
 		repoURL = "https" + repoURL[len("git"):]
 	default:
@@ -302,6 +302,14 @@ func derivedLFSURL(repoURL string) string {
 	}
 	return trimmed + ".git/info/lfs"
 }
+
+// The url schemes that the LFS server rule names.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+	schemeSSH   = "ssh"
+	schemeFile  = "file"
+)
 
 // lfsServerAllowed reports that the node cache may use an LFS server that
 // `.lfsconfig` names. The server's value comes from a pod, and the agent runs
@@ -324,12 +332,12 @@ func lfsServerAllowed(lfsURL, repoURL string) bool {
 	}
 	repoScheme, repoHost, repoOK := lfsURLParts(repoURL)
 	switch scheme {
-	case "http", "https":
+	case schemeHTTP, schemeHTTPS:
 		return host != ""
-	case "ssh":
-		return repoOK && repoScheme == "ssh" && host != "" && strings.EqualFold(host, repoHost)
-	case "file":
-		return repoOK && repoScheme == "file"
+	case schemeSSH:
+		return repoOK && repoScheme == schemeSSH && host != "" && strings.EqualFold(host, repoHost)
+	case schemeFile:
+		return repoOK && repoScheme == schemeFile
 	}
 	return false
 }
@@ -338,19 +346,19 @@ func lfsServerAllowed(lfsURL, repoURL string) bool {
 // or the scp-like `[user@]host:path`, which is ssh. A local path, a
 // `<helper>::<address>` and a host that is not a plain name give !ok.
 func lfsURLParts(raw string) (scheme, host string, ok bool) {
-	if i := strings.Index(raw, "://"); i >= 0 {
-		scheme = strings.ToLower(raw[:i])
+	if before, _, found := strings.Cut(raw, "://"); found {
+		scheme = strings.ToLower(before)
 		if !schemeName.MatchString(scheme) {
 			return "", "", false
 		}
-		if scheme == "file" {
+		if scheme == schemeFile {
 			return scheme, "", true
 		}
 		u, err := url.Parse(raw)
 		if err != nil || u.Hostname() == "" || strings.HasPrefix(u.Hostname(), "-") {
 			return "", "", false
 		}
-		if scheme == "ssh" && !hostName.MatchString(u.Hostname()) {
+		if scheme == schemeSSH && !hostName.MatchString(u.Hostname()) {
 			return "", "", false
 		}
 		return scheme, u.Hostname(), true
@@ -368,7 +376,7 @@ func lfsURLParts(raw string) (scheme, host string, ok bool) {
 	if !hostName.MatchString(host) {
 		return "", "", false
 	}
-	return "ssh", host, true
+	return schemeSSH, host, true
 }
 
 var (

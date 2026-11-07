@@ -105,7 +105,7 @@ type lfsWorld struct {
 	cache  string
 }
 
-func newLFSWorld(t *testing.T, objs ...client.Object) *lfsWorld {
+func newLFSWorld(t *testing.T) *lfsWorld {
 	t.Helper()
 	requireGitLFS(t)
 	server := filepath.Join(t.TempDir(), "server")
@@ -122,7 +122,7 @@ func newLFSWorld(t *testing.T, objs ...client.Object) *lfsWorld {
 	})
 	r.Spec.URL = "file://" + server
 	git := &recGit{inner: ExecGit()}
-	a := newAgent(t, &fakeGit{}, append([]client.Object{r}, objs...)...)
+	a := newAgent(t, &fakeGit{}, r)
 	a.Git = git
 	cache := a.dir(key)
 	gitT(t, "", "clone", "-q", "--bare", "file://"+server, cache)
@@ -481,7 +481,7 @@ func TestDerivedLFSURLIsWhatGitLFSDerives(t *testing.T) {
 	env := func(args ...string) (endpoint, ssh string) {
 		t.Helper()
 		out := gitT(t, dir, append(args, "lfs", "env")...)
-		for _, line := range strings.Split(out, "\n") {
+		for line := range strings.SplitSeq(out, "\n") {
 			line = strings.TrimSpace(line)
 			if v, ok := strings.CutPrefix(line, "Endpoint="); ok && endpoint == "" {
 				endpoint = strings.TrimSuffix(v, " (auth=none)")

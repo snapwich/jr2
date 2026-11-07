@@ -191,7 +191,7 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 		if wanted {
 			result, err = a.clone(ctx, &repo, key)
 		} else {
-			result, err = a.probe(ctx, &repo)
+			err = a.probe(ctx, &repo)
 		}
 		if lfsErr := a.serveLFS(ctx, &repo, key, dir, present(dir)); lfsErr != nil && err == nil {
 			err = lfsErr
@@ -375,9 +375,9 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 // longer holds — the directory was removed, or the node was re-imaged under
 // its name — and it must not stand: the operator places Sandboxes by it, and
 // `jr2 status` reports it. The probe is the write that corrects it.
-func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result, error) {
+func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) error {
 	if entry := a.own(repo); entry != nil && !entry.Present && entry.Synced && entry.ObservedGeneration == repo.Generation {
-		return ctrl.Result{}, nil
+		return nil
 	}
 	started := a.now()
 	entry := corev1alpha1.RepoNodeStatus{
@@ -398,13 +398,13 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 		entry.LastError = err.Error()
 	}
 	if reportErr := a.report(ctx, repo, entry); reportErr != nil {
-		return ctrl.Result{}, reportErr
+		return reportErr
 	}
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("probe Repo %s: %w", repo.Name, err)
+		return fmt.Errorf("probe Repo %s: %w", repo.Name, err)
 	}
 	logf.FromContext(ctx).V(1).Info("Probed", "key", repo.Name)
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // refresh keeps a present cache pinned and fetched. The fetch is on demand (a

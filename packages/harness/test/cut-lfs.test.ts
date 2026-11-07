@@ -23,7 +23,7 @@ import { dirname, join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { attacher } from "../src/attach.ts";
-import { cut, type CutAnswer, type CutRequest } from "../src/cut.ts";
+import { CUT_LFS_MARGIN_MS, cut, type CutAnswer, type CutRequest } from "../src/cut.ts";
 import { testChildren } from "./support/children.ts";
 
 const LOCK = ["flock", "-x", "0"];
@@ -68,6 +68,8 @@ type Custodian = {
   fetchAsks: () => number;
   /** The remote is down: a fetch ask answers stale, and an LFS ask answers git-lfs's words. */
   down: () => void;
+  /** An LFS ask gets no answer: the node cache is slow. */
+  hang: () => void;
   close: () => void;
 };
 
@@ -76,6 +78,7 @@ function custodian(remoteLfs: string, cache: string): Promise<Custodian> {
   let lfsAsks = 0;
   let fetchAsks = 0;
   let isDown = false;
+  let hangs = false;
   const probe: Custodian["probe"] = { seen: [] };
   const server: Server = createServer((req, res) => {
     let body = "";
@@ -97,6 +100,7 @@ function custodian(remoteLfs: string, cache: string): Promise<Custodian> {
       }
       lfsAsks++;
       if (probe.at) probe.seen.push(probe.at());
+      if (hangs) return;
       if (isDown) {
         res.end(JSON.stringify({ lfs: { answered: at, error: "batch request: dial tcp: connection refused" } }));
         return;
@@ -127,7 +131,11 @@ function custodian(remoteLfs: string, cache: string): Promise<Custodian> {
         probe,
         fetchAsks: () => fetchAsks,
         down: () => (isDown = true),
-        close: () => server.close(),
+        hang: () => (hangs = true),
+        close: () => {
+          server.closeAllConnections();
+          server.close();
+        },
       }),
     ),
   );
@@ -306,6 +314,23 @@ test("a cut whose large file cannot be had is refused, names the file, and leave
   assert.match(refusal(await w.go({ path: w.path("bd"), detach: sha })), /lost\.bin/);
   assert.equal(existsSync(w.path("bd")), false);
 });
+
+test(
+  "a cut whose large files do not come in its timeout is refused, naming the file, before the Effect's timeout (ADR-0075)",
+  { skip },
+  async (t) => {
+    const w = await world(t);
+    await w.attach();
+    w.c.hang();
+    // Half a second for the ask: the rest of the timeout is the cut's margin.
+    const started = Date.now();
+    const reason = refusal(await w.go({ path: w.path("feat"), branch: "feature", timeoutMs: CUT_LFS_MARGIN_MS + 500 }));
+    assert.ok(Date.now() - started < 20_000, "the ask ended with its budget");
+    assert.match(reason, /more\.bin/);
+    assert.match(reason, /within the budget of/);
+    assert.equal(existsSync(w.path("feat")), false, "nothing is made");
+  },
+);
 
 test("a dead remote with every object held: `ready` with `stale`", { skip }, async (t) => {
   const w = await world(t);

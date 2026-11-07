@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"time"
 )
 
 // FetchResult is the one JSON line that `fetch` prints.
@@ -33,14 +34,31 @@ type Missing struct {
 type fetchArgs struct {
 	identity, base, commit string
 	identitySet, baseSet   bool
+	// budget bounds all the asks of the run. Zero: no bound but each ask's
+	// own AskTimeout.
+	budget    time.Duration
+	budgetSet bool
 }
 
-// parseFetchArgs reads `[--identity I] [--base B] [--] <commit>`. It is false
-// for a usage fault.
+// parseFetchArgs reads `[--identity I] [--base B] [--budget D] [--] <commit>`.
+// It is false for a usage fault. D is a Go duration, such as "390s".
 func parseFetchArgs(args []string) (fetchArgs, bool) {
 	var f fetchArgs
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
+		case a == "--budget" && i+1 < len(args):
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				return f, false
+			}
+			f.budget, f.budgetSet = d, true
+		case strings.HasPrefix(a, "--budget="):
+			d, err := time.ParseDuration(strings.TrimPrefix(a, "--budget="))
+			if err != nil {
+				return f, false
+			}
+			f.budget, f.budgetSet = d, true
 		case (a == "--identity" || a == "--base") && i+1 < len(args):
 			i++
 			if a == "--identity" {
@@ -64,11 +82,14 @@ func parseFetchArgs(args []string) (fetchArgs, bool) {
 	return f, f.commit != ""
 }
 
-// runFetch is `jr2-lfs fetch [--identity I] [--base B] <commit>`. It gets the
-// LFS objects of one commit into the node cache before git checks the commit
-// out (ADR-0053, ADR-0075). It exits 0 when it could do its work, also when
-// objects are missing: the caller reads `missing`. It exits non-zero only for
-// a usage or I/O fault.
+// runFetch is `jr2-lfs fetch [--identity I] [--base B] [--budget D] <commit>`.
+// It gets the LFS objects of one commit into the node cache before git checks
+// the commit out (ADR-0053, ADR-0075). It exits 0 when it could do its work,
+// also when objects are missing: the caller reads `missing`. It exits non-zero
+// only for a usage or I/O fault. With `--budget`, the asks end when the budget
+// does, and each object that did not come in time is missing with a reason
+// that says so: the cut gives the part of its Effect's timeout that is left,
+// so that it can still answer `refused`, naming the files.
 func runFetch(o Options, args []string) int {
 	f, ok := parseFetchArgs(args)
 	if !ok {
@@ -77,6 +98,10 @@ func runFetch(o Options, args []string) int {
 	}
 	identity, base, commit := f.identity, f.base, f.commit
 	identitySet, baseSet := f.identitySet, f.baseSet
+	var deadline time.Time
+	if f.budgetSet {
+		deadline = time.Now().Add(f.budget)
+	}
 
 	c, err := findCheckout(o.Dir)
 	if err != nil {
@@ -119,7 +144,9 @@ func runFetch(o Options, args []string) int {
 		if !baseSet {
 			base = gitConfig(o.Dir, "jr2.base")
 		}
-		_, reasons = newAsker(o, identity, base).askAll(wanted)
+		a := newAsker(o, identity, base)
+		a.deadline, a.budget = deadline, f.budget
+		_, reasons = a.askAll(wanted)
 		result.Asked = len(wanted)
 	}
 	for _, p := range pointers {

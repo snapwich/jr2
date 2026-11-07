@@ -64,6 +64,10 @@ type asker struct {
 	endpoint string
 	identity string
 	base     string
+	// deadline, when set, ends every ask; budget is how it was given, for
+	// the reason of an object that did not come in time.
+	deadline time.Time
+	budget   time.Duration
 }
 
 func newAsker(o Options, identity, base string) asker {
@@ -91,6 +95,11 @@ func (a asker) ask(objects []Object) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), AskTimeout)
 	defer cancel()
+	if !a.deadline.IsZero() {
+		var stop context.CancelFunc
+		ctx, stop = context.WithDeadline(ctx, a.deadline)
+		defer stop()
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return oneLine(err.Error())
@@ -100,11 +109,17 @@ func (a asker) ask(objects []Object) string {
 
 	resp, err := a.client.Do(req)
 	if err != nil {
+		if !a.deadline.IsZero() && ctx.Err() == context.DeadlineExceeded && !time.Now().Before(a.deadline) {
+			return a.outOfTime()
+		}
 		return oneLine(err.Error())
 	}
 	defer func() { _ = resp.Body.Close() }()
 	read, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
+		if !a.deadline.IsZero() && !time.Now().Before(a.deadline) {
+			return a.outOfTime()
+		}
 		return fmt.Sprintf("the custodian's answer could not be read: %s", oneLine(err.Error()))
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -126,6 +141,11 @@ func (a asker) ask(objects []Object) string {
 	return ""
 }
 
+// outOfTime is the reason of an object whose ask the budget ended.
+func (a asker) outOfTime() string {
+	return fmt.Sprintf("the node cache did not get it within the budget of %s", a.budget.Round(time.Second))
+}
+
 // askAll sends the objects in asks of at most MaxAskObjects, one after the
 // other. It returns the reason of each object whose ask gave one.
 func (a asker) askAll(objects []Object) (asks int, reasons map[string]string) {
@@ -133,6 +153,12 @@ func (a asker) askAll(objects []Object) (asks int, reasons map[string]string) {
 	for start := 0; start < len(objects); start += MaxAskObjects {
 		end := min(start+MaxAskObjects, len(objects))
 		chunk := objects[start:end]
+		if !a.deadline.IsZero() && !time.Now().Before(a.deadline) {
+			for _, obj := range chunk {
+				reasons[obj.OID] = a.outOfTime()
+			}
+			continue
+		}
 		asks++
 		if reason := a.ask(chunk); reason != "" {
 			for _, obj := range chunk {

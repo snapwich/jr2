@@ -11,12 +11,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fetch(t *testing.T, dir string, args ...string) FetchResult {
@@ -121,10 +124,14 @@ func TestFetchAsksOnlyForLFSFilesThatNoStoreHolds(t *testing.T) {
 	const answerErr = "object d not found on the remote"
 	c.answerError(answerErr)
 
+	// Probe first: only a git with `check-attr --source` (2.40 and later) must
+	// do without the temp index.
+	probe := exec.Command("git", "-C", p.clone, "check-attr", "--source=HEAD", "filter", "--", "a.bin")
+	hasSource := probe.Run() == nil
 	calls := gitLog(t)
 	r := fetch(t, p.clone, "main")
 	for _, call := range calls() {
-		if strings.HasPrefix(call, "read-tree") {
+		if hasSource && strings.HasPrefix(call, "read-tree") {
 			t.Fatalf("git %s has check-attr --source, but the fetch read the tree into an index", run(t, "", "version"))
 		}
 	}
@@ -158,6 +165,56 @@ func TestFetchFlagsOverrideTheConfig(t *testing.T) {
 	}
 	if a := c.asked()[0]; a.Identity != "gitlab.com/x/y" || a.LFS.Base != "v1.0" {
 		t.Fatalf("ask = %+v", a)
+	}
+}
+
+func TestFetchIgnoresAGitattributesThatGitIgnores(t *testing.T) {
+	// git reads no .gitattributes over 100 MB; the program reads none either,
+	// so a commit whose only `filter=lfs` is in such a file has no LFS file.
+	maxAttributesSize = int64(len(attrsLFS)) - 1
+	t.Cleanup(func() { maxAttributesSize = 100 << 20 })
+	b := newBlob("too large attributes")
+	p := makePod(t, map[string]string{".gitattributes": attrsLFS, "x.bin": b.pointer})
+	c := newCustodian(t, p.cache, b)
+	r := fetch(t, p.clone, "main")
+	if r.Pointers != 0 || r.Asked != 0 || len(c.asked()) != 0 {
+		t.Fatalf("result = %+v, asks %d: want no LFS file", r, len(c.asked()))
+	}
+}
+
+func TestFetchBudgetEndsTheAsksAndNamesTheFiles(t *testing.T) {
+	b := newBlob("slow")
+	p := makePod(t, map[string]string{".gitattributes": attrsLFS, "x.bin": b.pointer})
+	// The stand-in never answers within the budget.
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); slow.Close() })
+	t.Setenv("JR2_CUSTODIAN_URL", slow.URL)
+	start := time.Now()
+	r := fetch(t, p.clone, "--budget", "300ms", "main")
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the budget did not end the ask: it took %s", took)
+	}
+	if len(r.Missing) != 1 || r.Missing[0].Path != "x.bin" ||
+		!strings.Contains(r.Missing[0].Reason, "within the budget of") {
+		t.Fatalf("missing = %+v, want x.bin and the budget's words", r.Missing)
+	}
+
+	// A budget that is already spent asks for nothing and names each file.
+	r = fetch(t, p.clone, "--budget=0s", "main")
+	if r.Asked != 1 || len(r.Missing) != 1 || !strings.Contains(r.Missing[0].Reason, "within the budget of 0s") {
+		t.Fatalf("result = %+v", r)
+	}
+
+	// A budget that is not a duration is a usage fault.
+	var out, errOut strings.Builder
+	if code := Run(Options{Args: []string{"fetch", "--budget", "soon", "main"}, Dir: p.clone, Stdout: &out, Stderr: &errOut}); code != 2 {
+		t.Fatalf("exit %d, want 2", code)
 	}
 }
 
