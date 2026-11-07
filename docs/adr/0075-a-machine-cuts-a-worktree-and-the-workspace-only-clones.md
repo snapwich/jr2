@@ -63,6 +63,13 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
   the tests (ADR-0028).
 - **A cut needs a Repo Slot.** `jr2 up` and the invoke refuse `worktree()` under a Workspace with no Repo Slot, as they
   refuse a `push` (ADR-0051).
+- **A cut gets its commit's large files first.** After the fetch and before it changes git, a cut asks the node cache
+  for each Git LFS object of its commit
+  ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). An object that the
+  cache does not hold and cannot get makes the cut `refused`, and the reason names the file. With a remote that is down
+  and every object held, the cut is `ready` with `stale`.
+- **A cut checks out no submodule.** A submodule's folder stays empty. A Machine that works in a submodule's code binds
+  that Repo as its own Repo Slot.
 - **v1 has no kit removal.** The docs give a `command` that runs `git worktree remove`.
 
 ### What names a Worktree
@@ -276,7 +283,7 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
 ## Consequences
 
 - After v1, these are additive: a removal Effect, a sparse checkout, a new Worktree source, `to`, a relaxed `branch` or
-  `cwd`, a later outcome, and durable output under `/work/.jr2/` or on its own mount.
+  `cwd`, a later outcome, durable output under `/work/.jr2/` or on its own mount, and submodules.
 - Park and restore can only restore all of `/work`. A restore from the remote alone cannot work: settled cuts do not run
   again, and unpushed work is gone. v1 does not promise that form.
 - A packaged Machine with two slots still needs a static `slot` on its `push`.
