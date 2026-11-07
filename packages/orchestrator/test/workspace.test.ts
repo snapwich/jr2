@@ -110,6 +110,8 @@ class FakeSandbox implements SandboxPort {
   images: Array<string | undefined> = [];
   /** The pod-composition fields beside it (ADR-0005), same passthrough rule. */
   composition: Array<{ user?: string; workGroup?: number }> = [];
+  /** The `projectContext` each provision was asked for (ADR-0062), as the Machine states it. */
+  projectContexts: Array<string | undefined> = [];
   /** The Repo Slots each provision resolved (ADR-0051), in declaration order. */
   repos: ProvisionedRepo[][] = [];
   /** The Size each provision was handed, as the Machine states it (ADR-0060). */
@@ -127,6 +129,7 @@ class FakeSandbox implements SandboxPort {
     });
     this.images.push(req.image);
     this.composition.push({ user: req.user, workGroup: req.workGroup });
+    this.projectContexts.push(req.projectContext);
     this.repos.push(req.repos);
     this.routes.push(req.route);
     this.assemblies.push(req.assembly);
@@ -375,6 +378,33 @@ test("`workGroup` is a static option, with or without a Repo Slot, and a Workspa
   await waitFor(() => host.gates(runId).length === 1);
   assert.deepEqual(sandbox.composition, [{ user: undefined, workGroup: 3000 }]);
   await host.stop(runId);
+});
+
+test("`projectContext` is a static option that reaches the provision as the Machine states it (ADR-0062)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({
+    name: "shared",
+    machine: workspace(slotlessBody, { projectContext: "workspace" }),
+    provide: () => ({}),
+  });
+  host.register({ name: "own", machine: workspace(slotlessBody, {}), provide: () => ({}) });
+  for (const name of ["shared", "own"]) {
+    const { runId } = await host.start(name);
+    await waitFor(() => host.gates(runId).length === 1);
+    await host.stop(runId);
+  }
+  // Absent stays absent: the port's default is "worktree".
+  assert.deepEqual(sandbox.projectContexts, ["workspace", undefined]);
+});
+
+test("a `projectContext` that is not worktree or workspace is refused when the Machine is built", () => {
+  for (const projectContext of ["user", "", 1, null] as never[]) {
+    assert.throws(
+      () => workspace(slotlessBody, { projectContext }),
+      /workspace\(\): `projectContext` is "worktree" or "workspace" \(got .*\) \(ADR-0062\)/,
+    );
+  }
 });
 
 test("a `workGroup` that is not a gid is refused when the Machine is built, so it never costs a pod", () => {

@@ -113,6 +113,7 @@ import {
   SHELL_VOLUME,
   OUTPUT_DIR,
   OUTPUT_VOLUME,
+  PROJECT_CONTEXT_ENV,
   HELD_MOUNT,
   CA_CONFIGMAP,
   heldManifestKey,
@@ -680,7 +681,12 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   // The gate rides LAST (ADR-0058): the digest of the bearer the Orchestrator derives for THIS
   // Sandbox. A digest because the Agent reads this env; last because a `harness.env` entry of the
   // same name must not be able to choose the Harness's credential.
-  const harnessEnv = (name: string, custodian: CustodianComposition, hints: HarnessEnvVar[]): HarnessEnvVar[] => {
+  const harnessEnv = (
+    name: string,
+    custodian: CustodianComposition,
+    hints: HarnessEnvVar[],
+    projectContext: "worktree" | "workspace",
+  ): HarnessEnvVar[] => {
     if (!opts.signingKey) throw new Error("kubeSandbox: a Harness needs a signingKey to check its bearer");
     return [
       ...(cfg().env ?? []),
@@ -688,6 +694,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // The CPU hints (ADR-0060) are mechanism: they say what the Size gives, so they win over a
       // `harness.env` entry of the same name.
       ...hints,
+      // How far up the Harness reads an Agent's context files (ADR-0062): the `workspace()`'s
+      // word, so no `harness.env` entry chooses it.
+      { name: PROJECT_CONTEXT_ENV, value: projectContext },
       // Where the Harness persists its conversations (ADR-0031) — the volume below, mechanism, so
       // no `harness.env` entry chooses it.
       { name: CONVERSATIONS_DIR_ENV, value: CONVERSATIONS_DIR },
@@ -794,6 +803,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       userResources?: Size;
       effector?: string;
       assembly?: string;
+      projectContext?: "worktree" | "workspace";
     },
     refs: ImageRefs,
     repos: FencedRepo[],
@@ -880,7 +890,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // Marked (`harness-env.ts`, ADR-0076): the Harness's start tells jr2's names from the image's.
         ...(() => {
           const marked = markHarnessEnv(
-            [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv())],
+            [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv(), req.projectContext ?? "worktree")],
             cfg().envFrom ?? [],
           );
           return { env: marked.env, ...(marked.envFrom.length ? { envFrom: marked.envFrom } : {}) };

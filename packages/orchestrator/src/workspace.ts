@@ -313,6 +313,8 @@ export type PlaceRequest = {
   /** The Sandbox Effector's image as the `workspace()` names it (ADR-0068): the port resolves it,
    * and adds the container only when `jr2 up` placed an Effect there. Absent → the Sandbox Image. */
   effector?: string;
+  /** How far up the Harness reads an Agent's context files (ADR-0062). Absent → `"worktree"`. */
+  projectContext?: "worktree" | "workspace";
   /** The hash of the Assembly the run holds (ADR-0069). When it is not the current one, an image
    * the map lacks fails naming it. Absent for a run no Assembly started. */
   assembly?: string;
@@ -724,6 +726,22 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
    */
   // The default is the Sandbox Image, whose floor already holds `git` (ADR-0037).
   effector?: { image: string };
+  // ADR-0062: the bound of the project context's walk. The Harness enforces it on what the child
+  // that loads the files gives back; nothing above `/work` is read with either value.
+  /**
+   * Which context files (`AGENTS.md`, `CLAUDE.md`) an Agent of this Workspace reads, by how far up
+   * from its working directory the search goes:
+   * - `"worktree"` (default): up to the root of the Agent's Worktree (`/work/<slot>/<name>`). In
+   *   `/work` or in a slot's folder, the search reads that folder alone. So a file that another
+   *   Agent writes in `/work` or in `/work/<slot>` does not get into this Agent's prompt.
+   * - `"workspace"`: up to `/work`. A `/work/AGENTS.md` or a `/work/<slot>/AGENTS.md` is then read
+   *   by each Agent of the Workspace. Such a file is in no Worktree, so it is in no diff that a
+   *   reviewer reads, and any Agent of the Workspace can write it into the prompt of each other
+   *   Agent. Choose it only when you accept that.
+   *
+   * The skills stay `<cwd>/.pi/skills` with either value.
+   */
+  projectContext?: "worktree" | "workspace";
 };
 
 // How a Workspace with a declared door is configured (ADR-0012, ADR-0033) — the wrapper's own
@@ -846,6 +864,8 @@ export type PermissiveNoSlotWorkspaceOptions = Omit<SandboxOptions<never>, "repo
  * - a `workGroup` that is not a gid: ``workspace(): `workGroup` must be a gid (got <value>)``
  * - a bad `secrets` list: ``workspace(): `secrets` must be a list of distinct names from
  *   jr2.config.ts's `secrets` list (got <value>) — secrets: ["JIRA_TOKEN"] (ADR-0059).``
+ * - a `projectContext` that is not `"worktree"` or `"workspace"`: ``workspace(): `projectContext` is
+ *   "worktree" or "workspace" (got <value>) (ADR-0062).``
  * - a bad `effector`: ``workspace(): `effector` is { image } — a `file:` URL to a docker context
  *   or a registry ref (got <value>) — effector: { image: import.meta.resolve("./effector") }
  *   (ADR-0068).``
@@ -1139,6 +1159,12 @@ export function workspace(
   }
   const workGroup = options.workGroup;
   assertWorkGroup(workGroup);
+  const projectContext = options.projectContext;
+  if (projectContext !== undefined && projectContext !== "worktree" && projectContext !== "workspace") {
+    throw new Error(
+      `workspace(): \`projectContext\` is "worktree" or "workspace" (got ${JSON.stringify(projectContext)}) (ADR-0062).`,
+    );
+  }
   if (repos === open || Object.keys(repos).length > 0) refuseUnnamedWorktrees(body);
   const wrapper = buildWorkspaceMachine(body);
   // The wrapper is TRANSPARENT to its body (ADR-0049): `customize(machine, { agents })` on a
@@ -1158,6 +1184,7 @@ export function workspace(
     ...(workGroup !== undefined ? { workGroup } : {}),
     ...(secrets !== undefined ? { secrets: [...secrets] } : {}),
     ...(effector !== undefined ? { effector: { image: effector.image } } : {}),
+    ...(projectContext !== undefined ? { projectContext } : {}),
   });
   // The body's vocabulary stays the BODY's (ADR-0011, ADR-0049): the wrapper declares no events
   // of its own and merges none, because the actors that use the body's names resolve against the
@@ -1392,6 +1419,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
         ...(parts.resources !== undefined ? { resources: parts.resources } : {}),
         ...(user.resources !== undefined ? { userResources: user.resources } : {}),
         ...(parts.effector !== undefined ? { effector: parts.effector.image } : {}),
+        ...(parts.projectContext !== undefined ? { projectContext: parts.projectContext } : {}),
         ...(binding.assembly !== undefined ? { assembly: binding.assembly } : {}),
       },
       { onWait, signal },

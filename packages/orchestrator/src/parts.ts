@@ -267,6 +267,8 @@ export type SandboxParts = {
   secrets?: string[];
   /** The Sandbox Effector's image (ADR-0068). Absent → the Sandbox Image. */
   effector?: { image: string };
+  /** How far up an Agent's context files are read (ADR-0062). Absent → `"worktree"`. */
+  projectContext?: "worktree" | "workspace";
 };
 
 // The stamps below are written ON `machine.config` under `Symbol.for` keys, never held in a

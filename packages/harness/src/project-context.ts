@@ -1,7 +1,9 @@
 // An Agent's project context (ADR-0062): the context files (`AGENTS.md`, `CLAUDE.md`) from its
-// Worktree and the folders above it, and the skills in `<cwd>/.pi/skills`, as pi-coding-agent finds
-// them (`loadProjectContextFiles`, `loadSkills`, `formatSkillsForPrompt`). They go in the system
-// prompt between the Agent's instructions and the Briefing's standing part.
+// working directory and the folders above it, up to a bound that the Workspace sets, and the skills
+// in `<cwd>/.pi/skills`, as pi-coding-agent finds them (`loadProjectContextFiles`, `loadSkills`,
+// `formatSkillsForPrompt`). And, when the Sandbox Image has one, the image user's context
+// (`~/.pi/agent`): its context file and its skills. They go in the system prompt between the
+// Agent's instructions and the Briefing's standing part.
 //
 // pi reads the files in the process that calls it. Here that is a child in the domain
 // (`project-context-main.ts`), started by the spawner, never the Harness process: the Agent writes
@@ -12,14 +14,21 @@
 // the shape, gives no project context, as a child that fails or does not end in time does. The Turn
 // goes on without it, and the pod log has one line.
 //
+// The bound is the Harness's, not pi's: pi's walk goes up to `/`, and it has no option to stop. So
+// the Harness keeps only the files that the child names in a folder from the working directory up
+// to the bound (`contextBound`), and drops the rest. The walk reads the folders above in the domain,
+// which can read them anyway, and their text goes nowhere.
+//
 // It is loaded once for each conversation and folder, at the first Submission there, and kept in
 // memory, so the system prompt is the same bytes on each later Submission and the provider's
 // prefix cache holds (ADR-0029). A Harness restart loads it again.
 
-import { normalize } from "node:path";
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, join, normalize, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HARNESS_HOME, runIn, type ChildPolicy } from "./children.ts";
+import { HARNESS_HOME, harnessRules, runIn, type ChildPolicy } from "./children.ts";
 import type { AgentDefinition } from "./spec.ts";
+import { FALLBACK_HOME } from "./startup.ts";
 
 /** The child's entry, beside this module: `/opt/jr2/src/project-context-main.ts` in a pod. */
 export const PROJECT_CONTEXT_ENTRY = fileURLToPath(new URL("./project-context-main.ts", import.meta.url));
@@ -28,8 +37,25 @@ export const PROJECT_CONTEXT_ENTRY = fileURLToPath(new URL("./project-context-ma
 export const PROJECT_CONTEXT_MAX_BYTES = 256 * 1024;
 /** How long the child may run. A node start and pi's import take about half a second. */
 export const PROJECT_CONTEXT_TIMEOUT_MS = 20_000;
-/** Where a Workspace's Repo Slots are (ADR-0075): `/work/<slot>/<folder>` is a clone or a Worktree. */
+/** Where a Workspace's Repo Slots are (ADR-0075): `/work/<slot>/<name>` is a clone or a Worktree. */
 const WORK_ROOT = "/work";
+
+/** How far up the context files are read: to the Agent's Worktree, or to `/work` (the
+ * `workspace()`'s `projectContext`, which the pod's `JR2_PROJECT_CONTEXT` carries). */
+export type ContextScope = "worktree" | "workspace";
+
+/** The scope that `JR2_PROJECT_CONTEXT` names. Any other value, or none, is `"worktree"`: the
+ * narrower one. */
+export function contextScopeOf(value: string | undefined): ContextScope {
+  return value === "workspace" ? "workspace" : "worktree";
+}
+
+/**
+ * The names in the image user's folder that pi's loaders read (`loadProjectContextFiles` and
+ * `loadSkills`, at the pin): its context file, by pi's order of names, and its skills folder. The
+ * child may read these and nothing else there: not `auth.json`, `settings.json` or `models.json`.
+ */
+export const USER_CONTEXT_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD", "skills"];
 
 /** One context file, as pi read it in the domain. */
 export type ContextFile = { path: string; content: string };
@@ -37,16 +63,88 @@ export type ContextFile = { path: string; content: string };
 export type ProjectContext = { files: ContextFile[]; skills: string };
 
 /**
- * True when an Agent in `cwd` gets a project context: it has Working tools, and `cwd` is in a
- * Repo Slot's clone or Worktree (`/work/<slot>/<folder>`, ADR-0075). A Menu-only Agent has no
- * files. An Agent of a Workspace with no Repo Slot works in `/work`, which no repo's files frame.
+ * True when an Agent in `cwd` gets a project context: it has Working tools, and `cwd` is `/work` or
+ * a folder in it (ADR-0075), not in jr2's own `/work/.jr2`. A Menu-only Agent has no files.
  */
 export function hasProjectContext(workspace: AgentDefinition["workspace"], cwd: string, workRoot = WORK_ROOT): boolean {
   if (workspace === "none") return false;
-  const at = normalize(cwd);
+  const at = normalize(cwd).replace(/\/+$/, "");
+  if (at === workRoot) return true;
   if (!at.startsWith(`${workRoot}/`)) return false;
-  const [slot, folder] = at.slice(workRoot.length + 1).split("/");
-  return slot !== undefined && slot !== "" && !slot.startsWith(".") && folder !== undefined && folder !== "";
+  return !at.slice(workRoot.length + 1).startsWith(".");
+}
+
+/**
+ * The folder where the walk of the context files stops (ADR-0062), from a `cwd` that
+ * {@link hasProjectContext} accepts. `"workspace"`: `/work`. `"worktree"`: the Worktree's root,
+ * `/work/<slot>/<name>`, when `cwd` is in one (ADR-0075 cuts each Worktree, and clones each slot's
+ * `default`, at exactly that depth); in `/work` or in a slot's folder, which no Worktree holds,
+ * `cwd` itself. The rule reads the path, not the folder: a `.git` that the Agent removes or makes
+ * does not move it.
+ */
+export function contextBound(cwd: string, scope: ContextScope, workRoot = WORK_ROOT): string {
+  const at = normalize(cwd).replace(/\/+$/, "");
+  if (scope === "workspace") return workRoot;
+  const [slot, name] = relative(workRoot, at).split(sep);
+  return slot && name ? join(workRoot, slot, name) : at;
+}
+
+/** The folders from `cwd` up to `bound`, both in: where a kept context file is. */
+function foldersUpTo(cwd: string, bound: string): Set<string> {
+  const out = new Set<string>();
+  let at = normalize(cwd).replace(/\/+$/, "");
+  for (;;) {
+    out.add(at);
+    if (at === bound || dirname(at) === at) return out;
+    at = dirname(at);
+  }
+}
+
+/**
+ * The context files of `ctx` that are in a folder from `cwd` up to `bound`, or in the image user's
+ * folder (`userDir`): the Harness's bound on pi's walk, which goes up to `/`. The order stays pi's.
+ */
+export function withinBound(ctx: ProjectContext, cwd: string, bound: string, userDir?: string): ProjectContext {
+  const folders = foldersUpTo(cwd, bound);
+  return {
+    files: ctx.files.filter(
+      ({ path }) => folders.has(dirname(path)) || (userDir !== undefined && dirname(path) === userDir),
+    ),
+    skills: ctx.skills,
+  };
+}
+
+/**
+ * The image user's context folder (`<HOME>/.pi/agent`, pi's `agentDir`), as the Sandbox Image holds
+ * it when the Harness starts, by its real path: `undefined` when there is none. Never jr2's own home
+ * for an image with no `USER` (`/home/jr2`, an emptyDir, ADR-0037), and never a folder in `/work`:
+ * the image has nothing there, and an Agent may have written it. Call it once, at the start, before
+ * any Agent runs. The domain can still write the folder later when the image's uid owns it.
+ */
+export function imageUserContext(home: string | undefined, workRoot = WORK_ROOT): string | undefined {
+  if (home === undefined || home === "" || normalize(home) === FALLBACK_HOME) return undefined;
+  try {
+    const dir = realpathSync(join(home, ".pi", "agent"));
+    if (!statSync(dir).isDirectory()) return undefined;
+    if (dir === FALLBACK_HOME || dir.startsWith(`${FALLBACK_HOME}/`)) return undefined;
+    if (dir === workRoot || dir.startsWith(`${workRoot}/`)) return undefined;
+    return dir;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The paths of {@link USER_CONTEXT_NAMES} in `userDir` that are there and are no link: each gets
+ * a read rule. A link gets none, so a read through it fails, as Landlock checks the path that the
+ * link names. Read without following a link. */
+function userContextReads(userDir: string): string[] {
+  return USER_CONTEXT_NAMES.map((name) => join(userDir, name)).filter((p) => {
+    try {
+      return !lstatSync(p).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -97,13 +195,21 @@ export type LoadOptions = {
   entry?: string;
   timeoutMs?: number;
   maxBytes?: number;
+  /** How far up the context files are read. Default `"worktree"`. */
+  scope?: ContextScope;
+  /** Where the Repo Slots are. Default `/work` (ADR-0075); a test names its own folder. */
+  workRoot?: string;
+  /** The image user's context folder ({@link imageUserContext}), or none. */
+  userDir?: string;
 };
 
 /**
  * Load the project context of `cwd` in the domain: the child, by the spawner, with this process's
  * node. Its env is HOME alone, the Harness's own (which the domain cannot reach), so the child's
  * node looks for modules in jr2's folders alone, and no `NODE_OPTIONS` of the image loads code
- * into it. An abort answers `aborted`.
+ * into it. With an image user's folder, the child is confined further: in that folder it reads only the names that pi's
+ * loaders read ({@link USER_CONTEXT_NAMES}), and writes nothing. The files are kept within the
+ * scope's bound ({@link withinBound}). An abort answers `aborted`.
  */
 export async function loadProjectContext(
   children: ChildPolicy,
@@ -111,7 +217,25 @@ export async function loadProjectContext(
   opts: LoadOptions = {},
 ): Promise<ProjectContext | { fault: string } | "aborted"> {
   const maxBytes = opts.maxBytes ?? PROJECT_CONTEXT_MAX_BYTES;
-  const r = await runIn(children, [process.execPath, opts.entry ?? PROJECT_CONTEXT_ENTRY, cwd], {
+  const userDir = opts.userDir;
+  const child = [process.execPath, opts.entry ?? PROJECT_CONTEXT_ENTRY, cwd, ...(userDir ? [userDir] : [])];
+  let argv = child;
+  if (userDir !== undefined) {
+    try {
+      argv = [
+        children.confiner,
+        "confine",
+        ...harnessRules(children.confiner, [userDir], userContextReads(userDir)),
+        // `effector confine`'s form: the path that execve runs, then the whole argv.
+        "--",
+        process.execPath,
+        ...child,
+      ];
+    } catch (err) {
+      return { fault: `its rules for ${userDir} could not be made: ${(err as Error).message.split("\n")[0]}` };
+    }
+  }
+  const r = await runIn(children, argv, {
     cwd,
     env: { HOME: HARNESS_HOME },
     timeoutMs: opts.timeoutMs ?? PROJECT_CONTEXT_TIMEOUT_MS,
@@ -128,7 +252,10 @@ export async function loadProjectContext(
     const said = r.stderr.trim().split("\n").at(-1)?.slice(0, 500);
     return { fault: said ? `${why}: ${said}` : why };
   }
-  return parseProjectContext(r.stdout);
+  const parsed = parseProjectContext(r.stdout);
+  if ("fault" in parsed) return parsed;
+  const workRoot = opts.workRoot ?? WORK_ROOT;
+  return withinBound(parsed, cwd, contextBound(cwd, opts.scope ?? "worktree", workRoot), userDir);
 }
 
 /**

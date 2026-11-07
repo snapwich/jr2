@@ -5,25 +5,32 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  contextBound,
+  contextScopeOf,
   hasProjectContext,
+  imageUserContext,
   loadProjectContext,
   parseProjectContext,
   projectContexts,
   projectContextText,
+  USER_CONTEXT_NAMES,
+  withinBound,
   type ProjectContext,
 } from "../src/project-context.ts";
 import { deniedDir, testChildren } from "./support/children.ts";
 
-/** A Repo Slot's Worktree under a work root of its own: `<work>/app/default`. */
-function worktree(): { work: string; dir: string } {
-  const work = mkdtempSync(join(tmpdir(), "jr2-pc-work-"));
+/** A Repo Slot's Worktree under a work root of its own: `<root>/work/app/default`. `root` stands
+ * for `/`: a file there is above the work root. */
+function worktree(): { root: string; work: string; dir: string } {
+  const root = mkdtempSync(join(tmpdir(), "jr2-pc-root-"));
+  const work = join(root, "work");
   const dir = join(work, "app", "default");
   mkdirSync(dir, { recursive: true });
-  return { work, dir };
+  return { root, work, dir };
 }
 
 function skill(dir: string, name: string, description: string): string {
@@ -38,18 +45,69 @@ const loaded = (r: Awaited<ReturnType<typeof loadProjectContext>>): ProjectConte
   return r;
 };
 
-test("hasProjectContext: an Agent with Working tools in a Repo Slot's clone or Worktree, and no other", () => {
+test("hasProjectContext: an Agent with Working tools in /work or a folder in it, and no other", () => {
   assert.equal(hasProjectContext("write", "/work/app/default"), true);
   assert.equal(hasProjectContext(undefined, "/work/app/feat-1/src"), true);
   assert.equal(hasProjectContext("read", "/work/app/review"), true);
+  assert.equal(hasProjectContext("write", "/work"), true, "a Workspace with no Repo Slot works in /work");
+  assert.equal(hasProjectContext("write", "/work/"), true);
+  assert.equal(hasProjectContext("write", "/work/app"), true);
   assert.equal(hasProjectContext("none", "/work/app/default"), false, "a Menu-only Agent has no files");
-  assert.equal(hasProjectContext("write", "/work"), false, "a Workspace with no Repo Slot works in /work");
-  assert.equal(hasProjectContext("write", "/work/app"), false, "a slot's folder holds clones, it is not one");
   assert.equal(hasProjectContext("write", "/work/.jr2/x"), false, "jr2's own folder (ADR-0075)");
   assert.equal(hasProjectContext("write", "/work/app/../.jr2/x"), false);
   assert.equal(hasProjectContext("write", "/workx/app/default"), false);
   assert.equal(hasProjectContext("write", "/home/jr2/app/default"), false);
+  assert.equal(hasProjectContext("write", "/"), false);
   assert.equal(hasProjectContext("write", "/tmp/w/app/default", "/tmp/w"), true);
+});
+
+test("contextBound: a Worktree's root under worktree, /work under workspace; the path decides, not a .git", () => {
+  for (const [cwd, bound] of [
+    ["/work/app/fix", "/work/app/fix"],
+    ["/work/app/fix/", "/work/app/fix"],
+    ["/work/app/fix/packages/core", "/work/app/fix"],
+    ["/work/app/default", "/work/app/default"],
+    ["/work/app/review/src", "/work/app/review"],
+    // No Worktree holds these: the folder itself.
+    ["/work/app", "/work/app"],
+    ["/work", "/work"],
+  ] as const) {
+    assert.equal(contextBound(cwd, "worktree"), bound, cwd);
+    assert.equal(contextBound(cwd, "workspace"), "/work", cwd);
+  }
+  assert.equal(contextBound("/tmp/w/app/x/y", "worktree", "/tmp/w"), "/tmp/w/app/x");
+  assert.equal(contextScopeOf("workspace"), "workspace");
+  for (const v of [undefined, "", "worktree", "Workspace", "user"]) assert.equal(contextScopeOf(v), "worktree");
+});
+
+test("withinBound: only files from cwd up to the bound, or in the image user's folder, stay, in pi's order", () => {
+  const f = (path: string) => ({ path, content: path });
+  const ctx = {
+    files: [
+      f("/home/u/.pi/agent/AGENTS.md"),
+      f("/AGENTS.md"),
+      f("/work/AGENTS.md"),
+      f("/work/app/AGENTS.md"),
+      f("/work/app/fix/AGENTS.md"),
+      f("/work/app/fix/src/CLAUDE.md"),
+    ],
+    skills: "s",
+  };
+  const kept = (bound: string, user?: string) =>
+    withinBound(ctx, "/work/app/fix/src", bound, user).files.map((x) => x.path);
+  assert.deepEqual(kept("/work/app/fix"), ["/work/app/fix/AGENTS.md", "/work/app/fix/src/CLAUDE.md"]);
+  assert.deepEqual(kept("/work"), [
+    "/work/AGENTS.md",
+    "/work/app/AGENTS.md",
+    "/work/app/fix/AGENTS.md",
+    "/work/app/fix/src/CLAUDE.md",
+  ]);
+  assert.deepEqual(kept("/work/app/fix", "/home/u/.pi/agent"), [
+    "/home/u/.pi/agent/AGENTS.md",
+    "/work/app/fix/AGENTS.md",
+    "/work/app/fix/src/CLAUDE.md",
+  ]);
+  assert.equal(withinBound(ctx, "/work/app/fix/src", "/work").skills, "s");
 });
 
 test("projectContextText: pi's project_context and skills sections, outermost file first, and none for nothing", () => {
@@ -94,25 +152,113 @@ test("parseProjectContext: the child's line is untrusted, and each field is chec
   }
 });
 
-test("loadProjectContext: the Worktree's AGENTS.md, the context files above it, and its .pi/skills, as pi finds them", async () => {
-  const { work, dir } = worktree();
+test("loadProjectContext: the Worktree's AGENTS.md and its .pi/skills; a file above the Worktree only under workspace, and none above /work", async () => {
+  const { root, work, dir } = worktree();
+  writeFileSync(join(root, "AGENTS.md"), "Above the work root.\n");
   writeFileSync(join(work, "CLAUDE.md"), "The Workspace's rules.\n");
+  writeFileSync(join(work, "app", "AGENTS.md"), "The slot's rules.\n");
   writeFileSync(join(dir, "AGENTS.md"), "# Repo rules\nUse tabs.\n");
   const skillFile = skill(dir, "release-notes", "Write the release notes.");
-  const ctx = loaded(await loadProjectContext(testChildren({ work }), dir));
-  assert.deepEqual(ctx.files, [
-    { path: join(work, "CLAUDE.md"), content: "The Workspace's rules.\n" },
-    { path: join(dir, "AGENTS.md"), content: "# Repo rules\nUse tabs.\n" },
-  ]);
+  const children = testChildren({ work });
+  const ctx = loaded(await loadProjectContext(children, dir, { workRoot: work }));
+  assert.deepEqual(ctx.files, [{ path: join(dir, "AGENTS.md"), content: "# Repo rules\nUse tabs.\n" }]);
   assert.match(ctx.skills, /Use the read tool to load a skill's file/);
   assert.ok(ctx.skills.includes(`<name>release-notes</name>`), ctx.skills);
   assert.ok(ctx.skills.includes(`<location>${skillFile}</location>`), ctx.skills);
+  // Under "workspace", up to the work root, and never above it.
+  const wide = loaded(await loadProjectContext(children, dir, { workRoot: work, scope: "workspace" }));
+  assert.deepEqual(wide.files, [
+    { path: join(work, "CLAUDE.md"), content: "The Workspace's rules.\n" },
+    { path: join(work, "app", "AGENTS.md"), content: "The slot's rules.\n" },
+    { path: join(dir, "AGENTS.md"), content: "# Repo rules\nUse tabs.\n" },
+  ]);
+  // A Workspace with no Repo Slot: its Agents work in /work, which reads its own file alone.
+  const job = loaded(await loadProjectContext(children, work, { workRoot: work }));
+  assert.deepEqual(job.files, [{ path: join(work, "CLAUDE.md"), content: "The Workspace's rules.\n" }]);
+  // Removing the Worktree's .git file, or making one, moves no bound: the path decides.
+  writeFileSync(join(dir, ".git"), "gitdir: /nowhere\n");
+  assert.deepEqual(loaded(await loadProjectContext(children, dir, { workRoot: work })).files, ctx.files);
   // An empty Worktree has none.
   const empty = worktree();
-  assert.deepEqual(loaded(await loadProjectContext(testChildren({ work: empty.work }), empty.dir)), {
-    files: [],
-    skills: "",
-  });
+  assert.deepEqual(
+    loaded(await loadProjectContext(testChildren({ work: empty.work }), empty.dir, { workRoot: empty.work })),
+    {
+      files: [],
+      skills: "",
+    },
+  );
+});
+
+test("imageUserContext: the image's ~/.pi/agent by its real path, and never jr2's fallback home or a folder in /work", () => {
+  const { root, work } = worktree();
+  const home = join(root, "home", "u");
+  assert.equal(imageUserContext(home, work), undefined, "no folder");
+  mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+  assert.equal(imageUserContext(home, work), realpathSync(join(home, ".pi", "agent")));
+  assert.equal(imageUserContext(undefined, work), undefined);
+  assert.equal(imageUserContext("/home/jr2", work), undefined, "jr2's home for an image with no USER (ADR-0037)");
+  // A HOME whose folder is in /work is the Agents', not the image's.
+  const inWork = join(work, "home");
+  mkdirSync(join(inWork, ".pi", "agent"), { recursive: true });
+  assert.equal(imageUserContext(inWork, work), undefined);
+  const linked = join(root, "linked-home");
+  mkdirSync(linked);
+  symlinkSync(join(inWork, ".pi"), join(linked, ".pi"));
+  assert.equal(imageUserContext(linked, work), undefined, "a link into /work is in /work");
+  rmSync(join(home, ".pi"), { recursive: true });
+  writeFileSync(join(home, ".pi"), "not a folder");
+  assert.equal(imageUserContext(home, work), undefined);
+});
+
+test("loadProjectContext: the image user's AGENTS.md and skills load first; the child reads nothing else in that folder", async () => {
+  const { root, work, dir } = worktree();
+  writeFileSync(join(dir, "AGENTS.md"), "The repo's rules.\n");
+  const userDir = join(root, "home", "u", ".pi", "agent");
+  mkdirSync(userDir, { recursive: true });
+  writeFileSync(join(userDir, "AGENTS.md"), "The image's rules.\n");
+  mkdirSync(join(userDir, "skills", "deploy"), { recursive: true });
+  writeFileSync(
+    join(userDir, "skills", "deploy", "SKILL.md"),
+    "---\nname: deploy\ndescription: Ship it.\n---\nSteps.\n",
+  );
+  // auth.json holds what a skill file would hold; a skill that links to it is read through the
+  // link, at auth.json's own path, which the child may not read.
+  const secret = "image-auth-token-9a1b";
+  writeFileSync(join(userDir, "auth.json"), `---\nname: leak\ndescription: ${secret}\n---\n${secret}\n`);
+  mkdirSync(join(userDir, "skills", "leak"), { recursive: true });
+  symlinkSync(join(userDir, "auth.json"), join(userDir, "skills", "leak", "SKILL.md"));
+  const children = testChildren({ work });
+  const ctx = loaded(await loadProjectContext(children, dir, { workRoot: work, userDir }));
+  assert.deepEqual(ctx.files, [
+    { path: join(userDir, "AGENTS.md"), content: "The image's rules.\n" },
+    { path: join(dir, "AGENTS.md"), content: "The repo's rules.\n" },
+  ]);
+  assert.ok(ctx.skills.includes("<name>deploy</name>"), ctx.skills);
+  assert.ok(!JSON.stringify(ctx).includes(secret), "auth.json is nowhere in the project context");
+  // Without the user folder, the same domain reads auth.json through the link: the further rules
+  // are what keep it out.
+  writeFileSync(join(dir, "AGENTS.md"), "");
+  mkdirSync(join(dir, ".pi", "skills", "leak"), { recursive: true });
+  symlinkSync(join(userDir, "auth.json"), join(dir, ".pi", "skills", "leak", "SKILL.md"));
+  const open = loaded(await loadProjectContext(children, dir, { workRoot: work }));
+  assert.ok(JSON.stringify(open).includes(secret), "the domain itself can read the image's home");
+  // An AGENTS.md there that is a link gets no read rule of its own: a read through it is a read of
+  // the file that it names, so a link to auth.json fails, and the child reads the next name.
+  rmSync(join(userDir, "AGENTS.md"));
+  symlinkSync(join(userDir, "auth.json"), join(userDir, "AGENTS.md"));
+  writeFileSync(join(userDir, "CLAUDE.md"), "The image's CLAUDE.md.\n");
+  rmSync(join(dir, ".pi"), { recursive: true });
+  const linked = loaded(await loadProjectContext(children, dir, { workRoot: work, userDir }));
+  assert.deepEqual(linked.files[0], { path: join(userDir, "CLAUDE.md"), content: "The image's CLAUDE.md.\n" });
+  assert.ok(!JSON.stringify(linked).includes(secret));
+  assert.deepEqual(USER_CONTEXT_NAMES, [
+    "AGENTS.override.md",
+    "AGENTS.md",
+    "AGENTS.MD",
+    "CLAUDE.md",
+    "CLAUDE.MD",
+    "skills",
+  ]);
 });
 
 test("loadProjectContext: an AGENTS.md that links to a file under /run/jr2 fails in the domain, and its content goes nowhere", async () => {

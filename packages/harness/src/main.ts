@@ -54,6 +54,7 @@ import {
 } from "./startup.ts";
 import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
+import { contextScopeOf, imageUserContext } from "./project-context.ts";
 import { unixFetch } from "./unix-fetch.ts";
 import { keepSendOver } from "./keep.ts";
 import { serveShells } from "./workspace-shell.ts";
@@ -243,6 +244,16 @@ guard.start();
 // every conversation sends the same bytes. Unknown where this is not a Sandbox, and then unsaid.
 const standing = standingBriefing(seatFacts(process.env));
 
+// The project context's reach (ADR-0062): the Workspace's bound on the context files
+// (`JR2_PROJECT_CONTEXT`, the `workspace()`'s `projectContext`), and the image user's context
+// folder, as the Sandbox Image holds it now, before any Agent runs.
+const userDir = children ? imageUserContext(children.env.HOME) : undefined;
+const projectContext = {
+  scope: contextScopeOf(process.env.JR2_PROJECT_CONTEXT),
+  ...(userDir !== undefined ? { userDir } : {}),
+};
+if (userDir !== undefined) console.error(`jr2 harness: the image user's context in ${userDir} is read (ADR-0062)`);
+
 // The MCP servers of the Instance (ADR-0079): a remote server's one connection for this pod, and the
 // stdio servers of each conversation, which start in the domain. The Instance Harness has no domain,
 // so it starts no stdio server, and its admission refuses a definition that names one.
@@ -257,6 +268,7 @@ const harnessWire = harnessServer({
       guard,
       standing,
       ...(children ? { children } : {}),
+      projectContext,
       mcp: {
         conversation: mcpHost.conversation(conversationKey(seat.agentName, seat.instanceId), seat.mcpTools),
         servers: harness,

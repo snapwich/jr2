@@ -120,12 +120,12 @@ export type TurnDeps = {
    * every Turn sends the same bytes. `main.ts` passes the pod's; omitted, a seat that knows no
    * CPUs and no Size — a host run. */
   standing?: StandingBriefing;
-  /** The project context's load (`project-context.ts`, ADR-0062): where its failure is said
-   * (default `console.error`, the pod log), and, for a test, another child entry or bounds. */
+  /** The project context's load (`project-context.ts`, ADR-0062): its scope (the Workspace's
+   * `projectContext`) and the image user's folder, which `main.ts` passes; where its failure is
+   * said (default `console.error`, the pod log); and, for a test, another child entry, bounds or
+   * work root. */
   projectContext?: Omit<LoadOptions, "signal"> & {
     log?: (line: string) => void;
-    /** Where the Repo Slots are. Default `/work` (ADR-0075); a test names its own folder. */
-    workRoot?: string;
   };
   /** ADR-0035's runaway bounds — jr2-owned defaulted knobs (ADR-0016), no author surface. These
    * seams exist for the conformance suite alone, which cannot afford 128 provider rounds. */
@@ -210,7 +210,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   const standing = deps.standing ?? standingBriefing({});
   /** The project context of this conversation, by folder (ADR-0062): loaded in the domain once for
    * each, so the system prompt is the same bytes on each Submission there. */
-  const { log: contextLog, workRoot, ...contextOptions } = deps.projectContext ?? {};
+  const { log: contextLog, ...contextOptions } = deps.projectContext ?? {};
   const projectContextOf = deps.children
     ? projectContexts(deps.children, contextLog ?? ((line) => console.error(line)), contextOptions)
     : undefined;
@@ -329,11 +329,11 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       mcpList = await mcp.conversation.tools(servers.servers, definition.cwd, signal);
     }
 
-    // The project context (ADR-0062): an Agent with Working tools in a Repo Slot's clone or
-    // Worktree reads the repo's context files and skills, which pi finds there. Loaded in the
+    // The project context (ADR-0062): an Agent with Working tools in `/work` reads the context
+    // files up to the Workspace's bound, its skills, and the image user's context. Loaded in the
     // domain, never in this process; a load that fails gives none, and the Turn goes on.
     const projectContext =
-      projectContextOf && hasProjectContext(definition.workspace, definition.cwd, workRoot)
+      projectContextOf && hasProjectContext(definition.workspace, definition.cwd, contextOptions.workRoot)
         ? await projectContextOf(definition.cwd, signal)
         : "";
 

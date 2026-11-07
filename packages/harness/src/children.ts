@@ -146,6 +146,9 @@ export type ChildPolicy = {
   readonly env: Readonly<Record<string, string>>;
   /** The one spawner of the domain. */
   readonly spawner: Spawner;
+  /** The confiner that made the domain. A process of the domain can confine a child of its own
+   * further with it (`effector confine`): Landlock adds the new rules to the domain's. */
+  readonly confiner: string;
 };
 
 /** A program on `path`, or undefined. The Harness's check before it names a shell: the spawner
@@ -338,7 +341,7 @@ export function childPolicy(inputs: PolicyInputs): ChildPolicy {
     env: {},
     ...(inputs.log ? { log: inputs.log } : {}),
   });
-  return { env, spawner };
+  return { env, spawner, confiner };
 }
 
 /**

@@ -240,21 +240,33 @@ the same fact again does no harm.
 ## The project context
 
 The [project context](../reference/glossary.md#project-context) is the text of the repo that an Agent works in. An Agent
-with Working tools whose directory is in a clone or a [Worktree](../reference/glossary.md#worktree) of a
-[Repo Slot](../reference/glossary.md#repo-slot) (`/work/<slot>/<folder>`) gets it:
+with Working tools whose directory is `/work` or a directory in it gets it:
 
-- the context files, `AGENTS.md` or `CLAUDE.md`, in the directory of the Turn and in each directory above it, the
-  outermost first;
+- the context files in the directory of the Turn and in each directory above it, up to a limit, the outermost first. In
+  each directory, jr2 reads the first of `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md` and `CLAUDE.MD`
+  that is there;
 - the skills in `.pi/skills/<name>/SKILL.md` of that directory: their names, their descriptions and where they are. The
-  model reads a skill's file with `read` when its task agrees with the description.
+  model reads a skill's file with `read` when its task agrees with the description;
+- the context file and the skills in `~/.pi/agent` of the user of the Sandbox Image, when the image has that directory.
+  They come first.
 
-They go in the system prompt between the instructions and the standing part of the Briefing. jr2 reads them once for
-each conversation and directory, at its first Turn there. A change to `AGENTS.md` during a conversation thus gets to the
-next conversation. A Menu-only Agent, and an Agent in a Workspace with no Repo Slot, get no project context.
+The `projectContext` option of [`workspace()`](../reference/authoring-surface/workspace.md) sets the limit:
+
+- `"worktree"`, the default: the root of the Agent's Worktree, `/work/<slot>/<name>`. In `/work`, or in the directory of
+  a Repo Slot, jr2 reads that directory only. Thus a file that another Agent writes in `/work` does not get into the
+  prompt.
+- `"workspace"`: `/work`. A `/work/AGENTS.md` then gets into the prompt of each Agent of the Workspace. That file is in
+  no Worktree, so no diff shows it. Any Agent of the Workspace can change it.
+
+jr2 reads nothing above `/work`. The project context goes in the system prompt between the instructions and the standing
+part of the Briefing. jr2 reads it once for each conversation and directory, at its first Turn there. A change to
+`AGENTS.md` during a conversation thus gets to the next conversation. A Menu-only Agent gets no project context.
 
 jr2 reads the files with the rights of the Agent's own processes. A link from `AGENTS.md` to a file that the Agent
-cannot read gives no text. When jr2 cannot read the project context, the Turn runs without it, and the Harness's log
-tells why.
+cannot read gives no text. In `~/.pi/agent`, jr2 reads only the context file and `skills/`, and not a file such as
+`auth.json`. The Agent's processes can write `~/.pi/agent` when the user of the image owns it. To stop that, give the
+directory and its files to another owner, such as root, in the image. When jr2 cannot read the project context, the Turn
+runs without it, and the Harness's log tells why.
 
 ## Steering messages
 

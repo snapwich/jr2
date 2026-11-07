@@ -579,6 +579,31 @@ test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH plac
   assert.ok(!own.spec.volumes.some((v: { name: string }) => v.name === "home"));
 });
 
+test("the Harness hears the Workspace's projectContext in JR2_PROJECT_CONTEXT, worktree by default, and harness.env cannot change it (ADR-0062)", async () => {
+  const envFor = async (projectContext?: "worktree" | "workspace"): Promise<string | undefined> => {
+    const { exec, calls } = cluster();
+    const port = kubeSandbox({
+      imagesPath: await mkImages(REFS),
+      ...provisionable,
+      ...exec,
+      env: [{ name: "JR2_PROJECT_CONTEXT", value: "workspace" }],
+    });
+    await port.provision({
+      name: "sb",
+      runId: "r",
+      workflow: "w",
+      ...withApp,
+      ...(projectContext !== undefined ? { projectContext } : {}),
+    });
+    const all = crOf(calls).spec.env.filter((e: { name: string }) => e.name === "JR2_PROJECT_CONTEXT");
+    // Kubernetes takes the last entry of a name: jr2's comes after harness.env's.
+    return all.at(-1)?.value;
+  };
+  assert.equal(await envFor(), "worktree");
+  assert.equal(await envFor("worktree"), "worktree");
+  assert.equal(await envFor("workspace"), "workspace");
+});
+
 test("the pod carries the work group: fsGroup = spec.workGroup ?? 2000", async () => {
   // ADR-0005's ownership half of cross-uid sharing on `/work` (the attach's default ACL is the
   // writability half). The override exists for the image whose sessions already hold a gid of
@@ -1052,6 +1077,8 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
       "OMP_NUM_THREADS",
       "PYTHON_CPU_COUNT",
       "GOMAXPROCS",
+      // How far up the Agents' context files are read (ADR-0062): the `workspace()`'s word.
+      "JR2_PROJECT_CONTEXT",
       // Where the conversations persist (ADR-0031): mechanism too.
       "JR2_CONVERSATIONS_DIR",
       "JR2_HARNESS_TOKEN_SHA256",
@@ -1671,6 +1698,7 @@ test("a held secret: the Harness gets Stand-in files and the proxy, the Custodia
       ["REQUESTS_CA_BUNDLE", "/etc/jr2/ca/bundle.crt"],
       ["GIT_SSL_CAINFO", "/etc/jr2/ca/bundle.crt"],
       ...CPU_HINTS.map((h) => [h.name, undefined]),
+      ["JR2_PROJECT_CONTEXT", "worktree"],
       ["JR2_CONVERSATIONS_DIR", "/run/jr2/conversations"],
       ["JR2_HARNESS_TOKEN_SHA256", harnessTokenDigest(provisionable.signingKey, "sb-held")],
     ],
@@ -1770,6 +1798,7 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
     { name: "JR2_CONTROL_STANDIN_FILE", value: "/run/jr2/control/standin" },
     { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/ca.crt" },
     ...CPU_HINTS,
+    { name: "JR2_PROJECT_CONTEXT", value: "worktree" },
     { name: "JR2_CONVERSATIONS_DIR", value: "/run/jr2/conversations" },
     { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(provisionable.signingKey, "sb-ca") },
   ]);

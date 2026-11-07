@@ -24,18 +24,44 @@ inherits a Workspace whose processes are gone, with no way to know why.
   Allowed picks ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). So the
   Briefing never breaks the provider's prompt cache — the Turn part sits in the newest message, which is uncached
   anyway, and stays unchanged in the history after.
-- **An Agent in a Worktree reads its repo's project context, which is not the Briefing.** The project context is the
-  context files (`AGENTS.md`, `CLAUDE.md`) that pi-coding-agent's `loadProjectContextFiles` finds from the Turn's
-  working directory up to `/`, and the skills that its `loadSkills` finds in `<cwd>/.pi/skills`, as
-  `formatSkillsForPrompt` lists them. The system prompt is the `instructions`, then the project context in pi's frame
-  (its `project_context` section for the files, then its `skills` section), then the standing part. The Briefing stays
-  jr2's own text, is read last, and does not mention the project context.
-  - **Who gets it.** An Agent with Working tools whose working directory is in a Repo Slot's clone or Worktree
-    (`/work/<slot>/<folder>`, [ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). A Menu-only
-    Agent has no files, and an Agent of a Workspace with no Repo Slot works in `/work`, which no repo frames: neither
-    gets one.
-  - **No user-level context.** pi's user folder (`~/.pi/agent`) is a folder that does not exist, so only what the repo
-    and the folders above it hold loads. Context from the Sandbox Image is a later decision.
+- **An Agent in `/work` reads its project context, which is not the Briefing.** The project context is the context files
+  that pi-coding-agent's `loadProjectContextFiles` finds from the Turn's working directory up to the Workspace's bound
+  (below), one in each folder (the first of `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`
+  that is there); the skills that its `loadSkills` finds in `<cwd>/.pi/skills`, as `formatSkillsForPrompt` lists them;
+  and the Sandbox Image's user context, when the image has one (below). The system prompt is the `instructions`, then
+  the project context in pi's frame (its `project_context` section for the files, then its `skills` section), then the
+  standing part. The Briefing stays jr2's own text, is read last, and does not mention the project context.
+  - **Who gets it.** An Agent with Working tools whose working directory is `/work` or a folder in it, except jr2's own
+    `/work/.jr2` ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). A Menu-only Agent has no
+    files.
+  - **How far up: the `workspace()`'s `projectContext`.** `"worktree"`, the default: up to the root of the Agent's
+    Worktree, `/work/<slot>/<name>`. ADR-0075 makes each Worktree, and each slot's clone `default`, at exactly that
+    depth. In `/work` (a Workspace with no Repo Slot) or in a slot's folder, which no Worktree holds, the walk reads
+    that folder alone. `"workspace"`: up to `/work`, so a `/work/AGENTS.md` and a `/work/<slot>/AGENTS.md` reach each
+    Agent of the Workspace. Neither value reads above `/work`. The default is the narrow one, for isolation. A file in
+    `/work` or in a slot's folder is in no Worktree, so it is in no diff and no reviewer reads it
+    ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)). And under `"workspace"` one
+    Agent writes text into each other Agent's system prompt, where a peer's word becomes a rule; ADR-0002 keeps a peer's
+    word from being an order (`peer-not-order`). An author who wants rules that each Agent of the Workspace shares
+    chooses `"workspace"` and accepts that. Neither value is a wall: the Agents of one Workspace share `/work`
+    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), so one Agent can still
+    write in another's Worktree. That write is then in that Worktree's diff.
+  - **The path sets the bound, and the Harness enforces it.** The bound comes from the working directory's path, not
+    from a `.git` in a folder: the Agent can remove its Worktree's `.git` file or make one, and that moves no bound.
+    pi's walk goes up to `/` and has no option to stop. So the Harness keeps only the files that the child names in a
+    folder from the working directory up to the bound, and drops the rest. The walk reads the folders above in the
+    domain, which can read them anyway, and their text goes nowhere.
+  - **The image user's context, when the image has one.** When the Sandbox Image's user has `~/.pi/agent` at the
+    Harness's start, pi reads it as its user folder (`agentDir`): its context file comes first, before the walk's files,
+    and its skills come from `skills/`. Never otherwise: not jr2's own home for an image with no `USER` (`/home/jr2`, an
+    emptyDir, [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)), not a folder in
+    `/work`, and not a folder that is made after the start. It does not depend on `projectContext`. The child that reads
+    it is confined further: in that folder it reads only the names that pi's loaders read there, so not `auth.json`,
+    `settings.json` or `models.json` (ADR-0076). **An Agent can write it.** ADR-0037 requires a writable `HOME` for the
+    image's user, and the domain does what that uid does (ADR-0076). So a file there that the image's user owns is as
+    writable by each Agent of the Workspace as `/work` is, and what an Agent writes there reaches each Agent's next
+    conversation. An image keeps the folder read-only for its Agents when another owner (root) holds the folder and its
+    files and the image's user cannot write them.
   - **Loaded once for each conversation and folder,** at the first Submission there, and kept in memory: the system
     prompt is the same bytes on each later Submission, so the provider's prefix cache holds
     ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). A change to
@@ -270,6 +296,15 @@ inherits a Workspace whose processes are gone, with no way to know why.
   differently or not at all.
 - **An author switch** (`agent({ briefing: false })`, or notices only). Rejected: under the rule, each fact is one a
   correct Agent needs; the switch only lets the ADR-0057 failure back in.
+- **Walk to `/`** (pi's own walk). Rejected: a folder above `/work` is the image's or the node's. A file there is in no
+  repo and in no review, and in a Sandbox the Agents write some of those folders (`HOME`).
+- **Stop at the nearest folder that holds a `.git`.** Rejected: the Agent writes its Worktree's `.git` file. If it
+  removes the file, the walk goes up to the next `.git` or to `/work`.
+- **A third value, `"user"`, above `"workspace"`, that also reads the image's user context.** Rejected: the image's user
+  context is the image author's choice, not a level of the walk. Tied above `"workspace"`, an author who wants the
+  image's context would have to accept a shared `/work` file too.
+- **No user context, or the user context only by an author's switch.** Rejected: an image that has `~/.pi/agent` is an
+  author's statement that its Agents read it, as the image's tools are its statement of what they run.
 - **No project context** (jr2 before pi-coding-agent). Rejected: a repo's `AGENTS.md` is where its rules for each coding
   agent are, and an Agent that never reads them works against them. The rule above is for jr2's own text; the repo's
   text is the repo's, as the Frame's prompt is the Machine's.
