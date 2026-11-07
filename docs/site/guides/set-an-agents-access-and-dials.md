@@ -33,8 +33,8 @@ where its Turns run. The default is `"write"`.
 
 | `workspace`         | The Working tools                            | Where the Turn runs                                                                |
 | ------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `"write"` (default) | read, write, edit, bash, grep and glob       | The [Sandbox](../reference/glossary.md#sandbox) of the Workspace                   |
-| `"read"`            | read, bash, grep and glob: no write, no edit | The Sandbox of the Workspace                                                       |
+| `"write"` (default) | read, write, edit, bash, grep and find       | The [Sandbox](../reference/glossary.md#sandbox) of the Workspace                   |
+| `"read"`            | read, bash, grep and find: no write, no edit | The Sandbox of the Workspace                                                       |
 | `"none"`            | none                                         | The [Instance Harness](../reference/glossary.md#instance-harness), with no Sandbox |
 
 An Agent with `"write"` or `"read"` works in a Sandbox. Thus invoke it in the body of a

@@ -115,7 +115,7 @@ ADR-0018 and GLOSSARY.md said `cwd` is identity, never per Turn. The decided thi
   incident: ADR-0024 already established that the same prompt produces compliance on one run and not the next, and every
   other Machine would repeat the sentence.
 - **`cwd` stays on the definition, overridable per Turn.** Rejected: a definition-level `cwd` can only ever say `/work`,
-  the parent of every checkout, where grep and glob hit the pristine `default/` clone beside the worktree. A default
+  the parent of every checkout, where grep and find hit the pristine `default/` clone beside the worktree. A default
   that is wrong under every `workspace()` is not a default.
 - **`cwd` as a third Dial.** Rejected on the word: Dials say how hard to run. A directory says where, which is the same
   kind of fact as the prompt — hence Frame.
