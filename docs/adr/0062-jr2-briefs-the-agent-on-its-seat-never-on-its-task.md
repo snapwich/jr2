@@ -45,7 +45,12 @@ inherits a Workspace whose processes are gone, with no way to know why.
     word from being an order (`peer-not-order`). An author who wants rules that each Agent of the Workspace shares
     chooses `"workspace"` and accepts that. Neither value is a wall: the Agents of one Workspace share `/work`
     ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), so one Agent can still
-    write in another's Worktree. That write is then in that Worktree's diff.
+    write in another's Worktree. A write to a file that is not ignored is then in that Worktree's diff. An ignored
+    context file is in no diff (an Agent writes the clone's shared `info/exclude`), so each detached cut removes the
+    ignored context files and skills of its Worktree
+    ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)): a reviewer's system prompt has only
+    what the commit under review has, and what an Agent writes after the cut. A branch Worktree is given back as it is,
+    so an ignored context file that another Agent writes there reaches its Agent, in no diff.
   - **The path sets the bound, and the Harness enforces it.** The bound comes from the working directory's path, not
     from a `.git` in a folder: the Agent can remove its Worktree's `.git` file or make one, and that moves no bound.
     pi's walk goes up to `/` and has no option to stop. So the Harness keeps only the files that the child names in a

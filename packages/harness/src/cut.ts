@@ -122,7 +122,7 @@ const CLEAN = [
 ];
 
 type Git = { code: number; out: string; err: string };
-type Runner = (cwd: string, args: readonly string[]) => Promise<Git>;
+type Runner = (cwd: string, args: readonly string[], maxBuffer?: number) => Promise<Git>;
 
 function runner(paths: CutPaths, home: string, filters: { args: string[] }): Runner {
   const env: NodeJS.ProcessEnv = {
@@ -136,17 +136,12 @@ function runner(paths: CutPaths, home: string, filters: { args: string[] }): Run
     ...(process.env.JR2_CUSTODIAN_URL ? { JR2_CUSTODIAN_URL: process.env.JR2_CUSTODIAN_URL } : {}),
     ...paths.env,
   };
-  return (cwd, args) =>
+  return (cwd, args, maxBuffer = 16 << 20) =>
     new Promise((resolve) => {
-      execFile(
-        "git",
-        ["-C", cwd, ...CLEAN, ...filters.args, ...args],
-        { env, maxBuffer: 16 << 20 },
-        (error, stdout, stderr) => {
-          const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
-          resolve({ code, out: stdout.trim(), err: stderr.trim() });
-        },
-      );
+      execFile("git", ["-C", cwd, ...CLEAN, ...filters.args, ...args], { env, maxBuffer }, (error, stdout, stderr) => {
+        const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
+        resolve({ code, out: stdout.trim(), err: stderr.trim() });
+      });
     });
 }
 
@@ -502,6 +497,30 @@ const HALF_DONE = [
   "sequencer",
 ];
 
+/**
+ * The files that pi-coding-agent reads into an Agent's system prompt from a folder of a Worktree
+ * (ADR-0062), at the pin: the context file names of `loadProjectContextFiles`, and what is in a
+ * `.pi/skills` folder (`loadSkills`), in each folder of the Worktree. As git pathspecs: `**` also
+ * matches the Worktree's root. git does not go into a nested repo that is ignored.
+ */
+export const CONTEXT_PATHSPECS = [
+  ...["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"].map((name) => `:(glob)**/${name}`),
+  ":(glob)**/.pi/skills/**",
+];
+
+/** The paths of `path`'s index whose skip-worktree bit is set (`git ls-files -v`: `S`, or `s` with
+ * assume-unchanged too). */
+async function skipWorktreePaths(c: Clone, path: string): Promise<{ paths: string[] } | { fault: string }> {
+  // One line for each file of the index: a large repo's list is more than the usual buffer.
+  const listed = await c.git(path, ["ls-files", "-v", "-z"], 256 << 20);
+  if (listed.code !== 0) return { fault: listed.err };
+  const paths = listed.out
+    .split("\0")
+    .filter((entry) => entry.startsWith("S ") || entry.startsWith("s "))
+    .map((entry) => entry.slice(2));
+  return { paths };
+}
+
 /** A path a cut made. The record says what it is, and a re-cut agrees with it or is refused. */
 async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf): Promise<CutAnswer> {
   if (rec.branch !== undefined && req.branch !== rec.branch) {
@@ -523,11 +542,28 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
       const gitDir = await c.git(req.path, ["rev-parse", "--absolute-git-dir"]);
       if (gitDir.code !== 0) return refused(`${req.path} is a folder and no longer a Worktree: ${gitDir.err}`);
       for (const state of HALF_DONE) await rm(`${gitDir.out}/${state}`, { recursive: true, force: true });
-      const co = await steady(() => c.git(req.path, ["checkout", "--detach", "-f", sha]));
+      // A forced checkout keeps a changed tracked file whose skip-worktree bit is set, and the
+      // Workspace's Agents write this Worktree's index. So the bits go first, and no sparse
+      // checkout sets them again.
+      const skipped = await skipWorktreePaths(c, req.path);
+      if ("fault" in skipped) return refused(skipped.fault);
+      for (let i = 0; i < skipped.paths.length; i += 1000) {
+        const some = skipped.paths.slice(i, i + 1000);
+        const unskip = await c.git(req.path, ["update-index", "--no-skip-worktree", "--", ...some]);
+        if (unskip.code !== 0) return refused(unskip.err);
+      }
+      const co = await steady(() =>
+        c.git(req.path, ["-c", "core.sparseCheckout=false", "checkout", "--detach", "-f", sha]),
+      );
       if (co.code !== 0) return refused(co.err);
       // `-ff`: a nested repo goes too. No `-x`: a reviewer runs the tests (ADR-0028).
       const clean = await c.git(req.path, ["clean", "-ffd"]);
       if (clean.code !== 0) return refused(clean.err);
+      // The context files and skills that pi reads (ADR-0062) go even when they are ignored: an
+      // ignore rule in the clone's shared `info/exclude` is in no diff, so such a file would put
+      // text in the reviewer's system prompt that no reviewer reads. A tracked file stays.
+      const context = await c.git(req.path, ["clean", "-ffdx", "--", ...CONTEXT_PATHSPECS]);
+      if (context.code !== 0) return refused(context.err);
     }
     await writeRecord(c, { ...rec, id: req.id, detach: req.detach, found: "commit" });
     return ready(null, sha, "commit");

@@ -60,7 +60,18 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
   cut. It never removes a folder that its record does not name. A re-cut that disagrees with the first cut is `refused`.
   Cuts of one clone are serialized by a lock.
 - **A detached cut is forced from its own record** and cleaned with `-ffd`. Ignored files stay, because a reviewer runs
-  the tests (ADR-0028).
+  the tests (ADR-0028). Two things that git keeps through `checkout -f` and `clean -ffd` go too, because each puts text
+  in the reviewer's system prompt that is in no diff
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), and the Workspace's Agents write the clone's
+  `info/exclude` and the Worktree's index:
+  - each context file and skill that pi reads (`AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`,
+    and what is in a `.pi/skills` folder) in any folder of the Worktree, also when an ignore rule holds it
+    (`clean -ffdx` with those pathspecs). A tracked file stays. git does not go into a nested repo that is ignored.
+  - a skip-worktree bit, which keeps a changed tracked file through a forced checkout. The cut clears the bits, and
+    checks out with no sparse checkout.
+
+  Only a detached cut: a branch Worktree that a cut made is given back as it is (`held`), with the work in it.
+
 - **A cut needs a Repo Slot.** `jr2 up` and the invoke refuse `worktree()` under a Workspace with no Repo Slot, as they
   refuse a `push` (ADR-0051).
 - **v1 has no kit removal.** The docs give a `command` that runs `git worktree remove`.

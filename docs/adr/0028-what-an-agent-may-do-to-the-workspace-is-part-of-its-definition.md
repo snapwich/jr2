@@ -67,9 +67,10 @@ definition can state.
   because no Workspace code can spend the secret.
 - **A state before the reviewing state cuts the review Worktree on each round.** The sha under review moves between
   rounds, so each round cuts the one folder again at the new sha. The cut forces the folder to the commit and cleans it
-  with `-ffd`. Ignored files stay, because the reviewer runs the tests. The folder's path frames the reviewer's turn —
-  cwd and prompt — instead of the coder's Worktree. What is decided here is the seat: worktree mechanics stay in
-  `worktree()` and the Machine's states, never in Agent instructions.
+  with `-ffd`. Ignored files stay, because the reviewer runs the tests, except the context files and skills that pi
+  reads (ADR-0075). The folder's path frames the reviewer's turn — cwd and prompt — instead of the coder's Worktree.
+  What is decided here is the seat: worktree mechanics stay in `worktree()` and the Machine's states, never in Agent
+  instructions.
 
 ## Considered options
 

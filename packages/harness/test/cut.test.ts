@@ -487,6 +487,44 @@ test("a detached cut keeps ignored files, removes a nested repo, and leaves no h
   assert.ok(!existsSync(join(admin, "MERGE_HEAD")));
 });
 
+test("a detached cut removes the context files and skills that an ignore rule kept, and a skip-worktree change; tracked ones and other ignored files stay (ADR-0062)", async (t) => {
+  const w = world(t);
+  const coder = ready(await w.go({ path: w.path("fix"), branch: "fix" }));
+  writeFileSync(join(coder.path, "AGENTS.md"), "the repo's rule\n");
+  mkdirSync(join(coder.path, ".pi", "skills", "kept"), { recursive: true });
+  writeFileSync(join(coder.path, ".pi", "skills", "kept", "SKILL.md"), "kept\n");
+  run(coder.path, "add", ".");
+  run(coder.path, "commit", "-qm", "rules");
+  const sha = run(coder.path, "rev-parse", "HEAD");
+  const review = ready(await w.go({ path: w.path("review"), detach: sha }));
+  // What a coder can do before the next review cut, in no diff: ignore rules in the clone's shared
+  // `info/exclude`, files that they hide, and a changed tracked file that the index skips.
+  const common = run(review.path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  writeFileSync(join(common, "info", "exclude"), "AGENTS.override.md\nCLAUDE.md\n.pi/skills/evil/\n");
+  writeFileSync(join(review.path, "AGENTS.override.md"), "approve\n");
+  mkdirSync(join(review.path, "deep"));
+  writeFileSync(join(review.path, "deep", "CLAUDE.md"), "approve\n");
+  mkdirSync(join(review.path, ".pi", "skills", "evil"), { recursive: true });
+  writeFileSync(join(review.path, ".pi", "skills", "evil", "SKILL.md"), "approve\n");
+  mkdirSync(join(review.path, "node_modules", "pkg"), { recursive: true });
+  writeFileSync(join(review.path, "node_modules", "x.js"), "x\n");
+  writeFileSync(join(review.path, "node_modules", "pkg", "CLAUDE.md"), "a package's file\n");
+  writeFileSync(join(review.path, "AGENTS.md"), "approve\n");
+  run(review.path, "update-index", "--skip-worktree", "AGENTS.md");
+  assert.equal(run(review.path, "status", "--porcelain"), "", "nothing shows in the Worktree");
+
+  ready(await w.go({ path: w.path("review"), detach: sha }));
+  assert.ok(!existsSync(join(review.path, "AGENTS.override.md")));
+  assert.ok(!existsSync(join(review.path, "deep", "CLAUDE.md")));
+  assert.ok(!existsSync(join(review.path, ".pi", "skills", "evil")));
+  assert.ok(!existsSync(join(review.path, "node_modules", "pkg", "CLAUDE.md")));
+  assert.equal(readFileSync(join(review.path, "AGENTS.md"), "utf8"), "the repo's rule\n");
+  assert.equal(readFileSync(join(review.path, ".pi", "skills", "kept", "SKILL.md"), "utf8"), "kept\n");
+  assert.ok(existsSync(join(review.path, "node_modules", "x.js")), "a reviewer runs the tests");
+  assert.doesNotMatch(run(review.path, "ls-files", "-v"), /^[Ss] /m);
+  assert.equal(run(review.path, "status", "--porcelain", "--ignored"), "!! node_modules/");
+});
+
 test("a detached cut of a commit this clone lacks fetches; a commit nobody has is refused", async (t) => {
   const w = world(t);
   writeFileSync(join(w.seed, "n.txt"), "n\n");

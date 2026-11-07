@@ -97,7 +97,8 @@ refuses a bad name at the [Menu](../reference/glossary.md#menu) or at the door, 
 
 Invoke the Effect with `{ path, detach }` to hold one commit, with no branch. The example gives this Worktree to a
 reviewer. Each cut forces the folder to the commit, and cleans it. Ignored files stay, so that a reviewer can run the
-tests:
+tests. An ignored `AGENTS.md`, `CLAUDE.md` or skill goes, so that the reviewer's system prompt has only what the commit
+has:
 
 <<< @/examples/guides/cut-a-worktree/anthropic/fix-a-bug.ts#detaching
 
