@@ -67,7 +67,9 @@ inherits a Workspace whose processes are gone, with no way to know why.
     reviewer to approve. So the Agents never read that folder as it is in `HOME`:
     - `jr2 up` records, for each Sandbox Image that it builds, the folder `<home>/.pi/agent`, when each folder of that
       path is a real folder in the image and no link, and the path has no empty, `.` or `..` part (`HOME=/home//u`): the
-      Orchestrator mounts only such a path, and it refuses the whole image map for one that is not. `<home>` is the
+      Orchestrator mounts only such a path, and it refuses the whole image map for one that is not. An image in which
+      `~/.pi`, or another folder of the path, is a link has no user context, because a mount's `subPath` must be a real
+      folder. `jr2 up` prints, for each image, the folder or why there is none, and names the link. `<home>` is the
       image's `HOME`, or its `USER`'s home in the image's `/etc/passwd`. An image with no `USER` has none: its home is
       jr2's emptyDir (`/home/jr2`, [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). A
       multi-platform image is read for its first platform, from the registry. A registry ref that jr2 did not build has

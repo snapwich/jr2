@@ -41,6 +41,7 @@ import {
   firstTarEntry,
   foldersTo,
   imageHome,
+  userContextFolders,
   userContextPath,
 } from "../src/build.ts";
 import { imageContextDigest } from "@jr2/orchestrator/internal";
@@ -975,6 +976,31 @@ test("userContextPath: a home with an empty, . or .. part gives none, so the rec
   await writeFile(file, JSON.stringify(map));
   const refs = await readImageRefs(file);
   assert.equal(refs.sandboxUserContext?.["s"], dir);
+});
+
+test("userContextFolders: a link anywhere on the path, ~/.pi among them, gives none and names it (ADR-0062)", async () => {
+  const image = (types: Record<string, "dir" | "link" | "file">) => async (p: string) => types[p];
+  const dirs = { "/home": "dir", "/home/node": "dir", "/home/node/.pi": "dir", "/home/node/.pi/agent": "dir" } as const;
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image(dirs)), { dir: "/home/node/.pi/agent" });
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image({ ...dirs, "/home/node/.pi": "link" })), {
+    none: "/home/node/.pi is a link, and the mount needs a real folder",
+  });
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image({ ...dirs, "/home/node": "link" })), {
+    none: "/home/node is a link, and the mount needs a real folder",
+  });
+  assert.deepEqual(
+    await userContextFolders("/home/node/.pi/agent", image({ ...dirs, "/home/node/.pi/agent": "link" })),
+    {
+      none: "/home/node/.pi/agent is a link, and the mount needs a real folder",
+    },
+  );
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image({ ...dirs, "/home/node/.pi": "file" })), {
+    none: "/home/node/.pi is not a folder",
+  });
+  const { "/home/node/.pi/agent": _agent, ...noAgent } = dirs;
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image(noAgent)), {
+    none: "the image has no /home/node/.pi/agent",
+  });
 });
 
 test("foldersTo: each folder from / to the image user's context folder", () => {

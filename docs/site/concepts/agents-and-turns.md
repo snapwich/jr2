@@ -273,7 +273,9 @@ records the directory when the image has it, and the Sandbox pod mounts that dir
 path and read-only. The Agents read the image's files and cannot change them. A `~/.pi/agent` that an Agent makes gets
 no read. The directory must be a real directory in the image, and each directory above it too, not a link. Its path must
 have no empty, `.` or `..` part: a `HOME` such as `/home//u` gives no user context. `jr2 up` prints `user context:` for
-each Sandbox Image that it builds, with the directory or why there is none.
+each Sandbox Image that it builds, with the directory or why there is none. For example, when `~/.pi` is a link, the
+line is `user context: none (/home/node/.pi is a link, and the mount needs a real folder)`, and no Agent reads the user
+context.
 
 When jr2 cannot read the project context, the Turn runs without it, and the Harness's log tells why.
 
