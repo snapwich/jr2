@@ -6,24 +6,12 @@
 // carries the system prompt and the tools, which is how pi 1.x carries them. pi 1.x keeps no
 // conversation, so the adapter's engine part is jr2's transcript, under `engine/pi`.
 
-import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, toToolDeclaration, type SystemMessage } from "@earendil-works/pi-ai";
-import type {
-  CompactionSummaryMessage,
-  Engine,
-  EngineAdapter,
-  EngineEvent,
-  EngineOptions,
-  EngineTool,
-} from "./engine.ts";
+import type { Engine, EngineAdapter, EngineEvent, EngineMessage, EngineOptions, EngineTool } from "./engine.ts";
 import { unlimitedPayload } from "./provider.ts";
+import { isEngineMessage } from "./pi-compaction.ts";
 import { openEnginePart } from "./transcript.ts";
-
-declare module "@earendil-works/pi-agent-core" {
-  interface CustomAgentMessages {
-    compactionSummary: CompactionSummaryMessage;
-  }
-}
 
 /** The engine's name: its directory under the conversation (`engine/pi`). */
 const ENGINE = "pi";
@@ -42,9 +30,10 @@ export const piAdapter: EngineAdapter = {
  * context. pi compares the declarations in that message with the tools it runs before each request
  * (`declareToolChanges`); they are equal, so pi adds no system message of its own.
  *
- * The seam's messages are pi-ai's, with the Compaction summary merged into `CustomAgentMessages`
- * above, so the adapter passes them through without a copy; the compiler checks each direction
- * where they cross. A seam tool becomes a pi tool here (`agentTool`).
+ * The seam's messages are pi-ai's and pi's Compaction summary, which pi-coding-agent merges into
+ * `CustomAgentMessages`, so the adapter passes them through without a copy. pi-coding-agent merges
+ * other roles too, which jr2 never gives the loop; `isEngineMessage` (`pi-compaction.ts`) narrows
+ * where pi's messages reach the seam. A seam tool becomes a pi tool here (`agentTool`).
  */
 function piEngine(options: EngineOptions): Engine {
   const { hooks, models, maxRetries } = options;
@@ -71,7 +60,7 @@ function piEngine(options: EngineOptions): Engine {
         ...(onPayload ? { onPayload } : {}),
       });
     },
-    convertToLlm: (messages) => hooks.convertToLlm(messages),
+    convertToLlm: (messages) => hooks.convertToLlm(messages.filter(isEngineMessage)),
     // Before EVERY provider request, the first one included: pi has appended and emitted the
     // pending messages. A context returned is what pi uses for this request and the rest of the
     // run; a throw is a failed run.
@@ -141,9 +130,11 @@ function agentTool(tool: EngineTool): AgentTool {
 export function engineEvent(event: AgentEvent): EngineEvent | undefined {
   switch (event.type) {
     case "message_end":
-      return { type: "message_end", message: event.message };
+      return isEngineMessage(event.message) ? { type: "message_end", message: event.message } : undefined;
     case "turn_end":
-      return { type: "step_boundary", message: event.message, toolResults: event.toolResults };
+      return isEngineMessage(event.message)
+        ? { type: "step_boundary", message: event.message, toolResults: event.toolResults }
+        : undefined;
     case "tool_execution_start":
       return { type: "tool_start", toolCallId: event.toolCallId, name: event.toolName, args: event.args };
     case "tool_execution_end":

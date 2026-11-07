@@ -35,7 +35,7 @@ import type {
 import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
-import { compactionSummaryText } from "./compaction-summary.ts";
+import { summaryLlmMessage } from "./pi-compaction.ts";
 import { RunawayError, TURN_OVER, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
 import {
   ackNotices,
@@ -175,17 +175,13 @@ function usageOf(message: AssistantMessage): SubmissionUsage {
 
 /**
  * The messages the provider gets (the `convertToLlm` hook), from the loop's: the cut picks settled
- * (`settleCutPicks`), and a Compaction's summary as the user message pi 0.82.1 made of it. The
+ * (`settleCutPicks`), and a Compaction's summary as the user message pi makes of it. The
  * system message, user, assistant and tool result messages pass; nothing else is sent. It must not
  * throw (the seam's contract), and nothing in it does.
  */
 export function convertToLlm(messages: EngineMessage[]): Message[] {
   return settleCutPicks(messages).flatMap((m): Message[] => {
-    if (m.role === "compactionSummary") {
-      return [
-        { role: "user", content: [{ type: "text", text: compactionSummaryText(m.summary) }], timestamp: m.timestamp },
-      ];
-    }
+    if (m.role === "compactionSummary") return summaryLlmMessage(m);
     if (m.role === "system" || m.role === "user" || m.role === "assistant" || m.role === "toolResult") return [m];
     return [];
   });

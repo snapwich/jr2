@@ -297,7 +297,7 @@ _Avoid_: turn (a Turn is the Agent's whole answer to its Frame), round, iteratio
 
 **Compaction**:
 The cut that the Harness makes in a conversation's model context during a Turn: a summary plus a retained tail replaces
-the earlier context. jr2 alone decides when it occurs, and it changes what the model sees, never what jr2
+the earlier context. The Harness decides when it occurs, by pi's rule, and it changes what the model sees, never what jr2
 recorded.
 _Avoid_: summarization (one part of a Compaction), truncation (the failure that Compaction prevents), pruning
 

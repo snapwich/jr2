@@ -80,27 +80,28 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
     neither is the answer of a pick that the Harness may have delivered (ADR-0002), because an error reads as a failed
     pick, and a cut pick may have run.
 
-  The seam's tools, events and hooks are jr2's types. The seam's messages are pi-ai's provider messages, plus jr2's
-  Compaction summary. pi-ai is the provider library, not the engine (see below), so these shapes are not the engine's.
-  An adapter (`EngineAdapter`) opens the conversation's engine part and makes its engine. `pi-engine.ts` is the one
-  adapter, and the one module that imports pi-agent-core. It holds pi's `Agent` loop, its hooks and events, and the
-  leading system message that carries the system prompt and the tool declarations (pi 1.x's way).
+  The seam's tools, events and hooks are jr2's types. The seam's messages are pi-ai's provider messages, plus a
+  Compaction summary in pi's shape. pi-ai is the provider library, not the engine (see below), so these shapes are not
+  the engine's. An adapter (`EngineAdapter`) opens the conversation's engine part and makes its engine. `pi-engine.ts`
+  is the one adapter, and the one module that runs pi-agent-core. It holds pi's `Agent` loop, its hooks and events, and
+  the leading system message that carries the system prompt and the tool declarations (pi 1.x's way).
 
   The engine part (ADR-0031) is engine-named: the adapter chooses its directory (`engine/pi`). Its format is jr2's
-  transcript (`transcript.ts`), not pi's, because pi 1.x keeps no conversation. The Turn and Compaction (ADR-0036) read
-  and write it. So the adapter does not own the format. It owns the name. The name is the guard: only the engine that
-  wrote a part is known to read it correctly, because that engine's loop decides what goes into it. So a Harness on
-  another engine opens another directory, does not read pi's part, and continues from the record's history.
+  transcript (`transcript.ts`), not pi's, because pi-agent-core keeps no conversation. The Turn and Compaction
+  (ADR-0036) read and write it. So the adapter does not own the format. It owns the name. The name is the guard: only
+  the engine that wrote a part is known to read it correctly, because that engine's loop decides what goes into it. So a
+  Harness on another engine opens another directory, does not read pi's part, and continues from the record's history.
 
   pi-ai is the provider library that every engine sends its requests through, so the Harness uses it directly:
   - the model catalog and the custom provider (`provider.ts`);
   - the message and tool-declaration types;
   - TypeBox `Type` for the Working tools' schemas (pi-ai coerces the arguments of a TypeBox schema differently from
     those of a plain JSON Schema);
-  - `uuidv7`, for two ids that go to a provider as a prompt-cache key (pi-ai's `sessionId`): the engine part's id, and
-    the id of each Compaction summary request;
-  - `contentText`: the summary request joins a message's text by pi-ai's rule, as pi 0.82.1 did;
-  - `retryAssistantCall`: the summary call retries by the same rule as each provider request.
+  - `uuidv7`, for the engine part's id, which goes to a provider as a prompt-cache key (pi-ai's `sessionId`).
+
+  The Harness also imports pi's Compaction from `@earendil-works/pi-coding-agent` (ADR-0036), at the exact pin of its
+  siblings: pi-coding-agent pins pi-agent-core and pi-ai, so the four pins move together. `pi-compaction.ts` is the one
+  module that imports it.
 
   A second engine is a second adapter. One module chooses the Harness's adapter (`engine-choice.ts`), and the Turn names
   no adapter: a test rig can pass another (`TurnDeps.engineAdapter`). So a second engine changes `engine-choice.ts`, not

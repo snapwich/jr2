@@ -1,5 +1,3 @@
-// Ported in part from @earendil-works/pi-agent-core 0.82.1 (MIT, see PI-LICENSE): the context rule and the branch walk of dist/harness/session/session.js and memory-storage.js
-//
 // The transcript (ADR-0031, ADR-0036): jr2's own store of what the model read, which an engine
 // adapter opens as its engine part, under a directory named for the engine (`engine/<name>`). Its
 // format is jr2's, not the engine's: the Turn and Compaction (`compaction.ts`) read and write it.
@@ -16,8 +14,10 @@
 //   {"type":"submission"}
 //   {"type":"compaction","summary":"…","firstKept":<entry index>,"tokensBefore":<n>,"details":{…},"usage":{…},"timestamp":<ms>}
 //
-// Entry indexes count from 0, after the header line. Each line is appended synchronously, before
-// the loop goes on, as the record is: the transcript holds a message before the printer prints it.
+// Entry indexes count from 0, after the header line. What the model reads of it is pi's context
+// rule (`pi-compaction.ts`), over the transcript shown to pi as a linear session. Each line is
+// appended synchronously, before the loop goes on, as the record is: the transcript holds a message
+// before the printer prints it.
 // A Harness that restarts reopens it, and the model reads every message, tool result and Compaction
 // it read before. When the part is missing or does not open — another engine wrote it, another
 // version, a damaged line — the conversation continues from the record's history messages instead:
@@ -28,7 +28,8 @@
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { uuidv7, type Api, type AssistantMessage, type Message, type Model, type Usage } from "@earendil-works/pi-ai";
-import type { CompactionSummaryMessage, EngineMessage } from "./engine.ts";
+import type { EngineMessage } from "./engine.ts";
+import { contextOf } from "./pi-compaction.ts";
 import { cutTornTail, type EngineSeat } from "./record.ts";
 import type { HistoryMessage } from "./wire.ts";
 
@@ -43,8 +44,8 @@ export type CompactionDetails = { readFiles: string[]; modifiedFiles: string[] }
 /** One entry of the transcript. */
 export type TranscriptEntry =
   | { type: "message"; message: Message }
-  /** A Submission starts here. The cut reads it as pi 0.82.1 read the tool-set entry it wrote at
-   * the same place (`compaction-summary.ts`, `findCutPoint`). */
+  /** A Submission starts here. pi reads it as a state entry with no context (`pi-compaction.ts`):
+   * its cut moves back over it, so a cut at a Submission's prompt is a split turn. */
   | { type: "submission" }
   | {
       type: "compaction";
@@ -114,70 +115,10 @@ export class EnginePart {
     this.entries.push(entry);
   }
 
-  /** The entries the next cut works on: back from the newest entry to the first entry the oldest
-   * reached Compaction keeps. `start` is the index of the first one. */
-  branch(): { start: number; entries: TranscriptEntry[] } {
-    const start = branchStart(this.entries);
-    return { start, entries: this.entries.slice(start) };
-  }
-
   /** The messages the model reads, without the system message. */
   context(): EngineMessage[] {
-    const { start, entries } = this.branch();
-    return contextOf(entries, start);
+    return contextOf(this.entries);
   }
-}
-
-/** pi 0.82.1's walk to the root or a Compaction (`getPathToRootOrCompaction`) over a linear log:
- * at each Compaction the stop moves to its `firstKept`, and the walk stops there. */
-export function branchStart(entries: readonly TranscriptEntry[]): number {
-  let stop: number | undefined;
-  let i = entries.length - 1;
-  for (; i > 0; i--) {
-    if (stop !== undefined && i === stop) break;
-    const entry = entries[i]!;
-    if (entry.type === "compaction") stop = entry.firstKept;
-  }
-  return Math.max(i, 0);
-}
-
-/** A Compaction's summary as a context message. */
-export function summaryMessage(entry: Extract<TranscriptEntry, { type: "compaction" }>): CompactionSummaryMessage {
-  return {
-    role: "compactionSummary",
-    summary: entry.summary,
-    tokensBefore: entry.tokensBefore,
-    timestamp: entry.timestamp,
-  };
-}
-
-/**
- * pi 0.82.1's context over a branch (`buildSessionContext`): every message when no Compaction is
- * in it; else the newest Compaction's summary, then the entries it keeps before it, then every entry
- * after it. `start` is the index of the branch's first entry in the whole transcript.
- */
-export function contextOf(entries: readonly TranscriptEntry[], start: number): EngineMessage[] {
-  let newest = -1;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i]!.type === "compaction") {
-      newest = i;
-      break;
-    }
-  }
-  const messagesOf = (entry: TranscriptEntry): EngineMessage[] => {
-    if (entry.type === "message") return [entry.message];
-    if (entry.type === "compaction") return [summaryMessage(entry)];
-    return [];
-  };
-  if (newest < 0) return entries.flatMap(messagesOf);
-  const cut = entries[newest] as Extract<TranscriptEntry, { type: "compaction" }>;
-  // A first kept entry before the branch is not on it, and pi then kept nothing before the cut.
-  const kept = cut.firstKept >= start ? cut.firstKept - start : newest;
-  return [
-    summaryMessage(cut),
-    ...entries.slice(kept, newest).flatMap(messagesOf),
-    ...entries.slice(newest + 1).flatMap(messagesOf),
-  ];
 }
 
 /**

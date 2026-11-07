@@ -1,6 +1,6 @@
 // The engine part (ADR-0031, `transcript.ts`): the transcript jr2 writes for an engine — one append-only,
-// versioned file that a restart reopens or plainly does not open, and the context and the branch
-// that Compaction reads from it (ADR-0036).
+// versioned file that a restart reopens or plainly does not open, and the context that the model
+// reads of it, by pi's rule (ADR-0036).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -193,19 +193,16 @@ test("context: every message with no cut; the newest cut's summary, its kept tai
     "assistant: a1",
     "assistant: a2",
   ]);
-  // A second cut that keeps part of what the first one kept. The kept range runs over the first cut's
-  // entry, which reads as its summary there: pi 0.82.1's rule (`buildSessionContext`), kept.
+  // A second cut that keeps part of what the first one kept. The kept range runs over the first
+  // cut's entry, which gives no message there: only the newest cut's summary is read (pi's rule,
+  // `buildSessionProjection`). The second summary covers the first: pi gave it the first summary.
   const twice = [...once, msg(said("a3")), cut("second", 4), msg(said("a4"))];
   const part = new EnginePart("t", twice, undefined, undefined);
   assert.deepEqual(texts(part), [
     "summary: second",
     "assistant: a1",
-    "summary: first",
     "assistant: a2",
     "assistant: a3",
     "assistant: a4",
   ]);
-  // The branch the next cut works on reaches back to the FIRST cut's kept tail (index 3): the
-  // second cut's walk passes the first cut, whose `firstKept` moves the stop back.
-  assert.equal(part.branch().start, 3);
 });

@@ -298,10 +298,10 @@ part of the conversation with a summary. The recent part stays. The Turn continu
 The summary comes from the model and the thinking level of the Turn. A Compaction changes only what the model sees. The
 history of the conversation keeps all that was said.
 
-You do not set when a Compaction occurs. jr2 calculates it from the context window and the output limit of the model. A
-model of a catalog provider, such as `anthropic`, has a known context window. A custom provider gets it from
-[`harness.provider.contextWindow`](../reference/config.md#harness-provider-contextwindow) or from the `contextWindow` of
-the model in `models`. A model with no context window gets no Compaction.
+You do not set when a Compaction occurs. The Harness calculates it by pi's rule, from the context window and the output
+limit of the model. A model of a catalog provider, such as `anthropic`, has a known context window. A custom provider
+gets it from [`harness.provider.contextWindow`](../reference/config.md#harness-provider-contextwindow) or from the
+`contextWindow` of the model in `models`. A model with no context window gets no Compaction.
 
 ## Rules
 
