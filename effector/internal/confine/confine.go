@@ -511,7 +511,8 @@ func HarnessRulesMain(args []string, stdout, stderr io.Writer) int {
 	var deny, read []string
 	for i := 0; i < len(args); i++ {
 		if args[i] != "--deny" && args[i] != "--read" {
-			_, _ = fmt.Fprintf(stderr, "harness-rules: %q is no flag (usage: harness-rules --deny <path>... [--read <path>]...)\n", args[i])
+			_, _ = fmt.Fprintf(stderr,
+				"harness-rules: %q is no flag (usage: harness-rules --deny <path>... [--read <path>]...)\n", args[i])
 			return 2
 		}
 		if i+1 >= len(args) || !strings.HasPrefix(args[i+1], "/") {
