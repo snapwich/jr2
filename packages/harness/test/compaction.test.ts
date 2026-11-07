@@ -280,3 +280,18 @@ test("no second cut on the reading that crossed: pi's estimate does not trust a 
   assert.ok(await compactIfOver(seatFor(part, models, 0)));
   assert.equal(compactions(part).length, 2);
 });
+
+test("a second cut when the text itself is still over: pi's estimate counts the text, and the text crosses", async () => {
+  // The other side of the case above. After a cut and a request that ends `error`, pi's projected
+  // estimate counts the text of the context (chars/4). When that text is still over the window less
+  // the reserve, the context really is over, and the next request cuts again by pi's rule. A pi bump
+  // that changes this rule fails here.
+  const { models, seen } = scripted([{}, {}]);
+  const part = new EnginePart("t", full(), undefined, undefined);
+  assert.ok(await compactIfOver(seatFor(part, models, 0)));
+  part.appendMessage(messageOf(user("x".repeat(800_000))));
+  part.appendMessage(messageOf(assistant("", 0, "error")));
+  assert.ok(await compactIfOver(seatFor(part, models, 0)), "the text estimate crossed, so pi cuts again");
+  assert.equal(seen.length, 2, "one summary request for each crossing");
+  assert.equal(compactions(part).length, 2);
+});

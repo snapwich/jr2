@@ -26,8 +26,9 @@ SDK-verified model of the five wire endpoints. And the base flue builds on is pu
 (MIT, independent of flue's authors) — from which flue imports only the low-level `Agent` loop and reimplements the
 rest. jr2 takes the same slim core: pi-agent-core gives the `Agent` loop, its tool hooks (`beforeToolCall`,
 `finishTurn`, `prepareRequest`), the abort, the steering queue and an in-process event stream. The tool-restriction gap
-does not exist for a caller that owns tool assembly. jr2 owns the rest: the engine part on disk, Compaction
-([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md)) and the six Working tools, whose text the model reads.
+does not exist for a caller that owns tool assembly. jr2 owns the rest: the engine part on disk and the six Working
+tools, whose text the model reads. Compaction is pi-coding-agent's, over jr2's engine part
+([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md)).
 
 ## Decision
 
@@ -241,7 +242,8 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
 - **The pinning risk moves; it does not vanish.** pi releases often and a minor can break. The pin is exact, a bump is a
   deliberate kit change gated by the conformance suite, and the breaking surface is now the `Agent` loop's hooks and
   pi-ai's provider adapters — not a code generator, a CLI build, and a process-global registry. What pi removed jr2 now
-  owns, so a bump cannot move it: the Working tools keep their text, and Compaction its algorithm.
+  owns, so a bump cannot move it: the Working tools keep their text. Compaction is pi-coding-agent's, so a bump can move
+  its cut, its summary text and its rule; the conformance suite and `@model` are its canaries.
 - **Migration is phased behind the wire.** Because both ends speak the same protocol, the image swap and the
   Orchestrator client swap are independent commits, each leaving every tier green; an old Orchestrator drives the new
   image and vice versa. `@flue/*` leaves the repo when the last pin (the retired contract tier) is deleted.

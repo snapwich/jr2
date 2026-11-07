@@ -2125,9 +2125,11 @@ test("a SECOND cut in one Submission keeps the first cut's retained tail (ADR-00
 test("a cut followed by a request that FAILS does not cut again on the stale reading (ADR-0036)", async () => {
   // pi's estimate reads the last VALID assistant usage, and a cut deliberately RETAINS recent
   // assistant messages — so the reading that triggered a cut survives it. A request that ends
-  // `error` contributes no usage of its own, leaving that stale number the newest one: without the
-  // latch the next Submission on this conversation cuts AGAIN, spending a summarizer round-trip
-  // and a second summary on a context nothing has grown since.
+  // `error` contributes no usage of its own, leaving that stale number the newest one. pi's projected
+  // estimate (estimateProjectedContextTokens) does not trust a usage from before the newest
+  // compaction entry, and estimates the text instead; if it trusted the stale number, the next
+  // Submission on this conversation would cut AGAIN, spending a summarizer round-trip and a second
+  // summary on a context nothing has grown since.
   provider.reset([
     { toolCall: { id: "call_1", name: "bash", args: '{"command":"echo MARK_ONE"}' } },
     {
@@ -2150,7 +2152,7 @@ test("a cut followed by a request that FAILS does not cut again on the stale rea
   assert.equal((await settled(iid, next, AGENT, compactApp)).outcome, "completed");
   assert.equal(provider.summaries.length, 1, "the stale reading did not buy a second cut");
   // The content assertion is the one that bites: it fails on loss, not on a summarizer count, so it
-  // survives a refactor that merely moves the latch.
+  // survives a change to where the stale reading is refused (jr2's adapter or pi's estimate).
   assert.ok(
     JSON.stringify(provider.calls.at(-1)!.messages).includes("MARK_TWO"),
     "the first cut's retained tail is still in the context",

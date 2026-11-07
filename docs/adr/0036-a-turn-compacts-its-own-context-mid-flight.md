@@ -147,7 +147,9 @@ by a summary plus a retained tail.
 - A cut RETAINS recent assistant messages, and so the usage that triggered it. When the request after a cut ends `error`
   or `aborted` it contributes no usage of its own, and an estimate from that old usage would cut again on a context
   nothing has grown. pi's projected estimate does not trust a usage from before the newest compaction entry: it then
-  estimates the text of the context, which the cut made small.
+  estimates the text of the context, which the cut made small. When that text estimate is still over
+  `contextWindow − reserve` (for example, the retained tail holds large tool results), the next request cuts again by
+  pi's rule: the context is then really over.
 - **The pi surface is the `prepareRequest` hook, behind the engine seam (`pi-engine.ts`), pi-ai's message types, and
   pi-coding-agent's compaction, session and message files (`pi-compaction.ts`).** The hook's rule that its context
   "replaces the runtime values for this and later requests" is documented in pi's types, not promised as a caller
