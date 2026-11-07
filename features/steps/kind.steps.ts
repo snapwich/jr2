@@ -3042,6 +3042,9 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
     // Each request's whole body: a tool's RESULT is visible only here once the Sandbox is reaped.
     ["provider-bodies.jsonl", calls.map((c) => c.raw.replace(/\n/g, " ")).join("\n") + "\n"],
     ["jr2-status.json", status],
+    // The run's feed from its start, when the scenario kept it (`recordFeed`): each Effect's output
+    // (ADR-0067), such as a push's outcome, reason and stage, which no pod keeps after the reap.
+    ["run-feed.txt", world.feed || "<no feed: this scenario kept none>\n"],
     [
       "harness-history.json",
       iid ? probe(() => harnessHistory(world, iid)) : "<no runId to derive a conversation from>\n",
@@ -4040,6 +4043,8 @@ async function startWt(world: E2EWorld, wf: string, input: unknown): Promise<voi
   const r = await world.runCli(["run", wf, "--detach", "--input", JSON.stringify(input)]);
   assert.equal(r.code, 0, `jr2 run ${wf}: ${r.stderr}`);
   world.runId = world.resultJson<{ runId: string }>().runId;
+  // A push's outcome is on the feed alone once the Sandbox is reaped: a failure dump writes it.
+  world.recordFeed(world.runId);
 }
 
 const WT_DRIVERS: Record<string, (w: E2EWorld, m: string) => Promise<void>> = {
