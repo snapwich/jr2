@@ -3099,6 +3099,31 @@ test("M16: a number in a string is refused for a Menu pick, and runs as a number
   assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 5 }]);
 });
 
+test("M17: a Menu pick whose argument text does not parse is refused in pi's words, with that text, not as missing fields (ADR-0027)", async () => {
+  // pi-ai makes such text `{}` with `argumentsError`. jr2's strict check sees only the `{}`, so it
+  // lets pi's validation say the parse error. Told that "count" was missing, the model would fix
+  // the wrong thing.
+  const args = '{"count":3,"label":';
+  provider.reset([
+    { text: "", toolCall: { id: "call_p", name: "mcp__jr2__tally", args } },
+    { text: "", toolCall: { id: "call_q", name: "mcp__jr2__tally", args: '{"count":3,"label":"three"}' } },
+  ]);
+  const input = {
+    type: "object",
+    properties: { count: { type: "integer" }, label: { type: "string" } },
+    required: ["count", "label"],
+  };
+  const event = { name: "tally", description: "Deliver the tally.", input, semantics: "ack" as const };
+  sandbox.reset({ ...surfaceAllowing([], []), menu: [event], allowed: ["tally"] });
+  const iid = "conf/strict-pick-malformed";
+  assert.equal((await settled(iid, await admit(iid, "Tally it."))).outcome, "aborted");
+  const text = toolResultText(provider.calls[1], "call_p");
+  assert.ok(text.startsWith('Invalid arguments for tool "mcp__jr2__tally": '), text);
+  assert.ok(text.endsWith(`\n\nReceived arguments:\n${args}`), text);
+  assert.doesNotMatch(text, /missing/);
+  assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 3, label: "three" }]);
+});
+
 test("M11: another model's thinking is not sent after a model Dial change (pi-ai 1.4)", async () => {
   provider.reset([{ reasoning: "Model x thought this.", text: "One." }, { text: "Two." }]);
   sandbox.reset(surfaceWith("review_verdict"));

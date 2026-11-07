@@ -105,15 +105,17 @@ jr2's engine part ([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md
     Before pi-ai's conversion, jr2 checks the arguments against the schema with pi-schema and no conversion
     (`strict-arguments.ts`, each Menu tool's and MCP tool's `prepareArguments`). A refused call gets pi-ai's own text
     (`Validation failed for tool …`, each path and why, then the arguments it received) as its tool result, so the model
-    can correct the call. So the Delivery of a pick (a Door's, a Chart's) and the arguments that an MCP server gets are
-    what the model wrote, and the printed conversation ([ADR-0023](0023-the-harness-prints-the-conversation.md)) shows
-    the same values. Three reasons: a converted value is a silent change of data (`null` arrives as the word `"null"`);
-    the Chart's refuse-then-fix loop is what the `chart-refusal` claim measures
-    ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)), and a conversion would let a Chart pass that the model
-    never fixed; and the model reads a refusal where pi 1.4 refused, so what it reads stays as it was before 1.5. pi 1.4
-    also converted `"42"` for a number and `null` for a string to `""`; jr2 refuses both now. Conformance tests (M15,
-    M16, and the MCP suite's) hold the refusal for a pick and an MCP tool call, and M13 holds the conversion for a
-    Working tool, so a bump that changes either fails them;
+    can correct the call. Argument text that does not parse is pi's to refuse: pi-ai makes it `{}` and keeps the parse
+    error beside it, which the check does not see. So empty arguments that pi refuses too go on to pi, which says the
+    parse error and the text first (M17), and the model is not told that each field is missing. So the Delivery of a
+    pick (a Door's, a Chart's) and the arguments that an MCP server gets are what the model wrote, and the printed
+    conversation ([ADR-0023](0023-the-harness-prints-the-conversation.md)) shows the same values. Three reasons: a
+    converted value is a silent change of data (`null` arrives as the word `"null"`); the Chart's refuse-then-fix loop
+    is what the `chart-refusal` claim measures ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)), and a
+    conversion would let a Chart pass that the model never fixed; and the model reads a refusal where pi 1.4 refused, so
+    what it reads stays as it was before 1.5. pi 1.4 also converted `"42"` for a number and `null` for a string to `""`;
+    jr2 refuses both now. Conformance tests (M15, M16, M17, and the MCP suite's) hold the refusal for a pick and an MCP
+    tool call, and M13 holds the conversion for a Working tool, so a bump that changes either fails them;
   - `uuidv7`, for the engine part's id, which goes to a provider as a prompt-cache key (pi-ai's `sessionId`).
 
   The Working tools' schemas are TypeBox, as upstream's tool definitions are. `Type` comes from `typebox`, a direct

@@ -38,7 +38,6 @@ test("each value that pi would convert is refused, in pi-ai's own text", () => {
     [{ count: 1, tags: "one" }, "  - tags: expected array, got string"],
     [{ count: 1, ratio: "0.5" }, "  - ratio: expected number, got string"],
     [{ count: 1, "a/b": { "c~d": "true" } }, "  - a/b.c~d: expected boolean, got string"],
-    [{}, "  - count: missing"],
   ] as const) {
     assert.throws(
       () => check(args),
@@ -50,6 +49,38 @@ test("each value that pi would convert is refused, in pi-ai's own text", () => {
       JSON.stringify(args),
     );
   }
+});
+
+test("empty arguments that pi refuses too go on to pi, which says the parse error of malformed text first", () => {
+  // pi-ai makes argument text that does not parse into `{}` with `argumentsError`, and
+  // `prepareArguments` sees only the `{}`. pi's validation says that error, with the text.
+  const check = strictArguments("mcp__jr2__t", schema);
+  const empty = {};
+  assert.equal(check(empty), empty);
+  const tool = { name: "mcp__jr2__t", description: "", parameters: schema } as never;
+  const call = (extra: object) => ({ type: "toolCall", id: "1", name: "mcp__jr2__t", arguments: empty, ...extra });
+  assert.throws(
+    () =>
+      validateToolArguments(
+        tool,
+        call({ argumentsError: 'Unexpected end\n\nReceived arguments:\n{"count":' }) as never,
+      ),
+    (err: Error) =>
+      err.message === 'Invalid arguments for tool "mcp__jr2__t": Unexpected end\n\nReceived arguments:\n{"count":',
+  );
+  // Empty text, which parses to `{}` with no error: pi names the missing field.
+  assert.throws(
+    () => validateToolArguments(tool, call({}) as never),
+    (err: Error) => err.message.startsWith('Validation failed for tool "mcp__jr2__t":\n  - count: missing\n'),
+  );
+});
+
+test("empty arguments that fit pass, and a value that is no plain {} is checked", () => {
+  const none = strictArguments("t", { type: "object", properties: { a: { type: "string" } } });
+  const empty = {};
+  assert.equal(none(empty), empty);
+  // An object that is not a plain `{}` is checked as any other value.
+  assert.throws(() => strictArguments("t", schema)([]), /Validation failed/);
 });
 
 test("the refusal matches pi-ai's for a value that pi refuses too", () => {

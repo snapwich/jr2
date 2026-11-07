@@ -13,6 +13,13 @@
 // value that passes here passes pi's validation unchanged: pi-schema converts only a value that
 // does not already fit the schema. The refusal is in pi's own words, so the model reads one shape
 // of refusal for every tool.
+//
+// One exception: empty arguments (`{}`) that pi's validation refuses too go on to pi as they are.
+// pi-ai makes argument text that does not parse into `{}`, with the parse error and the text beside
+// it (`argumentsError`), and `prepareArguments` gets the `{}` alone. pi's validation says that
+// error first, with the text the model wrote. A refusal here would tell the model that each field
+// is missing, which is not its fault. pi converts nothing in `{}` that it then refuses, so no
+// value changes.
 
 import { compile, type Validator } from "@earendil-works/pi-schema";
 import { formats } from "@earendil-works/pi-schema/formats";
@@ -27,16 +34,34 @@ function shownPath(pointer: string): string {
     .join(".");
 }
 
+/** A plain object with no key: what pi-ai gives for argument text that does not parse. */
+function isEmptyObject(args: unknown): boolean {
+  return (
+    typeof args === "object" &&
+    args !== null &&
+    !Array.isArray(args) &&
+    Object.getPrototypeOf(args) === Object.prototype &&
+    Object.keys(args).length === 0
+  );
+}
+
 /**
  * A `prepareArguments` for the tool `name` with the JSON Schema `schema`: the arguments come back
  * unchanged when they fit the schema as they are, and it throws pi-ai's validation text when they
- * do not. The schema is compiled at the first call, with pi-ai's options except the coercion.
+ * do not. Empty arguments that pi's validation refuses too come back unchanged, so pi says why
+ * (the parse error of malformed argument text, or the missing fields). The schema is compiled at the first call, with pi-ai's options except the coercion.
  */
 export function strictArguments(name: string, schema: unknown): (args: unknown) => never {
   let validator: Validator | undefined;
+  let coercing: Validator | undefined;
   return ((args: unknown) => {
     validator ??= compile(schema as object, { formats, unresolvedRefs: "reject" });
     if (validator.check(args)) return args;
+    if (isEmptyObject(args)) {
+      // pi-ai's own options: what pi's validation does with `{}`.
+      coercing ??= compile(schema as object, { formats, coerce: true, unresolvedRefs: "reject" });
+      if (!coercing.parse({}).ok) return args;
+    }
     const errors = validator
       .errors(args)
       .map((error) => `  - ${shownPath(error.path)}: ${error.message}`)
