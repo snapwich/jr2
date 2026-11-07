@@ -343,7 +343,9 @@ inherits a Workspace whose processes are gone, with no way to know why.
 - ADR-0060's CPU fact and ADR-0061's memory-limit notice are the Briefing's first users.
 - The project context changes what the model reads, so the `@model` tier must pass on it
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). A pi bump can change
-  which files load and their frame: conformance sees the frame.
+  which files load and their frame. jr2 writes the frame itself (`projectContextText`), as a copy of pi's, because the
+  package root does not export pi's: a unit test compares the copy with the sections that pi's own system prompt builds
+  at the pin, so a bump that moves the frame fails it.
 - Each conversation in a Worktree starts one node child per folder, about half a second before its first request.
 - Each admission into a Workspace costs one more request to its Harness, `GET /memory-kills`. The first read from a
   Harness that fails is said in one line of the Orchestrator's log.

@@ -341,3 +341,35 @@ test("projectContexts: each folder loads once, so a later change of AGENTS.md do
   );
   assert.match(lines[0]!, /\(ADR-0062\)$/);
 });
+
+test("projectContextText is pi's own frame at the pin: the project_context and skills sections that pi's system prompt builds", async () => {
+  // jr2 copies pi's frame (`renderProjectContext` and the section tags in `system-prompt.js`,
+  // which the package root does not export). This compares the copy with pi's own sections, so a
+  // pin bump that moves the frame fails here (ADR-0062).
+  const { formatSkillsForPrompt, loadSkills } = await import("@earendil-works/pi-coding-agent");
+  const root = import.meta.resolve("@earendil-works/pi-coding-agent");
+  const pi = (await import(new URL("./core/system-prompt.js", root).href)) as {
+    buildSystemPromptSections: (input: unknown) => Record<string, string>;
+  };
+  const { dir } = worktree();
+  skill(dir, "release-notes", "Write the release notes.");
+  skill(dir, "deploy", 'Ship <it> & "say" so.');
+  const { skills } = loadSkills({
+    cwd: dir,
+    agentDir: join(dir, "no-agent-dir"),
+    skillPaths: [],
+    includeDefaults: true,
+  });
+  const files = [
+    { path: "/home/u/.pi/agent/AGENTS.md", content: "The image's rules." },
+    { path: "/work/app/fix/AGENTS.md", content: "# Rules\n\nUse tabs.\n" },
+  ];
+  const sections = pi.buildSystemPromptSections({ cwd: dir, contextFiles: files, skills, selectedTools: ["read"] });
+  assert.equal(
+    projectContextText({ files, skills: formatSkillsForPrompt(skills, "read") }),
+    `${sections.project_context}\n\n${sections.skills}`,
+  );
+  const none = pi.buildSystemPromptSections({ cwd: dir, contextFiles: files, skills: [], selectedTools: ["read"] });
+  assert.equal(none.skills, undefined);
+  assert.equal(projectContextText({ files, skills: "" }), none.project_context);
+});
