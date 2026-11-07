@@ -38,6 +38,12 @@ export const CONVERSATIONS_VOLUME = "conversations";
  * the Harness confines can make a file there, so none can listen in the Harness's place. */
 export const SHELL_DIR = "/run/jr2/shell";
 export const SHELL_VOLUME = "shell";
+/** The Harness's own folder for the whole output of a long `bash` call (ADR-0076): a folder under
+ * `/run/jr2`, an emptyDir mounted into the Harness container alone. The Harness's TMPDIR is this
+ * folder. Its confined processes read a file there, by the path that the model is given, and make,
+ * change, move and remove nothing there. */
+export const OUTPUT_DIR = "/run/jr2/output";
+export const OUTPUT_VOLUME = "output";
 
 /** The harness config ConfigMap the stock Harness boots from (ADR-0018): what this instance can
  * REACH — the custom model provider minus its key, and the catalog providers' gateways (ADR-0059). No Agents ride it: a Machine carries its own

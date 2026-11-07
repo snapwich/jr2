@@ -2,17 +2,27 @@
 // makes over upstream's tools. Every file op and every shell runs in the domain, through the real
 // spawner and the real confiner, so a path under the denied folder, or a link to one, fails as an
 // unreadable file fails, and the shell has the domain's env alone. A signal death is never exit 0;
-// the memory guard's verdict is the call's answer; the bash tool's whole output is a file in TMPDIR
-// that `read` reads, and a command that replaces that file gets no read of what the link names.
+// the memory guard's verdict is the call's answer; the bash tool's whole output is a file in the
+// Harness's output folder that `read` reads, and that no command can replace.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EngineTool } from "../src/engine.ts";
 import type { GuardOwner, GuardWatch } from "../src/memory-guard.ts";
 import { workingToolsFor } from "../src/working-tools.ts";
+import { useOutputDir } from "../src/children.ts";
 import { deniedDir, testChildren } from "./support/children.ts";
 
 // The pod's secret folders in miniature: the control Stand-in's, the held Stand-ins', the
@@ -27,12 +37,18 @@ writeFileSync(join(controlDir, "standin"), CONTROL);
 writeFileSync(join(standInsDir, "ANTHROPIC_API_KEY"), "jr2-held-ANTHROPIC_API_KEY.model-secret");
 writeFileSync(join(standInsDir, "JIRA_TOKEN"), "jr2-held-JIRA_TOKEN.granted-secret");
 writeFileSync(join(conversationsDir, "record.json"), "a conversation");
-const cwd = mkdtempSync(join(tmpdir(), "jr2-tool-ops-"));
-// The domain's TMPDIR is this process's own, as the start check makes it in a pod
-// (`harnessTmpFault`): pi's bash writes its whole output there.
+// The run's own TMPDIR, where the domain writes. This process's TMPDIR becomes the output folder
+// below, so each test makes its folders here.
+const base = realpathSync(tmpdir());
+const cwd = mkdtempSync(join(base, "jr2-tool-ops-"));
+// The Harness's output folder, in the denied folder, which the domain reads alone: this process's
+// TMPDIR, as `useOutputDir` makes it in a pod. pi's bash writes its whole output there.
+const output = join(secrets, "output");
+mkdirSync(output);
 const children = testChildren({
   work: cwd,
-  tmp: realpathSync(tmpdir()),
+  tmp: base,
+  read: [output],
   control: CONTROL,
   standIns: new Map([
     ["ANTHROPIC_API_KEY", "jr2-held-ANTHROPIC_API_KEY.model-secret"],
@@ -41,6 +57,7 @@ const children = testChildren({
   granted: ["JIRA_TOKEN"],
   deny: [secrets],
 });
+useOutputDir(output);
 const definition = { instructions: "test", model: "anthropic/claude-x" };
 
 function toolsIn(
@@ -69,7 +86,7 @@ const bash = (command: string, timeout?: number) => ({ command, ...(timeout === 
 // ─── the file tools ──────────────────────────────────────────────────────────
 
 test("a relative path resolves against the tools' cwd, the Frame's (ADR-0057), and write makes its folders", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jr2-tool-ops-"));
+  const dir = mkdtempSync(join(base, "jr2-tool-ops-"));
   const { write, read } = toolsIn(dir);
   assert.equal(await text(write!, { path: "sub/f.txt", content: "here" }), "Successfully wrote to sub/f.txt");
   assert.equal(readFileSync(join(dir, "sub", "f.txt"), "utf8"), "here");
@@ -77,8 +94,8 @@ test("a relative path resolves against the tools' cwd, the Frame's (ADR-0057), a
 });
 
 test("the file tools reach what bash reaches: outside the Worktree, by `..`, by an absolute path, by a link", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jr2-tool-ops-"));
-  const outside = mkdtempSync(join(tmpdir(), "jr2-tool-ops-outside-"));
+  const dir = mkdtempSync(join(base, "jr2-tool-ops-"));
+  const outside = mkdtempSync(join(base, "jr2-tool-ops-outside-"));
   writeFileSync(join(outside, "notes"), "outside\n");
   symlinkSync(join(outside, "notes"), join(dir, "to-notes"));
   symlinkSync(outside, join(dir, "to-folder"));
@@ -91,7 +108,7 @@ test("the file tools reach what bash reaches: outside the Worktree, by `..`, by 
 });
 
 test("read, write and edit through a link to a denied file fail as an unreadable file fails, and its bytes never show (ADR-0076)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jr2-tool-ops-"));
+  const dir = mkdtempSync(join(base, "jr2-tool-ops-"));
   symlinkSync(join(controlDir, "standin"), join(dir, "to-standin"));
   symlinkSync(secrets, join(dir, "to-secret"));
   const { read, write, edit } = toolsIn(dir);
@@ -112,7 +129,7 @@ test("read, write and edit through a link to a denied file fail as an unreadable
 });
 
 test("read sends an image as an image, from bytes read in the domain; a link to a denied image fails", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jr2-tool-ops-"));
+  const dir = mkdtempSync(join(base, "jr2-tool-ops-"));
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
     "base64",
@@ -131,7 +148,7 @@ test("read sends an image as an image, from bytes read in the domain; a link to 
 });
 
 test("two parallel edits of one file run one after the other, and both land", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jr2-tool-ops-"));
+  const dir = mkdtempSync(join(base, "jr2-tool-ops-"));
   writeFileSync(join(dir, "a.txt"), "alpha\nbeta\n");
   const { edit } = toolsIn(dir);
   await Promise.all([
@@ -145,10 +162,10 @@ test("two parallel edits of one file run one after the other, and both land", as
 // `~` to this process's HOME, so jr2 expands it first: `~` is the domain's HOME, the folder that
 // `bash` expands `~` to.
 test("~ in a path is the domain's HOME, not the Harness process's own (ADR-0076)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jr2-tool-ops-"));
+  const dir = mkdtempSync(join(base, "jr2-tool-ops-"));
   const home = children.env.HOME!;
   const own = process.env.HOME;
-  process.env.HOME = mkdtempSync(join(tmpdir(), "jr2-harness-own-home-"));
+  process.env.HOME = mkdtempSync(join(base, "jr2-harness-own-home-"));
   try {
     const { read, write, edit, find } = toolsIn(dir);
     await text(write!, { path: "~/notes/tilde.txt", content: "in the domain's HOME\n" });
@@ -264,32 +281,44 @@ test("the confined shell reads no Stand-in's file, no conversation, and not the 
   assert.match(await text(t, bash(`ls ${standInsDir}`)), /^ANTHROPIC_API_KEY$/m);
 });
 
-test("more than 2000 lines: the tail, and the whole output in a file in TMPDIR that `read` reads", async () => {
+test("more than 2000 lines: the tail, and the whole output in the Harness's output folder, which `read` reads", async () => {
   const { bash: t, read } = toolsIn(cwd);
   const message = await text(t!, bash("seq 1 2500"));
   const match = /\n\n\[Showing lines 501-2500 of 2500\. Full output: (.+)\]$/.exec(message);
   assert.ok(match, message.slice(-200));
   assert.ok(message.startsWith("501\n502\n"), "the kept text is the last 2000 lines");
   const full = match[1]!;
-  assert.ok(full.startsWith(`${children.env.TMPDIR}/`), full);
+  assert.ok(full.startsWith(`${output}/`), full);
   assert.equal(await text(read!, { path: full, offset: 2499 }), "2499\n2500\n");
+  assert.match(await text(t!, bash(`tail -n 1 ${full}`)), /^2500$/m);
 });
 
-test("a command that replaces the whole output's file with a link gets no read of what the link names (ADR-0076)", async () => {
-  const record = join(conversationsDir, "record.json");
-  const before = readFileSync(record, "utf8");
-  // More than 50 KB, so pi makes the file; then the command swaps it for a link to a conversation's
-  // record, which the confiner denies it, and prints a line.
+test("a command cannot replace the whole output's file, which the Harness opens by its path again (ADR-0076)", async () => {
+  // More than 50 KB, so pi makes the file; then the command tries to swap it for a link to a
+  // conversation's record and for a FIFO, and to write it. Each fails: the domain writes nothing in
+  // the output folder. pi reads the file that it wrote.
   const command = [
-    `before=$(ls "$TMPDIR" | grep '^pi-bash-')`,
+    `before=$(ls ${output} | grep '^pi-bash-')`,
     `head -c 60000 /dev/zero | tr '\\0' 'a'; echo`,
-    `for i in $(seq 1 50); do f=$(ls "$TMPDIR" | grep '^pi-bash-' | grep -vxF "$before" | head -1); [ -n "$f" ] && break; sleep 0.1; done`,
-    `f="$TMPDIR/$f"; rm -f "$f" && ln -s ${record} "$f" && echo swapped`,
+    `for i in $(seq 1 50); do f=$(ls ${output} | grep '^pi-bash-' | grep -vxF "$before" | head -1); [ -n "$f" ] && break; sleep 0.1; done`,
+    `f="${output}/$f"`,
+    `rm -f "$f" 2>/dev/null && echo removed`,
+    `ln -sf ${join(conversationsDir, "record.json")} "$f" 2>/dev/null && echo linked`,
+    `mkfifo "$f.fifo" 2>/dev/null && echo fifo`,
+    `{ echo more >> "$f"; } 2>&1 && echo appended`,
+    `echo done`,
   ].join("\n");
-  const message = await failure(toolsIn(cwd).bash!, bash(command));
-  assert.match(message, /that holds the command's whole output was moved or replaced while the command ran/);
+  const message = await text(toolsIn(cwd).bash!, bash(command));
+  for (const word of ["removed", "linked", "fifo", "appended"])
+    assert.ok(!new RegExp(`^${word}$`, "m").test(message), word);
+  assert.match(message, /^done$/m);
   assert.ok(!message.includes("a conversation"));
-  assert.equal(readFileSync(record, "utf8"), before, "the record is as it was");
+  const full = /Full output: (.+)\]$/.exec(message)?.[1];
+  assert.ok(full !== undefined, message.slice(-200));
+  assert.ok(lstatSync(full).isFile());
+  const kept = readFileSync(full, "utf8");
+  assert.ok(kept.startsWith(`${"a".repeat(60000)}\n`), "the file is the one that pi wrote");
+  assert.match(kept.slice(60000), /\.log: Permission denied\n[^]*^done$/m, "the append was refused");
 });
 
 // ─── the memory guard (ADR-0061, ADR-0062) ──────────────────────────────────

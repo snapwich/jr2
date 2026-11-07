@@ -458,8 +458,14 @@ func ForCommand(deny []string, effect string, read []string) (Rules, error) {
 // read-only. A confined process cannot ptrace a process outside its domain, so `/proc` is open and
 // the Harness's environ and memory are not.
 //
+// read is the folders inside a denied path that the domain may read and not write: the folder of
+// the Harness's own where pi's `bash` keeps a long command's whole output, which the model reads
+// there. The domain cannot write, move or link anything there, so the Harness opens a path there
+// as safely as its own. Each must lie in a path of deny: a folder outside one already has every
+// right.
+//
 // root is `/` in the Harness; a test gives its own.
-func ForHarness(root string, deny []string) (Rules, error) {
+func ForHarness(root string, deny, read []string) (Rules, error) {
 	if len(deny) == 0 {
 		return Rules{}, errors.New("the Harness's domain needs a denied path: without one it is no boundary")
 	}
@@ -468,11 +474,19 @@ func ForHarness(root string, deny []string) (Rules, error) {
 			return Rules{}, fmt.Errorf("the denied path %q is not absolute", d)
 		}
 	}
+	for _, r := range read {
+		if !strings.HasPrefix(r, "/") {
+			return Rules{}, fmt.Errorf("the read-only path %q is not absolute", r)
+		}
+		if !slices.ContainsFunc(deny, func(d string) bool { return within(r, d) && r != d }) {
+			return Rules{}, fmt.Errorf("the read-only path %s is in no denied path, so the domain would write it too", r)
+		}
+	}
 	rw, err := carve(root, deny, nil)
 	if err != nil {
 		return Rules{}, err
 	}
-	return Rules{ReadWrite: rw, ReadDir: []string{root}}, nil
+	return Rules{ReadWrite: rw, Read: slices.Clone(read), ReadDir: []string{root}}, nil
 }
 
 // ProbeMain is `effector probe`, the probe of a process that confines and runs no Go of its own
@@ -487,16 +501,17 @@ func ProbeMain(stdout, stderr io.Writer) int {
 	return 0
 }
 
-// HarnessRulesMain is `effector harness-rules --deny <path> [--deny <path>]...`: ForHarness's rules
-// for root `/`, each argument ended by a NUL byte, in confine's own format (Args, without the
-// program), so the Harness puts them before `--` as they are. At least one `--deny` is required. A
-// deny path is resolved to its real path here (realPath); one that does not exist is still left out
-// by the carve-out, so a folder made there later gets no rule.
+// HarnessRulesMain is `effector harness-rules --deny <path> [--deny <path>]... [--read <path>]...`:
+// ForHarness's rules for root `/`, each argument ended by a NUL byte, in confine's own format (Args,
+// without the program), so the Harness puts them before `--` as they are. At least one `--deny` is
+// required. Each `--read` is a folder in a denied path that the domain may read. A path is resolved
+// to its real path here (realPath); a deny path that does not exist is still left out by the
+// carve-out, so a folder made there later gets no rule.
 func HarnessRulesMain(args []string, stdout, stderr io.Writer) int {
-	var deny []string
+	var deny, read []string
 	for i := 0; i < len(args); i++ {
-		if args[i] != "--deny" {
-			_, _ = fmt.Fprintf(stderr, "harness-rules: %q is no flag (usage: harness-rules --deny <path>...)\n", args[i])
+		if args[i] != "--deny" && args[i] != "--read" {
+			_, _ = fmt.Fprintf(stderr, "harness-rules: %q is no flag (usage: harness-rules --deny <path>... [--read <path>]...)\n", args[i])
 			return 2
 		}
 		if i+1 >= len(args) || !strings.HasPrefix(args[i+1], "/") {
@@ -508,14 +523,18 @@ func HarnessRulesMain(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "harness-rules: %s: %v\n", args[i+1], err)
 			return 1
 		}
-		deny = append(deny, real)
+		if args[i] == "--deny" {
+			deny = append(deny, real)
+		} else {
+			read = append(read, real)
+		}
 		i++
 	}
 	if len(deny) == 0 {
 		_, _ = fmt.Fprintln(stderr, "harness-rules: at least one --deny <path> is required")
 		return 2
 	}
-	rules, err := ForHarness("/", deny)
+	rules, err := ForHarness("/", deny, read)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "harness-rules: %v\n", err)
 		return 1

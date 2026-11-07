@@ -7,10 +7,11 @@
 //
 //   /opt/jr2/bin/effector confine <rules> -- /opt/jr2/bin/effector spawner
 //
-// The rules are `confine.ForHarness`'s, which `effector harness-rules --deny /run/jr2` writes once
-// at start: every right on every path except `/run/jr2`. That folder holds the control Stand-in,
-// each held secret's Stand-in, the Custodian's control socket's folder, and the Harness's
-// conversations. A confined process cannot ptrace one outside its domain, so `/proc/<harness>/environ`
+// The rules are `confine.ForHarness`'s, which `effector harness-rules --deny /run/jr2 --read
+// /run/jr2/output` writes once at start: every right on every path except `/run/jr2`, and read alone
+// in `/run/jr2/output`. That folder holds the control Stand-in, each held secret's Stand-in, the
+// Custodian's control socket's folder, and the Harness's conversations; its `output` folder holds
+// the whole output of a long `bash` call, which the model reads (`OUTPUT_DIR`). A confined process cannot ptrace one outside its domain, so `/proc/<harness>/environ`
 // and `/mem` stay closed.
 //
 // The domain's env is the env that the container STARTED with — the image's `ENV`, `harness.env`,
@@ -26,7 +27,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { accessSync, constants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { SpawnError, Spawner, SpawnerGoneError, type SpawnExit, type Spawned } from "./spawner.ts";
 
@@ -43,6 +44,14 @@ export const CONTROL_SOCKET = `${RUNTIME_SECRETS}/custodian/control.sock`;
 /** Where a Harness keeps its conversations (ADR-0031): under `/run/jr2`, so no process of the
  * domain reads another Agent's conversation (ADR-0076). */
 export const CONVERSATIONS_DIR = `${RUNTIME_SECRETS}/conversations`;
+/**
+ * The Harness's own folder for the whole output of a long `bash` call (ADR-0076): an emptyDir of
+ * the Harness container's alone (sandbox-kube.ts), which the domain reads and does not write. pi's
+ * `bash` makes that file in this process's `os.tmpdir()` and opens it by its path again to read
+ * it, so the Harness's TMPDIR is this folder (`useOutputDir`): there, no process of the domain can
+ * put a link or a FIFO in the file's place. The model reads the file by the path that pi gives.
+ */
+export const OUTPUT_DIR = `${RUNTIME_SECRETS}/output`;
 /** Where the Harness of a Sandbox listens for a person's shell (`workspace-shell.ts`): in a folder
  * of the Harness container's alone under `/run/jr2`, where no process of the domain makes a file. */
 export const SHELL_SOCKET = `${RUNTIME_SECRETS}/shell/shell.sock`;
@@ -251,10 +260,12 @@ function real(p: string): string {
 
 /**
  * The rules of the domain, as `effector harness-rules` writes them (`confine.ForHarness`): one call
- * at start. Every right on every path but each of `deny`.
+ * at start. Every right on every path but each of `deny`, and read alone in each of `read`, which
+ * lies in a path of `deny`.
  */
-export function harnessRules(confiner: string, deny: readonly string[]): string[] {
-  const out = execFileSync(confiner, ["harness-rules", ...deny.flatMap((d) => ["--deny", d])], {
+export function harnessRules(confiner: string, deny: readonly string[], read: readonly string[] = []): string[] {
+  const args = [...deny.flatMap((d) => ["--deny", d]), ...read.flatMap((r) => ["--read", r])];
+  const out = execFileSync(confiner, ["harness-rules", ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: {},
@@ -291,6 +302,8 @@ export type PolicyInputs = {
   control: string | undefined;
   /** The paths that the domain may not reach. Default: `/run/jr2` alone. */
   deny?: readonly string[];
+  /** The folders in a path of `deny` that the domain may read and not write. Default: `OUTPUT_DIR`. */
+  read?: readonly string[];
   /** Where the spawner's start and restarts are said. Default: `console.error`. */
   log?: (line: string) => void;
 };
@@ -318,7 +331,7 @@ export function childPolicy(inputs: PolicyInputs): ChildPolicy {
     home,
     tmp,
   });
-  const rules = harnessRules(confiner, deny);
+  const rules = harnessRules(confiner, deny, (inputs.read ?? [OUTPUT_DIR]).map(real));
   const spawner = new Spawner({
     argv: [confiner, "confine", ...rules, "--", confiner, "effector", "spawner"],
     env: {},
@@ -328,33 +341,27 @@ export function childPolicy(inputs: PolicyInputs): ChildPolicy {
 }
 
 /**
- * Why this process's TMPDIR cannot hold the bash tool's whole output, or undefined when it can
- * (ADR-0076). pi's `bash` writes a long command's whole output to a new file in this process's
- * `os.tmpdir()` (`tool-ops.ts`), and the model reads it there with `read` or `bash`. So that folder
- * must be the domain's TMPDIR, by its own name: not a link, which the domain could point elsewhere.
- * And this uid must not write the folder above it, so the domain cannot rename the folder or put a
- * link in its place (`/tmp` passes: `/` is root's). `tmp` is `os.tmpdir()`.
+ * Make `dir` this process's TMPDIR (ADR-0076): the folder where pi's `bash` makes a long command's
+ * whole output (`OUTPUT_DIR`). It must be a folder, not a link, that this process can write. The
+ * domain keeps its own TMPDIR, from the start env (`childPolicy`), so call this after the domain is
+ * made. A Harness whose folder is not there cannot serve: pi would write the file where the domain
+ * writes, and open it there by its path again.
  */
-export function harnessTmpFault(tmp: string, policy: ChildPolicy): string | undefined {
-  const domain = policy.env.TMPDIR;
-  const fix = "start the Harness container with one TMPDIR, a folder in a folder that its user cannot write (ADR-0076)";
-  let isLink: boolean;
+export function useOutputDir(dir: string, env: NodeJS.ProcessEnv = process.env): void {
+  const fix = `mount a folder of the Harness container's own at ${dir} (ADR-0076)`;
+  let stat;
   try {
-    isLink = lstatSync(tmp).isSymbolicLink();
+    stat = lstatSync(dir);
   } catch (err) {
-    return `the Harness's TMPDIR ${tmp} is not there (${(err as Error).message}): ${fix}`;
+    throw new Error(`the Harness's output folder ${dir} is not there (${(err as Error).message}): ${fix}`);
   }
-  if (isLink) return `the Harness's TMPDIR ${tmp} is a link, which the domain can point elsewhere: ${fix}`;
-  if (real(tmp) !== domain) {
-    return `the Harness's TMPDIR ${tmp} is not the domain's TMPDIR ${domain ?? "(none)"}: the model could not read a long command's whole output — ${fix}`;
-  }
-  const parent = dirname(real(tmp));
+  if (!stat.isDirectory()) throw new Error(`the Harness's output folder ${dir} is not a folder: ${fix}`);
   try {
-    accessSync(parent, constants.W_OK);
+    accessSync(dir, constants.W_OK);
   } catch {
-    return undefined;
+    throw new Error(`the Harness cannot write its output folder ${dir}: ${fix}`);
   }
-  return `the Harness's TMPDIR ${tmp} is in ${parent}, which the Harness's user can write, so the domain could move TMPDIR and put a link in its place: ${fix}`;
+  env.TMPDIR = dir;
 }
 
 /** A process the domain ran to its end, as `execFile` answers one. */

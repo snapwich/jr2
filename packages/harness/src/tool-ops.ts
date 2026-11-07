@@ -10,9 +10,7 @@
 // a name is there and where a link points, which a `stat` in the domain tells too. No content is
 // read in this process.
 
-import { constants as osConstants, tmpdir } from "node:os";
-import { lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { constants as osConstants } from "node:os";
 import { getSystemErrorMessage } from "node:util";
 import type {
   BashOperations,
@@ -104,66 +102,17 @@ export function editOps(files: FileOps): EditOperations {
   };
 }
 
-/** The file of pi's `bash` that holds a long command's whole output, by pi's name for it. */
-const FULL_OUTPUT = /^pi-bash-[0-9a-f]{16}\.log$/;
-
-/**
- * pi's `bash` writes a long command's whole output to a new file in this process's `os.tmpdir()`,
- * which is the domain's TMPDIR (`harnessTmpFault`): the model reads it with `read` or `bash`. pi
- * writes it through its open descriptor, which no link changes; at the end pi opens the file by
- * its path once more, to read it. The domain writes in that folder, so a command could put a link
- * or a FIFO in the file's place, and this process would read what it names (`/dev/zero` never
- * ends). So after the shell ends, each such file that this process holds open must still be the
- * file at its path: a regular file, and the same one. Else the call fails, and pi reads nothing.
- */
-export function fullOutputFault(dir: string = tmpdir()): string | undefined {
-  let tmp: string;
-  let fds: string[];
-  try {
-    tmp = realpathSync(dir);
-  } catch {
-    return undefined;
-  }
-  try {
-    fds = readdirSync("/proc/self/fd");
-  } catch {
-    return undefined;
-  }
-  for (const fd of fds) {
-    let path: string;
-    try {
-      path = readlinkSync(`/proc/self/fd/${fd}`);
-    } catch {
-      continue;
-    }
-    const deleted = path.endsWith(" (deleted)");
-    const name = basename(deleted ? path.slice(0, -" (deleted)".length) : path);
-    if (dirname(path) !== tmp || !FULL_OUTPUT.test(name)) continue;
-    const at = `${tmp}/${name}`;
-    try {
-      const held = statSync(`/proc/self/fd/${fd}`);
-      const there = lstatSync(at);
-      if (!deleted && there.isFile() && there.ino === held.ino && there.dev === held.dev) continue;
-    } catch {
-      // Not there any more: replaced.
-    }
-    return `the file ${at} that holds the command's whole output was moved or replaced while the command ran, so the Harness does not read it (ADR-0076)`;
-  }
-  return undefined;
-}
-
 /**
  * `bash`'s operations: the shell in the domain (`shell.ts`). The env that pi passes is this
- * process's own, so it is never used: the shell has the domain's env (ADR-0076).
+ * process's own, so it is never used: the shell has the domain's env (ADR-0076). pi writes a long
+ * command's whole output to a new file in this process's `os.tmpdir()`, and opens it by its path
+ * again to read it: that is the Harness's output folder (`OUTPUT_DIR`), where the domain reads and
+ * writes nothing, so no command can put a link or a FIFO in the file's place.
  */
 export function bashOps(children: ChildPolicy): BashOperations {
   return {
-    exec: async (command, cwd, { onData, signal, timeout }) => {
-      const exit = await execInDomain(children, command, cwd, { onData, signal, timeout });
-      const fault = fullOutputFault();
-      if (fault !== undefined) throw new Error(fault);
-      return exit;
-    },
+    exec: (command, cwd, { onData, signal, timeout }) =>
+      execInDomain(children, command, cwd, { onData, signal, timeout }),
   };
 }
 

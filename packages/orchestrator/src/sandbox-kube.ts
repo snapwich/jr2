@@ -47,6 +47,8 @@
 //                             (ADR-0031: a Harness restart inside the pod keeps its conversations)
 //   volume        shell       an emptyDir → /run/jr2/shell, the Harness container's alone: the
 //                             socket of a person's shell (`jr2 workspace shell`, ADR-0076)
+//   volume        output      an emptyDir → /run/jr2/output, the Harness container's alone: the
+//                             whole output of a long `bash` call, which the domain reads (ADR-0076)
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
 //   container     harness     the Sandbox Image, command overridden, /work + /opt/jr2 mounted
@@ -109,6 +111,8 @@ import {
   CONVERSATIONS_VOLUME,
   SHELL_DIR,
   SHELL_VOLUME,
+  OUTPUT_DIR,
+  OUTPUT_VOLUME,
   HELD_MOUNT,
   CA_CONFIGMAP,
   heldManifestKey,
@@ -913,6 +917,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           // The shell socket's folder (ADR-0076): the Harness listens there for `jr2 workspace
           // shell`, in the Harness container ALONE, where no process that it confines makes a file.
           { name: SHELL_VOLUME, emptyDir: {} },
+          // The Harness's TMPDIR (ADR-0076): pi's `bash` keeps a long command's whole output
+          // there and opens it by its path again. The Harness container ALONE, and its confined
+          // processes read there and write nothing, so none can put a link in a file's place.
+          { name: OUTPUT_VOLUME, emptyDir: {} },
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,
           // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
@@ -928,6 +936,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           RUNTIME_VOLUME_MOUNT,
           { name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR },
           { name: SHELL_VOLUME, mountPath: SHELL_DIR },
+          { name: OUTPUT_VOLUME, mountPath: OUTPUT_DIR },
           ...seat.homeMount,
           ...custodian.harnessMounts,
         ],

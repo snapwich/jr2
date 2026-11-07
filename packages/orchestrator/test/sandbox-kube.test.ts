@@ -310,6 +310,9 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     { name: "conversations", mountPath: "/run/jr2/conversations" },
     // The socket of a person's shell (ADR-0076): the Harness container's alone.
     { name: "shell", mountPath: "/run/jr2/shell" },
+    // The Harness's TMPDIR, the whole output of a long bash call (ADR-0076): the Harness
+    // container's alone, which its confined processes read and do not write.
+    { name: "output", mountPath: "/run/jr2/output" },
     // Its Stand-ins, as files no confined child can read (ADR-0076, C1).
     { name: "harness-credentials", mountPath: "/run/jr2", readOnly: true },
     // The Custodian's control socket, which it connects to and cannot write (ADR-0076).
@@ -324,13 +327,14 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
       "runtime",
       "conversations",
       "shell",
+      "output",
       "custodian-values",
       "custodian-config",
       "custodian-socket",
       "harness-credentials",
     ],
   );
-  assert.deepEqual(applied.spec.volumes.slice(0, 4), [
+  assert.deepEqual(applied.spec.volumes.slice(0, 5), [
     { name: "work", emptyDir: {} },
     // The KIT's image, mounted as a volume (ADR-0037): no pull policy of its own, so the kubelet
     // treats the ref exactly as it treats the same ref on a container.
@@ -339,6 +343,7 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     // gone takes them with it — that Workspace is Lost (ADR-0021, ADR-0031).
     { name: "conversations", emptyDir: {} },
     { name: "shell", emptyDir: {} },
+    { name: "output", emptyDir: {} },
   ]);
   assert.ok(!JSON.stringify(applied).includes("persistentVolumeClaim"), "no source PVC — the cache is per node");
 });

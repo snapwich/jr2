@@ -134,7 +134,8 @@ A confined program can do all that the user of the container can do, with these 
 - It cannot read, write, make, remove, move or link a file in `/run/jr2`. That folder holds the control Stand-in, the
   Stand-in of each Held secret, the socket of the Custodian for the picks, and the conversations of the Harness. A
   program can list the names in `/run/jr2`, as it can list each folder: `ls /` and `find /` work. The names are not
-  secrets.
+  secrets. One folder there, `/run/jr2/output`, it can read and not change: when the output of a `bash` call is too
+  long, the Harness writes all of it to a file there, and the result gives the path of that file.
 - It cannot make a socket in `/run/jr2`. It can connect to the socket of the Custodian, but the Custodian refuses each
   request on the socket that does not have the control Stand-in, and the program cannot read that Stand-in.
 - It cannot trace the Harness process, or read its environment or its memory.
