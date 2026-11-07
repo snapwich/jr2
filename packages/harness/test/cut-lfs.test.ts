@@ -212,6 +212,7 @@ async function world(t: TestContext) {
         ],
       }),
     go,
+    paths,
     content,
     path: (n: string) => join(workRoot, "app", n),
   };
@@ -351,4 +352,36 @@ test("the Agent's config chooses no program of the cut's checkout", { skip }, as
   const a = ready(await w.go({ path: w.path("f"), branch: "feature" }));
   assert.equal(readFileSync(join(a.path, "more.bin"), "utf8"), w.content("more"));
   assert.equal(existsSync(marker), false, existsSync(marker) ? readFileSync(marker, "utf8") : "");
+});
+
+test("no url-scoped key of the Agent's config chooses the cut's transfer agent", { skip }, async (t) => {
+  const w = await world(t);
+  await w.attach();
+  const marker = join(w.dir, "agents");
+  const evil = join(w.dir, "evil.sh");
+  writeFileSync(evil, `#!/bin/sh\necho evil >> '${marker}'\nexit 1\n`, { mode: 0o755 });
+  // A jr2-lfs whose ask says that every object is held, so that the checkout misses one and git-lfs
+  // starts a transfer agent: it records that jr2's ran.
+  const stub = join(w.dir, "jr2-lfs-stub");
+  writeFileSync(
+    stub,
+    `#!/bin/sh\nif [ "$1" = transfer ]; then echo jr2 >> '${marker}'; exit 1; fi\necho '{"pointers":1,"asked":0,"missing":[]}'\n`,
+    { mode: 0o755 },
+  );
+  for (const [k, v] of [
+    ["lfs.url", "https://evil.test/lfs"],
+    ["lfs.https://evil.test/lfs.standalonetransferagent", "evil"],
+    ["remote.origin.lfsurl", "https://evil2.test/lfs"],
+    ["lfs.https://evil2.test/lfs.standalonetransferagent", "evil"],
+    ["lfs.https://jr2-cut.invalid/.standalonetransferagent", "evil"],
+    ["lfs.https://jr2-cut.invalid/lfs.standalonetransferagent", "evil"],
+    ["lfs.customtransfer.evil.path", evil],
+  ]) {
+    w.git(w.clone, "config", "--add", k!, v!);
+  }
+  const a = await cut({ id: "e1", base: "main", path: w.path("f"), branch: "feature" }, { ...w.paths, jr2Lfs: stub });
+  assert.notEqual(a.outcome, "ready", "the object was missing, so the checkout failed");
+  const ran = existsSync(marker) ? readFileSync(marker, "utf8").trim().split("\n") : [];
+  assert.ok(ran.length > 0, "git-lfs started a transfer agent");
+  assert.deepEqual([...new Set(ran)], ["jr2"], ran.join(" "));
 });

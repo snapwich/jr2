@@ -440,3 +440,69 @@ test("a second attach asks for no large file: the base is placed", async () => {
   await l.attach(req);
   assert.equal((await l.lfsCallsOf()).length, 1);
 });
+
+test("an empty Repo, then an Agent's work in default/ and the remote's first commit: a re-attach keeps the work", async () => {
+  const l = await layout();
+  const key = "example-test-acme-empty-12345678";
+  const cache = join(l.reposMount, key);
+  l.git(l.root, "init", "-q", "--bare", cache);
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key }] };
+  assert.deepEqual((await l.attach(req)).bases, { app: "" });
+  const dflt = join(l.workRoot, "app", "default");
+  // An Agent's commit, and an edit that it did not commit yet.
+  await writeFile(join(dflt, "work.txt"), "committed\n");
+  l.git(dflt, "add", "work.txt");
+  l.git(dflt, "-c", "user.email=a@jr2", "-c", "user.name=a", "commit", "-q", "-m", "agent");
+  const agentCommit = l.git(dflt, "rev-parse", "HEAD");
+  await writeFile(join(dflt, "work.txt"), "edited\n");
+  // The remote gets its first commit, and the node cache fetches it.
+  const other = join(l.root, "other");
+  l.git(l.root, "init", "-q", "-b", "main", other);
+  l.git(other, "-c", "user.email=t@jr2", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first");
+  l.git(other, "push", "-q", cache, "main");
+  // A live git of the Agent's holds the index.
+  await writeFile(join(dflt, ".git", "index.lock"), "");
+  assert.deepEqual((await l.attach(req)).bases, { app: "" }, "the recorded base stays");
+  assert.equal(await readFile(join(dflt, "work.txt"), "utf8"), "edited\n", "the edit stays");
+  assert.equal(l.git(dflt, "rev-parse", "HEAD"), agentCommit, "the commit stays");
+  assert.ok(existsSync(join(dflt, ".git", "index.lock")), "the attach removes no lock of a placed clone");
+  assert.equal((await l.lfsCallsOf()).length, 0);
+});
+
+test("a clone whose jr2.base someone removed: a re-attach forces nothing, keeps the work, and records the base", async () => {
+  const l = await layout();
+  withFiles(l);
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "develop" }] };
+  await l.attach(req);
+  const dflt = join(l.workRoot, "app", "default");
+  l.git(dflt, "config", "--unset", "jr2.base");
+  await writeFile(join(dflt, "work.txt"), "uncommitted\n");
+  l.git(dflt, "-c", "core.hooksPath=/dev/null", "checkout", "-q", "-b", "agent-work");
+  await writeFile(join(dflt, ".git", "index.lock"), "");
+  assert.deepEqual((await l.attach(req)).bases, { app: "develop" });
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "HEAD"), "agent-work", "no checkout ran");
+  assert.equal(await readFile(join(dflt, "work.txt"), "utf8"), "uncommitted\n");
+  assert.ok(existsSync(join(dflt, ".git", "index.lock")), "no lock was removed");
+  assert.equal(l.git(dflt, "config", "--local", "jr2.base"), "develop");
+  assert.equal((await l.lfsCallsOf()).length, 1, "only the first attach asked");
+});
+
+test("a re-attach writes no key that holds its value, and removes only a config.lock that a kill left", async () => {
+  const l = await layout();
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
+  await l.attach(req);
+  const dflt = join(l.workRoot, "app", "default");
+  const lock = join(dflt, ".git", "config.lock");
+  // A git of an Agent's holds the config now: a re-attach that has nothing to write does not wait on it.
+  await writeFile(lock, "");
+  assert.deepEqual((await l.attach(req)).bases, { app: "main" });
+  assert.ok(existsSync(lock), "a young lock stays");
+  // A kill in a write of an earlier re-attach: an old lock, and a key to write again.
+  const old = new Date(Date.now() - 5 * 60_000);
+  const { utimes } = await import("node:fs/promises");
+  await utimes(lock, old, old);
+  execFileSync("sh", ["-c", `printf '[gc]\\n\\tauto = 5\\n' >> ${JSON.stringify(join(dflt, ".git", "config"))}`]);
+  assert.deepEqual((await l.attach(req)).bases, { app: "main" });
+  assert.equal(existsSync(lock), false, "the old lock went");
+  assert.equal(l.git(dflt, "config", "--get-all", "gc.auto"), "0");
+});

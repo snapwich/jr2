@@ -89,7 +89,7 @@ async function attach(req: AttachRequest, paths: AttachPaths, env: Env): Promise
     await run("make the slot's folder", s.slot, "mkdir", ["-p", "--", slotDir], env);
     // On a filesystem without POSIX ACLs the helper warns and exits 0, degrading to the umask.
     await run("stamp the work ACL", s.slot, `${paths.runtime}/bin/work-acl`, [slotDir], env);
-    if ((await exists(env, `${dflt}/.git`)) && (await placedBase(dflt, env)) === undefined) {
+    if ((await exists(env, `${dflt}/.git`)) && !(await placedOrCheckedOut(dflt, env))) {
       await mendKilled(dflt, cache, s.slot, env);
     }
     if (!(await exists(env, `${dflt}/.git`))) {
@@ -102,28 +102,68 @@ async function attach(req: AttachRequest, paths: AttachPaths, env: Env): Promise
     // pod is a fetch of the remote's now. The url's argument is the Repo's IDENTITY, never the
     // cache key: that is the name a human reads in `git remote -v`. `git push` goes to the REAL
     // remote — the Binding's own spelling (ADR-0051). `--` keeps the url an operand.
-    await git("set origin's fetch url", s.slot, ["-C", dflt, "remote", "set-url", "origin", "--", fetchUrl(s, paths)]);
-    await git("set origin's push url", s.slot, ["-C", dflt, "remote", "set-url", "--push", "origin", "--", s.url]);
+    // Each key is written only when its value is not already the one jr2 wants, so that a second
+    // attach writes nothing: a kill in a write leaves `config.lock`, and an Agent's git works here.
+    await removeStaleConfigLock(dflt, s.slot, env);
+    if (!(await holds(dflt, "remote.origin.url", fetchUrl(s, paths), env))) {
+      await git("set origin's fetch url", s.slot, [
+        "-C",
+        dflt,
+        "remote",
+        "set-url",
+        "origin",
+        "--",
+        fetchUrl(s, paths),
+      ]);
+    }
+    if (!(await holds(dflt, "remote.origin.pushurl", s.url, env))) {
+      await git("set origin's push url", s.slot, ["-C", dflt, "remote", "set-url", "--push", "origin", "--", s.url]);
+    }
     // `ext` is on git's "known scary" list, default `never`. `user` allows a fetch a person or the
     // Agent runs and still refuses one git makes for itself (a submodule url), so a repository
     // cannot smuggle a program in through a url jr2 did not write (ADR-0053). Repo-level: the
     // linked worktrees share this config.
-    await git("allow the ext transport", s.slot, ["-C", dflt, "config", "--replace-all", "protocol.ext.allow", "user"]);
+    await setKey(dflt, s.slot, "allow the ext transport", "protocol.ext.allow", "user", env);
     // A fixed rule (ADR-0004): Agents share this clone, and a `gc` beside a cut or a commit prunes
     // what another Worktree needs. Every git in the pod reads the clone's config.
-    await git("turn off gc", s.slot, ["-C", dflt, "config", "--replace-all", "gc.auto", "0"]);
-    await git("turn off maintenance", s.slot, ["-C", dflt, "config", "--replace-all", "maintenance.auto", "false"]);
-    // `--replace-all`: an Agent can add a second value (`git config --add`), and a plain set then
-    // fails, so a second attach would fail.
-    for (const [key, value] of lfsConfig(paths)) {
-      await git(`set ${key}`, s.slot, ["-C", dflt, "config", "--replace-all", key, value]);
-    }
+    await setKey(dflt, s.slot, "turn off gc", "gc.auto", "0", env);
+    await setKey(dflt, s.slot, "turn off maintenance", "maintenance.auto", "false", env);
+    for (const [key, value] of lfsConfig(paths)) await setKey(dflt, s.slot, `set ${key}`, key, value, env);
     await writeHooks(dflt, s.slot, paths, env);
     // A guard, so that a second attach changes nothing: an Agent's edit in `default/`, or a fetch that
     // moved the remote-tracking refs, is no reason for a checkout here (SandboxPort: idempotent).
     bases[s.slot] = await placeDefault(dflt, s, paths, env);
   }
   return { repos, bases };
+}
+
+/** The clone's config holds `value` as the one value of `key`. */
+async function holds(dflt: string, key: string, value: string, env: Env): Promise<boolean> {
+  const r = await exec("git", ["-C", dflt, "config", "--local", "--null", "--get-all", key], env);
+  return r.code === 0 && r.stdout === `${value}\0`;
+}
+
+/**
+ * Give `key` the one value `value`, when the clone does not hold it already. `--replace-all`: an Agent
+ * can add a second value (`git config --add`), and a plain set then fails.
+ */
+async function setKey(dflt: string, slot: string, step: string, key: string, value: string, env: Env): Promise<void> {
+  if (await holds(dflt, key, value, env)) return;
+  await runGit(step, slot, ["-C", dflt, "config", "--replace-all", key, value], env);
+}
+
+/** A `config.lock` older than this is a kill's: git holds the lock for the time of one write. */
+const STALE_LOCK_MS = 60_000;
+
+/**
+ * Remove a `config.lock` that a kill left in an earlier attach's write, so that no later write (the
+ * attach's or an Agent's) fails on it. A lock that a live git holds is younger than `STALE_LOCK_MS`.
+ */
+async function removeStaleConfigLock(dflt: string, slot: string, env: Env): Promise<void> {
+  const lock = `${dflt}/.git/config.lock`;
+  const st = await env.children.spawner.stat(lock).catch(() => undefined);
+  if (st === undefined || st.kind !== "file" || Date.now() - st.mtimeMs < STALE_LOCK_MS) return;
+  await run("remove the config lock that a kill left", slot, "rm", ["-f", "--", lock], env);
 }
 
 /** The two LFS programs on the runtime volume (ADR-0053). */
@@ -194,8 +234,8 @@ function shellQuote(s: string): string {
  * clone, so a cut of it finds `origin/<default>` and tracks it.
  *
  * The clone has no checkout yet. The base's large files come first, then a forced checkout, so a kill
- * at any step before `jr2.base` is written leaves a clone that the next attach mends (`mendKilled`)
- * and places again. No
+ * at any step before the checkout leaves a clone that the next attach mends (`mendKilled`) and places
+ * again. A kill after the checkout leaves an index, and the next attach only records the base. No
  * hook runs in this checkout: git-lfs's hooks are for the people and Agents that work in the clone.
  */
 async function placeDefault(dflt: string, s: AttachSlot, paths: AttachPaths, env: Env): Promise<string> {
@@ -219,6 +259,16 @@ async function placeDefault(dflt: string, s: AttachSlot, paths: AttachPaths, env
     await git("record the base", ["config", "--local", "jr2.base", base]);
     return base;
   }
+  if (await exists(env, `${dflt}/.git/index`)) {
+    // The checkout ran (git writes the index last), and `jr2.base` is not there: a kill after the
+    // checkout, or someone removed the key. People and Agents can work here, so nothing is forced. The
+    // frozen default branch goes only when it holds no work of its own (`-d`, not `-D`).
+    if (base !== dfltBranch && dfltBranch !== "") {
+      await exec("git", ["-C", dflt, "branch", "-d", "--", dfltBranch], env);
+    }
+    await git("record the base", ["config", "--local", "jr2.base", base]);
+    return base;
+  }
   await askLargeFiles(dflt, s, base, commit, paths, env);
   if (base === dfltBranch) await checkout(["-f"]);
   else if (tracked) await checkout(["-f", "-B", base, "--track", `origin/${base}`]);
@@ -231,15 +281,28 @@ async function placeDefault(dflt: string, s: AttachSlot, paths: AttachPaths, env
   return base;
 }
 
-/** The base that `default/` was placed on, or undefined when it was not placed yet. */
+/**
+ * The base that `default/` was placed on, or undefined when it was not placed yet. A key that is
+ * there is a placement, also with the value "": an empty Repo's base, which has no commit yet.
+ */
 async function placedBase(dflt: string, env: Env): Promise<string | undefined> {
   const placed = await exec("git", ["-C", dflt, "config", "--local", "jr2.base"], env);
-  return placed.code === 0 && placed.stdout.trim() !== "" ? placed.stdout.trim() : undefined;
+  return placed.code === 0 ? placed.stdout.trim() : undefined;
 }
 
 /**
- * Mend a clone that a kill left before `default/` was placed. Attaches are serialized, and no Agent
- * works in `default/` before `jr2.base` is written, so no git of anyone else is alive in it.
+ * `default/` was placed, or its checkout ran. Only a clone with neither is one that a kill left in
+ * the first attach, before any person or Agent worked in it, and only that clone is mended. The
+ * marker is in config that an Agent can write, so the index is a second sign: a clone with no
+ * checkout has no index.
+ */
+async function placedOrCheckedOut(dflt: string, env: Env): Promise<boolean> {
+  return (await placedBase(dflt, env)) !== undefined || (await exists(env, `${dflt}/.git/index`));
+}
+
+/**
+ * Mend a clone that a kill left before `default/` was placed or checked out. Attaches are serialized,
+ * and no Agent works in `default/` before its checkout, so no git of anyone else is alive in it.
  *
  * A clone that a kill cut short has no `origin/HEAD` or no HEAD commit while the cache has a HEAD
  * commit: it goes, and the attach clones again. Another clone keeps its objects and its refs, and

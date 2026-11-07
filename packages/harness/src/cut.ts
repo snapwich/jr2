@@ -38,7 +38,7 @@ import { execFile, spawn } from "node:child_process";
 import { closeSync, openSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 /** The input of one cut. `id` is the Effect's id. `base` is where a new branch starts with no `from`:
  * the Binding's own ref, which no run can name, so the branch rule does not hold it. */
@@ -140,11 +140,20 @@ const CLEAN = [
   "checkout.guess=false",
 ];
 
+/**
+ * The LFS server url of each cut's git-lfs. No server is asked (the transfer agent is standalone), but
+ * git-lfs reads `lfs.<url>.standalonetransferagent` before `lfs.standalonetransferagent`. With this
+ * url and its own key pinned, no `lfs.<url>.*` key of the Agent's config chooses the agent.
+ */
+const PINNED_LFS_URL = "https://jr2-cut.invalid/lfs";
+
 /** jr2's own LFS filter and transfer agent, by `-c` after the clone's filters are turned off, so that
  * no key of the Agent's config chooses the program that a checkout starts (ADR-0053). The keys are the
  * attach's (attach.ts), and `lfs.storage` keeps git-lfs's store in the clone. */
 function lfsPins(paths: CutPaths, clone: string): string[] {
   return [
+    ["lfs.url", PINNED_LFS_URL],
+    [`lfs.${PINNED_LFS_URL}.standalonetransferagent`, "jr2"],
     ["filter.lfs.process", `${paths.gitLfs} filter-process`],
     ["filter.lfs.clean", `${paths.gitLfs} clean -- %f`],
     ["filter.lfs.smudge", `${paths.gitLfs} smudge -- %f`],
@@ -192,12 +201,70 @@ function runner(paths: CutPaths, home: string, filters: { args: string[] }): Run
     });
 }
 
+/** The keys that name a filter or a git-lfs extension. */
+const FILTER_KEYS = "^(filter|lfs\\.extension)\\.";
+/** The keys that include another config file. */
+const INCLUDE_KEYS = "^include(if\\..*)?\\.path$";
+/** git's own bound on nested includes. */
+const MAX_INCLUDE_DEPTH = 10;
+
+/**
+ * The key names of `FILTER_KEYS` in each file that the config of `dir` includes, whatever the
+ * condition: an `includeIf "onbranch:<b>"` file is not read in `dir` now, but it is read in the
+ * checkout of a new Worktree on `<b>`. A path that starts with `~` or `%(prefix)` names nothing for the
+ * cut's git, which runs with its own HOME and no install prefix.
+ */
+async function includedFilterKeys(git: Runner, dir: string): Promise<string[]> {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  const walk = async (origin: string, path: string, depth: number): Promise<void> => {
+    if (depth > MAX_INCLUDE_DEPTH || path === "" || path.startsWith("~") || path.startsWith("%(")) return;
+    const file = isAbsolute(path) ? path : join(dirname(origin), path);
+    if (seen.has(file) || !(await exists(file))) return;
+    seen.add(file);
+    const names = await git(dir, [
+      "config",
+      "--file",
+      file,
+      "--no-includes",
+      "--name-only",
+      "--get-regexp",
+      FILTER_KEYS,
+    ]);
+    if (names.out !== "") keys.push(...names.out.split("\n"));
+    const inc = await git(dir, ["config", "--file", file, "--no-includes", "--null", "--get-regexp", INCLUDE_KEYS]);
+    for (const [, value] of nulPairs(inc.out)) await walk(file, value, depth + 1);
+  };
+  // `--show-origin --null`: "file:<path>" NUL "<key>" LF "<value>" NUL, for each include of `dir`'s config.
+  const top = await git(dir, ["config", "--show-origin", "--null", "--get-regexp", INCLUDE_KEYS]);
+  const parts = top.out.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    // git names the clone's own config file relative to `dir`.
+    const origin = parts[i]!.replace(/^file:/, "");
+    const value = parts[i + 1]!.slice(parts[i + 1]!.indexOf("\n") + 1);
+    if (origin !== "" && origin !== parts[i]) await walk(isAbsolute(origin) ? origin : join(dir, origin), value, 1);
+  }
+  return keys;
+}
+
+/** The pairs of `git config --null --get-regexp`: "<key>" LF "<value>" NUL, each. */
+function nulPairs(out: string): Array<[string, string]> {
+  return out
+    .split("\0")
+    .filter((e) => e !== "")
+    .map((e) => {
+      const lf = e.indexOf("\n");
+      return lf < 0 ? [e, ""] : [e.slice(0, lf), e.slice(lf + 1)];
+    });
+}
+
 /** Each filter the clone's config names, turned off (`-c filter.x.smudge=`). */
 async function filtersOf(git: Runner, clone: string): Promise<string[]> {
   // No `--local`: that reads the one file and not what it includes. The global and the system config
-  // are cleared, so this is the clone's config and its includes.
-  const listed = await git(clone, ["config", "--name-only", "--get-regexp", "^(filter|lfs\\.extension)\\."]);
-  const lines = listed.out.split("\n");
+  // are cleared, so this is the clone's config and its includes. The includes whose condition is not
+  // true now are read too (`includedFilterKeys`).
+  const listed = await git(clone, ["config", "--name-only", "--get-regexp", FILTER_KEYS]);
+  const lines = listed.out.split("\n").concat(await includedFilterKeys(git, clone));
   const names = new Set(lines.flatMap((l) => l.match(/^filter\.(.+)\.[^.]+$/)?.[1] ?? []));
   // A git-lfs extension is a program that git-lfs starts for a pointer that names it.
   const extensions = new Set(lines.flatMap((l) => l.match(/^lfs\.extension\.(.+)\.[^.]+$/)?.[1] ?? []));

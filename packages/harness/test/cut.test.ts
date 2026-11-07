@@ -806,6 +806,23 @@ test("a filter that the clone's config includes is off too", async (t) => {
   assert.equal(existsSync(marker), false);
 });
 
+test("a filter in an include whose condition is not true in default/ is off too: onbranch, and nested", async (t) => {
+  const w = world(t);
+  const marker = join(w.dir, "ran");
+  const evil = join(w.dir, "evil.sh");
+  writeFileSync(evil, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`, { mode: 0o755 });
+  // Relative to the file that includes it, as git reads it: `.git/onbranch.inc`, then `.git/nested.inc`.
+  writeFileSync(
+    join(w.clone, ".git", "onbranch.inc"),
+    `[filter "evilob"]\n\tsmudge = true\n[include]\n\tpath = nested.inc\n`,
+  );
+  writeFileSync(join(w.clone, ".git", "nested.inc"), `[filter "evilob"]\n\tsmudge = ${evil}\n\trequired = true\n`);
+  run(w.clone, "config", "includeIf.onbranch:feature/run.path", "onbranch.inc");
+  writeFileSync(join(w.clone, ".git", "info", "attributes"), "* filter=evilob\n");
+  ready(await w.go({ path: w.path("run"), branch: "feature/run", from: "feature/auth" }));
+  assert.equal(existsSync(marker), false, "the onbranch include's filter did not run");
+});
+
 test("a filter in a linked Worktree's own config.worktree is off in a detached re-cut", async (t) => {
   const w = world(t);
   const first = ready(await w.go({ path: w.path("review"), detach: run(w.seed, "rev-parse", "main") }));
