@@ -384,10 +384,10 @@ export function pushParts(options: PushOptions = {}): PushParts {
   };
 }
 
-/** The push's start for one run: the Binding, the branch, the pin, the ledger's last pair. */
+/** The push's start for one run: the Binding and its base, the branch, the pin, the ledger's pairs. */
 export function pushStartOf(
   parts: PushParts,
-  ref: RepoRef & { url: string },
+  ref: RepoRef & { url: string; base?: string },
   branch: string,
   input: { sha?: string; message?: string } | undefined,
   pairs?: readonly Pair[],
@@ -410,6 +410,7 @@ export function pushStartOf(
       ...(parts.sign ? { sign: true } : {}),
       ...(message ? { squash: message } : {}),
       ...(parts.force ? { force: true } : {}),
+      ...(ref.base ? { base: ref.base } : {}),
       ...(pairs?.length ? { pairs: [...pairs] } : {}),
     },
     timeoutMs: parts.timeoutMs,
@@ -959,7 +960,9 @@ export function pushWith<const O extends PushOptions>(
     },
     build: (input, ambient, slot, pinned, extra, binding) => {
       const target = targetOf({ ambient, binding, input, slot });
-      const ref = repoRefOf(ambient, target.repo, target.path);
+      // The Binding's base names the LFS server that the push uploads to (ADR-0051, ADR-0067).
+      const base = ambient.bases?.[target.repo];
+      const ref = { ...repoRefOf(ambient, target.repo, target.path), ...(base ? { base } : {}) };
       const req = pushStartOf(parts, ref, target.branch, input as { sha?: string; message?: string }, extra?.pairs);
       if (pinned) req.push.pin = pinned;
       return req;

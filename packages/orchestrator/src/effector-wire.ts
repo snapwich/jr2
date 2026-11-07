@@ -121,6 +121,14 @@ export const PushStartShape = z.strictObject({
     sign: z.boolean().optional(),
     squash: z.string().optional(),
     force: z.boolean().optional(),
+    /** The Binding's base, where the Binding names one (ADR-0051): the Effector reads the LFS
+     * server from `.lfsconfig` at this commit of the node cache, and uploads the push's LFS objects
+     * there before the branch moves (ADR-0067). Absent, the cache's HEAD. */
+    base: z
+      .string()
+      .max(255)
+      .refine((b) => !b.startsWith("-") && !/[\0\r\n]/.test(b), "a base name has no leading -, NUL or newline")
+      .optional(),
     /** Every pair the ledger holds for the Workspace's Repo Slot, oldest push first (ADR-0067):
      * omitted when there is none, never empty. */
     pairs: z.array(PairShape).min(1).optional(),

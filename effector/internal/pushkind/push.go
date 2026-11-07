@@ -11,9 +11,9 @@
 //
 // Outcomes, every one output: `pushed` (the published commit, its source — the Agent's commit —
 // what the remote held before, and how many new commits it sent), `rejected` (a stage — fetch,
-// import, sign, push — and git's words), `diverged` (signing: the published commit is not in the
-// Agent's history, and no fallback pairs it; nothing was pushed), `unknown` (the push may have
-// reached the remote, and no answer came).
+// import, sign, upload, push — and git's or git-lfs's words), `diverged` (signing: the published
+// commit is not in the Agent's history, and no fallback pairs it; nothing was pushed), `unknown`
+// (the push may have reached the remote, and no answer came).
 //
 // Signed: the new commits are found by ancestry — the published tip must be an ancestor of the
 // Agent's tip, which the sync step makes true after each push that publishes a commit not the
@@ -67,6 +67,9 @@ type Runner struct {
 	WorkRoot, ReposRoot, GitRoot, Scratch string
 	// Helper is this binary's path: git's credential helper for a token.
 	Helper string
+	// GitLFS is jr2's own git-lfs, which uploads a push's LFS objects (ADR-0067). Default
+	// DefaultGitLFS, on the runtime volume.
+	GitLFS string
 	// CAFile is the instance's caBundle (ADR-0020), when one is mounted.
 	CAFile   string
 	Scrubber *scrub.Scrubber
@@ -240,6 +243,11 @@ func (c *call) run(ctx context.Context) wire.Output {
 	if res.Published == pub {
 		res.Unchanged = true
 		return wire.Output{Outcome: wire.OutcomePushed, Push: &res}
+	}
+	// The large files go first (ADR-0067): a branch whose LFS objects the server lacks is never
+	// published. A signed or squashed copy keeps the pointers, so it uploads the same objects.
+	if out := c.uploadLFS(ctx, res.Published, have); out != nil {
+		return *out
 	}
 	return c.push(ctx, res)
 }

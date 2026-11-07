@@ -166,6 +166,9 @@ type PushSpec struct {
 	Sign       bool    `json:"sign,omitempty"`
 	Squash     *string `json:"squash,omitempty"`
 	Force      bool    `json:"force,omitempty"`
+	// Base is the Binding's base, where the Binding names one (ADR-0051): the push reads the LFS
+	// server from `.lfsconfig` at this commit of the node cache. Absent, the cache's HEAD.
+	Base string `json:"base,omitempty"`
 	// Pairs is every pair the ledger holds for the Workspace's Repo Slot (ADR-0067), oldest push
 	// first: each push row that published. Omitted when there is none; never empty.
 	Pairs []Pair `json:"pairs,omitempty"`
@@ -910,6 +913,9 @@ func (p *PushSpec) validate() error {
 	}
 	if p.Squash != nil && strings.TrimSpace(*p.Squash) == "" {
 		return errors.New("push.squash is an empty message")
+	}
+	if len(p.Base) > 255 || strings.HasPrefix(p.Base, "-") || strings.ContainsAny(p.Base, "\x00\r\n") {
+		return fmt.Errorf("push.base %q is not a base name: at most 255 bytes, no leading -, no NUL or newline", p.Base)
 	}
 	if p.Pairs != nil && len(p.Pairs) == 0 {
 		return errors.New("push.pairs is empty: with no pair, it is omitted")
