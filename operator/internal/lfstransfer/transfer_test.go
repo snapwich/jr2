@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -108,6 +109,19 @@ func checkCopy(t *testing.T, p pod, b blob, got map[string]any) {
 	if _, err := os.Stat(objectPath(filepath.Join(p.cache, "lfs"), b.obj.OID)); err != nil {
 		t.Fatalf("the cache's own file must stay: %v", err)
 	}
+	// git-lfs keeps this mode when it moves the copy into the clone's store,
+	// so it follows the umask, as git-lfs's own downloads do.
+	info, err := os.Stat(path)
+	if want := os.FileMode(0o666) &^ umask(); err != nil || info.Mode().Perm() != want {
+		t.Fatalf("the temp copy's mode = %v (%v), want %v", info.Mode().Perm(), err, want)
+	}
+}
+
+// umask is the process's umask.
+func umask() os.FileMode {
+	m := syscall.Umask(0)
+	syscall.Umask(m)
+	return os.FileMode(m)
 }
 
 func TestTransferHitCopiesWithNoAsk(t *testing.T) {
@@ -149,7 +163,8 @@ func TestTransferMissThenErrorNamesTheOID(t *testing.T) {
 	b := newBlob("nobody has this\n")
 	p := lfsPod(t, b)
 	c := newCustodian(t, p.cache)
-	c.error = "batch response: Repository or object not found"
+	const answerErr = "batch response: Repository or object not found"
+	c.answerError(answerErr)
 
 	s := startAgent(t, p.clone)
 	s.init()
@@ -157,8 +172,8 @@ func TestTransferMissThenErrorNamesTheOID(t *testing.T) {
 	s.terminate()
 
 	msg := errorMessage(t, got)
-	if !strings.HasPrefix(msg, "jr2:") || !strings.Contains(msg, b.obj.OID) || !strings.Contains(msg, c.error) {
-		t.Fatalf("error message = %q, want a jr2: line naming %s and %q", msg, b.obj.OID, c.error)
+	if !strings.HasPrefix(msg, "jr2:") || !strings.Contains(msg, b.obj.OID) || !strings.Contains(msg, answerErr) {
+		t.Fatalf("error message = %q, want a jr2: line naming %s and %q", msg, b.obj.OID, answerErr)
 	}
 }
 
@@ -173,7 +188,7 @@ func TestTransferFaultsBecomeReasons(t *testing.T) {
 			b := newBlob("faulty " + name)
 			p := lfsPod(t, b)
 			c := newCustodian(t, p.cache)
-			set(c)
+			c.set(set)
 			s := startAgent(t, p.clone)
 			s.init()
 			msg := errorMessage(t, s.download(b))

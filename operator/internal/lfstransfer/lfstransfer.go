@@ -20,6 +20,12 @@ SPDX-License-Identifier: MIT
 // downloads the objects into the node cache, and the asker then reads them
 // from the cache's `lfs/objects` through the pod's read-only mount.
 //
+// Every git that the program starts has `-c core.fsmonitor=false -c
+// core.hooksPath=/dev/null` and GIT_NO_REPLACE_OBJECTS=1, so no program that
+// the clone's config names runs (ADR-0075). The rest of git's config comes
+// from the caller's env: a caller that clears the global config (as the cut
+// does) gives safe.directory itself, for example through GIT_CONFIG_COUNT.
+//
 // The program is static and imports the standard library only, for the reason
 // of jr2-upload-pack (ADR-0037): it runs on a libc that jr2 does not control.
 package lfstransfer

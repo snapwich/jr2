@@ -205,6 +205,19 @@ func (c *custodian) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"lfs": answer})
 }
 
+// set changes the stand-in's answer under its lock: the server reads the
+// fields from other goroutines, and in the smudge tests from other processes.
+func (c *custodian) set(change func(*custodian)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	change(c)
+}
+
+// answerError sets the answer's error.
+func (c *custodian) answerError(words string) {
+	c.set(func(c *custodian) { c.error = words })
+}
+
 func (c *custodian) asked() []askBody {
 	c.mu.Lock()
 	defer c.mu.Unlock()

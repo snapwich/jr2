@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -121,8 +120,7 @@ func listPointers(dir, commit string) ([]Pointer, error) {
 
 // lsTree lists every blob of the commit's tree, with its size.
 func lsTree(dir, commit string) ([]treeEntry, error) {
-	cmd := exec.Command("git", "ls-tree", "-r", "-z", "-l", "--full-tree", commit)
-	cmd.Dir = dir
+	cmd := gitCommand(dir, nil, "ls-tree", "-r", "-z", "-l", "--full-tree", commit)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {
@@ -152,8 +150,7 @@ func lsTree(dir, commit string) ([]treeEntry, error) {
 
 // catBlobs reads the blobs in one `git cat-file --batch`, in order.
 func catBlobs(dir string, oids []string) ([][]byte, error) {
-	cmd := exec.Command("git", "cat-file", "--batch")
-	cmd.Dir = dir
+	cmd := gitCommand(dir, nil, "cat-file", "--batch")
 	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
@@ -214,9 +211,8 @@ func lfsFiltered(dir, commit string, paths []string) (map[string]bool, error) {
 	_ = tmp.Close()
 	_ = os.Remove(name)
 	defer func() { _ = os.Remove(name) }()
-	env := append(os.Environ(), "GIT_INDEX_FILE="+name)
-	read := exec.Command("git", "read-tree", commit)
-	read.Dir, read.Env = dir, env
+	env := []string{"GIT_INDEX_FILE=" + name}
+	read := gitCommand(dir, env, "read-tree", commit)
 	if out, err := read.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git read-tree %s: %s", commit, oneLine(string(out)+" "+err.Error()))
 	}
@@ -232,11 +228,7 @@ func lfsFiltered(dir, commit string, paths []string) (map[string]bool, error) {
 // first call with no paths tells whether git accepts the flag.
 func checkAttr(dir string, env []string, flag string) (func([]string) (map[string]bool, error), error) {
 	run := func(paths []string) (map[string]bool, error) {
-		cmd := exec.Command("git", "check-attr", flag, "-z", "--stdin", "filter")
-		cmd.Dir = dir
-		if env != nil {
-			cmd.Env = env
-		}
+		cmd := gitCommand(dir, env, "check-attr", flag, "-z", "--stdin", "filter")
 		var in bytes.Buffer
 		for _, p := range paths {
 			in.WriteString(p)

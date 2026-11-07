@@ -8,6 +8,7 @@ package lfstransfer
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -18,8 +19,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"github.com/snapwich/jr2/operator/internal/uploadpack"
 )
 
 var oidPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -61,11 +60,33 @@ func findCheckout(dir string) (checkout, error) {
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(dir, common)
 	}
-	cache, err := uploadpack.CacheDir(dir)
+	common = filepath.Clean(common)
+	cache, err := cacheOf(common)
 	if err != nil {
 		return checkout{}, err
 	}
-	return checkout{common: filepath.Clean(common), cache: cache}, nil
+	return checkout{common: common, cache: cache}, nil
+}
+
+// cacheOf is `/repos/<key>` for the common dir: its first alternate is the
+// cache's object store, and the cache is that store's parent. It is the rule
+// of uploadpack.CacheDir, which this program does not call because that runs
+// git with no safeConfig.
+func cacheOf(common string) (string, error) {
+	alternates := filepath.Join(common, "objects", "info", "alternates")
+	contents, err := os.ReadFile(alternates)
+	if err != nil {
+		return "", fmt.Errorf("this checkout borrows from no node cache (%s): %w", alternates, err)
+	}
+	objects, _, _ := strings.Cut(string(contents), "\n")
+	objects = strings.TrimSpace(objects)
+	if objects == "" {
+		return "", fmt.Errorf("this checkout borrows from no node cache (%s names none)", alternates)
+	}
+	if !filepath.IsAbs(objects) {
+		objects = filepath.Join(common, "objects", objects)
+	}
+	return filepath.Dir(filepath.Clean(objects)), nil
 }
 
 // errMismatch is the fault of a cache file whose bytes are not its oid's.
@@ -85,7 +106,7 @@ func copyOut(c checkout, obj Object) (string, error) {
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		return "", err
 	}
-	dst, err := os.CreateTemp(tmpDir, "jr2-"+obj.OID+"-")
+	dst, err := createTemp(tmpDir, "jr2-"+obj.OID+"-")
 	if err != nil {
 		return "", err
 	}
@@ -111,10 +132,47 @@ func copyOut(c checkout, obj Object) (string, error) {
 	return dst.Name(), nil
 }
 
+// safeConfig is given to every git that the program runs. The cut and the
+// attach call jr2-lfs in a clone whose .git/config the Agent can write, and
+// the cut states that no hook and no filter runs in its window (ADR-0075).
+// `check-attr` and `read-tree` read an index, and an index read starts the
+// program that core.fsmonitor names. These keys stop that program and every
+// hook. The env stops a replace ref from changing which blobs the program
+// reads.
+var safeConfig = []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"}
+
+// gitCommand is the one way that the program starts git: in dir, with
+// safeConfig, GIT_NO_REPLACE_OBJECTS=1 and extra env (KEY=VALUE).
+func gitCommand(dir string, extraEnv []string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append(append([]string(nil), safeConfig...), args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1"), extraEnv...)
+	return cmd
+}
+
+// createTemp makes a new file in dir with mode 0666 less the umask.
+// os.CreateTemp makes it 0600, and git-lfs keeps the mode when it moves the
+// file into the clone's store. git-lfs's own downloads follow the umask, so
+// this copy does too.
+func createTemp(dir, prefix string) (*os.File, error) {
+	for range 100 {
+		var r [8]byte
+		if _, err := rand.Read(r[:]); err != nil {
+			return nil, err
+		}
+		name := filepath.Join(dir, prefix+hex.EncodeToString(r[:]))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return f, err
+	}
+	return nil, fmt.Errorf("cannot make a temp file in %s", dir)
+}
+
 // gitOut runs git in dir and gives its trimmed stdout.
 func gitOut(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
+	cmd := gitCommand(dir, nil, args...)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {

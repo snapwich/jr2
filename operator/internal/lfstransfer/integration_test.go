@@ -69,10 +69,22 @@ func TestSmudgeReadsTheCacheThroughTheAlternate(t *testing.T) {
 	p := smudgePod(t, b)
 	land(t, filepath.Join(p.cache, "lfs"), b)
 	c := newCustodian(t, p.cache)
+	// An agent that fails and leaves a mark: the smudge must come from the
+	// alternate, with no agent at all.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	failing := filepath.Join(dir, "agent")
+	if err := os.WriteFile(failing, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, p.clone, "config", "lfs.customtransfer.jr2.path", failing)
 	if out, err := checkOut(t, p); err != nil {
 		t.Fatalf("checkout: %v\n%s", err, out)
 	}
 	checkSmudged(t, p, b)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("git-lfs started the transfer agent for an object that the alternate holds")
+	}
 	if n := len(c.asked()); n != 0 {
 		t.Fatalf("a held object made %d asks, want 0", n)
 	}
@@ -98,7 +110,7 @@ func TestSmudgeFailsWithJr2sLine(t *testing.T) {
 	b := newBlob("nobody can give this\n")
 	p := smudgePod(t, b)
 	c := newCustodian(t, p.cache)
-	c.error = "batch response: object not found"
+	c.answerError("batch response: object not found")
 	out, err := checkOut(t, p)
 	if err == nil {
 		t.Fatalf("the checkout passed with no object:\n%s", out)

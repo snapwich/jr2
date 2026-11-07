@@ -36,25 +36,68 @@ func fetch(t *testing.T, dir string, args ...string) FetchResult {
 	return r
 }
 
-// gitLog puts a git on PATH that logs each argv to a file, then runs the
-// real git. It shows which git commands a fetch runs.
+// gitCalls is what the logging git saw: each argv, and the stdin of each
+// cat-file.
+type gitCalls struct {
+	argv, catIn string
+}
+
+// gitLog puts a git on PATH that logs each argv to a file, and the stdin of
+// each cat-file to a second file, then runs the real git. It shows which git
+// commands a fetch runs and which blobs it reads. Each call must carry
+// safeConfig; calls() gives the argv after it.
 func gitLog(t *testing.T) func() []string {
+	t.Helper()
+	l := gitLogFull(t)
+	return l.calls
+}
+
+type gitLogger struct {
+	t     *testing.T
+	files gitCalls
+}
+
+func gitLogFull(t *testing.T) *gitLogger {
 	t.Helper()
 	real, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git is not on PATH")
 	}
 	dir := t.TempDir()
-	log := filepath.Join(dir, "log")
-	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\nexec %q \"$@\"\n", log, real)
+	l := &gitLogger{t: t, files: gitCalls{argv: filepath.Join(dir, "log"), catIn: filepath.Join(dir, "cat-in")}}
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$*" >> %[1]q
+case " $* " in
+*" cat-file "*) tee -a %[2]q | exec %[3]q "$@" ;;
+esac
+exec %[3]q "$@"
+`, l.files.argv, l.files.catIn, real)
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return func() []string {
-		data, _ := os.ReadFile(log)
-		return strings.Split(strings.TrimSpace(string(data)), "\n")
+	return l
+}
+
+func (l *gitLogger) calls() []string {
+	l.t.Helper()
+	data, _ := os.ReadFile(l.files.argv)
+	prefix := strings.Join(safeConfig, " ") + " "
+	var calls []string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+		rest, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			l.t.Fatalf("git %q ran with no %q", line, prefix)
+		}
+		calls = append(calls, rest)
 	}
+	return calls
+}
+
+// catInput is every oid that a cat-file read, in order.
+func (l *gitLogger) catInput() []string {
+	data, _ := os.ReadFile(l.files.catIn)
+	return strings.Fields(string(data))
 }
 
 func TestFetchAsksOnlyForLFSFilesThatNoStoreHolds(t *testing.T) {
@@ -75,7 +118,8 @@ func TestFetchAsksOnlyForLFSFilesThatNoStoreHolds(t *testing.T) {
 	land(t, filepath.Join(p.cache, "lfs"), inCache)
 	land(t, filepath.Join(p.clone, ".git", "lfs"), inClone)
 	c := newCustodian(t, p.cache, remote)
-	c.error = "object d not found on the remote"
+	const answerErr = "object d not found on the remote"
+	c.answerError(answerErr)
 
 	calls := gitLog(t)
 	r := fetch(t, p.clone, "main")
@@ -99,7 +143,7 @@ func TestFetchAsksOnlyForLFSFilesThatNoStoreHolds(t *testing.T) {
 		t.Fatalf("ask = %+v, want objects %v", asks[0], want)
 	}
 	if len(r.Missing) != 1 || r.Missing[0].Path != "d.bin" || r.Missing[0].OID != absent.obj.OID ||
-		r.Missing[0].Reason != c.error {
+		r.Missing[0].Reason != answerErr {
 		t.Fatalf("missing = %+v, want d.bin with the answer's error", r.Missing)
 	}
 }
@@ -130,39 +174,96 @@ func TestFetchWithTheTempIndex(t *testing.T) {
 }
 
 func TestFetchWithNoLFSReadsOneTree(t *testing.T) {
+	const attrs = "*.sh text eol=lf\n"
 	for name, files := range map[string]map[string]string{
 		"no .gitattributes":   {"a.bin": newBlob("x").pointer, "README": "jr2\n"},
-		"no filter=lfs in it": {".gitattributes": "*.sh text eol=lf\n", "a.bin": newBlob("x").pointer},
+		"no filter=lfs in it": {".gitattributes": attrs, "a.bin": newBlob("x").pointer},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := makePod(t, files)
 			c := newCustodian(t, p.cache)
-			calls := gitLog(t)
+			l := gitLogFull(t)
 			r := fetch(t, p.clone, "main")
 			if r.Pointers != 0 || r.Asked != 0 || len(r.Missing) != 0 || len(c.asked()) != 0 {
 				t.Fatalf("result = %+v, asks %d", r, len(c.asked()))
 			}
-			trees := 0
-			for _, call := range calls() {
-				if strings.HasPrefix(call, "ls-tree") {
+			trees, cats := 0, 0
+			for _, call := range l.calls() {
+				switch {
+				case strings.HasPrefix(call, "ls-tree"):
 					trees++
-				}
-				if strings.HasPrefix(call, "check-attr") || strings.HasPrefix(call, "read-tree") {
+				case strings.HasPrefix(call, "cat-file"):
+					cats++
+				case strings.HasPrefix(call, "check-attr") || strings.HasPrefix(call, "read-tree"):
 					t.Fatalf("a commit with no LFS ran %q", call)
 				}
 			}
 			if trees != 1 {
-				t.Fatalf("%d tree listings, want 1: %v", trees, calls())
+				t.Fatalf("%d tree listings, want 1: %v", trees, l.calls())
 			}
-			// A cat-file reads the .gitattributes blob alone, if there is one.
-			if _, has := files[".gitattributes"]; !has {
-				for _, call := range calls() {
-					if strings.HasPrefix(call, "cat-file") {
-						t.Fatalf("a commit with no .gitattributes ran %q", call)
-					}
-				}
+			// One cat-file reads the .gitattributes blob alone, if there is
+			// one, and no other blob.
+			var want []string
+			if _, has := files[".gitattributes"]; has {
+				want = []string{run(t, p.clone, "rev-parse", "main:.gitattributes")}
+			}
+			if cats != len(want) || !slices.Equal(l.catInput(), want) {
+				t.Fatalf("%d cat-file runs read %v, want %v", cats, l.catInput(), want)
 			}
 		})
+	}
+}
+
+// TestFetchRunsNoProgramOfTheClone plants an fsmonitor and hooks in the
+// clone's config. The cut and the attach call fetch in a clone whose config
+// the Agent can write, and no program of the Agent's may run then (ADR-0075).
+func TestFetchRunsNoProgramOfTheClone(t *testing.T) {
+	for _, source := range []bool{true, false} {
+		t.Run(fmt.Sprintf("check-attr --source %v", source), func(t *testing.T) {
+			checkAttrSource = source
+			t.Cleanup(func() { checkAttrSource = true })
+			b := newBlob("planted")
+			p := makePod(t, map[string]string{".gitattributes": attrsLFS, "x.bin": b.pointer})
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "ran")
+			prog := filepath.Join(dir, "planted")
+			if err := os.WriteFile(prog, []byte("#!/bin/sh\necho \"$0 $*\" >> "+marker+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			hooks := filepath.Join(dir, "hooks")
+			if err := os.MkdirAll(hooks, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for _, h := range []string{"post-index-change", "post-checkout", "reference-transaction"} {
+				if err := os.Symlink(prog, filepath.Join(hooks, h)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run(t, p.clone, "config", "core.fsmonitor", prog)
+			run(t, p.clone, "config", "core.hooksPath", hooks)
+			newCustodian(t, p.cache, b)
+			if r := fetch(t, p.clone, "main"); r.Pointers != 1 {
+				t.Fatalf("result = %+v", r)
+			}
+			if data, err := os.ReadFile(marker); err == nil {
+				t.Fatalf("fetch ran the clone's planted program:\n%s", data)
+			}
+		})
+	}
+}
+
+// TestFetchFromASubdirectory runs fetch below the top of the checkout. An
+// attribute pattern with a directory still matches.
+func TestFetchFromASubdirectory(t *testing.T) {
+	b := newBlob("in assets")
+	p := makePod(t, map[string]string{".gitattributes": "assets/*.bin filter=lfs -text\n", "assets/x.bin": b.pointer})
+	sub := filepath.Join(p.clone, "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newCustodian(t, p.cache, b)
+	if r := fetch(t, sub, "main"); r.Pointers != 1 || r.Asked != 1 || len(r.Missing) != 0 {
+		t.Fatalf("result = %+v, want the one pointer", r)
 	}
 }
 

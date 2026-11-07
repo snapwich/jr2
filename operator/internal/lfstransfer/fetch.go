@@ -29,41 +29,54 @@ type Missing struct {
 	Reason string `json:"reason"`
 }
 
+// fetchArgs is what `fetch` reads from its arguments.
+type fetchArgs struct {
+	identity, base, commit string
+	identitySet, baseSet   bool
+}
+
+// parseFetchArgs reads `[--identity I] [--base B] [--] <commit>`. It is false
+// for a usage fault.
+func parseFetchArgs(args []string) (fetchArgs, bool) {
+	var f fetchArgs
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case (a == "--identity" || a == "--base") && i+1 < len(args):
+			i++
+			if a == "--identity" {
+				f.identity, f.identitySet = args[i], true
+			} else {
+				f.base, f.baseSet = args[i], true
+			}
+		case strings.HasPrefix(a, "--identity="):
+			f.identity, f.identitySet = strings.TrimPrefix(a, "--identity="), true
+		case strings.HasPrefix(a, "--base="):
+			f.base, f.baseSet = strings.TrimPrefix(a, "--base="), true
+		case a == "--" && i+1 < len(args) && f.commit == "":
+			i++
+			f.commit = args[i]
+		case strings.HasPrefix(a, "-") || f.commit != "":
+			return f, false
+		default:
+			f.commit = a
+		}
+	}
+	return f, f.commit != ""
+}
+
 // runFetch is `jr2-lfs fetch [--identity I] [--base B] <commit>`. It gets the
 // LFS objects of one commit into the node cache before git checks the commit
 // out (ADR-0053, ADR-0075). It exits 0 when it could do its work, also when
 // objects are missing: the caller reads `missing`. It exits non-zero only for
 // a usage or I/O fault.
 func runFetch(o Options, args []string) int {
-	var identity, base, commit string
-	identitySet, baseSet := false, false
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case (a == "--identity" || a == "--base") && i+1 < len(args):
-			i++
-			if a == "--identity" {
-				identity, identitySet = args[i], true
-			} else {
-				base, baseSet = args[i], true
-			}
-		case strings.HasPrefix(a, "--identity="):
-			identity, identitySet = strings.TrimPrefix(a, "--identity="), true
-		case strings.HasPrefix(a, "--base="):
-			base, baseSet = strings.TrimPrefix(a, "--base="), true
-		case a == "--" && i+1 < len(args) && commit == "":
-			i++
-			commit = args[i]
-		case strings.HasPrefix(a, "-") || commit != "":
-			_, _ = io.WriteString(o.Stderr, Usage)
-			return 2
-		default:
-			commit = a
-		}
-	}
-	if commit == "" {
+	f, ok := parseFetchArgs(args)
+	if !ok {
 		_, _ = io.WriteString(o.Stderr, Usage)
 		return 2
 	}
+	identity, base, commit := f.identity, f.base, f.commit
+	identitySet, baseSet := f.identitySet, f.baseSet
 
 	c, err := findCheckout(o.Dir)
 	if err != nil {
@@ -75,7 +88,14 @@ func runFetch(o Options, args []string) int {
 		fault(o, "%q names no commit in this clone", commit)
 		return 1
 	}
-	pointers, err := listPointers(o.Dir, resolved)
+	// `check-attr --stdin` reads each path from the working directory, and
+	// ls-tree gives each path from the top of the tree. So the listing runs at
+	// the top of the checkout, also when the caller is in a subdirectory.
+	top := o.Dir
+	if t, err := gitOut(o.Dir, "rev-parse", "--show-toplevel"); err == nil && t != "" {
+		top = t
+	}
+	pointers, err := listPointers(top, resolved)
 	if err != nil {
 		fault(o, "cannot list the large files of %s: %v", commit, err)
 		return 1
