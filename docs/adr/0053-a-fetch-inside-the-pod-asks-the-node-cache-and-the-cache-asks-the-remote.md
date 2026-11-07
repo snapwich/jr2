@@ -84,13 +84,14 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   alternate. A miss goes to jr2's standalone transfer agent, beside git-lfs on the volume. The agent asks for those
   objects by oid on the path that a fetch's ask takes (the Custodian, then the Orchestrator, then the cache agent),
   waits for the landing, and gives git-lfs a copy of each one. The cache agent downloads them with the Repo CR's
-  `secretRef` (ADR-0051). So any checkout works, of any commit, as it does in a clone with no LFS. One ask names 1 to
-  256 objects. An attach asks for the objects of the Binding's base before it checks out `default/`, and a cut asks for
-  its commit's. The cut's ask gets what is left of its Effect's `timeout`
-  ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). An object that the remote cannot give
-  and the cache does not hold fails git-lfs's checkout, with jr2's line on stderr. A cold attach can download for longer
-  than one HTTP request may wait, so `POST /attach` answers 202 while the attach runs, and the Orchestrator asks again
-  with the same body until it ends.
+  `secretRef` (ADR-0051). So any checkout in the pod's `/work` works, of any commit, as it does in a clone with no LFS.
+  A credentialed `command` is the exception: it runs on the Sandbox Effector's own scratch checkout, where each large
+  file is its pointer (ADR-0067). One ask names 1 to 256 objects. An attach asks for the objects of the Binding's base
+  before it checks out `default/`, and a cut asks for its commit's. The cut's ask gets what is left of its Effect's
+  `timeout` ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). An object that the remote
+  cannot give and the cache does not hold fails git-lfs's checkout, with jr2's line on stderr. A cold attach can
+  download for longer than one HTTP request may wait, so `POST /attach` answers 202 while the attach runs, and the
+  Orchestrator asks again with the same body until it ends.
 - **Names.** `fetch` is what an Agent, a human, and a cache do; `refresh` is what the interval does and stays on
   `refreshInterval`; an _ask_ is the mark, the word the agent and the operator already use. The url carries the Repo's
   identity, never the cache key — a key is a derived directory name, never chosen by a human (ADR-0004), and not the
@@ -131,8 +132,8 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 - The runtime volume carries a second static binary, and so a jr2 program is present in every seat of every Workspace
   pod, User Container included. It also carries git-lfs and the LFS transfer agent.
 - git-lfs copies each object that it smudges into the clone's own `.git/lfs/objects`, and the cache is on another mount,
-  so a pod's disk holds each checked-out large file two times. It counts toward the size that the Workspace states
-  ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
+  so a pod's disk holds each checked-out large file two times. That disk is `/work`'s, which is not part of the Size
+  that the Workspace states ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
 - A fetch inside a pod is a remote round trip through the node agent, seconds rather than milliseconds. Every git
   command that fetches pays it; none that does not.
 - The cache agent serves a Repo's git asks and its LFS asks one at a time, and it works on at most four Repos at once.

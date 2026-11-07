@@ -325,6 +325,7 @@ ends `and <n> more` when there are more:
   `the LFS object of <file> does not match its oid: <why>, and the server lacks it`
 - an object file that jr2 cannot read:
   `the LFS object of <file> could not be read (<cause>), and the server lacks it, so it cannot be uploaded`
+- jr2 cannot copy an object for git-lfs: `the LFS object of <file> could not be staged: <error>`
 - the batch answer refuses an object, or leaves it out: `the LFS object of <file> could not be uploaded: <why>` or
   `the LFS object of <file> could not be uploaded: the server's batch answer left it out`
 - the LFS server refuses the batch request, for example a server on a different origin that needs a credential, or a
@@ -333,12 +334,23 @@ ends `and <n> more` when there are more:
 - the batch request gets no answer:
   `the LFS objects of <files> could not be uploaded: the LFS server's batch request failed: <error>` or
   `the LFS objects of <files> could not be uploaded: the LFS server's batch answer did not come: the timeout passed`
+- the batch answer is not one that jr2 can use: `the LFS objects of <files> could not be uploaded: <why>`. `<why>` is
+  `the LFS server's batch answer could not be read: <error>`,
+  `the LFS server's batch answer is not the batch API's JSON` or `the LFS server's batch url could not be read`.
+- jr2 cannot find the LFS server from the push URL or from `.lfsconfig`. The `reason` is one of these:
+  - `the LFS server could not be found from the push url`
+  - `the LFS server's scheme "<scheme>" is not one jr2 uploads over`
+  - `the LFS server is ssh, and the push has no ssh credential`
+  - `the LFS server's ssh url could not be read` or `the LFS server's ssh url is not one jr2 runs ssh to`
+  - `git-lfs-authenticate on the LFS server failed: <why>`, `git-lfs-authenticate on the LFS server gave no href` or
+    `git-lfs-authenticate on the LFS server gave an href that is not http(s)`
+- jr2 cannot write the LFS settings of its scratch repository: `the LFS upload could not be configured`
 - git-lfs fails: `the LFS objects of <files> could not be uploaded[: <why>][; git-lfs: <line>]`. `<why>` is
   `the timeout passed`, `this Effector holds no git-lfs at <program>`, `the remote refused the credential` or
   `the remote's TLS certificate is not trusted`. `<line>` is the last line in which git-lfs tells of the failure.
 - the batch request after git-lfs exits fails: `the upload of the LFS objects of <files> could not be confirmed: <why>`
 - the server does not hold the objects after git-lfs exits:
-  `the LFS server does not hold the objects of <files> after the upload`
+  `the LFS server does not hold the objects of <files> after the upload[; git-lfs: <line>]`
 - the base of the Binding is not in the Repo cache:
   `the LFS server could not be read: the Binding's base "<base>" is not in the node cache`
 - jr2 cannot list the LFS pointers of the commits:

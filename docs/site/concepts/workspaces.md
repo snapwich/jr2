@@ -137,15 +137,14 @@ jr2 has no Effect that removes a Worktree. To remove one, run `git worktree remo
 ## Large files and submodules
 
 A Repo that keeps its large files with Git LFS needs nothing from your Machine or your image. The commit's
-`.gitattributes` tells git which files are large. jr2's runtime has its own git-lfs, and the clone uses it. Each large
-file is checked out with its contents, not as its pointer:
+`.gitattributes` tells git which files are large. jr2's runtime has its own git-lfs, and the clone uses it. In the clone
+and in each Worktree, a large file has its contents, not its pointer:
 
-- The attach gets the large files of the base before it checks out `default/`. When the Repo cache cannot get one, the
-  attach fails, and the Workspace fails in `attaching`.
+- The attach gets the large files of the base before it puts `default/` on the base. When the Repo cache cannot get one,
+  the attach fails, and the run faults. The Sandbox stays, so that you can look inside it.
 - A cut gets the large files of its commit before it changes git. When the Repo cache cannot get one, the cut is
   `refused`, and the reason names the file.
-- Each other checkout in the Sandbox, such as a `git checkout` by an Agent, asks the Repo cache for the large files that
-  it needs.
+- Each other `git checkout` in `/work`, such as one by an Agent, asks the Repo cache for the large files that it needs.
 - A `push` uploads the large files of its commits to the LFS server before it updates the branch (see
   [Push and sign a branch](../guides/push-and-sign-a-branch.md#push-large-files)).
 
@@ -154,8 +153,13 @@ gets from the Repo's url. The [Orchestrator](../reference/glossary.md#orchestrat
 Binding. It ignores a base that the pod sends. Thus an Agent cannot send the Repo cache or the push to an LFS server of
 its choice. [Architecture](architecture.md#large-files-in-the-repo-cache) tells which server gets the credential.
 
-A large file uses the disk of `/work` more than one time. The clone keeps one copy of it in its own LFS store, and each
-checkout of it, `default/` included, is one more copy.
+A large file uses the disk of `/work` more than one time. The clone keeps one copy of it in its own LFS store.
+`default/` and each Worktree that holds the file keep one more copy each.
+
+A `command` that names an Effect secret does not get the large files. It runs in the
+[Sandbox Effector](../reference/glossary.md#sandbox-effector), on its own copy of one commit, and in that copy each
+large file is its pointer. Thus do not give such a `command` the work of reading a large file. A `command` with no
+Effect secret, an Agent, and an `http` Effect with a file body read the Worktree, so they get the contents.
 
 The clone and each cut check out no submodule. The folder of a submodule stays empty. A Workspace that works in the code
 of a submodule binds that Repo as a Repo Slot of its own. The example binds `handbook` beside `app` in this way.
@@ -327,12 +331,12 @@ the Harness container does not lose the Workspace: the pod and `/work` stay.
   it chooses.
 - `jr2 up` refuses a Repo Slot name that starts with `.`, because `/work/.jr2/` is reserved for jr2.
 - A cut of the branch that `default/` holds is `refused`, and the reason names `/work/<slot>/default`.
-- An attach whose base has a large file that the Repo cache cannot get fails, and the Workspace fails in `attaching`.
-  The error is
-  `the attach of slot "<slot>" failed at get the base's large files: the node cache cannot get <files> of <base>: <list>`.
+- An attach whose base has a large file that the Repo cache cannot get fails. The run faults, and the Sandbox stays. The
+  fault is
+  `Sandbox "<name>": the attach failed (500): the attach of slot "<slot>" failed at get the base's large files: the node cache cannot get <files> of <base>: <list>`.
 - A cut whose large files the Repo cache cannot get, or cannot get in the time that the cut has, is `refused`. The
-  reason names the files, as the attach error does. [Cut a Worktree](../guides/cut-a-worktree.md#rules) gives the form
-  of `<list>`.
+  reason names the files. [Cut a Worktree](../guides/cut-a-worktree.md#rules) gives the text and the form of `<list>`.
+- A `command` that names an Effect secret gets the pointer of each large file, not its contents.
 - A `push` whose large files the LFS server does not hold after the upload is `rejected`, and nothing is pushed.
 - With no Repo Slot, `jr2 up` refuses a `worktree()`, a `push`, and a `command` that names an Effect secret.
 - A Size has only `limits.memory` and `limits.cpu`. jr2 refuses `requests` and each other key.
