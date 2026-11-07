@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Api, AssistantMessage, Message, Model, Models } from "@earendil-works/pi-ai";
-import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "../src/compaction.ts";
+import { compactIfOver, compactionSettingsFor, contextTokens, summaryRetryPolicy } from "../src/compaction.ts";
 import { prepareCompaction, sessionChain, shouldCompact } from "../src/pi-compaction.ts";
 import { EnginePart, type TranscriptEntry } from "../src/transcript.ts";
 
@@ -294,4 +294,30 @@ test("a second cut when the text itself is still over: pi's estimate counts the 
   assert.ok(await compactIfOver(seatFor(part, models, 0)), "the text estimate crossed, so pi cuts again");
   assert.equal(seen.length, 2, "one summary request for each crossing");
   assert.equal(compactions(part).length, 2);
+});
+
+test("the text estimate counts the system prompt, and a provider's usage, which counts it already, is not added to (ADR-0036)", () => {
+  const system = "s".repeat(4000); // 1000 tokens by pi's chars/4
+  // No usage since the newest cut: the text of the messages, plus the system prompt.
+  const textOnly = sessionChain([user("x".repeat(400)), assistant("", 0, "error")]);
+  assert.equal(contextTokens(textOnly, system) - contextTokens(textOnly), 1000);
+  // A usage: the provider counted the whole request, the system prompt in it.
+  const withUsage = sessionChain(full());
+  assert.equal(contextTokens(withUsage, system), contextTokens(withUsage));
+});
+
+test("a context whose messages fit and whose system prompt does not is cut: up to 256 KiB of project context is in it (ADR-0036, ADR-0062)", async () => {
+  // 100k tokens of messages and no usage since the newest cut: under the window less the reserve
+  // (200000 - 16384). With 100k tokens of system prompt, over it.
+  const entries = () => [user("x".repeat(200_000)), assistant("", 0, "error"), user("y".repeat(200_000))];
+  const fits = scripted([{}]);
+  assert.equal(
+    await compactIfOver(seatFor(new EnginePart("t", entries(), undefined, undefined), fits.models, 0)),
+    undefined,
+  );
+  assert.equal(fits.seen.length, 0);
+  const over = scripted([{}]);
+  const part = new EnginePart("t", entries(), undefined, undefined);
+  assert.ok(await compactIfOver({ ...seatFor(part, over.models, 0), systemPrompt: "p".repeat(400_000) }));
+  assert.equal(over.seen.length, 1, "the system prompt took it over");
 });

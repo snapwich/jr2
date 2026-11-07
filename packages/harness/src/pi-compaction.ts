@@ -33,7 +33,13 @@ export const PRIVATE_FILES = {
 
 type CompactionFile = {
   prepareCompaction(path: SessionEntry[], settings: CompactionSettings): CompactionPreparation | undefined;
-  estimateProjectedContextTokens(projection: SessionProjection, branch: SessionEntry[]): { tokens: number };
+  estimateProjectedContextTokens(
+    projection: SessionProjection,
+    branch: SessionEntry[],
+  ): {
+    tokens: number;
+    lastUsageIndex: number | null;
+  };
   shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean;
   estimateTokens(message: AgentMessage): number;
   compact(
@@ -150,9 +156,13 @@ export function contextOf(entries: readonly TranscriptEntry[]): EngineMessage[] 
   return projection(sessionChain(entries)).messages.filter(isEngineMessage);
 }
 
-/** pi's estimate of the projected context. It does not trust a usage from before the newest cut. */
-export function estimateContext(chain: SessionEntry[]): number {
-  return compaction.estimateProjectedContextTokens(projection(chain), chain).tokens;
+/** pi's estimate of the projected context. It does not trust a usage from before the newest cut.
+ * `fromUsage` is true when the estimate starts from a provider's usage, which counts the whole
+ * request: the system prompt and the tool declarations too. Else it is the text of the messages
+ * alone (chars/4). */
+export function estimateContext(chain: SessionEntry[]): { tokens: number; fromUsage: boolean } {
+  const estimate = compaction.estimateProjectedContextTokens(projection(chain), chain);
+  return { tokens: estimate.tokens, fromUsage: estimate.lastUsageIndex !== null };
 }
 
 export const shouldCompact: CompactionFile["shouldCompact"] = (tokens, window, settings) =>

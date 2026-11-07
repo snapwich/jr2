@@ -163,6 +163,8 @@ type Assembled = {
     thinkingLevel: ModelThinkingLevel;
     /** The Menu's pick briefings (`briefingsOf`): fixed with the Menu, read once per Submission. */
     briefings: ReadonlyMap<string, string>;
+    /** This Submission's system prompt: Compaction's text estimate counts it (ADR-0036). */
+    systemPrompt: string;
   };
 };
 
@@ -336,6 +338,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       projectContextOf && hasProjectContext(definition.workspace, definition.cwd, contextOptions.workRoot)
         ? await projectContextOf(definition.cwd, signal)
         : "";
+    const systemPrompt = standing(definition.instructions, definition.workspace, mcpList.length > 0, projectContext);
 
     if (!assembled) {
       const current: Assembled["current"] = {
@@ -343,6 +346,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         model,
         thinkingLevel,
         briefings: briefingsOf(read.menu),
+        systemPrompt,
       };
       // Opened, not created, when the conversation was rebuilt: the engine part a previous process
       // wrote (ADR-0031).
@@ -375,6 +379,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
               settings: compactionSettingsFor(current.model, deps.keepRecentTokens),
               retry: summaryRetry,
               signal: runSignal,
+              systemPrompt: current.systemPrompt,
             });
             if (!cut) return undefined;
             printLines(out, deps.agentName, deps.instanceId, [
@@ -533,6 +538,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       assembled.current.model = model;
       assembled.current.thinkingLevel = thinkingLevel;
       assembled.current.briefings = briefingsOf(read.menu);
+      assembled.current.systemPrompt = systemPrompt;
     }
 
     const { engine, part, current } = assembled;
@@ -596,7 +602,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       await engine.run({
         model,
         thinkingLevel,
-        systemPrompt: standing(definition.instructions, definition.workspace, mcpList.length > 0, projectContext),
+        systemPrompt,
         tools,
         context,
         prompt,

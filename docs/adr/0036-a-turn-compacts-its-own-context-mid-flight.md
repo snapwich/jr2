@@ -51,8 +51,16 @@ by a summary plus a retained tail.
   before it. The engine part's format does not change.
 - **The Harness decides when, by pi's rule, with jr2's setting for each model.** A cut is due when pi's projected
   estimate of the context (`estimateProjectedContextTokens`) is over `contextWindow − reserve` (`shouldCompact`), as
-  pi's own session decides. The setting is jr2's derivation, given to pi as its per-model setting, with no author
-  surface: `reserve = max(16384, model.maxTokens)`, with flue's small-window floor
+  pi's own session decides. When that estimate is the text of the messages alone (no provider usage since the newest
+  cut), jr2 adds the system prompt's text by pi's heuristic (characters / 4). pi's own session puts the system prompt in
+  the context as a message, which its estimate counts; the engine seam gives it apart, so pi's estimate does not see it.
+  The system prompt holds the project context, up to 256 KiB
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), so a first request or the request after a
+  cut could otherwise pass the window with an estimate below the threshold. jr2 counts it and keeps the cap, because a
+  lower cap would drop a repo's own rules to fit an estimate. A usage counts the whole request already, and jr2 adds
+  nothing to it. The tool declarations stay uncounted in the text estimate; they are small beside the reserve. The
+  setting is jr2's derivation, given to pi as its per-model setting, with no author surface:
+  `reserve = max(16384, model.maxTokens)`, with flue's small-window floor
   (`reserve × 2 ≥ contextWindow → max(1024, contextWindow / 3)`); `keepRecentTokens` 20000. The derivation is
   deliberate: the threshold is checked BEFORE a request that may emit up to `maxTokens`, so a reserve smaller than one
   full response does not reserve anything. pi's flat 16384 relies on pi's own compact-and-retry after an overflow, which

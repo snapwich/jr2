@@ -88,7 +88,22 @@ export type CompactionSeat = {
   settings: CompactionSettings;
   retry: RetryPolicy;
   signal: AbortSignal | undefined;
+  /** The system prompt of the request: the text estimate counts it (`contextTokens`). */
+  systemPrompt?: string;
 };
+
+/**
+ * The tokens of the next request's context, by pi's projected estimate. When the estimate is the
+ * text of the messages alone (no usage since the newest cut: the first request, or the one after a
+ * cut), it adds the system prompt's text by pi's own heuristic (chars/4): the instructions, the
+ * project context (up to 256 KiB, ADR-0062) and the standing part. pi's own sessions put the system
+ * prompt in the context as a message, which pi counts; jr2 gives it to the engine apart, so pi's
+ * estimate does not see it. A usage counts it already.
+ */
+export function contextTokens(chain: ReturnType<typeof sessionChain>, systemPrompt = ""): number {
+  const { tokens, fromUsage } = estimateContext(chain);
+  return fromUsage ? tokens : tokens + Math.ceil(systemPrompt.length / 4);
+}
 
 /** A cut that was taken: the rebuilt context to send, and the two numbers the log line reports. */
 export type Cut = {
@@ -101,8 +116,8 @@ export type Cut = {
  * Take a Compaction if the engine part's context crosses the reserve, and answer with the rebuilt
  * context — or `undefined` when nothing was cut, which is every ordinary request. Called before a
  * request, so the request that NOTICED is already compacted and no round-trip is spent on a full
- * window. The estimate is pi's, of the engine part's projected context, without the leading system
- * message: the system prompt was never counted. pi's estimate does not trust a usage from before the
+ * window. The estimate is pi's, of the engine part's projected context, plus the system prompt when
+ * the estimate is text alone (`contextTokens`). pi's estimate does not trust a usage from before the
  * newest cut (it estimates the text then), so a cut whose next request failed does not cut again on
  * the reading that crossed.
  *
@@ -117,7 +132,8 @@ export async function compactIfOver(seat: CompactionSeat): Promise<Cut | undefin
   // all (`compaction.test.ts`).
   if (seat.signal?.aborted) return undefined;
   const chain = sessionChain(seat.part.all());
-  if (!shouldCompact(estimateContext(chain), seat.model.contextWindow, seat.settings)) return undefined;
+  if (!shouldCompact(contextTokens(chain, seat.systemPrompt), seat.model.contextWindow, seat.settings))
+    return undefined;
 
   // `undefined` is "nothing to cut", not a failure — an empty transcript, or one whose newest entry
   // is already a compaction. The turn proceeds over the threshold; if the context truly cannot fit,
