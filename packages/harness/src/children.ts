@@ -67,7 +67,8 @@ export const OUTPUT_DIR = `${RUNTIME_SECRETS}/output`;
  * Where the pod mounts the image user's context folder (`~/.pi/agent`) a second time, read-only
  * from the Sandbox Image (ADR-0062): the Harness and the child that loads the project context read
  * it here alone. The domain reads it and changes nothing there, and it can move neither this folder
- * nor a folder above it, as it can move `~/.pi` in its HOME.
+ * nor a folder above it, as it can move `~/.pi` in its HOME. `@jr2/orchestrator`'s `USER_CONTEXT_DIR`
+ * is the mount's path; a test holds the two equal, as the other paths here that the pod mounts.
  */
 export const USER_CONTEXT_DIR = `${RUNTIME_SECRETS}/user-context`;
 /** Where the Harness of a Sandbox listens for a person's shell (`workspace-shell.ts`): in a folder

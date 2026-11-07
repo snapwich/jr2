@@ -325,3 +325,14 @@ test("runIn marks a process it starts with the oom_score_adj it is given, and it
   const plain = await runIn(domain, argv, { cwd: "/" });
   assert.notEqual(plain.stdout.trim(), "1000");
 });
+
+test("the pod paths the Harness reads are the ones the Orchestrator mounts: @jr2/orchestrator's names.ts (ADR-0062, ADR-0076)", async () => {
+  // The two packages share no runtime dependency, so each states the path, and this holds them equal.
+  const harness = await import("../src/children.ts");
+  const names = await import("@jr2/orchestrator/internal");
+  assert.equal(harness.USER_CONTEXT_DIR, names.USER_CONTEXT_DIR);
+  assert.equal(harness.OUTPUT_DIR, names.OUTPUT_DIR);
+  assert.equal(harness.CONVERSATIONS_DIR, names.CONVERSATIONS_DIR);
+  assert.equal(join(harness.SHELL_SOCKET, ".."), names.SHELL_DIR);
+  assert.equal(join(harness.CONTROL_SOCKET, ".."), names.CUSTODIAN_SOCKET_DIR);
+});
