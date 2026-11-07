@@ -3041,15 +3041,17 @@ test("M14: a missing required argument is refused in pi-schema's words (pi-ai 1.
   );
 });
 
-test("M15: a Menu pick's plain JSON Schema is coerced by pi-schema — the Delivery is the coerced value, the print is what the model sent (pi-ai 1.5)", async () => {
-  // pi-ai 1.5 coerces EVERY tool schema with pi-schema (`compile({ coerce: true })`), a plain JSON
-  // Schema too. On 1.4 a plain schema had weaker rules: `3.5` for an integer and one value for an
-  // array were refused, and `null` for a string became `""`. This test locks in the 1.5 behaviour,
-  // so a pin bump that moves it fails here. Whether jr2 keeps it for Doors is open (the plan's M5).
+test("M15: a Menu pick's arguments are checked as the model wrote them: pi's coercion is refused, and the model corrects the pick (ADR-0027)", async () => {
+  // pi-ai 1.5 coerces EVERY tool schema with pi-schema (`compile({ coerce: true })`): `3.5` for an
+  // integer would become 3, `null` for a string "null", one value for an array `["one"]`. jr2
+  // checks a pick's arguments before that (`strict-arguments.ts`), so the Machine never gets a
+  // converted value: the model reads pi's refusal, and its corrected pick is the Delivery.
+  const wrong = '{"count":3.5,"label":null,"tags":"one"}';
   provider.reset([
+    { text: "", toolCall: { id: "call_1", name: "mcp__jr2__tally", args: wrong } },
     {
       text: "",
-      toolCall: { id: "call_1", name: "mcp__jr2__tally", args: '{"count":3.5,"label":null,"tags":"one"}' },
+      toolCall: { id: "call_2", name: "mcp__jr2__tally", args: '{"count":3,"label":"three","tags":["one"]}' },
     },
   ]);
   const input = {
@@ -3063,11 +3065,38 @@ test("M15: a Menu pick's plain JSON Schema is coerced by pi-schema — the Deliv
   };
   const event = { name: "tally", description: "Deliver the tally.", input, semantics: "ack" as const };
   sandbox.reset({ ...surfaceAllowing([], []), menu: [event], allowed: ["tally"] });
-  const iid = "conf/coerced-pick";
+  const iid = "conf/strict-pick";
   assert.equal((await settled(iid, await admit(iid, "Tally it."))).outcome, "aborted");
-  assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 3, label: "null", tags: ["one"] }]);
-  // The printed conversation (ADR-0023) shows the arguments as the model wrote them.
+  assert.equal(
+    toolResultText(provider.calls[1], "call_1"),
+    'Validation failed for tool "mcp__jr2__tally":\n' +
+      "  - count: expected integer, got number\n" +
+      "  - label: expected string, got null\n" +
+      "  - tags: expected array, got string\n\n" +
+      `Received arguments:\n${JSON.stringify(JSON.parse(wrong), null, 2)}`,
+  );
+  assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 3, label: "three", tags: ["one"] }]);
+  // The printed conversation (ADR-0023) shows each pick as the model wrote it.
   assert.match(printed.get(iid) ?? "", /\[tally\] \{"count":3\.5,"label":null,"tags":"one"\}/);
+});
+
+test("M16: a number in a string is refused for a Menu pick, and runs as a number for a Working tool (ADR-0027)", async () => {
+  // pi converts `"5"` to 5 for every schema. The Working tools are pi's own and keep that (M13);
+  // a pick is checked as the model wrote it.
+  provider.reset([
+    { text: "", toolCall: { id: "call_s", name: "mcp__jr2__tally", args: '{"count":"5"}' } },
+    { text: "", toolCall: { id: "call_t", name: "mcp__jr2__tally", args: '{"count":5}' } },
+  ]);
+  const input = { type: "object", properties: { count: { type: "integer" } }, required: ["count"] };
+  const event = { name: "tally", description: "Deliver the tally.", input, semantics: "ack" as const };
+  sandbox.reset({ ...surfaceAllowing([], []), menu: [event], allowed: ["tally"] });
+  const iid = "conf/strict-pick-string";
+  assert.equal((await settled(iid, await admit(iid, "Tally it."))).outcome, "aborted");
+  assert.match(
+    toolResultText(provider.calls[1], "call_s"),
+    /^Validation failed for tool "mcp__jr2__tally":\n {2}- count: expected integer, got string\n/,
+  );
+  assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 5 }]);
 });
 
 test("M11: another model's thinking is not sent after a model Dial change (pi-ai 1.4)", async () => {

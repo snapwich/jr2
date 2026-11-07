@@ -13,6 +13,7 @@
 import type { TSchema } from "typebox";
 import type { EngineTool } from "./engine.ts";
 import type { Menu } from "./menu.ts";
+import { strictArguments } from "./strict-arguments.ts";
 
 /** The name the model sees for a Menu item. Handed to `menu.ts` too (`MenuOptions.toolName`), so
  * the Allowed-picks text and every receipt name the tool the model can actually call (ADR-0029). */
@@ -27,13 +28,16 @@ export const MENU_TOOL_PREFIX = "mcp__jr2__";
 /**
  * The Menu's items as engine tools. `execute` throws on every failure, as the item's `pick` does —
  * the seam's contract (the engine makes a throw the error result) turns the message into the error
- * result the model reads, so it can pick again or differently.
+ * result the model reads, so it can pick again or differently. The arguments are checked as the
+ * model wrote them, before pi's coercion (`strict-arguments.ts`, ADR-0027): the Delivery is what
+ * the model wrote, or the model reads a refusal.
  */
 export function menuTools(menu: Menu): EngineTool[] {
   return menu.map((item) => ({
     name: menuToolName(item.name),
     description: item.description,
     parameters: item.parameters as unknown as TSchema,
+    prepareArguments: strictArguments(menuToolName(item.name), item.parameters),
     execute: async (_toolCallId, params, signal) => ({
       content: [{ type: "text", text: await item.pick(params, signal) }],
     }),

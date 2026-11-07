@@ -210,24 +210,35 @@ test("an MCP tool call, then a pick: the call is a step and no pick, the pick de
   assert.equal(systemText(again), systemText(provider.calls[0]));
 });
 
-test("an MCP tool's plain JSON Schema is coerced by pi-schema: the server gets the coerced value (pi-ai 1.5)", async () => {
-  // pi-ai 1.5 coerces EVERY tool schema with pi-schema, an MCP server's too. On 1.4 `3.5` for an
-  // integer and one value for an array were refused, and `null` for a string became `""`. This
-  // test locks in the 1.5 behaviour, so a pin bump that moves it fails here.
+test("an MCP tool call's arguments are checked as the model wrote them: pi's coercion is refused, and the server gets only the corrected call (ADR-0027)", async () => {
+  // pi-ai 1.5 coerces EVERY tool schema with pi-schema, an MCP server's too: `3.5` would reach the
+  // server as 3, `null` as "null", "one" as ["one"]. jr2 checks the arguments before that
+  // (`strict-arguments.ts`): the model reads pi's refusal, and the server gets what it wrote next.
+  const wrong = '{"count":3.5,"label":null,"tags":"one"}';
   provider.reset([
-    { toolCall: { id: "call_1", name: "mcp__notes__echo", args: '{"count":3.5,"label":null,"tags":"one"}' } },
+    { toolCall: { id: "call_1", name: "mcp__notes__echo", args: wrong } },
+    { toolCall: { id: "call_2", name: "mcp__notes__echo", args: '{"count":3,"label":"three","tags":["one"]}' } },
     { text: "Done." },
   ]);
   sandbox.reset(surface);
-  const iid = "conf/mcp-coerced";
+  const iid = "conf/mcp-strict";
   assert.equal((await settled(iid, await admit(iid, definitions.withNotes!, "Echo it."))).outcome, "completed");
-  const results = provider.calls[1]!.messages.filter((m) => m.role === "tool");
+  const results = JSON.stringify(provider.calls[2]!.messages.filter((m) => m.role === "tool"));
   assert.ok(
-    JSON.stringify(results).includes(
-      JSON.stringify(JSON.stringify({ count: 3, label: "null", tags: ["one"] })).slice(1, -1),
+    results.includes(
+      JSON.stringify('Validation failed for tool "mcp__notes__echo":\n  - count: expected integer, got number').slice(
+        1,
+        -1,
+      ),
     ),
-    `the server got the coerced arguments (got: ${JSON.stringify(results)})`,
+    `the model read the refusal (got: ${results})`,
   );
+  // The server answered once, with the corrected call: a converted value never reached it.
+  assert.ok(
+    results.includes(JSON.stringify(JSON.stringify({ count: 3, label: "three", tags: ["one"] })).slice(1, -1)),
+    `the server got the corrected arguments (got: ${results})`,
+  );
+  assert.ok(!results.includes(JSON.stringify(JSON.stringify({ count: 3, label: "null", tags: ["one"] })).slice(1, -1)));
   assert.match(printed.get(iid) ?? "", /\[notes\/echo\] \{"count":3\.5,"label":null,"tags":"one"\}/);
 });
 

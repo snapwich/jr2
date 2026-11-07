@@ -99,10 +99,21 @@ jr2's engine part ([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md
   - the check of a tool call's arguments. pi-ai checks the arguments of each tool against its schema by one rule
     (pi-schema), for a TypeBox schema and a plain JSON Schema the same. Where a value does not agree with the schema and
     a conversion exists, it converts the value: `3.5` for an integer becomes `3`, `null` for a required string becomes
-    `"null"`, and one value for an array becomes an array of one. The tool gets the converted value: a Working tool, the
-    Delivery of a Menu pick, and an MCP server. The printed conversation
-    ([ADR-0023](0023-the-harness-prints-the-conversation.md)) shows what the model sent. Conformance tests hold this
-    rule for a pick and for an MCP tool call, so a bump that changes it fails them;
+    `"null"`, one value for an array becomes an array of one, and `"42"` for a number becomes `42`. A Working tool gets
+    the converted value: the Working tools are pi's own.
+  - **A Menu pick and an MCP tool call are checked as the model wrote them, and a value that does not fit is refused.**
+    Before pi-ai's conversion, jr2 checks the arguments against the schema with pi-schema and no conversion
+    (`strict-arguments.ts`, each Menu tool's and MCP tool's `prepareArguments`). A refused call gets pi-ai's own text
+    (`Validation failed for tool …`, each path and why, then the arguments it received) as its tool result, so the model
+    can correct the call. So the Delivery of a pick (a Door's, a Chart's) and the arguments that an MCP server gets are
+    what the model wrote, and the printed conversation ([ADR-0023](0023-the-harness-prints-the-conversation.md)) shows
+    the same values. Three reasons: a converted value is a silent change of data (`null` arrives as the word `"null"`);
+    the Chart's refuse-then-fix loop is what the `chart-refusal` claim measures
+    ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)), and a conversion would let a Chart pass that the model
+    never fixed; and the model reads a refusal where pi 1.4 refused, so what it reads stays as it was before 1.5. pi 1.4
+    also converted `"42"` for a number and `null` for a string to `""`; jr2 refuses both now. Conformance tests (M15,
+    M16, and the MCP suite's) hold the refusal for a pick and an MCP tool call, and M13 holds the conversion for a
+    Working tool, so a bump that changes either fails them;
   - `uuidv7`, for the engine part's id, which goes to a provider as a prompt-cache key (pi-ai's `sessionId`).
 
   The Working tools' schemas are TypeBox, as upstream's tool definitions are. `Type` comes from `typebox`, a direct
@@ -245,6 +256,9 @@ jr2's engine part ([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md
 - **Keep jr2's port of pi 0.82.1's Working tools** (their code and texts in jr2, held to pi 0.82.1 by a replay test).
   Rejected: it is a second copy of code that upstream maintains and fixes, and it ages from the day it is ported. Its
   only gain, that a bump cannot move a tool's text, the declaration capture gives as a loud failure instead.
+- **Let pi-ai convert a pick's and an MCP tool call's arguments** (pi 1.5's rule, for every schema). Rejected: the
+  Machine or the MCP server would get a value that the model did not write, and the printed conversation would show
+  another. A Chart could pass by conversion where the model never fixed it.
 - **Give `beforeToolCall` the names of the calls ahead of the call in its model answer** (`earlier`), for the first-pick
   rule. Rejected. The list names a call that the engine did not prepare (an unknown tool, invalid arguments), so the
   rule blocked a valid pick behind it. And the position of a call in the list needs the call's id, which a provider can

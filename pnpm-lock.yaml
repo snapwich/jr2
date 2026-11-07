@@ -168,6 +168,9 @@ importers:
       '@earendil-works/pi-mcp':
         specifier: 1.5.0
         version: 1.5.0
+      '@earendil-works/pi-schema':
+        specifier: 1.5.0
+        version: 1.5.0
       '@hono/node-server':
         specifier: ^2.0.6
         version: 2.0.6(hono@4.12.27)
