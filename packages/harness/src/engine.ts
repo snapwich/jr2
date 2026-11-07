@@ -37,12 +37,11 @@ import type {
   Model,
   Models,
   ModelThinkingLevel,
-  Static,
   TextContent,
   Tool,
   ToolResultMessage,
-  TSchema,
 } from "@earendil-works/pi-ai";
+import type { Static, TSchema } from "typebox";
 import type { EngineSeat } from "./record.ts";
 import type { EnginePart } from "./transcript.ts";
 

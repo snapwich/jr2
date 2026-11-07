@@ -7,7 +7,7 @@
 // Turn's pick rules (`MENU_TOOL_PREFIX`, turn.ts) do not apply to it, and a call of one does not
 // end the Turn.
 
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type { EngineTool } from "./engine.ts";
 import type { McpConversation } from "./mcp.ts";
 import type { RecordedMcpTool } from "./record.ts";

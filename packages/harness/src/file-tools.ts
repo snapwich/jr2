@@ -8,7 +8,9 @@
 // result `details` (a diff, a truncation), which no model and no printer read (ADR-0023).
 //
 // Each tool closes over the Frame's `cwd` (ADR-0057): a relative path resolves against it. The
-// schemas stay TypeBox (`Type` from pi-ai), so pi-ai coerces the arguments as it did on 0.82.1.
+// schemas stay TypeBox (`Type` from `typebox`, the version pi-ai pins). pi-ai coerces the arguments
+// with pi-schema, whose conversion rules are TypeBox's `Value.Convert` keyed on the JSON Schema, so
+// the arguments coerce as they did on 0.82.1.
 //
 // Each tool's I/O runs in the domain, done by the spawner (`spawner.ts`, ADR-0076), so the kernel
 // applies the domain's rules to it: the tools reach what `bash` reaches. A path under `/run/jr2`, or
@@ -19,7 +21,7 @@ import { constants as osConstants } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getSystemErrorMessage } from "node:util";
-import { Type, type Static } from "@earendil-works/pi-ai";
+import { Type, type Static } from "typebox";
 import type { EngineTool } from "./engine.ts";
 import { FileOpError, type FileOps } from "./spawner.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "./truncate.ts";

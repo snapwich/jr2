@@ -10,7 +10,7 @@
 // Menu, because it is how the model sees the Menu: an MCP client names a server's tools
 // `mcp__<server>__<name>` itself, so a Menu served over MCP as `jr2` gets the same names.
 
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type { EngineTool } from "./engine.ts";
 import type { Menu } from "./menu.ts";
 

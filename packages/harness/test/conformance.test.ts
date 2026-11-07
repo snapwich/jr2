@@ -2848,7 +2848,8 @@ test("the thinking level line: a level the model lacks names the level the Harne
 test("the thinking level line: Claude Sonnet 5.5 at off names the effort that the Harness's request sent (ADR-0023)", async () => {
   // jr2's default level is `off`, which this model lacks. The Anthropic adapter then sends its
   // default effort, `high`, and sets the word from that request: the line gives the choice to the
-  // Harness, not to the provider.
+  // Harness, not to the provider. Since pi-ai 1.5.0 the effort in force is the last system marker
+  // of the messages; the top-level effort is a fixed `low`, part of the cached prefix.
   sandbox.reset(surfaceWith("review_verdict"));
   const iid = "conf/thinking-line-sonnet-5-5";
   const before = anthropicGateway.seen.length;
@@ -2865,7 +2866,9 @@ test("the thinking level line: Claude Sonnet 5.5 at off names the effort that th
   }
   const sent = anthropicGateway.seen.slice(before);
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0]!.body.output_config, { effort: "high" });
+  assert.deepEqual(sent[0]!.body.output_config, { effort: "low" });
+  const messages = sent[0]!.body.messages as { role: string; output_config?: unknown }[];
+  assert.deepEqual(messages.at(-1), { role: "system", content: [], output_config: { effort: "high" } });
   assert.ok(
     (printed.get(iid) ?? "").includes(
       `[reviewer] [${iid}] [thinking level] anthropic/claude-sonnet-5-5 has no level "off"; ` +
@@ -2900,6 +2903,32 @@ test("M10: argument text that does not parse is refused, and the call does not r
   assert.ok(text.endsWith(`\n\nReceived arguments:\n${args}`), text);
   const { existsSync } = await import("node:fs");
   assert.equal(existsSync(marker), false, "the call did not run");
+});
+
+test("M13: a TypeBox schema's argument is coerced by pi-schema — a number in a string runs as a number (pi-ai 1.5)", async () => {
+  // pi-ai 1.5 validates with pi-schema, not TypeBox. The Working tools' schemas stay TypeBox
+  // (ADR-0027), and pi-schema's conversion keys on their JSON Schema, so `"5"` still becomes 5.
+  provider.reset([
+    { toolCall: { id: "call_c", name: "bash", args: '{"command":"echo coerced","timeout":"5"}' } },
+    { text: "Ran." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/coerced-argument";
+  assert.equal((await settled(iid, await admit(iid, "Run it."))).outcome, "completed");
+  assert.equal(toolResultText(provider.calls[1], "call_c"), "coerced\n");
+});
+
+test("M14: a missing required argument is refused in pi-schema's words (pi-ai 1.5)", async () => {
+  // The text the model reads: pi-ai 1.5 names each failed path (`- command: missing`), then the
+  // arguments it received.
+  provider.reset([{ toolCall: { id: "call_r", name: "bash", args: '{"timeout":5}' } }, { text: "Noted." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/missing-argument";
+  assert.equal((await settled(iid, await admit(iid, "Run it."))).outcome, "completed");
+  assert.equal(
+    toolResultText(provider.calls[1], "call_r"),
+    'Validation failed for tool "bash":\n  - command: missing\n\nReceived arguments:\n{\n  "timeout": 5\n}',
+  );
 });
 
 test("M11: another model's thinking is not sent after a model Dial change (pi-ai 1.4)", async () => {

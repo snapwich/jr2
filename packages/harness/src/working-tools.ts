@@ -14,7 +14,7 @@
 // the spawner with the domain's env (`children.ts`, `spawner.ts`, ADR-0076): the kernel applies the
 // domain's rules to each. What the model reads does not change.
 
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { bashTool } from "./bash-tool.ts";
 import { runIn, type ChildPolicy, type RunResult } from "./children.ts";
 import type { EngineTool, EngineToolResult } from "./engine.ts";

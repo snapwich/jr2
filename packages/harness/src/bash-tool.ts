@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
 import { constants } from "node:os";
 import { createInTmp, type ChildPolicy } from "./children.ts";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { EngineTool } from "./engine.ts";
 import type { GuardOwner, MemoryGuard } from "./memory-guard.ts";
 import { exec, isExecError, MAX_TIMEOUT_SECONDS, type ExecError, type ExecExit } from "./shell.ts";
