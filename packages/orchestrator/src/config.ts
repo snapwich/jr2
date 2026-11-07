@@ -831,8 +831,8 @@ export type JR2Config = {
   // Deployment-varying — resolve from env (ADR-0019).
   /** The image registry prefix to which `jr2 up` pushes the images that it builds, such as
    * `registry.example.com/team`. It changes between deployments, so read it from `process.env`
-   * (`.env`). Default: none; `jr2 up` loads the images into the kind cluster. On a cluster that is
-   * not kind, `jr2 up` then refuses:
+   * (`.env`). Default: none; `jr2 up` loads the images into the kind cluster. On another cluster, it
+   * refuses to build an image:
    * `` context <context> is not a kind cluster and no `registry` is configured ``. */
   registry?: string;
   // Deployment-varying — resolve from env. Seeding that mirror is a deliberate, instance-less act

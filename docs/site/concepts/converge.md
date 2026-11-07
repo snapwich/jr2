@@ -19,7 +19,8 @@ fails. `jr2 up` does every step, in the correct order, each time. It tells you w
 
 The Instance folder holds no record of a cluster. The kubectl context is the address, and the namespace is the identity.
 Thus the same folder converges into kind on your computer and into a shared cluster. Only the kubectl context changes,
-and, for a cluster that is not kind, the value that [`registry`](../reference/config.md#registry) reads from `.env`.
+and, when `jr2 up` builds an image for a cluster that is not kind, the value that
+[`registry`](../reference/config.md#registry) reads from `.env`.
 
 ## Setup and usage
 
@@ -216,7 +217,8 @@ would remove, and removes nothing.
   keep pod-level resources.
 - `jr2 up` refuses a namespace that belongs to a different Instance. It asks you before it uses a namespace for the
   first time. `--yes` gives the answer for CI.
-- `jr2 up` refuses a cluster that is not kind when `registry` is not set.
+- `jr2 up` refuses a cluster that is not kind when `registry` is not set and it must build an image. When no registered
+  Machine makes a [Sandbox](../reference/glossary.md#sandbox), `jr2 up` builds no image and needs no `registry`.
 - Each verb that reads the Instance, other than `jr2 version`, refuses when the Instance and the CLI do not use the same
   copy of `@jr2/orchestrator`.
 - `jr2 up` never downgrades the operator.

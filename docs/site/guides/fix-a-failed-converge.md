@@ -210,7 +210,7 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `warning: no Sandbox node right now has the allocatable for a Size of <size> (workflow "<workflow>") — its Sandbox stays Pending until one does`
 - Images for two or more platforms need a `registry`:
   `` error: this cluster needs a <platforms> build, which docker buildx delivers by PUSHING a manifest list (kind load cannot carry one) — set `registry` in jr2.config.ts, or name a single platform with `platforms` ``
-- A cluster that is not kind needs a [`registry`](../reference/config.md#registry):
+- A cluster that is not kind needs a [`registry`](../reference/config.md#registry) when `jr2 up` builds an image:
   ``error: context <context> is not a kind cluster and no `registry` is configured — set `registry` in jr2.config.ts (from env) so the image can be pushed (ADR-0019)``.
   jr2 knows a kind cluster by its context name, which starts with `kind-`. See
   [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md).
