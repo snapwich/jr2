@@ -89,6 +89,9 @@ async function attach(req: AttachRequest, paths: AttachPaths, env: Env): Promise
     await run("make the slot's folder", s.slot, "mkdir", ["-p", "--", slotDir], env);
     // On a filesystem without POSIX ACLs the helper warns and exits 0, degrading to the umask.
     await run("stamp the work ACL", s.slot, `${paths.runtime}/bin/work-acl`, [slotDir], env);
+    if ((await exists(env, `${dflt}/.git`)) && (await placedBase(dflt, env)) === undefined) {
+      await mendKilled(dflt, cache, s.slot, env);
+    }
     if (!(await exists(env, `${dflt}/.git`))) {
       // `--no-checkout`: the base's large files come first (step 5), so that the checkout smudges each.
       await git("git clone --shared", s.slot, ["clone", "--shared", "--no-checkout", "--", cache, dflt]);
@@ -105,13 +108,15 @@ async function attach(req: AttachRequest, paths: AttachPaths, env: Env): Promise
     // Agent runs and still refuses one git makes for itself (a submodule url), so a repository
     // cannot smuggle a program in through a url jr2 did not write (ADR-0053). Repo-level: the
     // linked worktrees share this config.
-    await git("allow the ext transport", s.slot, ["-C", dflt, "config", "protocol.ext.allow", "user"]);
+    await git("allow the ext transport", s.slot, ["-C", dflt, "config", "--replace-all", "protocol.ext.allow", "user"]);
     // A fixed rule (ADR-0004): Agents share this clone, and a `gc` beside a cut or a commit prunes
     // what another Worktree needs. Every git in the pod reads the clone's config.
-    await git("turn off gc", s.slot, ["-C", dflt, "config", "gc.auto", "0"]);
-    await git("turn off maintenance", s.slot, ["-C", dflt, "config", "maintenance.auto", "false"]);
+    await git("turn off gc", s.slot, ["-C", dflt, "config", "--replace-all", "gc.auto", "0"]);
+    await git("turn off maintenance", s.slot, ["-C", dflt, "config", "--replace-all", "maintenance.auto", "false"]);
+    // `--replace-all`: an Agent can add a second value (`git config --add`), and a plain set then
+    // fails, so a second attach would fail.
     for (const [key, value] of lfsConfig(paths)) {
-      await git(`set ${key}`, s.slot, ["-C", dflt, "config", key, value]);
+      await git(`set ${key}`, s.slot, ["-C", dflt, "config", "--replace-all", key, value]);
     }
     await writeHooks(dflt, s.slot, paths, env);
     // A guard, so that a second attach changes nothing: an Agent's edit in `default/`, or a fetch that
@@ -189,12 +194,13 @@ function shellQuote(s: string): string {
  * clone, so a cut of it finds `origin/<default>` and tracks it.
  *
  * The clone has no checkout yet. The base's large files come first, then a forced checkout, so a kill
- * at any step before `jr2.base` is written leaves a clone that the next attach places again. No
+ * at any step before `jr2.base` is written leaves a clone that the next attach mends (`mendKilled`)
+ * and places again. No
  * hook runs in this checkout: git-lfs's hooks are for the people and Agents that work in the clone.
  */
 async function placeDefault(dflt: string, s: AttachSlot, paths: AttachPaths, env: Env): Promise<string> {
-  const placed = await exec("git", ["-C", dflt, "config", "--local", "jr2.base"], env);
-  if (placed.code === 0 && placed.stdout.trim() !== "") return placed.stdout.trim();
+  const placed = await placedBase(dflt, env);
+  if (placed !== undefined) return placed;
   const git = (step: string, args: string[]) => runGit(step, s.slot, ["-C", dflt, ...args], env);
   const checkout = (args: string[]) =>
     git("check out the base", ["-c", "core.hooksPath=/dev/null", "checkout", ...args]);
@@ -205,6 +211,14 @@ async function placeDefault(dflt: string, s: AttachSlot, paths: AttachPaths, env
     base !== dfltBranch &&
     (await exec("git", ["-C", dflt, "rev-parse", "--verify", "-q", `refs/remotes/origin/${base}`], env)).code === 0;
   const commit = base === dfltBranch ? "HEAD" : tracked ? `refs/remotes/origin/${base}` : await baseOf(dflt, base, env);
+  // An empty Repo: no base commit, so nothing to check out (as before the LFS ask).
+  const empty =
+    base === dfltBranch &&
+    (await exec("git", ["-C", dflt, "rev-parse", "--verify", "-q", "HEAD^{commit}"], env)).code !== 0;
+  if (empty) {
+    await git("record the base", ["config", "--local", "jr2.base", base]);
+    return base;
+  }
   await askLargeFiles(dflt, s, base, commit, paths, env);
   if (base === dfltBranch) await checkout(["-f"]);
   else if (tracked) await checkout(["-f", "-B", base, "--track", `origin/${base}`]);
@@ -216,6 +230,50 @@ async function placeDefault(dflt: string, s: AttachSlot, paths: AttachPaths, env
   await git("record the base", ["config", "--local", "jr2.base", base]);
   return base;
 }
+
+/** The base that `default/` was placed on, or undefined when it was not placed yet. */
+async function placedBase(dflt: string, env: Env): Promise<string | undefined> {
+  const placed = await exec("git", ["-C", dflt, "config", "--local", "jr2.base"], env);
+  return placed.code === 0 && placed.stdout.trim() !== "" ? placed.stdout.trim() : undefined;
+}
+
+/**
+ * Mend a clone that a kill left before `default/` was placed. Attaches are serialized, and no Agent
+ * works in `default/` before `jr2.base` is written, so no git of anyone else is alive in it.
+ *
+ * A clone that a kill cut short has no `origin/HEAD` or no HEAD commit while the cache has a HEAD
+ * commit: it goes, and the attach clones again. Another clone keeps its objects and its refs, and
+ * only the locks that a killed git left go, because each later step would fail on a lock.
+ */
+async function mendKilled(dflt: string, cache: string, slot: string, env: Env): Promise<void> {
+  const resolves = async (dir: string, rev: string) =>
+    (await exec("git", ["-C", dir, "rev-parse", "--verify", "-q", rev], env)).code === 0;
+  const cacheHead = await resolves(cache, "HEAD^{commit}");
+  const originHead =
+    (await exec("git", ["-C", dflt, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"], env)).code === 0;
+  if (cacheHead && (!originHead || !(await resolves(dflt, "HEAD^{commit}")))) {
+    await run("remove a clone that a kill cut short", slot, "rm", ["-rf", "--", dflt], env);
+    return;
+  }
+  const git = `${dflt}/.git`;
+  await run(
+    "remove the locks that a kill left",
+    slot,
+    "rm",
+    ["-f", "--", ...KILLED_LOCKS.map((l) => `${git}/${l}`)],
+    env,
+  );
+  await run(
+    "remove the ref locks that a kill left",
+    slot,
+    "find",
+    [`${git}/refs`, "-name", "*.lock", "-type", "f", "-delete"],
+    env,
+  );
+}
+
+/** The locks that a git killed in the attach's steps can leave in the clone's git folder. */
+const KILLED_LOCKS = ["index.lock", "HEAD.lock", "config.lock", "packed-refs.lock"];
 
 /**
  * Ask the node cache for the Git LFS objects of the base's commit (ADR-0053), before the checkout

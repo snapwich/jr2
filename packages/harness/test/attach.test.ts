@@ -341,6 +341,73 @@ test("a kill between the clone and the checkout: the next attach places default/
   assert.equal(other.git(oDflt, "status", "--porcelain"), "");
 });
 
+/** A file in the base, so that a checkout writes something: `a.txt` and `b.txt` on main. */
+function withFiles(l: Awaited<ReturnType<typeof layout>>) {
+  execFileSync("sh", ["-c", "printf 'aaa\\n' > a.txt && printf 'bbb\\n' > b.txt"], { cwd: l.src });
+  l.git(l.src, "add", ".");
+  l.git(l.src, "-c", "user.email=t@jr2", "-c", "user.name=t", "commit", "-q", "-m", "files");
+  l.git(l.src, "push", "-q", join(l.reposMount, KEY), "main");
+}
+
+test("a kill inside the checkout: the next attach removes the locks it left and places default/", async () => {
+  const l = await layout();
+  withFiles(l);
+  const dflt = join(l.workRoot, "app", "default");
+  await mkdir(join(l.workRoot, "app"), { recursive: true });
+  l.git(l.root, "clone", "-q", "--shared", "--no-checkout", join(l.reposMount, KEY), dflt);
+  // What a checkout killed half way leaves: one file half written, the index lock, a ref lock.
+  await writeFile(join(dflt, "a.txt"), "aa");
+  await writeFile(join(dflt, ".git", "index.lock"), "");
+  await writeFile(join(dflt, ".git", "HEAD.lock"), "");
+  await writeFile(join(dflt, ".git", "refs", "heads", "main.lock"), "");
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
+  assert.equal(res.bases.app, "main");
+  assert.equal(l.git(dflt, "rev-parse", "HEAD"), l.git(l.src, "rev-parse", "main"));
+  assert.equal(l.git(dflt, "status", "--porcelain"), "", "default/ holds the base's files");
+  assert.equal(await readFile(join(dflt, "a.txt"), "utf8"), "aaa\n");
+  assert.equal(existsSync(join(dflt, ".git", "index.lock")), false);
+});
+
+test("a kill inside the clone: the next attach clones again and places default/", async () => {
+  const l = await layout();
+  withFiles(l);
+  const dflt = join(l.workRoot, "app", "default");
+  await mkdir(join(l.workRoot, "app"), { recursive: true });
+  l.git(l.root, "clone", "-q", "--shared", "--no-checkout", join(l.reposMount, KEY), dflt);
+  // A clone cut short: refs, but no origin/HEAD yet.
+  l.git(dflt, "remote", "set-head", "origin", "-d");
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
+  assert.equal(res.bases.app, "main");
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"), "origin/main");
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(l.git(dflt, "status", "--porcelain"), "");
+  assert.equal(await readFile(join(dflt, "b.txt"), "utf8"), "bbb\n");
+});
+
+test("an empty Repo attaches, as before the LFS ask: no checkout, no ask, and an empty base", async () => {
+  const l = await layout();
+  const key = "example-test-acme-empty-12345678";
+  l.git(l.root, "init", "-q", "--bare", join(l.reposMount, key));
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key }] };
+  assert.deepEqual((await l.attach(req)).bases, { app: "" });
+  assert.deepEqual((await l.attach(req)).bases, { app: "" }, "a second attach also works");
+  assert.equal((await l.lfsCallsOf()).length, 0);
+});
+
+test("a key that an Agent gave a second value: a second attach sets one value again", async () => {
+  const l = await layout();
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
+  await l.attach(req);
+  const dflt = join(l.workRoot, "app", "default");
+  l.git(dflt, "config", "--add", "filter.lfs.required", "false");
+  l.git(dflt, "config", "--add", "gc.auto", "5");
+  l.git(dflt, "config", "--add", "protocol.ext.allow", "always");
+  await l.attach(req);
+  assert.equal(l.git(dflt, "config", "--get-all", "filter.lfs.required"), "true");
+  assert.equal(l.git(dflt, "config", "--get-all", "gc.auto"), "0");
+  assert.equal(l.git(dflt, "config", "--get-all", "protocol.ext.allow"), "user");
+});
+
 test("a large file that the node cache cannot get fails the attach, naming the slot, the file and the reason", async () => {
   const l = await layout();
   const missing = [

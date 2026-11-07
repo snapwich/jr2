@@ -805,3 +805,19 @@ test("a filter that the clone's config includes is off too", async (t) => {
   ready(await w.go({ path: w.path("run"), branch: "feature/auth" }));
   assert.equal(existsSync(marker), false);
 });
+
+test("a filter in a linked Worktree's own config.worktree is off in a detached re-cut", async (t) => {
+  const w = world(t);
+  const first = ready(await w.go({ path: w.path("review"), detach: run(w.seed, "rev-parse", "main") }));
+  const marker = join(w.dir, "ran");
+  const evil = join(w.dir, "evil.sh");
+  writeFileSync(evil, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`, { mode: 0o755 });
+  run(w.clone, "config", "extensions.worktreeConfig", "true");
+  const admin = run(first.path, "rev-parse", "--absolute-git-dir");
+  writeFileSync(join(admin, "config.worktree"), `[filter "evilwt"]\n\tsmudge = ${evil}\n`);
+  writeFileSync(join(w.clone, ".git", "info", "attributes"), "*.txt filter=evilwt\n");
+  const r2 = run(w.seed, "rev-parse", "feature/auth");
+  assert.equal(ready(await w.go({ path: w.path("review"), detach: r2 })).head, r2);
+  assert.equal(existsSync(marker), false, "the Worktree's own filter did not run");
+  assert.equal(readFileSync(join(first.path, "auth.txt"), "utf8"), "auth\n");
+});

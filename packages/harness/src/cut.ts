@@ -285,6 +285,9 @@ type Clone = {
   git: Runner;
   /** Ask for the large files of a commit: the words of a refusal, or undefined when each is held. */
   largeFiles: (commit: string) => Promise<string | undefined>;
+  /** The `-c` that turn off each filter that a linked Worktree's own config (`config.worktree`) names,
+   * and then pin jr2's LFS filter again: a git in that Worktree reads that file too. */
+  filtersIn: (worktree: string) => Promise<string[]>;
 };
 
 const recordFile = (c: Clone, path: string): string => join(c.records, `${path.split("/").pop()!}.json`);
@@ -533,7 +536,8 @@ export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> 
     const git = runner(paths, home, filters);
     filters.args = [...(await filtersOf(git, clone)), ...lfsPins(paths, clone)];
     const largeFiles = (commit: string) => askLargeFiles(paths, home, clone, commit, req.base);
-    const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git, largeFiles };
+    const filtersIn = async (worktree: string) => [...(await filtersOf(git, worktree)), ...lfsPins(paths, clone)];
+    const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git, largeFiles, filtersIn };
     return await locked(clone, paths, async () => {
       await recover(c);
       return cutLocked(req, slot, c, paths);
@@ -650,7 +654,8 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
       const gitDir = await c.git(req.path, ["rev-parse", "--absolute-git-dir"]);
       if (gitDir.code !== 0) return refused(`${req.path} is a folder and no longer a Worktree: ${gitDir.err}`);
       for (const state of HALF_DONE) await rm(`${gitDir.out}/${state}`, { recursive: true, force: true });
-      const co = await steady(() => c.git(req.path, ["checkout", "--detach", "-f", sha]));
+      const own = await c.filtersIn(req.path);
+      const co = await steady(() => c.git(req.path, [...own, "checkout", "--detach", "-f", sha]));
       if (co.code !== 0) return refused(co.err);
       // `-ff`: a nested repo goes too. No `-x`: a reviewer runs the tests (ADR-0028).
       const clean = await c.git(req.path, ["clean", "-ffd"]);
