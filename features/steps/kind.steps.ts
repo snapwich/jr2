@@ -166,7 +166,7 @@ export async function waitForReadySandbox(world: E2EWorld): Promise<SandboxCR> {
 type RunChild = { id: string; value: unknown; children: RunChild[] };
 
 /** The wrapper's own state + context — where the workspace endpoint and the body's output land. */
-type WsStatus = {
+export type WsStatus = {
   status: string;
   value: string;
   /** The RUN's own seed Instance ID (ADR-0033) — what names `task`'s default branch. It is not a
@@ -187,9 +187,9 @@ type WsStatus = {
 
 /** One open Gate on the run, as the status listing reports it: the id `jr2 send --gate` takes, the
  * names it accepts, and the `meta` the invoking state published for callers to read. */
-type OpenGate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
+export type OpenGate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
 
-async function wsStatus(world: E2EWorld): Promise<WsStatus> {
+export async function wsStatus(world: E2EWorld): Promise<WsStatus> {
   const r = await world.runCli(["status", world.runId!]);
   assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   return world.resultJson<WsStatus>();
@@ -423,7 +423,7 @@ export async function podStandIns(world: E2EWorld): Promise<string[]> {
  * The text of the first tool result, in any request to the model, that holds `marker`. Only a
  * message with the `tool` role counts: the command that printed the marker holds it too.
  */
-async function toolResultWith(world: E2EWorld, marker: string, ms = 300_000): Promise<string> {
+export async function toolResultWith(world: E2EWorld, marker: string, ms = 300_000): Promise<string> {
   assert.ok(world.provider, "the scenario's scripted model is running");
   const textOf = (content: unknown): string =>
     typeof content === "string"
@@ -2614,7 +2614,7 @@ async function conversationOf(world: E2EWorld, agent: string, iid: string): Prom
  * other; "exactly one" is asserted because a second live Gate would make `jr2 send` ambiguous for
  * the human too.
  */
-async function openGate(world: E2EWorld): Promise<OpenGate> {
+export async function openGate(world: E2EWorld): Promise<OpenGate> {
   let last: WsStatus | undefined;
   for (let i = 0; i < 240; i++) {
     last = await wsStatus(world);
@@ -3742,7 +3742,7 @@ const TAKEOVER = [
   String.raw`s.listen(8082,"0.0.0.0",()=>fs.writeFileSync(dir+"/bound",String(Date.now())));};bind();`,
 ].join("");
 
-async function sandboxPodOf(world: E2EWorld): Promise<string> {
+export async function sandboxPodOf(world: E2EWorld): Promise<string> {
   let podName: string | undefined;
   for (let i = 0; i < 240 && podName === undefined; i++) {
     const ready = (await sandboxesFor(world)).find((sb) => sb.status?.phase === "Ready");
@@ -4015,12 +4015,12 @@ Then(
 const commitIn = (name: string, where = ".") =>
   `cd ${where} && printf '${name}\n' > ${name}.txt && git add ${name}.txt && git -c user.name=e -c user.email=e@e commit -qm ${name} && echo committed-${name}`;
 
-async function shell(world: E2EWorld, script: string): Promise<string> {
+export async function shell(world: E2EWorld, script: string): Promise<string> {
   const pod = await sandboxPodOf(world);
   return kubectl(world, ["exec", pod, "-c", "harness", "--", "sh", "-c", script]);
 }
 
-async function sendGate(world: E2EWorld, event: string, input?: unknown): Promise<void> {
+export async function sendGate(world: E2EWorld, event: string, input?: unknown): Promise<void> {
   const gate = await openGate(world);
   const r = await world.runCli([
     "send",
@@ -4034,7 +4034,7 @@ async function sendGate(world: E2EWorld, event: string, input?: unknown): Promis
   assert.equal(r.code, 0, `jr2 send ${event} failed: ${r.stderr}`);
 }
 
-async function startWt(world: E2EWorld, wf: string, input: unknown): Promise<void> {
+export async function startWt(world: E2EWorld, wf: string, input: unknown): Promise<void> {
   const r = await world.runCli(["run", wf, "--detach", "--input", JSON.stringify(input)]);
   assert.equal(r.code, 0, `jr2 run ${wf}: ${r.stderr}`);
   world.runId = world.resultJson<{ runId: string }>().runId;

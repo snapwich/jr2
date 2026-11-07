@@ -29,6 +29,7 @@
 
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { pushRemoteLogScript } from "../lib/model-evidence.ts";
 
@@ -524,4 +525,290 @@ export async function ownSeedRepo(name: string, files: number, branches: readonl
 /** Remove a repository of {@link ownSeedRepo}: from now on, its remote fails each fetch. */
 export async function dropSeedRepo(name: string): Promise<void> {
   await inSeed(`rm -rf /srv/${name}.git`);
+}
+
+// --- Git LFS (ADR-0051, ADR-0053, ADR-0067, ADR-0075) ----------------------------------------------
+//
+// The seed's LFS server: its own Deployment and Service (`lfs`), beside `seed`, so that the seed's
+// manifest does not change and its pod does not roll (every worktree applies its own copy of it).
+// It speaks the Git LFS batch API with the basic transfer, holds no credential, and keeps each
+// object in an emptyDir at `/data/<repo>/<oid>`. A scenario names it in the `.lfsconfig` of a
+// repository it makes at run time (`lfsSeedRepo`), so the cache agent and the Effector find it as
+// they find any LFS server: by `lfs.url` at the Binding's base. It is cluster furniture, as the
+// seed is: the next run's apply is a no-op.
+
+/** The LFS server's host, as a pod reaches it. */
+export const LFS_HOST = "lfs.jr2-e2e-seed.svc";
+
+/**
+ * The LFS server: `POST /<repo>/info/lfs/objects/batch`, `GET` and `PUT /<repo>/objects/<oid>`,
+ * `POST /<repo>/verify`. A download of an object it does not hold is that object's 404 error; an
+ * upload of an object it holds gets no action, which is how the batch API says "held". A `PUT` whose
+ * bytes do not hash to the oid is 422 and stores nothing. Every request is one line on stdout. On the
+ * host, `SEED_LFS_LISTEN` and `SEED_LFS_STORE` set its port and its store. The names are not
+ * `LFS_PORT`: Kubernetes sets that variable in each pod of the namespace, for the Service `lfs`.
+ */
+export const LFS_SERVER_SCRIPT = [
+  `const http=require("http"),fs=require("fs"),path=require("path"),crypto=require("crypto");`,
+  `const D=process.env.SEED_LFS_STORE||"/data";const OID=/^[0-9a-f]{64}$/;const REPO=/^[a-z0-9][a-z0-9-]{0,80}$/;`,
+  `const at=(r,o)=>path.join(D,r,o);`,
+  `const holds=(r,o,n)=>{try{const s=fs.statSync(at(r,o));return n===undefined||s.size===n;}catch{return false;}};`,
+  `const body=(req)=>new Promise((ok)=>{let b="";req.on("data",(d)=>b+=d);req.on("end",()=>{try{ok(JSON.parse(b));}catch{ok({});}});});`,
+  `http.createServer(async(req,res)=>{`,
+  `const s=new URL(req.url,"http://x").pathname.split("/").filter(Boolean);`,
+  `const send=(code,obj)=>{console.log(req.method+" "+req.url+" "+code);res.writeHead(code,{"content-type":"application/vnd.git-lfs+json"});res.end(obj===undefined?"":JSON.stringify(obj));};`,
+  `const repo=s[0];if(!repo||!REPO.test(repo))return send(404,{message:"no such repository"});`,
+  `const base="http://"+req.headers.host+"/"+repo;`,
+  `if(req.method==="POST"&&s.slice(1).join("/")==="info/lfs/objects/batch"){`,
+  `const b=await body(req);const up=b.operation==="upload";`,
+  `const objects=(b.objects||[]).map(({oid,size})=>{`,
+  `if(!OID.test(String(oid)))return {oid,size,error:{code:422,message:"not an oid"}};`,
+  `const held=holds(repo,oid,size);`,
+  `if(up)return held?{oid,size}:{oid,size,actions:{upload:{href:base+"/objects/"+oid},verify:{href:base+"/verify"}}};`,
+  `return held?{oid,size,actions:{download:{href:base+"/objects/"+oid}}}:{oid,size,error:{code:404,message:"Object does not exist"}};});`,
+  `return send(200,{transfer:"basic",objects});}`,
+  `const oid=s[2];`,
+  `if(s[1]==="objects"&&OID.test(oid||"")&&req.method==="GET"){`,
+  `if(!holds(repo,oid))return send(404,{message:"Object does not exist"});`,
+  `console.log("GET "+req.url+" 200");res.writeHead(200,{"content-type":"application/octet-stream","content-length":fs.statSync(at(repo,oid)).size});`,
+  `return fs.createReadStream(at(repo,oid)).pipe(res);}`,
+  `if(s[1]==="objects"&&OID.test(oid||"")&&req.method==="PUT"){`,
+  `fs.mkdirSync(path.join(D,repo),{recursive:true});const tmp=at(repo,oid)+".put-"+process.hrtime.bigint();`,
+  `const h=crypto.createHash("sha256");const out=fs.createWriteStream(tmp);req.on("data",(d)=>h.update(d));req.pipe(out);`,
+  `return out.on("finish",()=>{if(h.digest("hex")!==oid){fs.rmSync(tmp,{force:true});return send(422,{message:"the bytes do not hash to the oid"});}`,
+  `fs.renameSync(tmp,at(repo,oid));send(200);});}`,
+  `if(s[1]==="verify"&&req.method==="POST"){const b=await body(req);return holds(repo,String(b.oid),b.size)?send(200,{}):send(404,{message:"Object does not exist"});}`,
+  `send(404,{message:"not found"});`,
+  `}).listen(Number(process.env.SEED_LFS_LISTEN||8080));`,
+].join("");
+
+/**
+ * Make objects in the LFS server's store: one object of random bytes for each size, written and
+ * hashed in 1 MiB pieces, so a large one never sits in memory. Run in the LFS server's container
+ * with `node -e <this> <repo> <size>...`; it prints one `<oid> <size>` line for each object.
+ */
+export const MAKE_LFS_OBJECTS = [
+  `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
+  `const [repo,...sizes]=process.argv.slice(1);const dir=path.join(process.env.SEED_LFS_STORE||"/data",repo);fs.mkdirSync(dir,{recursive:true});`,
+  `for(const n of sizes.map(Number)){const tmp=path.join(dir,".make-"+process.pid);const fd=fs.openSync(tmp,"w");const h=crypto.createHash("sha256");`,
+  `for(let left=n;left>0;){const b=crypto.randomBytes(Math.min(left,1<<20));h.update(b);fs.writeSync(fd,b);left-=b.length;}`,
+  `fs.closeSync(fd);const oid=h.digest("hex");fs.renameSync(tmp,path.join(dir,oid));console.log(oid+" "+n);}`,
+].join("");
+
+const LFS_MANIFEST = `
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lfs
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lfs
+  template:
+    metadata:
+      labels:
+        app: lfs
+    spec:
+      containers:
+        - name: lfs
+          image: ${NODE_IMAGE}
+          command: ["node", "-e", ${JSON.stringify(LFS_SERVER_SCRIPT)}]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lfs
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: lfs
+  ports:
+    - port: 80
+      targetPort: 8080
+`;
+
+let lfsServed: Promise<void> | undefined;
+
+/** Make sure the seed and its LFS server are served, once per process. */
+export function ensureLfsServer(): Promise<void> {
+  lfsServed ??= (async () => {
+    await ensureSeed();
+    await kubectl(["apply", "-f", "-"], LFS_MANIFEST, /AlreadyExists/);
+    await kubectl(["--namespace", NAMESPACE, "rollout", "status", "deployment/lfs", "--timeout=300s"]);
+  })().catch((err: unknown) => {
+    lfsServed = undefined;
+    throw err;
+  });
+  return lfsServed;
+}
+
+/** One Git LFS object: its sha-256 and its size in bytes. */
+export type LfsObject = { oid: string; size: number };
+
+/** Make objects of random bytes, one for each size, in the LFS server's store for `repo`. */
+export async function makeLfsObjects(repo: string, sizes: readonly number[]): Promise<LfsObject[]> {
+  assert.match(repo, /^[a-z0-9][a-z0-9-]{0,80}$/, "an LFS repository is a plain lower-case label");
+  const { stdout } = await exec(
+    "kubectl",
+    [
+      "--namespace",
+      NAMESPACE,
+      "exec",
+      "deployment/lfs",
+      "-c",
+      "lfs",
+      "--",
+      "node",
+      "-e",
+      MAKE_LFS_OBJECTS,
+      repo,
+      ...sizes.map(String),
+    ],
+    { maxBuffer: 1 << 20, timeout: 1_800_000 },
+  );
+  const objects = stdout
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const [oid, size] = line.split(" ");
+      return { oid: oid ?? "", size: Number(size) };
+    });
+  assert.equal(objects.length, sizes.length, `the LFS server made each object: ${stdout}`);
+  for (const o of objects) assert.match(o.oid, /^[0-9a-f]{64}$/);
+  return objects;
+}
+
+/** An object that the LFS server never holds: its oid names no bytes that anyone has. */
+export function lfsObjectNobodyHolds(): LfsObject {
+  return { oid: randomBytes(32).toString("hex"), size: 1234 };
+}
+
+/** Does the LFS server hold this object of `repo`, with its size? */
+export async function lfsServerHolds(repo: string, o: LfsObject): Promise<boolean> {
+  assert.match(repo, /^[a-z0-9][a-z0-9-]{0,80}$/);
+  assert.match(o.oid, /^[0-9a-f]{64}$/);
+  const { stdout } = await exec("kubectl", [
+    "--namespace",
+    NAMESPACE,
+    "exec",
+    "deployment/lfs",
+    "-c",
+    "lfs",
+    "--",
+    "sh",
+    "-c",
+    `[ "$(stat -c %s /data/${repo}/${o.oid} 2>/dev/null)" = "${o.size}" ] && echo held || echo absent`,
+  ]);
+  return stdout.trim() === "held";
+}
+
+/** The LFS server's request lines, since the pod started. */
+export async function lfsServerLog(): Promise<string> {
+  const { stdout } = await exec("kubectl", ["--namespace", NAMESPACE, "logs", "deployment/lfs", "-c", "lfs"], {
+    maxBuffer: 64 << 20,
+  });
+  return stdout;
+}
+
+/** The text of a Git LFS pointer to `o`, in the canonical form. */
+export function lfsPointer(o: LfsObject): string {
+  return `version https://git-lfs.github.com/spec/v1\noid sha256:${o.oid}\nsize ${o.size}\n`;
+}
+
+/** The files of one commit: a path, and the object whose pointer that file holds. */
+export type LfsCommit = Record<string, LfsObject>;
+
+/** What a repository of {@link lfsSeedRepo} holds: commits on `main`, and branches off its tip. */
+export type LfsRepoSpec = { main: readonly LfsCommit[]; branches?: Record<string, LfsCommit> };
+
+/**
+ * The script that makes an LFS repository `<srv>/<name>.git` from a work tree at `work`: a first
+ * commit with `.gitattributes` (`*.bin` is stored with Git LFS) and `.lfsconfig` (the seed's LFS
+ * server), then one commit on `main` for each entry of `spec.main`, and a branch off the tip for each
+ * entry of `spec.branches`. Each file holds its pointer, written as text: the seed's git image has no
+ * git-lfs, and a pointer is all a commit holds. With `owner`, the repository is given to that uid,
+ * as sshd serves it to the user `git`.
+ */
+export function lfsRepoScript(srv: string, work: string, name: string, spec: LfsRepoSpec, owner?: number): string {
+  assert.match(name, /^[a-z0-9][a-z0-9-]{0,80}$/, "an LFS repository is a plain lower-case label");
+  const commit = (files: LfsCommit, message: string): string[] => [
+    ...Object.entries(files).map(([file, o]) => {
+      assert.match(file, /^[a-z0-9][a-z0-9/._-]{0,80}\.bin$/, "a large file is a plain path that ends in .bin");
+      return `mkdir -p "$(dirname ${work}/${file})" && printf '%s' '${lfsPointer(o)}' > ${work}/${file}`;
+    }),
+    `git -C ${work} add -A`,
+    `git -C ${work} -c user.email=e2e@jr2 -c user.name=e2e commit -qm '${message}'`,
+  ];
+  return [
+    `rm -rf ${work} ${srv}/${name}.git`,
+    `git init -q -b main ${work}`,
+    `printf '%s\\n' '*.bin filter=lfs diff=lfs merge=lfs -text' > ${work}/.gitattributes`,
+    `printf '[lfs]\\n\\turl = http://${LFS_HOST}/${name}/info/lfs\\n' > ${work}/.lfsconfig`,
+    `echo '# ${name}' > ${work}/README.md`,
+    `git -C ${work} add -A`,
+    `git -C ${work} -c user.email=e2e@jr2 -c user.name=e2e commit -qm init`,
+    ...spec.main.flatMap((files, i) => commit(files, `main ${i + 1}`)),
+    ...Object.entries(spec.branches ?? {}).flatMap(([branch, files]) => {
+      assert.match(branch, /^[a-z0-9][a-z0-9-]{0,60}$/, "a branch is a plain lower-case label");
+      return [
+        `git -C ${work} checkout -q -b ${branch} main`,
+        ...commit(files, branch),
+        `git -C ${work} checkout -q main`,
+      ];
+    }),
+    `git clone -q --bare ${work} ${srv}/${name}.git`,
+    `git -C ${srv}/${name}.git update-server-info`,
+    ...(owner === undefined ? [] : [`chown -R ${owner}:${owner} ${srv}/${name}.git`]),
+    `rm -rf ${work}`,
+  ].join(" && ");
+}
+
+/** The uid of the seed's user `git`, whom sshd serves (`SERVE_SSH`). */
+const SEED_GIT_UID = 1001;
+
+/**
+ * An LFS repository of one scenario, beside `app.git`, whose `.lfsconfig` names the seed's LFS server.
+ * Over `http` the cache clones it anonymously; over `ssh` it is `push.git`'s kind, which the deploy key
+ * clones and pushes to. Answer its url and the sha of each commit on `main`, oldest first.
+ */
+export async function lfsSeedRepo(
+  name: string,
+  spec: LfsRepoSpec,
+  over: "http" | "ssh" = "http",
+): Promise<{ url: string; main: string[] }> {
+  const out = await inSeed(
+    `${lfsRepoScript("/srv", `/tmp/lfs-${name}`, name, spec, over === "ssh" ? SEED_GIT_UID : undefined)} && ` +
+      `git -c safe.directory='*' -C /srv/${name}.git rev-list --reverse main`,
+  );
+  const main = out.trim().split("\n");
+  assert.equal(main.length, spec.main.length + 1, `the repository has its commits: ${out}`);
+  return {
+    url: over === "ssh" ? `ssh://git@${PUSH_HOST}/srv/${name}.git` : `http://${PUSH_HOST}/${name}.git`,
+    main,
+  };
+}
+
+/** What a seed repository holds on a branch, or "" when it has none. */
+export async function seedRepoTip(name: string, branch: string): Promise<string> {
+  assert.match(name, /^[a-z0-9][a-z0-9-]{0,80}$/);
+  assert.match(branch, /^[a-z0-9][a-z0-9/-]{0,60}$/);
+  const out = await inSeed(
+    `git -c safe.directory='*' -C /srv/${name}.git rev-parse -q --verify refs/heads/${branch} || true`,
+  );
+  return out.trim();
 }
