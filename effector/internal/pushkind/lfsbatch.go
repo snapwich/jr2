@@ -3,16 +3,20 @@ package pushkind
 // The Effector asks the LFS server's batch API itself (ADR-0067), before and after git-lfs
 // uploads, because git-lfs's exit code does not say that the server holds an object: an upload
 // href or a verify that answers 422 makes `git-lfs push --object-id` exit 0. Before the upload,
-// the answer tells which objects the server lacks: an object that the server holds already is not
-// uploaded, and needs no local copy. After the upload, the same question confirms that the server
-// holds each object that was uploaded. The question is an upload batch: an object that the answer
-// gives no action holds on the server.
+// the answer tells which objects the server holds already: those are not uploaded, and need no
+// local copy. After the upload, the same question confirms that the server holds each object
+// that was uploaded. The question is a DOWNLOAD batch: the server holds an object when the answer
+// gives it a download action and no error, which the batch API requires of a server. An upload
+// batch would not do: that a server gives no upload action for an object it holds is only a
+// SHOULD, and a server that always gives one would make every good push `rejected`.
 //
 // The batch goes where git-lfs sends its own: the server that `.lfsconfig` names at the Binding's
 // base, else the one that git-lfs derives from the push url. An https server gets the token only
 // through the credential helper, after a 401, as git-lfs does: the helper answers only the push
-// url's own origin. An ssh server gets the headers that `git-lfs-authenticate` gives, through the
-// call's own ssh command.
+// url's own origin. An ssh server is asked as git-lfs asks it (lfs.sshtransfer=negotiate): over
+// the pure SSH protocol (`git-lfs-transfer`, lfsssh.go) first, and through the headers that
+// `git-lfs-authenticate` gives when the server does not speak it. Both go through the call's own
+// ssh command.
 
 import (
 	"bytes"
@@ -53,20 +57,21 @@ type lfsAPI struct {
 	header map[string]string
 }
 
-// lfsState is what a batch answer says of one object.
+// lfsState is what a download batch answer says of one object.
 type lfsState struct {
-	// held: the answer gives the object no action, so the server holds it.
+	// held: the answer gives the object a download action and no error, so the server holds it.
 	held bool
-	// why is the server's refusal of the object, or "" when the answer gives an upload action.
+	// why is the server's error for the object, or "".
 	why string
 }
 
-// lfsAPIFor finds the batch API of the server, as git-lfs finds it: configured, which `.lfsconfig`
-// names, else the push url. An http(s) server is its url; a url that git-lfs derives gets
-// `.git/info/lfs`. An ssh server is the href that git-lfs-authenticate gives over the call's ssh
-// command.
-func (c *call) lfsAPIFor(ctx context.Context, configured string) (*lfsAPI, error) {
-	raw := configured
+// lfsHeld asks the LFS server which of objects it holds: per oid, what a download batch answer
+// says of it. An object that an answer leaves out has no entry. The server is endpoint, which
+// `.lfsconfig` names, else the push url's, as git-lfs finds it: an http(s) server is its url, and
+// a url that git-lfs derives gets `.git/info/lfs`. Each call opens its own session, so a header
+// of git-lfs-authenticate that expires during a long upload is not used again.
+func (c *call) lfsHeld(ctx context.Context, endpoint string, objects []lfsObject) (map[string]lfsState, error) {
+	raw := endpoint
 	if raw == "" {
 		raw = strings.TrimSpace(c.spec.URL)
 	}
@@ -77,52 +82,106 @@ func (c *call) lfsAPIFor(ctx context.Context, configured string) (*lfsAPI, error
 	switch scheme {
 	case gitclean.SchemeHTTPS, gitclean.SchemeHTTP:
 		href := strings.TrimSuffix(raw, "/")
-		if configured == "" {
+		if endpoint == "" {
 			if !strings.HasSuffix(href, ".git") {
 				href += ".git"
 			}
 			href += "/info/lfs"
 		}
-		return &lfsAPI{href: href}, nil
+		return c.lfsStates(ctx, &lfsAPI{href: href}, objects)
 	case gitclean.SchemeSSH:
-		return c.lfsAuthenticate(ctx, raw)
+		return c.lfsHeldSSH(ctx, raw, objects)
 	}
 	return nil, fmt.Errorf("the LFS server's scheme %q is not one jr2 uploads over", scheme)
 }
 
-// lfsAuthenticate runs `git-lfs-authenticate <path> upload` on the ssh server of raw, with the
-// call's own ssh command (its key, its known hosts, batch mode), and reads the href and the
-// headers that it answers.
-func (c *call) lfsAuthenticate(ctx context.Context, raw string) (*lfsAPI, error) {
+// lfsHeldSSH asks an ssh LFS server as git-lfs negotiates (lfs.sshtransfer=negotiate): over
+// `git-lfs-transfer` when the server speaks it, else over https with the headers that
+// `git-lfs-authenticate` gives.
+func (c *call) lfsHeldSSH(ctx context.Context, raw string, objects []lfsObject) (map[string]lfsState, error) {
 	if c.sshCommand == "" {
 		return nil, errors.New("the LFS server is ssh, and the push has no ssh credential")
 	}
-	var dest, port, path string
+	target, err := parseSSHTarget(raw)
+	if err != nil {
+		return nil, err
+	}
+	session, transferErr := c.openTransfer(ctx, target, "download")
+	if transferErr == nil {
+		defer session.close()
+		states := map[string]lfsState{}
+		for chunk := range slices.Chunk(objects, lfsBatchSize) {
+			answer, err := session.batch(chunk)
+			if err != nil && ctx.Err() != nil {
+				return nil, errors.New("git-lfs-transfer on the LFS server did not answer: the timeout passed")
+			}
+			if err != nil {
+				return nil, errors.New("git-lfs-transfer on the LFS server: " + err.Error())
+			}
+			maps.Copy(states, answer)
+		}
+		return states, nil
+	}
+	if ctx.Err() != nil {
+		return nil, errors.New("the LFS server did not answer: the timeout passed")
+	}
+	// ssh's lines of the failed session go into its error, not into the next call's reason.
+	if line := c.takeSSHLine(); line != "" {
+		transferErr = fmt.Errorf("%w (ssh: %s)", transferErr, line)
+	}
+	api, err := c.lfsAuthenticate(ctx, target)
+	if err != nil {
+		return nil, fmt.Errorf("%w; before it, git-lfs-transfer failed: %s", err, transferErr.Error())
+	}
+	return c.lfsStates(ctx, api, objects)
+}
+
+// sshTarget is the ssh destination, port and path of an ssh LFS server.
+type sshTarget struct{ dest, port, path string }
+
+// parseSSHTarget reads an ssh url, `ssh://` or scp-like.
+func parseSSHTarget(raw string) (sshTarget, error) {
+	var t sshTarget
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
 		if err != nil {
-			return nil, errors.New("the LFS server's ssh url could not be read")
+			return t, errors.New("the LFS server's ssh url could not be read")
 		}
-		dest, port, path = u.Hostname(), u.Port(), u.Path
+		t = sshTarget{dest: u.Hostname(), port: u.Port(), path: u.Path}
 		if u.User != nil && u.User.Username() != "" {
-			dest = u.User.Username() + "@" + dest
+			t.dest = u.User.Username() + "@" + t.dest
 		}
 	} else {
-		dest, path, _ = strings.Cut(raw, ":")
+		t.dest, t.path, _ = strings.Cut(raw, ":")
 	}
 	// git-lfs sends the path to the remote shell unquoted; a path of other characters is refused,
 	// so the remote shell reads it as one word.
-	if strings.HasPrefix(dest, "-") || !sshPath.MatchString(path) || (port != "" && !isDigits(port)) {
-		return nil, errors.New("the LFS server's ssh url is not one jr2 runs ssh to")
+	if strings.HasPrefix(t.dest, "-") || !sshPath.MatchString(t.path) || (t.port != "" && !isDigits(t.port)) {
+		return t, errors.New("the LFS server's ssh url is not one jr2 runs ssh to")
 	}
-	args := []string{}
-	if port != "" {
-		args = append(args, "-p", port)
+	return t, nil
+}
+
+// args are ssh's arguments after its command: the port, the destination, and the remote command.
+func (t sshTarget) args(command, operation string) []string {
+	var args []string
+	if t.port != "" {
+		args = append(args, "-p", t.port)
 	}
-	args = append(args, dest, "git-lfs-authenticate", path, "upload")
-	// git runs core.sshCommand through the shell; so does this call, with the args after it.
-	out, err := gitclean.Exec(ctx, c.repo, nil, append([]string{"sh", "-c", c.sshCommand + ` "$@"`, "ssh"},
-		args...)...)
+	return append(args, t.dest, command, t.path, operation)
+}
+
+// sshArgv runs the call's ssh command with args: git runs core.sshCommand through the shell, and
+// so does this, with the args after it.
+func (c *call) sshArgv(args []string) []string {
+	return append([]string{"sh", "-c", c.sshCommand + ` "$@"`, "ssh"}, args...)
+}
+
+// lfsAuthenticate runs `git-lfs-authenticate <path> download` on the ssh server, with the call's
+// own ssh command (its key, its known hosts, batch mode), and reads the href and the headers that
+// it answers.
+func (c *call) lfsAuthenticate(ctx context.Context, t sshTarget) (*lfsAPI, error) {
+	out, err := gitclean.Exec(ctx, c.repo, nil, c.sshArgv(t.args("git-lfs-authenticate", "download"))...)
 	if err != nil {
 		reason, _ := c.failure(stderrOf(err), ctx)
 		return nil, errors.New("git-lfs-authenticate on the LFS server failed: " + reason)
@@ -187,7 +246,7 @@ func (c *call) lfsClient() *http.Client {
 	}}
 }
 
-// lfsBatch sends one upload batch request. A 401 asks the credential helper for the batch url,
+// lfsBatch sends one download batch request. A 401 asks the credential helper for the batch url,
 // once, and sends again with the pair it gives: auth keeps it for the next batch.
 func (c *call) lfsBatch(ctx context.Context, client *http.Client, api *lfsAPI, objects []lfsObject,
 	auth *string) (map[string]lfsState, error) {
@@ -200,7 +259,7 @@ func (c *call) lfsBatch(ctx context.Context, client *http.Client, api *lfsAPI, o
 		Transfers []string `json:"transfers"`
 		Objects   []object `json:"objects"`
 		HashAlgo  string   `json:"hash_algo"`
-	}{Operation: "upload", Transfers: []string{"basic"}, HashAlgo: "sha256"}
+	}{Operation: "download", Transfers: []string{"basic"}, HashAlgo: "sha256"}
 	for _, o := range objects {
 		body.Objects = append(body.Objects, object{Oid: o.oid, Size: o.size})
 	}
@@ -238,7 +297,10 @@ func (c *call) lfsBatch(ctx context.Context, client *http.Client, api *lfsAPI, o
 		}
 		if res.StatusCode != http.StatusOK {
 			why := fmt.Sprintf("the LFS server answered the batch request %d", res.StatusCode)
-			if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+			switch {
+			case res.StatusCode == http.StatusUnauthorized && *auth == "" && !c.onPushOrigin(target):
+				why += ": " + originRule + ", and the LFS server is on another origin"
+			case res.StatusCode == http.StatusUnauthorized, res.StatusCode == http.StatusForbidden:
 				why += ": the server refused the credential"
 			}
 			if m := lfsMessage(answer); m != "" {
@@ -276,8 +338,8 @@ func (c *call) lfsCredential(ctx context.Context, target string) string {
 	return "Basic " + encoded
 }
 
-// lfsParse reads a batch answer: per oid, held (no action), an upload to do, or the server's
-// error for that object.
+// lfsParse reads a download batch answer: per oid, held (a download action and no error), or not,
+// with the server's error for that object.
 func lfsParse(raw []byte) (map[string]lfsState, error) {
 	var answer struct {
 		Objects []struct {
@@ -301,13 +363,24 @@ func lfsParse(raw []byte) (map[string]lfsState, error) {
 				why += " (" + m + ")"
 			}
 			states[o.Oid] = lfsState{why: why}
-		case o.Actions["upload"] != nil:
-			states[o.Oid] = lfsState{}
-		default:
+		case o.Actions["download"] != nil:
 			states[o.Oid] = lfsState{held: true}
+		default:
+			states[o.Oid] = lfsState{}
 		}
 	}
 	return states, nil
+}
+
+// originRule is why jr2 gave no token for a url on another origin (ADR-0051).
+const originRule = "jr2 sends the push token only to the push url's origin (scheme, host, port)"
+
+// onPushOrigin reports that raw has the push url's origin: its scheme and its host with its port,
+// as the credential helper matches them.
+func (c *call) onPushOrigin(raw string) bool {
+	a, errA := url.Parse(raw)
+	b, errB := url.Parse(strings.TrimSpace(c.spec.URL))
+	return errA == nil && errB == nil && strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
 }
 
 // lfsMessage is the `message` of an error answer, on one line.

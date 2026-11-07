@@ -462,6 +462,10 @@ func (a *Agent) fetchLFS(ctx context.Context, dir string, env []string, endpoint
 	out, err = a.Git.Run(fetchCtx, dir, env,
 		"-c", "lfs.url="+endpoint,
 		"-c", "http.followRedirects=false", // git's own rule; git-lfs does not read it
+		// git-lfs's own default, set so that nothing else chooses it: an ssh LFS server is asked
+		// over the pure SSH protocol (git-lfs-transfer) when it speaks it, else through
+		// git-lfs-authenticate, as the Effector's push asks it (ADR-0067).
+		"-c", "lfs.sshtransfer=negotiate",
 		"-c", "lfs.fetchinclude=",
 		"-c", "lfs.fetchexclude=",
 		"lfs", "fetch", "origin", commit)

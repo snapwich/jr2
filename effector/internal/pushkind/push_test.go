@@ -18,12 +18,17 @@ import (
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
-// TestMain lets the test binary be the credential helper, as the Effector binary is in a pod.
+// TestMain lets the test binary be the credential helper, as the Effector binary is in a pod, and
+// a git-lfs-transfer server.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "git-credential" {
 		// syscall.Exit, not os.Exit: under -coverprofile the test binary's exit hook writes
 		// "GOCOVERDIR not set" to stderr, into the output the test reads. The Effector's binary has no such hook.
 		syscall.Exit(Helper(os.Args[2:], os.Stdin, os.Stdout))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "lfs-transfer" {
+		// A test's ssh runs the test binary as a git-lfs-transfer server (lfsssh_test.go).
+		syscall.Exit(serveTransfer(os.Args[2:], os.Stdin, os.Stdout))
 	}
 	os.Exit(m.Run())
 }

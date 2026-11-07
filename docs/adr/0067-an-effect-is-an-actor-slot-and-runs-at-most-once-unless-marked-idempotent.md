@@ -240,24 +240,32 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   `customize()` binds. `force` replaces what the remote holds. A Workspace with no Repo Slot has no branch to push, so a
   `push` there is refused, by `jr2 up` and at invoke (ADR-0051).
 - **A push uploads its large files first.** When the commits that a push publishes hold Git LFS pointers, the Effector
-  uploads their objects before it updates the branch. It asks the server's batch API first: an object that the answer
-  gives no upload action, the server holds already, so it is not uploaded and needs no local copy. An object that the
-  answer refuses or leaves out is `rejected` at once. The Effector reads each object that the server lacks as data from
-  the Agent's `.git/lfs/objects`, else from the node cache's `lfs/objects`, checks it against its oid, and runs its own
-  git-lfs in its own scratch repository. An object that the server lacks and that neither store holds is `rejected`,
-  naming its file and the cause: no file, bytes that do not match the oid, a file the opener refuses, or a read error.
-  After git-lfs exits 0, the Effector asks the batch API again, and the server must hold each object that went up:
-  git-lfs's exit code does not say so, because a PUT or a verify that answers 422 makes it exit 0. The server is the
-  first of `lfs.pushurl`, `lfs.url`, `remote.origin.lfspushurl` and `remote.origin.lfsurl` of `.lfsconfig` at the
-  Binding's base, as git-lfs chooses for an upload, else the one that git-lfs derives from the push url. A push url is
-  honored because a repository that names one can read from a server that takes no upload, a mirror; the same scheme and
-  host rule applies to it. The upload spends the push credential and follows ADR-0051's LFS rule: an ssh server only on
-  the push url's host, through `git-lfs-authenticate`; the token, after a 401, only to the push url's own origin
-  (scheme, host and port), the batch API and an upload href there included; and an href on any other origin gets only
-  the headers of the batch answer. A pointer is each blob that git-lfs reads as one, so a pointer that is not in the
-  canonical form also gets its object uploaded. An upload that fails is `rejected`, and nothing is pushed; its output
-  shows no query of a url, because an upload href can carry its credential there. A signed or squashed copy keeps the
-  pointers, so it uploads the same objects.
+  uploads their objects before it updates the branch. It asks the server's batch API first, with a download batch: an
+  object that the answer gives a download action and no error, the server holds already, so it is not uploaded and needs
+  no local copy. The question is a download batch because the batch API requires that answer of a server. That a server
+  gives no upload action for an object it holds is only a recommendation, and a server that gives one anyway must not
+  make a good push `rejected`. An object that the answer leaves out is `rejected` at once. The Effector reads each
+  object that the server lacks as data from the Agent's `.git/lfs/objects`, else from the node cache's `lfs/objects`,
+  checks it against its oid, and runs its own git-lfs in its own scratch repository. An object that the server lacks and
+  that neither store holds is `rejected`, naming its file and the cause: no file, bytes that do not match the oid, a
+  file the opener refuses, or a read error. After git-lfs exits 0, the Effector asks the same download batch again, and
+  the server must hold each object that went up: git-lfs's exit code does not say so, because a PUT or a verify that
+  answers 422 makes it exit 0. The server is the first of `lfs.pushurl`, `lfs.url`, `remote.origin.lfspushurl` and
+  `remote.origin.lfsurl` of `.lfsconfig` at the Binding's base, as git-lfs chooses for an upload, else the one that
+  git-lfs derives from the push url. A push url is honored because a repository that names one can read from a server
+  that takes no upload, a mirror; the same scheme and host rule applies to it. The upload spends the push credential and
+  follows ADR-0051's LFS rule: an ssh server only on the push url's host; the token, after a 401, only to the push url's
+  own origin (scheme, host and port), the batch API and an upload href there included; and an href on any other origin
+  gets only the headers of the batch answer. When a url on another origin asks for a credential, the refusal says that
+  jr2 sends the token only to the push url's origin. An ssh server is asked as git-lfs asks it with
+  `lfs.sshtransfer=negotiate`, git-lfs's default, which the Effector and the cache agent set: over the pure SSH protocol
+  (`git-lfs-transfer`) when the server speaks it, else through `git-lfs-authenticate`. The Effector's own batch
+  questions go in the same order, through the push's ssh command, so a server that speaks only one of the two takes the
+  push, and the check speaks the protocol that the upload spoke. A pointer is each blob that git-lfs reads as one, so a
+  pointer that is not in the canonical form also gets its object uploaded. An upload that fails is `rejected`, and
+  nothing is pushed: the branch does not move, though an object that went up stays on the server. Its output shows no
+  query of a url, because an upload href can carry its credential there. A signed or squashed copy keeps the pointers,
+  so it uploads the same objects.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The

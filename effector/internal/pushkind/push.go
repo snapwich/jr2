@@ -453,6 +453,9 @@ func (c *call) failure(stderr string, ctx context.Context) (string, string) {
 		strings.TrimSpace(tail(stderr) + "\nssh:\n" + tail(ssh))
 }
 
+// refusedCredential is classify's reason for a credential that the remote refused.
+const refusedCredential = "the remote refused the credential"
+
 // classify says why a connection failed, from git's stderr: each is an answer of the outside
 // world.
 func classify(stderr string, ctx context.Context) string {
@@ -467,7 +470,7 @@ func classify(stderr string, ctx context.Context) string {
 	case strings.Contains(s, "authentication failed"), strings.Contains(s, "permission denied"),
 		strings.Contains(s, "could not read username"), strings.Contains(s, "access denied"),
 		strings.Contains(s, " 401"), strings.Contains(s, " 403"), strings.Contains(s, "not authorized"):
-		return "the remote refused the credential"
+		return refusedCredential
 	case strings.Contains(s, "repository not found"), strings.Contains(s, "does not appear to be a git repository"),
 		strings.Contains(s, "not found"):
 		return "the remote has no such repository"

@@ -5,9 +5,9 @@ package pushkind
 //
 //  1. It lists the pointers: each blob of `rev-list --objects <published> --not <held>` that is
 //     at most 1024 bytes and parses as a pointer. A push with no pointer runs no git-lfs.
-//  2. It asks the LFS server's batch API which objects the server lacks (lfsbatch.go). An object
-//     that the server holds is not uploaded, and needs no local copy. An object that the answer
-//     refuses or leaves out is `rejected` at once.
+//  2. It asks the LFS server's batch API which objects the server holds, with a download batch
+//     (lfsbatch.go). An object that the server holds is not uploaded, and needs no local copy. An
+//     object that the answer leaves out is `rejected` at once.
 //  3. It reads each object that the server lacks as DATA: from the Agent's
 //     `<git dir>/lfs/objects`, opened beneath the git dir with no symlink (package beneath), else
 //     from the node cache's `lfs/objects`. It checks each one against its oid (sha256) and its
@@ -15,8 +15,9 @@ package pushkind
 //     Agent's repository as its repository, and nothing of the Agent's config is read.
 //  4. It runs jr2's own git-lfs (GitLFS) as `push --object-id` in the scratch repository, to the
 //     push url.
-//  5. It asks the batch API again: the server must hold each object that was uploaded. git-lfs's
-//     exit code alone does not say so: a PUT or a verify that answers 422 makes it exit 0.
+//  5. It asks the batch API again, with a download batch: the server must hold each object that
+//     was uploaded. git-lfs's exit code alone does not say so: a PUT or a verify that answers 422
+//     makes it exit 0.
 //
 // The LFS server is the first of `lfs.pushurl`, `lfs.url`, `remote.origin.lfspushurl` and
 // `remote.origin.lfsurl` of `.lfsconfig` at the Binding's base in the node cache, as git-lfs
@@ -92,14 +93,10 @@ func (c *call) uploadLFS(ctx context.Context, published string, held []string) *
 	if err != nil {
 		return ptr(rejected(stageUpload, err.Error()+"; nothing was pushed", ""))
 	}
-	api, err := c.lfsAPIFor(ctx, endpoint)
-	if err != nil {
-		return ptr(rejected(stageUpload, withoutQueries(err.Error())+"; nothing was pushed", ""))
-	}
-	states, err := c.lfsStates(ctx, api, objects)
+	states, err := c.lfsHeld(ctx, endpoint, objects)
 	if err != nil {
 		return ptr(rejected(stageUpload, "the LFS objects of "+namesOf(objects)+" could not be uploaded: "+
-			err.Error()+"; nothing was pushed", ""))
+			withoutQueries(err.Error())+"; nothing was pushed", ""))
 	}
 	var need []lfsObject
 	for _, o := range objects {
@@ -108,9 +105,6 @@ func (c *call) uploadLFS(ctx context.Context, published string, held []string) *
 		case !ok:
 			return ptr(rejected(stageUpload, "the LFS object of "+o.name()+" could not be uploaded: the server's "+
 				"batch answer left it out; nothing was pushed", ""))
-		case s.why != "":
-			return ptr(rejected(stageUpload, "the LFS object of "+o.name()+" could not be uploaded: "+s.why+
-				"; nothing was pushed", ""))
 		case !s.held:
 			need = append(need, o)
 		}
@@ -128,21 +122,28 @@ func (c *call) uploadLFS(ctx context.Context, published string, held []string) *
 		return out
 	}
 	// git-lfs exited 0. The server must hold each object now: ask it.
-	after, err := c.lfsStates(ctx, api, need)
+	after, err := c.lfsHeld(ctx, endpoint, need)
 	if err != nil {
 		return ptr(rejected(stageUpload, "the upload of the LFS objects of "+namesOf(need)+" could not be "+
-			"confirmed: "+err.Error()+"; nothing was pushed", tail(words)))
+			"confirmed: "+withoutQueries(err.Error())+"; nothing was pushed", tail(words)))
 	}
 	var lacking []lfsObject
+	why := ""
 	for _, o := range need {
-		if !after[o.oid].held {
+		if s := after[o.oid]; !s.held {
 			lacking = append(lacking, o)
+			if why == "" {
+				why = s.why
+			}
 		}
 	}
 	if len(lacking) == 0 {
 		return nil
 	}
 	reason := "the LFS server does not hold the objects of " + namesOf(lacking) + " after the upload"
+	if why != "" {
+		reason += " (" + why + ")"
+	}
 	if last := lastLine(words); last != "" {
 		reason += "; git-lfs: " + last
 	}
@@ -492,6 +493,11 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 	settings := [][2]string{
 		// A lock is not the push's business: git-lfs asks the server about none.
 		{"lfs.locksverify", "false"},
+		// git-lfs's own default, set so that nothing else chooses it: an ssh server is asked over
+		// the pure SSH protocol (git-lfs-transfer) when it speaks it, else through
+		// git-lfs-authenticate. The check (lfsHeldSSH) negotiates in the same order, so the upload
+		// and the check use the same protocol, and a server that speaks only one of them works.
+		{"lfs.sshtransfer", "negotiate"},
 	}
 	if endpoint != "" {
 		settings = append(settings, [2]string{"lfs.url", endpoint})
@@ -529,8 +535,11 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 	case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
 		reason += ": this Effector holds no git-lfs at " + program
 	default:
-		if why := classify(words, ctx); why == "the remote refused the credential" ||
-			why == "the remote's TLS certificate is not trusted" {
+		switch why := classify(words, ctx); {
+		case why == refusedCredential && c.namesOtherOrigin(words):
+			// The helper gave git-lfs no token for that url: say why, not that a token was refused.
+			reason += ": a url on another origin asked for a credential, and " + originRule
+		case why == refusedCredential, why == "the remote's TLS certificate is not trusted":
 			reason += ": " + why
 		}
 		if last := lastLine(words); last != "" {
@@ -539,6 +548,23 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 	}
 	return words, ptr(rejected(stageUpload, reason+"; nothing was pushed", tail(words)))
 }
+
+// namesOtherOrigin reports that the push holds a token (an https push url) and that git-lfs's
+// words name an http(s) url whose origin is not the push url's: the credential helper answers no
+// such url.
+func (c *call) namesOtherOrigin(words string) bool {
+	if scheme, _, _ := lfsURLParts(strings.TrimSpace(c.spec.URL)); scheme != gitclean.SchemeHTTPS {
+		return false
+	}
+	for _, u := range httpURL.FindAllString(words, -1) {
+		if !c.onPushOrigin(u) {
+			return true
+		}
+	}
+	return false
+}
+
+var httpURL = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>]+`)
 
 // urlQuery is the query and the fragment of a url in git-lfs's words.
 var urlQuery = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"'<>]*)[?#][^\s"'<>]*`)

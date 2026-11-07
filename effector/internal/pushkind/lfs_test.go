@@ -33,8 +33,8 @@ type lfsRequest struct {
 	Branch string
 }
 
-// lfsServer is a Git LFS server for one test: the batch API (upload, with a verify action), the
-// PUT of each object and its verify. It records every request. An object that a PUT sends is
+// lfsServer is a Git LFS server for one test: the batch API (upload, with a verify action, and
+// download), the PUT of each object and its verify. It records every request. An object that a PUT sends is
 // held only after its verify passes, as a server that verifies keeps an unverified object out of
 // its store.
 type lfsServer struct {
@@ -48,10 +48,13 @@ type lfsServer struct {
 	hrefs string
 	// want is the Authorization that the batch needs; "" needs none.
 	want string
-	// refuse answers each object of a batch with an error; hold makes every PUT wait until the
-	// test ends.
+	// refuse answers each object of an upload batch with an error; hold makes every PUT wait
+	// until the test ends.
 	refuse bool
-	hold   chan struct{}
+	// alwaysUpload gives each object of an upload batch an upload action, held or not: the spec
+	// says only that a server SHOULD give none for an object it holds.
+	alwaysUpload bool
+	hold         chan struct{}
 	// putStatus and verifyStatus, when not 0, are what every PUT and every verify answer, and
 	// nothing is stored.
 	putStatus, verifyStatus int
@@ -97,7 +100,8 @@ func (s *lfsServer) batch(w http.ResponseWriter, r *http.Request, base string) {
 			Size int64  `json:"size"`
 		} `json:"objects"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Operation != "upload" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		(req.Operation != "upload" && req.Operation != "download") {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -129,9 +133,13 @@ func (s *lfsServer) batch(w http.ResponseWriter, r *http.Request, base string) {
 		}
 		obj := object{Oid: o.Oid, Size: o.Size}
 		switch {
+		case req.Operation == "download" && s.held(o.Oid) != nil:
+			obj.Actions = map[string]action{"download": {Href: base + "/down/" + o.Oid, Header: header}}
+		case req.Operation == "download":
+			obj.Error = &objectError{Code: http.StatusNotFound, Message: "Object does not exist"}
 		case s.refuse:
 			obj.Error = &objectError{Code: http.StatusForbidden, Message: "this server takes no upload"}
-		case s.held(o.Oid) == nil:
+		case s.held(o.Oid) == nil || s.alwaysUpload:
 			obj.Actions = map[string]action{
 				"upload": {Href: base + "/up/" + o.Oid, Header: header},
 				"verify": {Href: base + "/verify/" + o.Oid, Header: header},
@@ -400,6 +408,37 @@ func TestAnObjectNoStoreHoldsIsPushedWhenTheServerHoldsIt(t *testing.T) {
 	p := puts(lfs.requests())
 	if len(p) != 1 || p[0].Path != "/up/"+sum256("new\n") {
 		t.Fatalf("PUTs: %+v", p)
+	}
+}
+
+// A server that gives an upload action for every object, held or not (the batch API says only that
+// it SHOULD give none for an object it holds): the check asks with a download batch, so a good push
+// is `pushed`, and an object that the server holds needs no local copy (Q20).
+func TestAServerThatAlwaysGivesUploadActionsTakesTheGoodPush(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	lfs.alwaysUpload = true
+	srv := httptest.NewServer(lfs)
+	t.Cleanup(srv.Close)
+	lfsConfigAtBase(t, f, srv.URL+"/lfs")
+	content := "uploaded, then confirmed\n"
+	sha, oid := largeFile(t, f, "big.bin", content, true)
+	out := f.runner.Run(t.Context(), f.lfsRequest(false))
+	if out.Outcome != wire.OutcomePushed || out.Push.Published != sha || string(lfs.held(oid)) != content {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+
+	// An object that only the server holds: no local copy, no PUT, and the branch moves.
+	held := "held by the server only\n"
+	lfs.objects[sum256(held)] = []byte(held)
+	n := len(puts(lfs.requests()))
+	sha = f.pod.Commit("add held", map[string]string{"held.bin": pointerOf(held)})
+	out = f.runner.Run(t.Context(), f.lfsRequest(false))
+	if out.Outcome != wire.OutcomePushed || out.Push.Published != sha {
+		t.Fatalf("held: got %+v %+v", out, out.Push)
+	}
+	if p := puts(lfs.requests()); len(p) != n {
+		t.Fatalf("an object that the server holds went up: %+v", p[n:])
 	}
 }
 
@@ -853,6 +892,43 @@ func TestAnHTTPSTokenGoesToTheBindingsHostOnlyAndAnHrefGetsOnlyTheAnswersHeaders
 	}
 }
 
+// An href on another origin that answers 401 gets no token, also after the 401 (Q19): git-lfs
+// fails, the push is `rejected`, and the reason says that jr2 sends the token only to the push
+// url's origin, not that the server refused it.
+func TestAnHrefOnAnotherOriginThatAsksForACredentialGetsNone(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	other := httptest.NewTLSServer(lfs)
+	t.Cleanup(other.Close)
+	srv, want := httpsLFS(t, f, lfs)
+	lfs.want, lfs.hrefWant, lfs.hrefs = want, want, other.URL
+	before := remoteRef(f)
+	largeFile(t, f, "big.bin", "an href that asks\n", true)
+	req := f.request(false, nil)
+	req.Push.URL = srv.URL + "/" + filepath.Base(f.pod.Remote)
+	out := f.runner.Run(t.Context(), req)
+	t.Logf("%s", out.Reason)
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || !strings.Contains(out.Reason, originRule) {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != before {
+		t.Fatal("the branch moved")
+	}
+	hrefs := 0
+	for _, r := range lfs.requests() {
+		if strings.HasSuffix(r.Path, "/objects/batch") {
+			continue
+		}
+		hrefs++
+		if r.Auth != "" {
+			t.Fatalf("an href on another origin got an Authorization: %+v", r)
+		}
+	}
+	if hrefs == 0 {
+		t.Fatal("no href was asked")
+	}
+}
+
 // A private LFS server that `.lfsconfig` names on another host gets no token: the upload fails
 // with git-lfs's words, and nothing is pushed.
 // An href on the push url's own origin (scheme, host, port) gets the token after a 401, as
@@ -902,7 +978,8 @@ func TestAnLFSServerOnAnotherHostGetsNoToken(t *testing.T) {
 	req := f.lfsRequest(false)
 	req.Push.URL = srv.URL + "/" + filepath.Base(f.pod.Remote)
 	out := f.runner.Run(t.Context(), req)
-	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" {
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" || !strings.Contains(out.Reason, originRule) ||
+		strings.Contains(out.Reason, "refused the credential") {
 		t.Fatalf("got %+v %+v", out, out.Push)
 	}
 	for _, r := range lfs.requests() {
