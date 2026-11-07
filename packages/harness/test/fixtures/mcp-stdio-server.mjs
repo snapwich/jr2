@@ -1,7 +1,7 @@
 // A stdio MCP server for the tests (ADR-0079): one JSON-RPC message on each line of stdin and of
 // stdout. The Harness starts it through the spawner, in the Landlock domain. Its tools tell the
-// test what the process holds: `env` its environment, `pid` its process id, `read` a file's bytes,
-// and `exit` ends the process.
+// test what the process holds: `echo` the arguments it got, `env` its environment, `pid` its
+// process id, `read` a file's bytes, and `exit` ends the process.
 //
 // It serves only with `--serve`: `node --test` runs each script under `test/`, and with no flag the
 // script ends at once.
@@ -12,6 +12,19 @@ import { createInterface } from "node:readline";
 if (!process.argv.includes("--serve")) process.exit(0);
 
 const tools = [
+  {
+    name: "echo",
+    description: "The arguments the server got, as JSON.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        count: { type: "integer" },
+        label: { type: "string" },
+        tags: { type: "array", items: { type: "string" } },
+      },
+      required: ["count", "label", "tags"],
+    },
+  },
   { name: "env", description: "The server's environment, as JSON.", inputSchema: { type: "object" } },
   { name: "pid", description: "The server's process id.", inputSchema: { type: "object" } },
   {
@@ -42,7 +55,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     ok({ tools });
   } else if (message.method === "tools/call") {
     const args = params.arguments ?? {};
-    if (params.name === "env") ok(text(JSON.stringify(process.env)));
+    if (params.name === "echo") ok(text(JSON.stringify(args)));
+    else if (params.name === "env") ok(text(JSON.stringify(process.env)));
     else if (params.name === "pid") ok(text(String(process.pid)));
     else if (params.name === "lookup") ok(text(`notes on ${args.term}: it is defined in GLOSSARY.md`));
     else if (params.name === "read") {

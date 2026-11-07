@@ -2931,6 +2931,35 @@ test("M14: a missing required argument is refused in pi-schema's words (pi-ai 1.
   );
 });
 
+test("M15: a Menu pick's plain JSON Schema is coerced by pi-schema — the Delivery is the coerced value, the print is what the model sent (pi-ai 1.5)", async () => {
+  // pi-ai 1.5 coerces EVERY tool schema with pi-schema (`compile({ coerce: true })`), a plain JSON
+  // Schema too. On 1.4 a plain schema had weaker rules: `3.5` for an integer and one value for an
+  // array were refused, and `null` for a string became `""`. This test locks in the 1.5 behaviour,
+  // so a pin bump that moves it fails here. Whether jr2 keeps it for Doors is open (the plan's M5).
+  provider.reset([
+    {
+      text: "",
+      toolCall: { id: "call_1", name: "mcp__jr2__tally", args: '{"count":3.5,"label":null,"tags":"one"}' },
+    },
+  ]);
+  const input = {
+    type: "object",
+    properties: {
+      count: { type: "integer" },
+      label: { type: "string" },
+      tags: { type: "array", items: { type: "string" } },
+    },
+    required: ["count", "label", "tags"],
+  };
+  const event = { name: "tally", description: "Deliver the tally.", input, semantics: "ack" as const };
+  sandbox.reset({ ...surfaceAllowing([], []), menu: [event], allowed: ["tally"] });
+  const iid = "conf/coerced-pick";
+  assert.equal((await settled(iid, await admit(iid, "Tally it."))).outcome, "aborted");
+  assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 3, label: "null", tags: ["one"] }]);
+  // The printed conversation (ADR-0023) shows the arguments as the model wrote them.
+  assert.match(printed.get(iid) ?? "", /\[tally\] \{"count":3\.5,"label":null,"tags":"one"\}/);
+});
+
 test("M11: another model's thinking is not sent after a model Dial change (pi-ai 1.4)", async () => {
   provider.reset([{ reasoning: "Model x thought this.", text: "One." }, { text: "Two." }]);
   sandbox.reset(surfaceWith("review_verdict"));

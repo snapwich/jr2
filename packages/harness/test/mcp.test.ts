@@ -472,7 +472,14 @@ test("a stdio server runs through the spawner, in the domain, with only the Stan
   const offered = await a.tools([stdio], tmpdir(), never);
   assert.deepEqual(
     offered.map((t) => t.name),
-    ["mcp__notes__env", "mcp__notes__exit", "mcp__notes__lookup", "mcp__notes__pid", "mcp__notes__read"],
+    [
+      "mcp__notes__echo",
+      "mcp__notes__env",
+      "mcp__notes__exit",
+      "mcp__notes__lookup",
+      "mcp__notes__pid",
+      "mcp__notes__read",
+    ],
   );
   const named = (name: string) => offered.find((t) => t.tool === name)!;
   const env = JSON.parse((await a.call(named("env"), {}, never)).text) as Record<string, string>;
