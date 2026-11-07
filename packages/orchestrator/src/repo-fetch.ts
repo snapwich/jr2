@@ -60,8 +60,8 @@ export type FetchAnswer = { fetched: string } | { stale: string; asOf: string | 
 /** One LFS object, as a pointer file names it. */
 export type LfsObject = { oid: string; size: number };
 
-/** The `lfs` part of an ask (ADR-0053): the objects to get. A pod may also send a `base`; it is
- * ignored, because the Orchestrator names the base itself (ADR-0051). */
+/** The `lfs` part of an ask (ADR-0053): the objects to get. The Orchestrator names the base itself,
+ * from the run's Binding (ADR-0051). */
 export type LfsAsk = { objects: LfsObject[] };
 
 /** What an LFS ask settles as. `answered` is the `at` of the mark that the cache agent served;
@@ -75,8 +75,7 @@ export const LFS_MAX_OBJECTS = 256;
 
 /**
  * The `lfs` part of a fetch body, checked: the ask, or the words of a 400 that says what is wrong.
- * An oid is 64 lowercase hex characters, a size a safe integer of 0 or more. A `base` is accepted
- * and not read: a runtime that started before this rule still sends one (ADR-0037).
+ * An oid is 64 lowercase hex characters, a size a safe integer of 0 or more. No other key is read.
  */
 export function parseLfsAsk(value: unknown): LfsAsk | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

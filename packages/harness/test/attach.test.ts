@@ -311,7 +311,7 @@ test("the attach asks for the base's large files before the checkout, and then c
   const calls = await l.lfsCallsOf();
   assert.equal(calls.length, 1, calls.join("\n"));
   const [args, cwd, held] = calls[0]!.split(" | ");
-  assert.equal(args, `fetch --identity ${IDENTITY} --base develop -- ${l.git(l.src, "rev-parse", "develop")}`);
+  assert.equal(args, `fetch --identity ${IDENTITY} -- ${l.git(l.src, "rev-parse", "develop")}`);
   assert.equal(cwd, dflt);
   assert.equal(held?.trim(), ".git", "nothing was checked out when jr2-lfs ran");
   assert.equal(l.git(dflt, "status", "--porcelain"), "", "the checkout is whole");

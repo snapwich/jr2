@@ -68,7 +68,8 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
   ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). An object that the
   cache does not hold and cannot get makes the cut `refused`, and the reason names the file. The ask gets what is left
   of the Effect's `timeout` less one minute for the checkout, so an object that does not come in time also makes the cut
-  `refused`, naming the file, and never ends the Effect at its `timeout`. With `worktree()`'s default of `"10m"` and a
+  `refused`, naming the file, and never ends the Effect at its `timeout`. When no time is left, no ask goes, and the
+  refusal says that the Effect's timeout left no time to ask for the file. With `worktree()`'s default of `"10m"` and a
   fetch that spends its two budgets, the ask has 6.5 minutes. With a remote that is down and every object held, the cut
   is `ready` with `stale`.
 - **A cut checks out no submodule.** A submodule's folder stays empty. A Machine that works in a submodule's code binds

@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package lfstransfer
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -172,8 +173,12 @@ func (c *custodian) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
+	// The body has no field but the identity and the objects: the
+	// Orchestrator names the base from the Binding, so the pod sends none.
 	var ask askBody
-	if err := json.Unmarshal(body, &ask); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&ask); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

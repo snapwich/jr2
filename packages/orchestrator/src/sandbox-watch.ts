@@ -86,8 +86,10 @@ export type SandboxRepoStatus = {
   error?: string;
   /** The latest LFS ask for this key and what the node cache did about it (ADR-0053). `asked` is
    * the `at` of the Sandbox's own `jr2.dev/lfs-<key>` mark; `answered` is the `at` of the mark the
-   * cache agent served last; `error` is git-lfs's words, set only when `answered` is at or after
-   * `asked`. */
+   * cache agent served last, and an `answered` before `asked` is an older ask's answer; `error` is
+   * git-lfs's words when an object of the mark that `answered` names is still not in the cache. It
+   * goes with `answered`, also when `answered` is before `asked`: an ask that waits on that earlier
+   * mark is answered by it. */
   lfs?: { asked?: string; answered?: string; error?: string };
 };
 

@@ -231,12 +231,14 @@ func (a *Agent) getLFS(ctx context.Context, repo *corev1alpha1.Repo, dir string,
 // HEAD. The agent always gives git-lfs the server as `lfs.url`, so the
 // `.lfsconfig` at the cache's HEAD cannot override the base's.
 //
-// The base comes from inside a pod, so the agent trusts no part of it. The
-// ask's parser refuses a leading `-`, a NUL and a newline, and git resolves
-// the base after `--end-of-options`. git reads `.lfsconfig` with
-// `--no-includes`, so an `include.path` cannot make it read a file on the
-// node. lfsServerAllowed limits the server that `.lfsconfig` names, so a base
-// cannot point the agent at a path on the node or at another ssh host.
+// The Orchestrator names the base from the run's Binding, never from a pod
+// (ADR-0051). The agent still checks the base and limits the server, because
+// anyone who can push to the base writes its `.lfsconfig`. lfsEndpoint refuses
+// a base with a leading `-`, a NUL or a newline, and git resolves the base
+// after `--end-of-options`. git reads `.lfsconfig` with `--no-includes`, so an
+// `include.path` cannot make it read a file on the node. lfsServerAllowed
+// limits the server that `.lfsconfig` names, so a base cannot point the agent
+// at a path on the node or at another ssh host.
 func (a *Agent) lfsEndpoint(ctx context.Context, dir, repoURL, base string) (string, error) {
 	if strings.HasPrefix(base, "-") || strings.ContainsAny(base, "\x00\r\n") {
 		return "", fmt.Errorf("bad base %q", base)
@@ -312,8 +314,9 @@ const (
 )
 
 // lfsServerAllowed reports that the node cache may use an LFS server that
-// `.lfsconfig` names. The server's value comes from a pod, and the agent runs
-// git-lfs as root on the node with the Repo's credential, so:
+// `.lfsconfig` names. Anyone who can push to the Binding's base writes its
+// `.lfsconfig`, and the agent runs git-lfs as root on the node with the
+// Repo's credential, so:
 //
 //   - http(s) on any host is accepted: the credential helper answers only for
 //     the Repo url's origin, so another host gets no token;

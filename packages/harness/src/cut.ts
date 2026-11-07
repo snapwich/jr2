@@ -560,15 +560,16 @@ export const CUT_LFS_MARGIN_MS = 60_000;
 /**
  * Ask the node cache for the LFS objects of `commit` (ADR-0053, ADR-0075): `jr2-lfs fetch` asks for
  * each object that no store holds, waits for the landing, and names each file whose object is still
- * missing. A commit with no LFS file makes no ask. jr2-lfs runs no program of the clone's config. It
- * gets `safe.directory` by env, because the cleared environment reads no global config.
+ * missing. A commit with no LFS file makes no ask. When the Effect's timeout left no time for the
+ * ask (`budgetMs` of zero or less), jr2-lfs sends none, and the refusal names each file that no
+ * store holds. jr2-lfs runs no program of the clone's config. It gets `safe.directory` by env,
+ * because the cleared environment reads no global config.
  */
 async function askLargeFiles(
   paths: CutPaths,
   home: string,
   clone: string,
   commit: string,
-  base: string | undefined,
   budgetMs: number | undefined,
 ): Promise<string | undefined> {
   const env: NodeJS.ProcessEnv = {
@@ -579,7 +580,6 @@ async function askLargeFiles(
   };
   const args = [
     "fetch",
-    ...(base !== undefined ? ["--base", base] : []),
     ...(budgetMs !== undefined ? ["--budget", `${Math.max(0, Math.floor(budgetMs))}ms`] : []),
     "--",
     commit,
@@ -594,7 +594,20 @@ async function askLargeFiles(
   const missing = largeFilesMissing(r.out);
   if (missing === undefined)
     return `jr2-lfs printed no result for the large files of ${commit}: ${r.out.slice(0, 200)}`;
-  return missing.length > 0 ? describeMissing(missing, commit) : undefined;
+  if (missing.length === 0) return undefined;
+  if (budgetMs !== undefined && budgetMs <= 0) return describeNoTime(missing, commit);
+  return describeMissing(missing, commit);
+}
+
+/** The refusal of a cut whose Effect's timeout left no time to ask for its large files. */
+function describeNoTime(missing: readonly MissingFile[], of: string): string {
+  const named = missing
+    .slice(0, NAMED_FILES)
+    .map((m) => `${m.path} (${String(m.oid).slice(0, 12)})`)
+    .join("; ");
+  const more = missing.length > NAMED_FILES ? `; and ${missing.length - NAMED_FILES} more` : "";
+  const files = missing.length === 1 ? "the large file" : `${missing.length} large files`;
+  return `the Effect's timeout left no time to ask the node cache for ${files} of ${of}: ${named}${more}`;
 }
 
 // --- The cut --------------------------------------------------------------------------------------------
@@ -626,7 +639,7 @@ export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> 
     // The ask's budget is what is left of the Effect's timeout, counted from here, less the margin.
     const ends = typeof req.timeoutMs === "number" ? started + req.timeoutMs - CUT_LFS_MARGIN_MS : undefined;
     const largeFiles = (commit: string) =>
-      askLargeFiles(paths, home, clone, commit, req.base, ends === undefined ? undefined : ends - Date.now());
+      askLargeFiles(paths, home, clone, commit, ends === undefined ? undefined : ends - Date.now());
     const filtersIn = async (worktree: string) => [...(await filtersOf(git, worktree)), ...lfsPins(paths, clone)];
     const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git, largeFiles, filtersIn };
     return await locked(clone, paths, async () => {

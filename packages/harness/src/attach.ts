@@ -356,7 +356,7 @@ async function askLargeFiles(
   if (sha.code !== 0) return;
   const step = "get the base's large files";
   const { jr2Lfs } = lfsPrograms(paths);
-  const r = await exec(jr2Lfs, ["fetch", "--identity", s.identity, "--base", base, "--", sha.stdout.trim()], env, dflt);
+  const r = await exec(jr2Lfs, ["fetch", "--identity", s.identity, "--", sha.stdout.trim()], env, dflt);
   if (r.code !== 0) {
     const said = r.stderr.trim() || r.stdout.trim() || r.error?.message || `exited ${r.code}`;
     throw new AttachFault(`the attach of slot "${s.slot}" failed at ${step}: ${said}`, s.slot);

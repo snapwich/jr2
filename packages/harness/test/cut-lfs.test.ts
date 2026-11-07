@@ -332,6 +332,24 @@ test(
   },
 );
 
+test(
+  "a cut whose Effect's timeout leaves no time for the ask sends none and is refused, naming the file (ADR-0075)",
+  { skip },
+  async (t) => {
+    const w = await world(t);
+    await w.attach();
+    const asks = w.c.lfsAsks();
+    // The whole timeout is the cut's margin: no time is left for the ask.
+    const reason = refusal(await w.go({ path: w.path("feat"), branch: "feature", timeoutMs: CUT_LFS_MARGIN_MS }));
+    assert.match(
+      reason,
+      /^the Effect's timeout left no time to ask the node cache for the large file of [0-9a-f]{40}: more\.bin \([0-9a-f]{12}\)$/,
+    );
+    assert.equal(w.c.lfsAsks(), asks, "no ask went");
+    assert.equal(existsSync(w.path("feat")), false, "nothing is made");
+  },
+);
+
 test("a dead remote with every object held: `ready` with `stale`", { skip }, async (t) => {
   const w = await world(t);
   await w.attach();

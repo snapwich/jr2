@@ -30,17 +30,21 @@ type Missing struct {
 	Reason string `json:"reason"`
 }
 
+// NoTimeToAsk is the reason of each object that a `--budget` of zero or less
+// gave no time to ask for. With it, `fetch` sends no ask.
+const NoTimeToAsk = "no time was left to ask for it"
+
 // fetchArgs is what `fetch` reads from its arguments.
 type fetchArgs struct {
-	identity, base, commit string
-	identitySet, baseSet   bool
+	identity, commit string
+	identitySet      bool
 	// budget bounds all the asks of the run. Zero: no bound but each ask's
 	// own AskTimeout.
 	budget    time.Duration
 	budgetSet bool
 }
 
-// parseFetchArgs reads `[--identity I] [--base B] [--budget D] [--] <commit>`.
+// parseFetchArgs reads `[--identity I] [--budget D] [--] <commit>`.
 // It is false for a usage fault. D is a Go duration, such as "390s".
 func parseFetchArgs(args []string) (fetchArgs, bool) {
 	var f fetchArgs
@@ -59,17 +63,11 @@ func parseFetchArgs(args []string) (fetchArgs, bool) {
 				return f, false
 			}
 			f.budget, f.budgetSet = d, true
-		case (a == "--identity" || a == "--base") && i+1 < len(args):
+		case a == "--identity" && i+1 < len(args):
 			i++
-			if a == "--identity" {
-				f.identity, f.identitySet = args[i], true
-			} else {
-				f.base, f.baseSet = args[i], true
-			}
+			f.identity, f.identitySet = args[i], true
 		case strings.HasPrefix(a, "--identity="):
 			f.identity, f.identitySet = strings.TrimPrefix(a, "--identity="), true
-		case strings.HasPrefix(a, "--base="):
-			f.base, f.baseSet = strings.TrimPrefix(a, "--base="), true
 		case a == "--" && i+1 < len(args) && f.commit == "":
 			i++
 			f.commit = args[i]
@@ -82,22 +80,23 @@ func parseFetchArgs(args []string) (fetchArgs, bool) {
 	return f, f.commit != ""
 }
 
-// runFetch is `jr2-lfs fetch [--identity I] [--base B] [--budget D] <commit>`.
+// runFetch is `jr2-lfs fetch [--identity I] [--budget D] <commit>`.
 // It gets the LFS objects of one commit into the node cache before git checks
 // the commit out (ADR-0053, ADR-0075). It exits 0 when it could do its work,
 // also when objects are missing: the caller reads `missing`. It exits non-zero
 // only for a usage or I/O fault. With `--budget`, the asks end when the budget
 // does, and each object that did not come in time is missing with a reason
 // that says so: the cut gives the part of its Effect's timeout that is left,
-// so that it can still answer `refused`, naming the files.
+// so that it can still answer `refused`, naming the files. A budget of zero or
+// less sends no ask, and each object that no store holds is missing with the
+// reason NoTimeToAsk.
 func runFetch(o Options, args []string) int {
 	f, ok := parseFetchArgs(args)
 	if !ok {
 		_, _ = io.WriteString(o.Stderr, Usage)
 		return 2
 	}
-	identity, base, commit := f.identity, f.base, f.commit
-	identitySet, baseSet := f.identitySet, f.baseSet
+	identity, commit := f.identity, f.commit
 	var deadline time.Time
 	if f.budgetSet {
 		deadline = time.Now().Add(f.budget)
@@ -137,14 +136,16 @@ func runFetch(o Options, args []string) int {
 		wanted = append(wanted, p.Object)
 	}
 	reasons := map[string]string{}
-	if len(wanted) > 0 {
-		if !identitySet {
+	if len(wanted) > 0 && f.budgetSet && f.budget <= 0 {
+		// The caller had no time left for an ask, so none is sent.
+		for _, w := range wanted {
+			reasons[w.OID] = NoTimeToAsk
+		}
+	} else if len(wanted) > 0 {
+		if !f.identitySet {
 			identity = identityOf(gitConfig(o.Dir, "remote.origin.url"))
 		}
-		if !baseSet {
-			base = gitConfig(o.Dir, "jr2.base")
-		}
-		a := newAsker(o, identity, base)
+		a := newAsker(o, identity)
 		a.deadline, a.budget = deadline, f.budget
 		_, reasons = a.askAll(wanted)
 		result.Asked = len(wanted)

@@ -154,8 +154,8 @@ func TestTransferMissAsksThenCopies(t *testing.T) {
 		t.Fatalf("a miss made %d asks, want 1", len(asks))
 	}
 	a := asks[0]
-	if a.Identity != testIdentity || a.LFS.Base != "main" || len(a.LFS.Objects) != 1 || a.LFS.Objects[0] != b.obj {
-		t.Fatalf("ask = %+v, want identity %q, base main, the one object %+v", a, testIdentity, b.obj)
+	if a.Identity != testIdentity || len(a.LFS.Objects) != 1 || a.LFS.Objects[0] != b.obj {
+		t.Fatalf("ask = %+v, want identity %q and the one object %+v", a, testIdentity, b.obj)
 	}
 }
 
@@ -260,7 +260,7 @@ func TestTransferEndsAtEOF(t *testing.T) {
 }
 
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"nope"}, {"transfer", "x"}, {"fetch"}, {"fetch", "a", "b"}, {"fetch", "--bogus", "a"}} {
+	for _, args := range [][]string{nil, {"nope"}, {"transfer", "x"}, {"fetch"}, {"fetch", "a", "b"}, {"fetch", "--bogus", "a"}, {"fetch", "--base", "main", "a"}} {
 		var errOut bytes.Buffer
 		if code := Run(Options{Args: args, Stderr: &errOut}); code == 0 || !strings.HasPrefix(errOut.String(), "usage: jr2-lfs") {
 			t.Fatalf("%v: exit %d, stderr %q", args, code, errOut.String())

@@ -46,7 +46,6 @@ type askBody struct {
 }
 
 type askLFS struct {
-	Base    string   `json:"base"`
 	Objects []Object `json:"objects"`
 }
 
@@ -63,14 +62,13 @@ type asker struct {
 	client   *http.Client
 	endpoint string
 	identity string
-	base     string
 	// deadline, when set, ends every ask; budget is how it was given, for
 	// the reason of an object that did not come in time.
 	deadline time.Time
 	budget   time.Duration
 }
 
-func newAsker(o Options, identity, base string) asker {
+func newAsker(o Options, identity string) asker {
 	url := uploadpack.DefaultCustodianURL
 	if v := strings.TrimSpace(o.Getenv("JR2_CUSTODIAN_URL")); v != "" {
 		url = v
@@ -79,7 +77,6 @@ func newAsker(o Options, identity, base string) asker {
 		client:   o.Client,
 		endpoint: strings.TrimSuffix(url, "/") + "/fetch",
 		identity: identity,
-		base:     base,
 	}
 }
 
@@ -89,7 +86,7 @@ func newAsker(o Options, identity, base string) asker {
 // status that is not 200, or a body that is not the carrier's shape. The
 // caller then reads the cache store to know what landed.
 func (a asker) ask(objects []Object) string {
-	body, err := json.Marshal(askBody{Identity: a.identity, LFS: askLFS{Base: a.base, Objects: objects}})
+	body, err := json.Marshal(askBody{Identity: a.identity, LFS: askLFS{Objects: objects}})
 	if err != nil {
 		return err.Error()
 	}

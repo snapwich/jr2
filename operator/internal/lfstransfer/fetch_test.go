@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -146,7 +147,7 @@ func TestFetchAsksOnlyForLFSFilesThatNoStoreHolds(t *testing.T) {
 	want := []Object{remote.obj, absent.obj}
 	sortObjects(got)
 	sortObjects(want)
-	if !slices.Equal(got, want) || asks[0].Identity != testIdentity || asks[0].LFS.Base != "main" {
+	if !slices.Equal(got, want) || asks[0].Identity != testIdentity {
 		t.Fatalf("ask = %+v, want objects %v", asks[0], want)
 	}
 	if len(r.Missing) != 1 || r.Missing[0].Path != "d.bin" || r.Missing[0].OID != absent.obj.OID ||
@@ -159,11 +160,11 @@ func TestFetchFlagsOverrideTheConfig(t *testing.T) {
 	b := newBlob("flags")
 	p := makePod(t, map[string]string{".gitattributes": attrsLFS, "x.bin": b.pointer})
 	c := newCustodian(t, p.cache, b)
-	r := fetch(t, p.clone, "--identity", "gitlab.com/x/y", "--base=v1.0", "--", "HEAD")
+	r := fetch(t, p.clone, "--identity", "gitlab.com/x/y", "--", "HEAD")
 	if r.Asked != 1 || len(r.Missing) != 0 {
 		t.Fatalf("result = %+v", r)
 	}
-	if a := c.asked()[0]; a.Identity != "gitlab.com/x/y" || a.LFS.Base != "v1.0" {
+	if a := c.asked()[0]; a.Identity != "gitlab.com/x/y" {
 		t.Fatalf("ask = %+v", a)
 	}
 }
@@ -187,7 +188,9 @@ func TestFetchBudgetEndsTheAsksAndNamesTheFiles(t *testing.T) {
 	p := makePod(t, map[string]string{".gitattributes": attrsLFS, "x.bin": b.pointer})
 	// The stand-in never answers within the budget.
 	release := make(chan struct{})
+	var asks atomic.Int32
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asks.Add(1)
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -205,10 +208,16 @@ func TestFetchBudgetEndsTheAsksAndNamesTheFiles(t *testing.T) {
 		t.Fatalf("missing = %+v, want x.bin and the budget's words", r.Missing)
 	}
 
-	// A budget that is already spent asks for nothing and names each file.
-	r = fetch(t, p.clone, "--budget=0s", "main")
-	if r.Asked != 1 || len(r.Missing) != 1 || !strings.Contains(r.Missing[0].Reason, "within the budget of 0s") {
-		t.Fatalf("result = %+v", r)
+	// A budget that is already spent sends no ask and names each file.
+	for _, budget := range []string{"--budget=0s", "--budget=-2s"} {
+		before := asks.Load()
+		r = fetch(t, p.clone, budget, "main")
+		if r.Asked != 0 || len(r.Missing) != 1 || r.Missing[0].Path != "x.bin" || r.Missing[0].Reason != NoTimeToAsk {
+			t.Fatalf("%s: result = %+v", budget, r)
+		}
+		if n := asks.Load() - before; n != 0 {
+			t.Fatalf("%s: %d asks went, want none", budget, n)
+		}
 	}
 
 	// A budget that is not a duration is a usage fault.

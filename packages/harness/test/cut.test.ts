@@ -742,13 +742,13 @@ test("the lock program's flock frees when the cut dies", () => {
 
 // --- Git LFS (ADR-0075) --------------------------------------------------------------------------------
 
-test("a cut asks jr2-lfs for its commit's large files, with the Orchestrator's base, from the clone", async (t) => {
+test("a cut asks jr2-lfs for its commit's large files from the clone, and sends no base: the Orchestrator names it", async (t) => {
   const w = world(t);
   const a = ready(await w.go({ path: w.path("run"), branch: "feature/auth" }));
-  assert.deepEqual(w.lfs.calls(), [`fetch --base main -- ${a.head}`]);
+  assert.deepEqual(w.lfs.calls(), [`fetch -- ${a.head}`]);
   const d = ready(await w.go({ path: w.path("d"), detach: a.head }));
   assert.equal(w.lfs.calls().length, 2);
-  assert.equal(w.lfs.calls()[1], `fetch --base main -- ${d.head}`);
+  assert.equal(w.lfs.calls()[1], `fetch -- ${d.head}`);
 });
 
 test("a large file that cannot be had: `refused`, naming each file, and the cut changes nothing", async (t) => {

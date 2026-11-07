@@ -114,7 +114,7 @@ func newTransferAgent(o Options) (*transferAgent, error) {
 		return nil, err
 	}
 	identity := identityOf(gitConfig(o.Dir, "remote.origin.url"))
-	return &transferAgent{checkout: c, asker: newAsker(o, identity, gitConfig(o.Dir, "jr2.base"))}, nil
+	return &transferAgent{checkout: c, asker: newAsker(o, identity)}, nil
 }
 
 // download answers one download event. A hit in the cache store is copied

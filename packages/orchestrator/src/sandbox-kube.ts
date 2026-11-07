@@ -1645,11 +1645,11 @@ export function memoryFaultOf(sandbox: SandboxObject | undefined, since: Date): 
 export const repoVolumeName = (key: string): string => `repo-${key}`;
 export const repoMountPath = (key: string): string => `${REPOS_MOUNT}/${key}`;
 
-/** One Repo as the provision names it: the CR entry, plus what its resource records — the
- * identity, and whether a Machine's slot (not only the run's) binds it. */
-/** One Repo of a Sandbox, by cache key. `base` is the Binding's base of the first slot that binds
- * it, absent for the Repo's default branch: the Orchestrator's own record of where the Repo's
- * `.lfsconfig` is read (ADR-0051), never a pod's word. */
+/** One Repo of a Sandbox as the provision names it, by cache key: the CR entry, plus what its
+ * resource records — the identity, and whether a Machine's slot (not only the run's) binds it.
+ * `base` is the Binding's base of the first slot that binds it, absent for the Repo's default
+ * branch: the Orchestrator's own record of where the node cache reads the Repo's `.lfsconfig`
+ * (ADR-0051), never a pod's word. */
 type FencedRepo = { key: string; url: string; identity: string; bound: boolean; base?: string };
 
 /** The operator's Ready reason when the cache agent could not clone onto the pod's node

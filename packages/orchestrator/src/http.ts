@@ -599,7 +599,7 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     path: "/sandboxes/:name/fetch",
     band: "authenticated",
     summary:
-      "Ask the node cache to fetch one Repo that this Sandbox mounts. With `lfs`, ask it for 1 to 256 Git LFS objects of that Repo, by oid and size, and do no git fetch. The LFS server is the one that `.lfsconfig` names at the Binding's base, which the Orchestrator knows: a `base` in the body is not read. When the Orchestrator holds too many asks, a fetch gets `stale` at once, and an LFS ask waits for its turn inside its time limit. A fetch token asks only for its own Sandbox.",
+      "Ask the node cache to fetch one Repo that this Sandbox mounts. With `lfs`, ask it for 1 to 256 Git LFS objects of that Repo, by oid and size, and do no git fetch. The LFS server is the one that `.lfsconfig` names at the Binding's base, which the Orchestrator knows. When the Orchestrator holds too many asks, a fetch gets `stale` at once, and an LFS ask waits for its turn inside its time limit. A fetch token asks only for its own Sandbox.",
     body: "{ identity, lfs?: { objects } }",
     response:
       "FetchAnswer. With lfs: { lfs: { answered, error? } } when the node cache did the ask (error: git-lfs's words when an object is still missing), or { lfs: { error } } when the time limit ran out or the Sandbox has 256 LFS asks open. 400 when the lfs part is not valid.",
