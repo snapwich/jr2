@@ -21,7 +21,7 @@
 // is missing, which is not its fault. pi converts nothing in `{}` that it then refuses, so no
 // value changes.
 
-import { compile, type Validator } from "@earendil-works/pi-schema";
+import { compile, type CoercingValidator, type Validator } from "@earendil-works/pi-schema";
 import { formats } from "@earendil-works/pi-schema/formats";
 
 /** A pi-schema error path (a JSON Pointer) as pi-ai shows it to the model: `/edits/0/x` → `edits.0.x`. */
@@ -53,7 +53,7 @@ function isEmptyObject(args: unknown): boolean {
  */
 export function strictArguments(name: string, schema: unknown): (args: unknown) => never {
   let validator: Validator | undefined;
-  let coercing: Validator | undefined;
+  let coercing: CoercingValidator | undefined;
   return ((args: unknown) => {
     validator ??= compile(schema as object, { formats, unresolvedRefs: "reject" });
     if (validator.check(args)) return args;
