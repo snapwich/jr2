@@ -6196,6 +6196,32 @@ spec:
                       description: Key is the Repo cache key, as spec.repos names
                         it.
                       type: string
+                    lfs:
+                      description: |-
+                        LFS is the state of this Sandbox's last Git LFS ask on this key
+                        (ADR-0053). It is absent when the Sandbox carries no
+                        `jr2.dev/lfs-<key>` annotation.
+                      properties:
+                        answered:
+                          description: |-
+                            Answered is the `at` of the last ask that the agent served for this Pod,
+                            as the agent wrote it. It is absent when the agent has served no ask for
+                            this Pod. An answered before asked is an older ask's answer.
+                          type: string
+                        asked:
+                          description: |-
+                            Asked is the `at` of the Sandbox's `jr2.dev/lfs-<key>` annotation, as
+                            the annotation writes it.
+                          type: string
+                        error:
+                          description: |-
+                            Error is git-lfs's own words when an asked object is still not in the
+                            cache. It is set only when answered is at or after asked, because the
+                            words about an older ask are not an answer to this one.
+                          type: string
+                      required:
+                      - asked
+                      type: object
                   required:
                   - asked
                   - key

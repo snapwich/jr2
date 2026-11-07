@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1214,7 +1215,7 @@ func TestReportReplacesOnlyThisNodesEntry(t *testing.T) {
 	if len(r.Status.Nodes) != 2 {
 		t.Fatalf("expected two entries, got %+v", r.Status.Nodes)
 	}
-	if r.Status.Nodes[0] != other {
+	if !reflect.DeepEqual(r.Status.Nodes[0], other) {
 		t.Fatalf("another node's entry must be left as written, got %+v", r.Status.Nodes[0])
 	}
 	if r.Status.Nodes[1].Node != node || !r.Status.Nodes[1].Synced || r.Status.Nodes[1].LastError != "" {

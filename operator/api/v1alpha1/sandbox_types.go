@@ -426,6 +426,35 @@ type SandboxRepoStatus struct {
 	// stands and says so — freshness degrades, absence does not (ADR-0051).
 	// +optional
 	Error string `json:"error,omitempty"`
+
+	// LFS is the state of this Sandbox's last Git LFS ask on this key
+	// (ADR-0053). It is absent when the Sandbox carries no
+	// `jr2.dev/lfs-<key>` annotation.
+	// +optional
+	LFS *SandboxLFSStatus `json:"lfs,omitempty"`
+}
+
+// SandboxLFSStatus is what the node's cache agent has done about this
+// Sandbox's last LFS ask on one key (ADR-0053). The operator computes it from
+// the item for this Sandbox's Pod in the Repo's entry for the Pod's node. The
+// Orchestrator waits until `answered` is at or after `asked`.
+type SandboxLFSStatus struct {
+	// Asked is the `at` of the Sandbox's `jr2.dev/lfs-<key>` annotation, as
+	// the annotation writes it.
+	// +required
+	Asked string `json:"asked"`
+
+	// Answered is the `at` of the last ask that the agent served for this Pod,
+	// as the agent wrote it. It is absent when the agent has served no ask for
+	// this Pod. An answered before asked is an older ask's answer.
+	// +optional
+	Answered string `json:"answered,omitempty"`
+
+	// Error is git-lfs's own words when an asked object is still not in the
+	// cache. It is set only when answered is at or after asked, because the
+	// words about an older ask are not an answer to this one.
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // +kubebuilder:object:root=true

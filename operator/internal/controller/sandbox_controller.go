@@ -333,13 +333,17 @@ func (r *SandboxReconciler) reposFor(ctx context.Context, sandbox *corev1alpha1.
 // the copy is exactly what "the operator copies it onto the pod as it copies
 // everything else the pod needs from the CR" asks for.
 //
+// The LFS asks (`jr2.dev/lfs-<key>`) go across in the same patch, for the
+// same reason: the cache agent reads them off the pod.
+//
 // Only a value that differs is written: the annotation is a timestamp the
 // Orchestrator advances, so an unchanged ask must not cost a PATCH on every
 // lease renewal.
 func (r *SandboxReconciler) reconcileAsks(ctx context.Context, sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) error {
 	changed := map[string]string{}
 	for name, value := range sandbox.Annotations {
-		if strings.HasPrefix(name, corev1alpha1.AskedAnnotationPrefix) && pod.Annotations[name] != value {
+		ask := strings.HasPrefix(name, corev1alpha1.AskedAnnotationPrefix) || strings.HasPrefix(name, corev1alpha1.LFSAnnotationPrefix)
+		if ask && pod.Annotations[name] != value {
 			changed[name] = value
 		}
 	}
@@ -391,9 +395,48 @@ func repoStatuses(ctx context.Context, sandbox *corev1alpha1.Sandbox, node strin
 				}
 			}
 		}
+		status.LFS = lfsStatus(ctx, sandbox, ref.Key, node, repos[ref.Key])
 		out = append(out, status)
 	}
 	return out
+}
+
+// lfsStatus is the state of this Sandbox's last LFS ask on one key
+// (ADR-0053), or nil when the Sandbox carries no LFS ask for it. The answer is
+// the item for this Sandbox's Pod — the Pod has the Sandbox's name — in the
+// Repo's entry for the Pod's node. `answered` is reported whatever it says, so
+// a reader sees an older answer as older; `error` is scoped to the ask, as the
+// fetch's is, because git-lfs's words about an older ask are not an answer to
+// this one. A garbage annotation is treated as absent, loudly.
+func lfsStatus(ctx context.Context, sandbox *corev1alpha1.Sandbox, key, node string, repo *corev1alpha1.Repo) *corev1alpha1.SandboxLFSStatus {
+	raw, ok := sandbox.Annotations[corev1alpha1.LFSAnnotation(key)]
+	if !ok {
+		return nil
+	}
+	ask, err := corev1alpha1.ParseLFSAsk(raw)
+	if err != nil {
+		logf.FromContext(ctx).Info("unparseable LFS ask annotation; treating as absent", "key", key, "error", err.Error())
+		return nil
+	}
+	status := &corev1alpha1.SandboxLFSStatus{Asked: ask.AtRaw}
+	if repo == nil {
+		return status
+	}
+	entry := nodeEntry(repo, node)
+	if entry == nil {
+		return status
+	}
+	for _, item := range entry.LFS {
+		if item.Pod != sandbox.Name {
+			continue
+		}
+		status.Answered = item.Asked
+		if answered, err := time.Parse(time.RFC3339Nano, item.Asked); err == nil && !answered.Before(ask.At) {
+			status.Error = item.Error
+		}
+		break
+	}
+	return status
 }
 
 // askedFor resolves what this Sandbox asked its node for on one key: the later
