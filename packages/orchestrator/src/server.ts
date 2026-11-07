@@ -81,7 +81,7 @@ import {
 import type { AnyStateMachine } from "xstate";
 import { partsOf, type CarriedRepo } from "./parts.ts";
 import { kubeClient, type KubeClient } from "./kube-client.ts";
-import { kubeRepoFetches, type RepoFetches } from "./repo-fetch.ts";
+import { kubeRepoFetches, type LfsAsk, type RepoFetches } from "./repo-fetch.ts";
 import { kubeRepos, type RepoResources } from "./repos.ts";
 import { SANDBOX_EFFECTOR_PORT, kubeSandbox } from "./sandbox-kube.ts";
 import { sandboxEffectorService } from "./sandbox-effector.ts";
@@ -329,7 +329,12 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // repos: [] }` (http.ts), and what its dropped Machines left behind is `jr2 gc`'s to name.
     ...(dataPlane && repos ? { repos: () => repos.list() } : {}),
     // The pod's route out (ADR-0053), same shape: read per request, off the port.
-    ...(fetches ? { fetchRepo: (name: string, identity: string) => fetches.fetch(name, identity) } : {}),
+    ...(fetches
+      ? {
+          fetchRepo: (name: string, identity: string, lfs?: LfsAsk) =>
+            lfs ? fetches.fetchLfs(name, identity, lfs) : fetches.fetch(name, identity),
+        }
+      : {}),
     // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
     // `jr2 up` converges the StatefulSet behind it whenever any definition declares
     // `workspace: "none"`, so deployed, the address exists exactly when it is needed.

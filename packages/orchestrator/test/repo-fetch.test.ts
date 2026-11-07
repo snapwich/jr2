@@ -24,6 +24,7 @@ import {
   UnmountedRepoError,
   type FetchAnswer,
   type KubeRepoFetchesOptions,
+  type LfsAsk,
 } from "../src/repo-fetch.ts";
 import { repoIdentity } from "../src/repo-identity.ts";
 import { RunHost } from "../src/run-host.ts";
@@ -261,6 +262,188 @@ test("past the cap an ask is answered with the cache, and nothing is marked", as
   assert.equal(c.marks().length, 1, "the refused ask marks nothing");
   c.publish([{ key: APP.key, asked: ASKED_AT, fetched: AFTER, attempted: AFTER }]);
   assert.deepEqual(await first, { fetched: AFTER });
+});
+
+// --- the LFS ask (ADR-0053) -------------------------------------------------------------------
+//
+// The same port with an `lfs` part. Its mark is `jr2.dev/lfs-<key>`, never the fetch's, and its
+// seat keeps the union of the open asks. The landing is `status.repos[key].lfs.answered` at or
+// after the ask's `at`, carried by a watch event.
+
+const OID = (n: number) => n.toString(16).padStart(64, "0");
+const objs = (...ns: number[]): LfsAsk => ({ base: "main", objects: ns.map((n) => ({ oid: OID(n), size: n })) });
+const LFS_MARK = `jr2.dev/lfs-${APP.key}`;
+type LfsMark = { at: string; base: string; objects: string[] };
+
+/** Every LFS mark the port wrote, parsed, in order. */
+const lfsMarks = (c: ReturnType<typeof cluster>): LfsMark[] =>
+  c
+    .marks()
+    .map((b) => (b as { metadata: { annotations: Record<string, string> } }).metadata.annotations[LFS_MARK])
+    .filter((v): v is string => v !== undefined)
+    .map((v) => JSON.parse(v) as LfsMark);
+
+/** The status the operator publishes once the cache agent served the mark `at`. */
+const served = (at: string, error?: string): Entry[] =>
+  [{ key: APP.key, lfs: { asked: at, answered: at, ...(error ? { error } : {}) } }] as unknown as Entry[];
+
+test("an LFS ask marks jr2.dev/lfs-<key> with the objects, and the landing answers it", async (t) => {
+  const c = cluster(t, [APP.key]);
+  const asked = c.port({ lfsBudgetMs: 60_000 }).fetchLfs("sb-1", APP.identity, objs(1, 2));
+  await waitFor(() => c.marks().length === 1);
+
+  // One merge patch, one annotation: never the fetch's `asked-<key>`, so no git fetch.
+  const [body] = c.marks() as Array<{ metadata: { annotations: Record<string, string> } }>;
+  assert.deepEqual(Object.keys(body!.metadata.annotations), [LFS_MARK]);
+  const [mark] = lfsMarks(c);
+  assert.deepEqual(mark, { at: ASKED, base: "main", objects: [`${OID(1)} 1`, `${OID(2)} 2`] });
+
+  // A landing for an EARLIER mark answers nothing.
+  c.publish(served(BEFORE));
+  await new Promise((r) => setTimeout(r, 10));
+  c.publish(served(ASKED, "batch response: object not found"));
+  assert.deepEqual(await asked, { lfs: { answered: ASKED, error: "batch response: object not found" } });
+});
+
+test("LFS asks open at the same time share one mark; a later ask with new objects marks the union again", async (t) => {
+  const c = cluster(t, [APP.key]);
+  const port = c.port({ lfsBudgetMs: 60_000 });
+
+  const first = port.fetchLfs("sb-1", APP.identity, objs(1, 2));
+  await waitFor(() => c.marks().length === 1);
+  // Its objects are in the open mark: it joins the wait, and nothing is written.
+  const joined = port.fetchLfs("sb-1", APP.identity, objs(2));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(c.marks().length, 1, "a held object writes nothing");
+
+  // New objects: the union is marked again, with an `at` strictly later on the same clock.
+  const later = port.fetchLfs("sb-1", APP.identity, objs(3));
+  await waitFor(() => c.marks().length === 2);
+  const [one, two] = lfsMarks(c);
+  assert.ok(Date.parse(two!.at) > Date.parse(one!.at), "at increases strictly per seat");
+  assert.deepEqual(two!.objects, [`${OID(1)} 1`, `${OID(2)} 2`, `${OID(3)} 3`]);
+
+  // The first landing answers the asks of the first mark only; the second answers the rest.
+  c.publish(served(one!.at));
+  assert.deepEqual(await first, { lfs: { answered: one!.at } });
+  assert.deepEqual(await joined, { lfs: { answered: one!.at } });
+  c.publish(served(two!.at));
+  assert.deepEqual(await later, { lfs: { answered: two!.at } });
+
+  // The seat closed with its last ask; the next ask marks after every earlier `at`.
+  const again = port.fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => c.marks().length === 3);
+  const three = lfsMarks(c)[2]!;
+  assert.ok(Date.parse(three.at) > Date.parse(two!.at));
+  assert.deepEqual(three.objects, [`${OID(1)} 1`]);
+  c.publish(served(three.at));
+  assert.deepEqual(await again, { lfs: { answered: three.at } });
+});
+
+test("an LFS ask that would take the union past 256 objects waits until the open mark lands", async (t) => {
+  const c = cluster(t, [APP.key]);
+  const port = c.port({ lfsBudgetMs: 60_000 });
+  const range = (from: number, n: number) => objs(...Array.from({ length: n }, (_, i) => from + i));
+
+  const full = port.fetchLfs("sb-1", APP.identity, range(1, 200));
+  await waitFor(() => c.marks().length === 1);
+  const over = port.fetchLfs("sb-1", APP.identity, range(1000, 100));
+  // A later ask that the open mark holds still joins, even behind a waiting ask.
+  const held = port.fetchLfs("sb-1", APP.identity, range(1, 3));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(c.marks().length, 1, "the ask past the cap marks nothing while the mark is open");
+
+  const one = lfsMarks(c)[0]!;
+  c.publish(served(one.at));
+  assert.deepEqual(await full, { lfs: { answered: one.at } });
+  assert.deepEqual(await held, { lfs: { answered: one.at } });
+
+  // The landing closed the union: the waiting ask marks its own objects alone.
+  await waitFor(() => c.marks().length === 2);
+  const two = lfsMarks(c)[1]!;
+  assert.equal(two.objects.length, 100);
+  assert.ok(Date.parse(two.at) > Date.parse(one.at));
+  c.publish(served(two.at));
+  assert.deepEqual(await over, { lfs: { answered: two.at } });
+});
+
+test("an LFS ask for another base waits until the open mark lands", async (t) => {
+  // One mark names one base, whose .lfsconfig names the LFS server.
+  const c = cluster(t, [APP.key]);
+  const port = c.port({ lfsBudgetMs: 60_000 });
+  const first = port.fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => c.marks().length === 1);
+  const other = port.fetchLfs("sb-1", APP.identity, { ...objs(1), base: "release" });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(c.marks().length, 1);
+  c.publish(served(lfsMarks(c)[0]!.at));
+  await first;
+  await waitFor(() => c.marks().length === 2);
+  const two = lfsMarks(c)[1]!;
+  assert.equal(two.base, "release");
+  c.publish(served(two.at));
+  assert.deepEqual(await other, { lfs: { answered: two.at } });
+});
+
+test("an LFS ask's wait ends with its budget, said in its answer", async (t) => {
+  const c = cluster(t, [APP.key]);
+  assert.deepEqual(await c.port({ lfsBudgetMs: 5 }).fetchLfs("sb-1", APP.identity, objs(1)), {
+    lfs: { error: "timed out waiting for the node cache" },
+  });
+});
+
+test("a Sandbox deleted while an LFS ask waits is a refusal; an unmounted Repo is refused and marks nothing", async (t) => {
+  const c = cluster(t, [APP.key]);
+  const asked = c.port({ lfsBudgetMs: 60_000 }).fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => c.marks().length === 1);
+  c.api.remove("sandboxes", "sb-1");
+  await assert.rejects(asked, /is gone/);
+
+  const other = cluster(t, [OTHER.key]);
+  await assert.rejects(() => other.port().fetchLfs("sb-1", APP.identity, objs(1)), UnmountedRepoError);
+  assert.equal(other.marks().length, 0);
+});
+
+test("a fetch ask and an LFS ask on one key do not touch each other's mark or answer", async (t) => {
+  const c = cluster(t, [APP.key], [{ key: APP.key, asked: ASKED_AT }]);
+  const port = c.port({ budgetMs: 60_000, lfsBudgetMs: 60_000 });
+  const fetched = port.fetch("sb-1", APP.identity);
+  const lfs = port.fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => c.marks().length === 2);
+  const keys = (c.marks() as Array<{ metadata: { annotations: Record<string, string> } }>).map((b) =>
+    Object.keys(b.metadata.annotations),
+  );
+  assert.deepEqual(keys.sort(), [[`jr2.dev/asked-${APP.key}`], [LFS_MARK]]);
+
+  // A git fetch landing answers the fetch alone; the LFS landing answers the LFS ask alone.
+  const at = lfsMarks(c)[0]!.at;
+  c.publish([{ key: APP.key, asked: ASKED_AT, fetched: AFTER, attempted: AFTER }]);
+  assert.deepEqual(await fetched, { fetched: AFTER });
+  let settled = false;
+  void lfs.then(() => (settled = true));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(settled, false);
+  c.publish([
+    { key: APP.key, asked: ASKED_AT, fetched: AFTER, attempted: AFTER, lfs: { asked: at, answered: at } },
+  ] as never);
+  assert.deepEqual(await lfs, { lfs: { answered: at } });
+});
+
+test("LFS seats count toward the cap on open asks", async (t) => {
+  const c = cluster(t, [APP.key, OTHER.key], [{ key: OTHER.key, asked: ASKED_AT, fetched: BEFORE }]);
+  const port = c.port({ maxInFlight: 1, lfsBudgetMs: 60_000 });
+  const lfs = port.fetchLfs("sb-1", APP.identity, objs(1));
+  await waitFor(() => c.marks().length === 1);
+  assert.deepEqual(await port.fetch("sb-1", OTHER.identity), {
+    stale: "the orchestrator is holding too many fetches at once",
+    asOf: BEFORE,
+  });
+  assert.deepEqual(await port.fetchLfs("sb-1", OTHER.identity, objs(1)), {
+    lfs: { error: "the orchestrator is holding too many fetches at once" },
+  });
+  assert.equal(c.marks().length, 1);
+  c.publish(served(lfsMarks(c)[0]!.at));
+  await lfs;
 });
 
 // --- the route (`POST /sandboxes/:name/fetch`) ------------------------------------------------

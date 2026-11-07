@@ -69,7 +69,7 @@ import {
 import type { RepoStatus } from "./repos.ts";
 import { parseRunListQuery } from "./run-list.ts";
 import { CONVERSATION_SWEPT, type ConversationEntry, type ConversationStore } from "./conversations.ts";
-import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
+import { parseLfsAsk, UnmountedRepoError, type FetchAnswer, type LfsAnswer, type LfsAsk } from "./repo-fetch.ts";
 import {
   callerHasScope,
   callerMay,
@@ -598,9 +598,11 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     method: "POST",
     path: "/sandboxes/:name/fetch",
     band: "authenticated",
-    summary: "Ask the node cache to fetch one Repo that this Sandbox mounts. A fetch token asks only for its own.",
-    body: "{ identity }",
-    response: "FetchAnswer: { fetched } | { stale, asOf }",
+    summary:
+      "Ask the node cache to fetch one Repo that this Sandbox mounts, or, with `lfs`, to get LFS objects of it (1 to 256, by oid and size; `base` is the Binding's base, whose .lfsconfig names the LFS server). An LFS ask causes no git fetch. A fetch token asks only for its own.",
+    body: "{ identity, lfs?: { base, objects: Array<{ oid, size }> } }",
+    response:
+      "FetchAnswer: { fetched } | { stale, asOf }; with lfs, { lfs: { answered, error? } } when the node cache served the ask (error: git-lfs's words when an object is still missing), or { lfs: { error } } when the wait ran out; 400 for an lfs part that is not valid",
     stream: false,
     adrs: ["0053"],
   },
@@ -1025,11 +1027,12 @@ export type CreateAppOptions = {
   repos?: () => Promise<RepoStatus[]>;
   /**
    * The ask a pod makes when something inside it fetches (ADR-0053), off the port the caller
-   * built: mark the Sandbox CR for one Repo key, wait for the landing on its status, answer.
+   * built: mark the Sandbox CR for one Repo key, wait for the landing on its status, answer. With
+   * `lfs`, the LFS ask: its own mark, the same wait, the `{ lfs }` answer.
    * Absent for an instance without a data plane and for the in-process tests: no Sandbox, so no
    * ask, and the route says so rather than waiting on a cluster that is not there.
    */
-  fetchRepo?: (sandbox: string, identity: string) => Promise<FetchAnswer>;
+  fetchRepo?: (sandbox: string, identity: string, lfs?: LfsAsk) => Promise<FetchAnswer | LfsAnswer>;
   /** How long one poll of an outstanding pick waits for its answer before it answers `outstanding`
    * (ADR-0013, ADR-0024). Default 25 s: every request stays far below undici's 300 s and the
    * Custodian's idle limit. Tests shorten it. */
@@ -2349,8 +2352,16 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     if (typeof identity !== "string" || identity === "") {
       return c.json({ error: "a fetch names the Repo's identity: { identity }" }, 400);
     }
+    // An LFS ask (ADR-0053): the objects a smudge, a cut or an attach needs. Checked here, so a
+    // bad part is refused before anything is marked.
+    let lfs: LfsAsk | undefined;
+    if (body.lfs !== undefined) {
+      const parsed = parseLfsAsk(body.lfs);
+      if (typeof parsed === "string") return c.json({ error: parsed }, 400);
+      lfs = parsed;
+    }
     try {
-      return c.json(await opts.fetchRepo(name, identity));
+      return c.json(await (lfs ? opts.fetchRepo(name, identity, lfs) : opts.fetchRepo(name, identity)));
     } catch (err) {
       // The scope refusal, and the only one: a Repo this Sandbox does not mount.
       if (err instanceof UnmountedRepoError) return c.json({ error: errMessage(err) }, 404);
