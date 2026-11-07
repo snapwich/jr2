@@ -31,7 +31,6 @@ import {
   projectContexts,
   projectContextText,
   USER_CONTEXT_NAMES,
-  asImagePaths,
   userContextMount,
   withinBound,
   type ProjectContext,
@@ -254,36 +253,6 @@ test("userContextMount: a read-only mount at its own real path, when the pod ann
   );
 });
 
-test("asImagePaths: a file and a skill of the mount are named at the image's folder, where the model reads them; others stay", () => {
-  const m = { dir: "/run/jr2/user-context", image: "/home/a&b/.pi/agent" };
-  const skills = [
-    "<location>/run/jr2/user-context/skills/deploy/SKILL.md</location>",
-    "<location>/work/app/fix/.pi/skills/x/SKILL.md</location>",
-  ].join("\n");
-  assert.deepEqual(
-    asImagePaths(
-      {
-        files: [
-          { path: "/run/jr2/user-context/AGENTS.md", content: "image" },
-          { path: "/work/app/fix/AGENTS.md", content: "repo" },
-        ],
-        skills,
-      },
-      m,
-    ),
-    {
-      files: [
-        { path: "/home/a&b/.pi/agent/AGENTS.md", content: "image" },
-        { path: "/work/app/fix/AGENTS.md", content: "repo" },
-      ],
-      skills: [
-        "<location>/home/a&amp;b/.pi/agent/skills/deploy/SKILL.md</location>",
-        "<location>/work/app/fix/.pi/skills/x/SKILL.md</location>",
-      ].join("\n"),
-    },
-  );
-});
-
 test("loadProjectContext: the image user's AGENTS.md and skills load first; the child reads nothing else in that folder", async () => {
   const { root, work, dir } = worktree();
   writeFileSync(join(dir, "AGENTS.md"), "The repo's rules.\n");
@@ -305,11 +274,11 @@ test("loadProjectContext: the image user's AGENTS.md and skills load first; the 
   const userContext = { dir: userDir, image: "/home/u/.pi/agent" };
   const ctx = loaded(await loadProjectContext(children, dir, { workRoot: work, userContext }));
   assert.deepEqual(ctx.files, [
-    { path: "/home/u/.pi/agent/AGENTS.md", content: "The image's rules.\n" },
+    { path: join(userDir, "AGENTS.md"), content: "The image's rules.\n" },
     { path: join(dir, "AGENTS.md"), content: "The repo's rules.\n" },
   ]);
   assert.ok(ctx.skills.includes("<name>deploy</name>"), ctx.skills);
-  assert.ok(ctx.skills.includes("<location>/home/u/.pi/agent/skills/deploy/SKILL.md</location>"), ctx.skills);
+  assert.ok(ctx.skills.includes(`<location>${join(userDir, "skills", "deploy", "SKILL.md")}</location>`), ctx.skills);
   assert.ok(!JSON.stringify(ctx).includes(secret), "auth.json is nowhere in the project context");
   // Without the user folder, the same domain reads auth.json through the link: the further rules
   // are what keep it out.
@@ -325,7 +294,7 @@ test("loadProjectContext: the image user's AGENTS.md and skills load first; the 
   writeFileSync(join(userDir, "CLAUDE.md"), "The image's CLAUDE.md.\n");
   rmSync(join(dir, ".pi"), { recursive: true });
   const linked = loaded(await loadProjectContext(children, dir, { workRoot: work, userContext }));
-  assert.deepEqual(linked.files[0], { path: "/home/u/.pi/agent/CLAUDE.md", content: "The image's CLAUDE.md.\n" });
+  assert.deepEqual(linked.files[0], { path: join(userDir, "CLAUDE.md"), content: "The image's CLAUDE.md.\n" });
   assert.ok(!JSON.stringify(linked).includes(secret));
   assert.deepEqual(USER_CONTEXT_NAMES, [
     "AGENTS.override.md",
@@ -598,7 +567,7 @@ test("projectContexts: each folder loads once, so a later change of AGENTS.md do
   assert.match(lines[0]!, /\(ADR-0062\)$/);
 });
 
-test("projectContexts: the image user's context from its mount, first, at the image's paths", async () => {
+test("projectContexts: the image user's context from its mount, first, at the mount's paths, where the model reads it (ADR-0062)", async () => {
   const { work, dir } = worktree();
   writeFileSync(join(dir, "AGENTS.md"), "The repo's rules.\n");
   const { dir: userDir, table } = userMount();
@@ -610,8 +579,9 @@ test("projectContexts: the image user's context from its mount, first, at the im
   });
   const text = await read(dir, new AbortController().signal);
   assert.ok(text.indexOf("The image's rules.") < text.indexOf("The repo's rules."), text);
-  assert.ok(text.includes('<project_instructions path="/home/u/.pi/agent/AGENTS.md">'), text);
-  assert.ok(!text.includes(userDir), text);
+  // Not `~/.pi/agent`: an Agent can move `~/.pi` and put a folder of its own there.
+  assert.ok(text.includes(`<project_instructions path="${join(userDir, "AGENTS.md")}">`), text);
+  assert.ok(!text.includes("/home/u/.pi/agent"), text);
 });
 
 test("the domain reads the user context mount under the denied folder, and moves and writes nothing there", async () => {
@@ -624,8 +594,13 @@ test("the domain reads the user context mount under the denied folder, and moves
   const userContext = { dir: userDir, image: "/home/u/.pi/agent" };
   const children = testChildren({ work, deny: [run], read: [userDir] });
   const ctx = loaded(await loadProjectContext(children, dir, { workRoot: work, userContext }));
-  assert.deepEqual(ctx.files, [{ path: "/home/u/.pi/agent/AGENTS.md", content: "The image's rules.\n" }]);
-  assert.ok(ctx.skills.includes("<location>/home/u/.pi/agent/skills/deploy/SKILL.md</location>"), ctx.skills);
+  assert.deepEqual(ctx.files, [{ path: join(userDir, "AGENTS.md"), content: "The image's rules.\n" }]);
+  const skillFile = join(userDir, "skills", "deploy", "SKILL.md");
+  assert.ok(ctx.skills.includes(`<location>${skillFile}</location>`), ctx.skills);
+  // The model reads the skill's file at that path, with the domain's rights.
+  const read = await runIn(children, ["cat", skillFile], { cwd: work, timeoutMs: 10_000 });
+  assert.equal(read.code, 0, read.stderr);
+  assert.match(read.stdout, /description: Ship it\./);
   for (const argv of [
     ["mv", userDir, join(run, "moved")],
     ["mv", run, `${run}-moved`],

@@ -12,8 +12,9 @@
 // writes there would be in each later Agent's system prompt. The pod mounts the image's folder in
 // the HOME too, read-only, but an Agent can move `~/.pi` and put a folder of its own in its place.
 // Under `/run/jr2`, the domain can move nothing. The Harness checks once, at its start, that the
-// folder is that read-only mount. The paths in the text are the image's (`~/.pi/agent/...`), where
-// the model reads a skill's file, as the image's author wrote them.
+// folder is that read-only mount. The paths in the text are the mount's (`/run/jr2/user-context/...`),
+// which the domain reads: so the model's read of a skill's file reads the image's file, also after an
+// Agent moved `~/.pi` and put a folder of its own at `~/.pi/agent`.
 //
 // pi reads the files in the process that calls it. Here that is a child in the domain
 // (`project-context-main.ts`), started by the spawner, never the Harness process: the Agent writes
@@ -131,8 +132,8 @@ export function withinBound(ctx: ProjectContext, cwd: string, bound: string, use
 export type UserContextMount = {
   /** Where the Harness and the child read it: {@link USER_CONTEXT_DIR}, a read-only mount. */
   dir: string;
-  /** The same folder of the image as the model sees it, `<home>/.pi/agent` (`JR2_USER_CONTEXT`):
-   * the paths in the system prompt are here. */
+  /** The same folder of the image in its user's HOME, `<home>/.pi/agent` (`JR2_USER_CONTEXT`): the
+   * pod log names it. */
   image: string;
 };
 
@@ -204,30 +205,6 @@ export function userContextMount(
   const at = mountAt(dir, mountinfo());
   if ("fault" in at) return at;
   return { dir, image: announced };
-}
-
-/** `text` with each XML special character escaped, as pi's `formatSkillsForPrompt` escapes a
- * skill's location. */
-const escapeXml = (text: string): string =>
-  text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-
-/**
- * `ctx` with the paths in the image user's folder as the model sees them: a context file in `m.dir`
- * is named in `m.image`, and each skill location under `m.dir` is under `m.image`. The model reads a
- * skill's file there with its own tools, from the image's folder in its HOME.
- */
-export function asImagePaths(ctx: ProjectContext, m: UserContextMount): ProjectContext {
-  return {
-    files: ctx.files.map((f) =>
-      dirname(f.path) === m.dir ? { ...f, path: join(m.image, relative(m.dir, f.path)) } : f,
-    ),
-    skills: ctx.skills.split(`<location>${escapeXml(m.dir)}/`).join(`<location>${escapeXml(m.image)}/`),
-  };
 }
 
 /** The paths of {@link USER_CONTEXT_NAMES} in `userDir` that are there and are no link: each gets
@@ -369,8 +346,7 @@ export async function loadProjectContext(
   const parsed = parseProjectContext(r.stdout);
   if ("fault" in parsed) return parsed;
   const workRoot = opts.workRoot ?? WORK_ROOT;
-  const kept = withinBound(parsed, cwd, contextBound(cwd, opts.scope ?? "worktree", workRoot), userDir);
-  return opts.userContext !== undefined ? asImagePaths(kept, opts.userContext) : kept;
+  return withinBound(parsed, cwd, contextBound(cwd, opts.scope ?? "worktree", workRoot), userDir);
 }
 
 /** What {@link projectContexts} loads with: {@link LoadOptions}, with the image user's context as

@@ -972,11 +972,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           { name: SHELL_VOLUME, mountPath: SHELL_DIR },
           { name: OUTPUT_VOLUME, mountPath: OUTPUT_DIR },
           ...seat.homeMount,
-          // Twice, read-only. At its own path (`JR2_USER_CONTEXT`): the files that the model reads
-          // there, a skill's among them, are the image's, and no Agent writes them. And under
-          // /run/jr2: an Agent can move `~/.pi` in its HOME and put a folder of its own in its
-          // place, and under /run/jr2 it moves nothing. The Harness reads the user context there
-          // alone (ADR-0062).
+          // Twice, read-only. At its own path (`JR2_USER_CONTEXT`): a program that reads
+          // `~/.pi/agent` reads the image's files, and no Agent writes them. And under /run/jr2: an
+          // Agent can move `~/.pi` in its HOME and put a folder of its own in its place, and under
+          // /run/jr2 it moves nothing. The Harness reads the user context there alone, and the
+          // system prompt names its files there, where the model reads a skill's file (ADR-0062).
           ...(seat.userContext !== undefined
             ? [seat.userContext, USER_CONTEXT_DIR].map((mountPath) => ({
                 name: USER_CONTEXT_VOLUME,

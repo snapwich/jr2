@@ -107,10 +107,10 @@ inherits a Workspace whose processes are gone, with no way to know why.
       multi-platform image is read for its first platform, from the registry. A registry ref that jr2 did not build has
       none.
     - The Sandbox pod mounts the Sandbox Image again, as an `image` volume, with that folder as its `subPath`,
-      read-only, in the Harness container, twice. At the same path: the files that the model reads there (a skill's
-      file) are the image's, and the kernel refuses each write, each new file, each removal and each move in it. And at
-      `/run/jr2/user-context`: an Agent can move `~/.pi`, the folder above the first mount, and put a folder of its own
-      at `~/.pi/agent`, but under `/run/jr2` the domain moves, makes and removes nothing
+      read-only, in the Harness container, twice. At the same path: a program in the `HOME` that reads `~/.pi/agent`
+      reads the image's files, and the kernel refuses each write, each new file, each removal and each move in it. And
+      at `/run/jr2/user-context`: an Agent can move `~/.pi`, the folder above the first mount, and put a folder of its
+      own at `~/.pi/agent`, but under `/run/jr2` the domain moves, makes and removes nothing
       ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). The mounts need the
       record: a `subPath` that the image does not have stops the container.
     - The pod tells the Harness the folder (`JR2_USER_CONTEXT`, after `harness.env`, `""` for none). The Harness reads
@@ -118,11 +118,11 @@ inherits a Workspace whose processes are gone, with no way to know why.
       a `~/.pi/agent`. At its start, before it makes the domain, it checks that `/run/jr2/user-context` is its own real
       path and a read-only mount (`/proc/self/mountinfo`, and the folder's device). If not, no Agent reads a user
       context, and the pod log has one line. No later check is needed: no process of the domain can unmount it, mount
-      over it, or move it or a folder above it. The domain reads that folder, so that the child in the domain can. In
-      the system prompt, each path in that folder is named in the image's folder (`~/.pi/agent/...`), where the model
-      reads a skill's file as the image's author wrote it. Between a move of `~/.pi` and the model's `read`, that path
-      can name an Agent's file: the read of a skill's file is then a read of a file in the Workspace, as any other read
-      is.
+      over it, or move it or a folder above it. The domain reads that folder, so that the child in the domain can, and
+      so that the model can: in the system prompt, each path in that folder is named at `/run/jr2/user-context/...`, and
+      the model reads a skill's file there. A path at `~/.pi/agent` would name an Agent's file after a move of `~/.pi`.
+      A skill whose text names its other files by a path in `~/.pi/agent`, and not by a path from its own folder, sends
+      the model to the copy in the `HOME`.
     - The child that reads it is confined further: in that folder it reads only the names that pi's loaders read there,
       so not `auth.json`, `settings.json` or `models.json` (ADR-0076). The image's author put a link there, if there is
       one, and a read through it is a read of the path that it names, which the rules do not allow.
@@ -378,6 +378,10 @@ inherits a Workspace whose processes are gone, with no way to know why.
   the Agent's, so an Agent could move it, put a folder of its own at `~/.pi/agent` and move it back within one load
   (about half a second), and no check saw it. A second mount under `/run/jr2` has no folder above it that the domain can
   move.
+- **Name the user context's files at the image's path (`~/.pi/agent/...`) in the system prompt,** as the image's author
+  wrote them. Rejected: the model reads a skill's file at that path, and after an Agent moves `~/.pi` and puts a folder
+  of its own there, that read is a read of the Agent's file. The mount under `/run/jr2` is a path that no Agent can
+  change, and the domain reads it.
 - **A shared, writable user context** (`userContext: "shared"`, the folder in `HOME` as it is). Not now: no Workflow
   needs Agents that leave rules to each other there. A Workflow that does would name it, and its pod would have no
   mount.

@@ -280,11 +280,11 @@ Each Agent of the Workspace runs as the user of the image, and that user can wri
 `~/.pi/agent` as it is in the home: an Agent could write text there for the system prompt of each later Agent. `jr2 up`
 records the directory when the image has it, and the Sandbox pod mounts that directory of the image again, read-only, at
 the same path and at `/run/jr2/user-context`. The Agents read the image's files and cannot change them. jr2 reads the
-user context in `/run/jr2/user-context` alone, which no Agent can move, and the prompt names each file at `~/.pi/agent`.
-A `~/.pi/agent` that an Agent makes gets no read. The directory must be a real directory in the image, and each
-directory above it too, not a link. Its path must have no empty, `.` or `..` part: a `HOME` such as `/home//u` gives no
-user context. `jr2 up` prints `user context:` for each Sandbox Image that it builds, with the directory or why there is
-none. For example, when `~/.pi` is a link, the line is
+user context in `/run/jr2/user-context` alone, which no Agent can move. The prompt names each file there, so the model
+reads a skill's file in `/run/jr2/user-context` too. A `~/.pi/agent` that an Agent makes gets no read. The directory
+must be a real directory in the image, and each directory above it too, not a link. Its path must have no empty, `.` or
+`..` part: a `HOME` such as `/home//u` gives no user context. `jr2 up` prints `user context:` for each Sandbox Image
+that it builds, with the directory or why there is none. For example, when `~/.pi` is a link, the line is
 `user context: none (/home/node/.pi is a link, and the mount needs a real folder)`, and no Agent reads the user context.
 
 When jr2 cannot read the project context, the Turn runs without it, and the Harness's log tells why.

@@ -634,7 +634,7 @@ test("an image whose record names a user context folder gets it mounted read-onl
       { name: "user-context", mountPath: dir, subPath: "home/node/.pi/agent", readOnly: true },
       { name: "user-context", mountPath: "/run/jr2/user-context", subPath: "home/node/.pi/agent", readOnly: true },
     ],
-    "at the image's path, where the model reads it, and under /run/jr2, where the Harness reads it",
+    "at the image's path, read-only in the HOME, and under /run/jr2, where the Harness and the model read it",
   );
   const announced = spec.env.filter((e: { name: string }) => e.name === "JR2_USER_CONTEXT");
   assert.equal(announced.at(-1).value, dir, "jr2's entry is last, after harness.env's");
