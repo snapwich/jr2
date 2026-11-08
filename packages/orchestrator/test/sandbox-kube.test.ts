@@ -14,6 +14,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,7 +58,7 @@ import {
   type PlacingWait,
   type ProvisionedRepo,
 } from "../src/workspace.ts";
-import { answers, neverOpens } from "./_fake-connection.ts";
+import { answers, fakeConnection, neverOpens } from "./_fake-connection.ts";
 import { fakeKube, type FakeCall } from "./_fake-kube.ts";
 import { waitFor } from "./_fixtures.ts";
 
@@ -2379,7 +2380,7 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
     ...c.exec,
     attachWindowMs: 0,
     harnessFetch: (async () => {
-      throw new TypeError("fetch failed");
+      throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED", syscall: "connect" } });
     }) as typeof fetch,
   });
   await assert.rejects(
@@ -2433,6 +2434,63 @@ test("an attach try whose connection does not open is given up after the connect
   await assert.rejects(
     () => never.attach({ name: "sb-d", repos: [{ slot: "app", url: APP_URL }] }),
     /the attach never reached its Harness at http:\/\/sb-1\.default\.svc:8080: connect ETIMEDOUT sb-1\.default\.svc:8080/,
+  );
+});
+
+test("with no transport given, the attach dials through dialFetch: a new connection per try, its connect bounded (ADR-0042)", async (t) => {
+  const c = readySandbox("sb-w");
+  const dialed: Array<{ host: unknown; port: unknown }> = [];
+  t.mock.method(net, "createConnection", (args: { host?: string; port?: number }) => {
+    dialed.push({ host: args.host, port: args.port });
+    return answers(JSON.stringify({ repos: { app: "/work/app" }, bases: { app: "main" } }));
+  });
+  const { harnessFetch: _injected, ...exec } = c.exec;
+  const port = kubeSandbox({ ...provisionable, ...exec });
+  const out = await port.attach({ name: "sb-w", repos: [{ slot: "app", url: APP_URL }] });
+  assert.deepEqual(out.repos, { app: "/work/app" });
+  assert.deepEqual(dialed, [{ host: "sb-1.default.svc", port: 8080 }], "the default transport made the connection");
+});
+
+test("an attach whose signal aborts ends at once with the reason, and closes its request", async () => {
+  const c = readySandbox("sb-a");
+  let made!: (socket: ReturnType<typeof fakeConnection>) => void;
+  const dialed = new Promise<ReturnType<typeof fakeConnection>>((resolve) => (made = resolve));
+  const port = kubeSandbox({
+    ...provisionable,
+    ...c.exec,
+    harnessFetch: dialFetch({
+      connect: () => {
+        const socket = fakeConnection({ open: true });
+        made(socket);
+        return socket;
+      },
+    }),
+  });
+  const controller = new AbortController();
+  const attaching = port.attach(
+    { name: "sb-a", repos: [{ slot: "app", url: APP_URL }] },
+    { signal: controller.signal },
+  );
+  const socket = await dialed;
+  await socket.request;
+  const reason = new Error("the Sandbox is gone");
+  controller.abort(reason);
+  await assert.rejects(attaching, (err) => err === reason);
+  assert.ok(socket.destroyed, "the request to the Harness is closed, not left open");
+});
+
+test("an attach that reached its Harness and heard nothing says so, not that it never reached it", async () => {
+  const c = readySandbox("sb-i");
+  const port = kubeSandbox({
+    ...provisionable,
+    ...c.exec,
+    attachWindowMs: 0,
+    log: () => {},
+    harnessFetch: dialFetch({ idleTimeoutMs: 50, connect: () => fakeConnection({ open: true }) }),
+  });
+  await assert.rejects(
+    () => port.attach({ name: "sb-i", repos: [{ slot: "app", url: APP_URL }] }),
+    /the attach got no answer from its Harness at http:\/\/sb-1\.default\.svc:8080: no answer from sb-1\.default\.svc:8080 in 50ms/,
   );
 });
 

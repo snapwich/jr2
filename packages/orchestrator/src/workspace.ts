@@ -357,8 +357,12 @@ export interface SandboxPort {
   /** Post-Ready attach (ADR-0004): per slot, `git clone --shared` off the node's read-only
    * cache (the `default/` checkout). A Machine cuts each Worktree (ADR-0075). Resolves with the
    * folder of each slot; `stale` names the slots whose cache could not be fetched before this
-   * attach, with git's own error (ADR-0051: freshness degrades, absence does not). */
-  attach(req: { name: string; repos: Array<{ slot: string; url: string; ref?: string }> }): Promise<{
+   * attach, with git's own error (ADR-0051: freshness degrades, absence does not). `signal` ends
+   * the attach early, rejecting with its reason, and closes its request to the Harness. */
+  attach(
+    req: { name: string; repos: Array<{ slot: string; url: string; ref?: string }> },
+    opts?: { signal?: AbortSignal },
+  ): Promise<{
     repos: Record<string, string>;
     bases?: Record<string, string>;
     stale?: Record<string, string>;
@@ -1443,22 +1447,35 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
     // The attach is loss-aware (ADR-0021): a Sandbox gone or Lost under it fails the attach at
     // once and by name, as it fails the placing and the provisioning — never a transport error
     // one attach window later. Only the cluster's word: a dropped watch says nothing.
+    // The attach that loses the race is ended, not left behind: its request to the Harness closes.
+    const ended = new AbortController();
     let unsubscribe = (): void => {};
     const loss = new Promise<never>((_, reject) => {
       unsubscribe = port.continuity(name, (seen) => {
         const lost = !seen.present ? GONE : seen.lost;
         if (lost === undefined) return;
         const what = seen.present ? "is Lost" : "is gone";
-        reject(new Error(`Sandbox "${name}" ${what} while it attached: ${lost.reason}: ${lost.message} (ADR-0021)`));
+        const err = new Error(
+          `Sandbox "${name}" ${what} while it attached: ${lost.reason}: ${lost.message} (ADR-0021)`,
+        );
+        reject(err);
+        ended.abort(err);
       });
     });
     loss.catch(() => {});
-    signal.addEventListener("abort", () => unsubscribe(), { once: true });
+    const onAbort = () => {
+      unsubscribe();
+      ended.abort(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     let out: Awaited<ReturnType<typeof port.attach>>;
     try {
-      out = await Promise.race([port.attach({ name, repos: attachedRepos(input.bindings) }), loss]);
+      const attaching = port.attach({ name, repos: attachedRepos(input.bindings) }, { signal: ended.signal });
+      attaching.catch(() => {});
+      out = await Promise.race([attaching, loss]);
     } finally {
       unsubscribe();
+      signal.removeEventListener("abort", onAbort);
     }
     // Announced, never persisted (ADR-0051): a stale cache is a degraded attach the run proceeds
     // through on the objects the node holds. The pod cannot heal it — the worktree's `origin`

@@ -91,7 +91,7 @@ import {
   CUSTODIAN_SCRIPT_KEY,
   type CustodianComposition,
 } from "./custodian.ts";
-import { dialFetch, routabilityLine, transportCode, transportDetail } from "./dial.ts";
+import { dialFetch, neverDelivered, routabilityLine, transportCode, transportDetail } from "./dial.ts";
 import { heldStandIn, readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
 import { markHarnessEnv } from "./harness-env.ts";
 import {
@@ -1184,7 +1184,12 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    * after a request that DID land is harmless too — but only a transport failure is retried: an
    * answer is an answer. Each try's connect is bounded (`dialFetch`), and a retry that cost
    * something says so in one routability line (ADR-0042). */
-  const postAttach = async (name: string, endpoint: string, body: AttachRequest): Promise<AttachResponse> => {
+  const postAttach = async (
+    name: string,
+    endpoint: string,
+    body: AttachRequest,
+    signal?: AbortSignal,
+  ): Promise<AttachResponse> => {
     if (!opts.signingKey) throw new Error("kubeSandbox: the attach needs a signingKey for the Harness bearer");
     const url = new URL("/attach", endpoint).toString();
     const headers = {
@@ -1200,22 +1205,41 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       attempts += 1;
       let res: Response;
       try {
-        res = await harnessFetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+        res = await harnessFetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          ...(signal ? { signal } : {}),
+        });
       } catch (err) {
+        // The caller gave up (the Sandbox was lost under the attach): its reason, never a retry.
+        if (signal?.aborted) throw err;
         // Ready is not routable (ADR-0042): the EndpointSlice behind the Service is programmed after
         // the pod passes its probe, and the attach is now the first thing that dials it.
         lastCode = transportCode(err);
         if (Date.now() >= until) {
+          // Say which: a request that provably never connected, or one that may have reached the
+          // Harness and then heard nothing (the idle bound, ADR-0042) or lost its connection.
           throw new Error(
-            `Sandbox "${name}": the attach never reached its Harness at ${endpoint}: ${transportDetail(err)}`,
+            neverDelivered(err)
+              ? `Sandbox "${name}": the attach never reached its Harness at ${endpoint}: ${transportDetail(err)}`
+              : `Sandbox "${name}": the attach got no answer from its Harness at ${endpoint}: ${transportDetail(err)}`,
           );
         }
-        await sleep(backoff);
+        await sleep(backoff, signal);
         backoff = Math.min(backoff * 2, 5_000);
         continue;
       }
       if (attempts > 1) log(routabilityLine("attach", url, attempts, Date.now() - startedAt, lastCode));
-      const text = await res.text();
+      let text: string;
+      try {
+        text = await res.text();
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new Error(
+          `Sandbox "${name}": the attach reached its Harness at ${endpoint} and its answer broke off: ${transportDetail(err)}`,
+        );
+      }
       if (res.ok) return JSON.parse(text) as AttachResponse;
       // The Harness's own words: the slot, the step, and git's stderr.
       let error = text;
@@ -1459,7 +1483,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       );
     },
 
-    async attach(req) {
+    async attach(req, opts) {
       // The Harness's own route (ADR-0063): the same bearer as every Harness call (ADR-0058), and
       // the Repo's identity and cache key resolved HERE, so the cache the Harness clones from is
       // the one the operator mounted, by construction (ADR-0051). The address is the Sandbox's
@@ -1479,7 +1503,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           return { slot: r.slot, url: r.url, identity, key, ...(r.ref !== undefined ? { ref: r.ref } : {}) };
         }),
       };
-      const { repos, bases } = await postAttach(req.name, endpoint, body);
+      const { repos, bases } = await postAttach(req.name, endpoint, body, opts?.signal);
       const stale = staleSlots(req.repos, staleByName.get(req.name));
       return { repos, bases, ...(stale ? { stale } : {}) };
     },
@@ -1808,7 +1832,20 @@ function staleSlots(
   return Object.keys(stale).length ? stale : undefined;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A pause that `signal` ends early, rejecting with its reason. */
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 /**
  * The refusal of a provision on a cluster with no operator (ADR-0069). The data plane is always

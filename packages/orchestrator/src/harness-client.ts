@@ -38,7 +38,7 @@
 // observability, though jr2 never reads it (the actor is stopped by then; see actor.ts).
 
 import { agentActorWith } from "./actor.ts";
-import { dialFetch, routabilityLine, transportCode, transportDetail } from "./dial.ts";
+import { dialFetch, neverDelivered, routabilityLine, transportCode, transportDetail } from "./dial.ts";
 import type {
   AgentAdmission,
   AgentAdmitOptions,
@@ -1182,34 +1182,6 @@ const DRAINING = 503;
 
 /** A stream read worth retrying (server hiccup) — internal to the reconnect loop, never thrown out. */
 class ReconnectableError extends Error {}
-
-/** Errnos that mean no connection was ever established. `getaddrinfo`/`connect` say it by syscall
- * (as `dialFetch`'s bounded connect does); undici's own connect timeout says it by code. Deliberately short — anything not on this list is
- * treated as possibly-delivered (see `postAdmission`). */
-const NEVER_DELIVERED_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]);
-const NEVER_DELIVERED_SYSCALLS = new Set(["connect", "getaddrinfo"]);
-
-/**
- * Did this rejection happen BEFORE any byte of the request reached the wire?
- *
- * `fetch` reports transport failures as a generic `TypeError: fetch failed` and puts the real
- * errno on `cause`, which for a dual-stack address is an `AggregateError` over one attempt per
- * family — so the answer is only ever legible by walking down. Read structurally (syscall/code),
- * never by matching the message: the message is the part that changes between Node versions.
- */
-function neverDelivered(err: unknown, depth = 0): boolean {
-  if (depth > 4 || typeof err !== "object" || err === null) return false;
-  const { code, syscall, cause, errors } = err as {
-    code?: unknown;
-    syscall?: unknown;
-    cause?: unknown;
-    errors?: unknown;
-  };
-  if (typeof syscall === "string" && NEVER_DELIVERED_SYSCALLS.has(syscall)) return true;
-  if (typeof code === "string" && (code === "UND_ERR_CONNECT_TIMEOUT" || NEVER_DELIVERED_CODES.has(code))) return true;
-  if (Array.isArray(errors) && errors.some((nested) => neverDelivered(nested, depth + 1))) return true;
-  return neverDelivered(cause, depth + 1);
-}
 
 /** A readable fault message from a non-`completed` Settlement. */
 function faultMessage(settlement: Settlement): string {
