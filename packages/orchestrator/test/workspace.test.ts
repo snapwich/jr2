@@ -2324,3 +2324,115 @@ test("a nested Workspace's Sandbox name is its actor path's: two Pool workers' n
   await second.cancel(runId);
   assert.deepEqual([...destroyed(sandbox)].sort(), [...placed].sort());
 });
+
+/** The deletes of stopped Workspaces' Sandboxes that the run's last save names (`RunBlob.deleting`). */
+const savedDeleting = async (store: Awaited<ReturnType<typeof mkStore>>, runId: string) =>
+  ((await store.load(runId))?.snapshot as { deleting?: string[] } | undefined)?.deleting;
+
+test("a Workspace that its parent stops while the run goes on loses its Sandbox; a park does not (ADR-0012)", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const ws = workspace(slotlessBody, {});
+  const def = (): WorkflowDef => ({ name: "leaves", machine: liveParent(ws, {}), provide: () => ({}) });
+  const first = new RunHost({ store, sandbox });
+  first.register(def());
+  const { runId } = await first.start("leaves");
+  await waitFor(() => first.gates(runId).length === 2);
+  const [name] = [...sandbox.provisioned.keys()];
+
+  // A park stops the Workspace too, and deletes nothing: the restored run needs the Sandbox.
+  await first.stop(runId);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.deepEqual(destroyed(sandbox), []);
+  const second = new RunHost({ store, sandbox });
+  second.register(def());
+  await second.restore();
+  await waitFor(() => second.gates(runId).length === 2);
+  assert.deepEqual(destroyed(sandbox), []);
+
+  // The parent leaves the Workspace's state: the stop skips `teardown`, and the host deletes.
+  second.sendToGate(runId, "leave", { type: "approve" });
+  await waitFor(() => destroyed(sandbox).length === 1);
+  assert.deepEqual(destroyed(sandbox), [name]);
+  assert.equal(second.status(runId)?.status, "active", "the run goes on");
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no Lease renews what was deleted");
+  assert.equal(await savedDeleting(store, runId), undefined, "a delete that is done is not saved");
+});
+
+test("a delete that a crash cut short is done again by the restore (ADR-0012)", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const ws = workspace(slotlessBody, {});
+  const def = (): WorkflowDef => ({ name: "leaves", machine: liveParent(ws, {}), provide: () => ({}) });
+  const first = new RunHost({ store, sandbox });
+  first.register(def());
+  const { runId } = await first.start("leaves");
+  await waitFor(() => first.gates(runId).length === 2);
+  const [name] = [...sandbox.provisioned.keys()];
+  // The delete never ends: the process dies under it.
+  const destroy = sandbox.destroy.bind(sandbox);
+  sandbox.destroy = async (n) => {
+    sandbox.calls.push(`destroy:${n}`);
+    await new Promise(() => {});
+  };
+  first.sendToGate(runId, "leave", { type: "approve" });
+  await waitFor(() => destroyed(sandbox).length === 1);
+  // Saved with the snapshot that no longer holds the Workspace.
+  assert.deepEqual(await savedDeleting(store, runId), [name]);
+  await first.stop(runId);
+
+  sandbox.destroy = destroy;
+  const second = new RunHost({ store, sandbox });
+  second.register(def());
+  await second.restore();
+  await waitFor(() => destroyed(sandbox).length === 2);
+  assert.deepEqual(destroyed(sandbox), [name, name]);
+  for (let i = 0; i < 100 && (await savedDeleting(store, runId)) !== undefined; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  assert.equal(await savedDeleting(store, runId), undefined, "the done delete leaves the saved list");
+});
+
+test("a Workspace that places a name the host is deleting waits for the delete (ADR-0012)", async () => {
+  const sandbox = new FakeSandbox();
+  const ws = workspace(slotlessBody, {});
+  // `leave` stops the Workspace; `again` invokes it once more from the same state: the same name.
+  const parent = jr2Setup({ actors: { child: ws }, events: [approveDef] }).createMachine({
+    id: "again-parent",
+    initial: "running",
+    states: {
+      running: {
+        invoke: [
+          { id: "F-1", src: "child" },
+          { src: "gate", input: { gate: "leave", accepts: ["approve"] } },
+        ],
+        on: { approve: "away" },
+      },
+      away: { invoke: { src: "gate", input: { gate: "again", accepts: ["approve"] } }, on: { approve: "running" } },
+    },
+  });
+  let release = (): void => {};
+  sandbox.destroy = async (n) => {
+    sandbox.calls.push(`destroy:${n}`);
+    await new Promise<void>((r) => (release = r));
+    sandbox.calls.push(`destroyed:${n}`);
+  };
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "again", machine: parent, provide: () => ({}) });
+  const { runId } = await host.start("again");
+  await waitFor(() => host.gates(runId).length === 2);
+  host.sendToGate(runId, "leave", { type: "approve" });
+  await waitFor(() => host.gates(runId).some((g) => g.gate.endsWith("again")));
+  await waitFor(() => destroyed(sandbox).length === 1);
+  host.sendToGate(runId, "again", { type: "approve" });
+  await new Promise((r) => setTimeout(r, 30));
+  const places = () => sandbox.calls.filter((c) => c.startsWith("place:")).length;
+  assert.equal(places(), 1, "the second place waits for the delete");
+  release();
+  await waitFor(() => places() === 2);
+  const verbs = sandbox.calls.filter((c) => !c.startsWith("renew:")).map((c) => c.split(":")[0]);
+  assert.ok(verbs.lastIndexOf("destroyed") < verbs.lastIndexOf("place"), verbs.join(" "));
+  await waitFor(() => host.gates(runId).length === 2);
+});

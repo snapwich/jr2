@@ -71,9 +71,24 @@ key, the secrets it does not name, the push credentials and the Worktree (ADR-00
 Teardown fires **only when the body reaches a final state or fails**. A Failure from the body
 ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)) goes to a `failing` state,
 which runs the same `destroy` and then sends the Failure up unchanged; a defect goes up with no `onError`, and its
-Sandbox stays as evidence. A body that needs its Sandbox kept alive — escalation, a human inspecting the worktree, a
-human-review gate — simply parks in a non-final state (typically holding a `gate`, ADR-0011). We considered and rejected
-an `onSettled → retain | destroy` policy knob: parking expresses retention with no new API, and keeps the run visibly
+Sandbox stays as evidence.
+
+A Workspace that a Machine of the run stops before its body ends — a parent that leaves the Workspace's state on an
+`after` or an event, a Machine that a Failure ended
+([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), the run's Machine at its
+final state — skips `teardown`, because a stop is synchronous. So the host deletes its Sandbox after the stop, unless a
+live Workspace of the run holds the same name then. The host saves the name in the same write as the snapshot that no
+longer holds the Workspace, and drops it when the delete is done, so a restore deletes again what a crash cut short. A
+Workspace that places that name before the delete is done waits for it. A stop by the host is not the Machine's and
+deletes nothing here: a park for a restart ([ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) keeps each Sandbox for
+the restored run, a fault keeps them as evidence, and a cancel deletes them itself or, with `keep`, keeps them. A
+Workspace in `placing` deletes its own ([ADR-0064](0064-a-workspace-waits-for-capacity.md)). We rejected a delete by the
+wrapper when it is stopped, as `placing` does: the wrapper cannot save the delete, so a crash between the stop and the
+delete left the Sandbox to the idle GC, and for 30 minutes it held its whole Size for nobody.
+
+A body that needs its Sandbox kept alive — escalation, a human inspecting the worktree, a human-review gate — simply
+parks in a non-final state (typically holding a `gate`, ADR-0011). We considered and rejected an
+`onSettled → retain | destroy` policy knob: parking expresses retention with no new API, and keeps the run visibly
 "waiting" in `jr2 runs`. A parked run's Sandbox stays alive as long as the run does — each live workspace renews its own
 lease, and the operator reaps only Sandboxes whose lease has lapsed (abandonment, not parking — ADR-0001).
 

@@ -267,6 +267,10 @@ Sandbox waits in a state that is not final, such as at a Gate. The Sandbox stays
 A Failure also deletes the Sandbox, with each commit in it. To keep the work for a person to read, wait at a Gate before
 the state that fails.
 
+When the parent leaves the state that invokes the Workspace before the body ends, for example on an `after` or on an
+event, the Workspace stops. jr2 then deletes its Sandbox, with each commit in it. A restart of the Orchestrator does not
+stop a Workspace, and keeps its Sandbox.
+
 A parent that invokes the same Machine again, with the same invoke id, gives the new Workspace the same Sandbox. That
 happens on a retry after it catches a Failure, or when it enters the state again. jr2 does not delete that Sandbox. The
 new Workspace takes it over, with the Worktree and each commit of the attempt before it, as a restore does.

@@ -1371,6 +1371,10 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
    * Workspace of the run holds when the delete would run: a parent that re-enters the state, or
    * catches a Failure and invokes the same Machine again, gives its new Workspace the same actor
    * path, and so the same name, which that Workspace has placed again by then (ADR-0073).
+   *
+   * A stop past `placing` is the host's to delete (ADR-0012, `RunHost.workspaceStopped`). When that
+   * delete of this name is not done, the write waits for it, so the delete does not remove the
+   * Sandbox written here.
    */
   const place = fromPromise<
     { bindings: Record<string, ResolvedBinding>; runInput: Record<string, unknown> },
@@ -1421,6 +1425,9 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
       }
       wrapper?.send({ type: "workspace.waiting", wait: { ...wait, since } });
     };
+    // A Sandbox of the same name that the host deletes goes first.
+    await binding.sandboxDeleting?.(name);
+    if (signal.aborted) throw signal.reason;
     const placed = port.place(
       {
         name,
