@@ -198,16 +198,18 @@ List the Workspaces of the run with [`jr2 workspace ls`](../reference/cli.md#wor
 jr2 workspace ls <run id>
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 → context kind-jr2 / namespace my-instance
-WORKSPACE      SANDBOX                   WORKFLOW  PHASE  AGE  RUN
-79b90360/x:23  ws-79b90360-x-23-1gex8om  task      Ready  81s  held
+WORKSPACE      SANDBOX                        WORKFLOW  PHASE  AGE  RUN
+79b90360/x:23  ws-79b90360-x-23-e7dbbb56059e  task      Ready  81s  held
 ```
 
 `79b90360/x:23` is the handle of the Workspace: the first 8 characters of the run id, then the path of the Workspace in
-the run. `ws-79b90360-x-23-1gex8om` is the name of the Sandbox. The name of the Sandbox is a handle too. Your values are
-different. The commands below write the handle as `<workspace>`. `held` tells that the run holds the Sandbox.
+the run. `ws-79b90360-x-23-e7dbbb56059e` is the name of the Sandbox. The name of the Sandbox is a handle too. Your
+values are different. The commands below write the handle as `<workspace>`. `held` tells that the run holds the Sandbox.
 
 ## Look inside the Sandbox
 

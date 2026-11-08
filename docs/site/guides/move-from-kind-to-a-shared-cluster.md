@@ -192,10 +192,12 @@ When the quota refuses the pod of a Sandbox, the Workspace waits in Placing. It 
 sets no time limit on this wait. `jr2 run` shows the reason, in the words of the quota. In this output, the quota
 `team-quota` permits 512Mi of memory limits, and the Size asks for 1Gi:
 
+<!-- output: not run -->
+
 ```text
 …
   → active "placing"
-  placing: waits for quota — pods "ws-5e817334-x-0-61ru0u" is forbidden: exceeded quota: team-quota, requested: limits.memory=1Gi, used: limits.memory=2Gi, limited: limits.memory=512Mi
+  placing: waits for quota — pods "ws-5e817334-x-0-152ceb19645b" is forbidden: exceeded quota: team-quota, requested: limits.memory=1Gi, used: limits.memory=2Gi, limited: limits.memory=512Mi
 ```
 
 For a Workspace that is not the root of the Workflow, the line adds the path of the child after `placing`.

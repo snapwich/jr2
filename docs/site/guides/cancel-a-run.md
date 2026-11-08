@@ -74,9 +74,11 @@ the `WORKSPACE` column to [`jr2 workspace rm`](../reference/cli.md#workspace-rm)
 jr2 workspace rm <workspace>
 ```
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
-removed Workspace 442d95df/x:47 (ws-442d95df-x-47-11p1uzl)
+removed Workspace 442d95df/x:47 (ws-442d95df-x-47-db6ea104d687)
 ```
 
 Your handle and your Sandbox name are different. `jr2 workspace rm` refuses the Sandbox of a run that is live.

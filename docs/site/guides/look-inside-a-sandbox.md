@@ -30,17 +30,19 @@ the Instance:
 jr2 workspace ls <run id>
 ```
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
-WORKSPACE     SANDBOX                  WORKFLOW  PHASE  AGE  RUN
-7a0e8b50/x:0  ws-7a0e8b50-x-0-1eolpdi  task      Ready  32s  held
+WORKSPACE     SANDBOX                       WORKFLOW  PHASE  AGE  RUN
+7a0e8b50/x:0  ws-7a0e8b50-x-0-b35f14dc370a  task      Ready  32s  held
 ```
 
 - `WORKSPACE` is the handle of the Workspace: the first 8 characters of the run id, then the path of the Workspace in
   the run. In the commands below, write it in place of `<workspace>`. You can also give the name of the Sandbox, or the
   first characters of the run id, then `/` and the path.
-- `SANDBOX` is the name of the Sandbox, here `ws-7a0e8b50-x-0-1eolpdi`. Your name is different. The pod has the same
-  name.
+- `SANDBOX` is the name of the Sandbox, here `ws-7a0e8b50-x-0-b35f14dc370a`. Your name is different. The pod has the
+  same name.
 - A run that has two Workspaces at the same time has two rows.
 - `PHASE` is `Pending` until the pod is ready and its node has a fresh cache of each
   [Repo](../reference/glossary.md#repo). Then it is `Ready`. It is `Lost` when the pod is gone, and a `Lost` Sandbox
@@ -185,9 +187,11 @@ A Sandbox that a cancel with `--keep` or a fault left stays until the operator d
 jr2 workspace rm <workspace>
 ```
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
-removed Workspace 7a0e8b50/x:0 (ws-7a0e8b50-x-0-1eolpdi)
+removed Workspace 7a0e8b50/x:0 (ws-7a0e8b50-x-0-b35f14dc370a)
 ```
 
 `jr2 workspace rm` removes only a Sandbox that `jr2 workspace ls` shows as `released` or `idle`. To remove the Sandbox
