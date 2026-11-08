@@ -58,12 +58,13 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
 - **`expect` is static**, so a Chart cannot change it. The string can grow. A boolean cannot, and its absent value and
   its `false` would mean different things.
 - **A cut runs on the `command` machinery**: a kit program in the Harness container, no new wire kind, marked
-  idempotent. Each thing that an Agent's word can cause settles as `refused`, and never as `onError` (ADR-0067). A cut
-  writes a record before it changes git, so `refused` changes nothing and the next cut in the clone repairs a killed
-  cut. So does a cut that adds again a Worktree whose folder an Agent removed: its record says so before the add, and
-  the next cut removes the half-made folder and adds it again. Under the lock, a cut also removes the folder in `TMPDIR`
-  that a killed cut of the same clone left. It never removes a folder that its record does not name. A re-cut that
-  disagrees with the first cut is `refused`. Cuts of one clone are serialized by a lock.
+  idempotent. A cut at a Handoff adds two legs on the Harness wire, which carry the Handoff's files to the child's
+  Harness before its exec starts (ADR-0080). Each thing that an Agent's word can cause settles as `refused`, and never
+  as `onError` (ADR-0067). A cut writes a record before it changes git, so `refused` changes nothing and the next cut in
+  the clone repairs a killed cut. So does a cut that adds again a Worktree whose folder an Agent removed: its record
+  says so before the add, and the next cut removes the half-made folder and adds it again. Under the lock, a cut also
+  removes the folder in `TMPDIR` that a killed cut of the same clone left. It never removes a folder that its record
+  does not name. A re-cut that disagrees with the first cut is `refused`. Cuts of one clone are serialized by a lock.
 - **A cut writes a Worktree's files from a git folder of its own.** The cut runs as the uid of the Workspace's Agents,
   so they write the clone's config and `info/` folder, and each Worktree's config, index and HEAD. Each of these changes
   what a checkout writes, and none is in a diff
@@ -360,7 +361,9 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   git-lfs checks an object in the store by its size only, so an Agent that puts other bytes of the same size there
   changes the large file that a cut writes. An alternate that an Agent adds gives the cut's git folder more objects to
   read. Inside the Sandbox the Agents have free rein (ADR-0028), so jr2 accepts these. What leaves the Sandbox is
-  checked where it lands: a cut at a Handoff checks each object with fsck and each large file's sha256 (ADR-0080).
+  checked where it lands: a cut at a Handoff takes only the handed-off commit's closure into the clone, checks each of
+  its objects with fsck, and lands only a large file that a pointer of the range names and whose sha256 is its oid
+  (ADR-0080).
 - Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a
   Pool in one clone. They share the one Harness and `/work`. Only the Harness process holds the control credential, and
   each process it starts in `/work` runs confined, so no Agent's code can act as another Agent

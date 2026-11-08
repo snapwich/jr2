@@ -22,7 +22,7 @@ on real files (Considered options), and a probe tested the bundle range.
 - **A Handoff is plain data: the parent cut's `WorktreeReady`.** `{ slot, path, branch, head }`, as a `ready` cut of a
   Worktree gives it ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). The parent Machine
   passes it to the nested Workspace through the door, as each other input. There is no `handoff()` Effect, no seal and
-  no extra parent state.
+  no extra parent state. `@jr2/orchestrator` exports `handoff`, the schema of a Handoff, for a door's input.
 - **The commit enters the nested Workspace only at its cut.** `worktree()` gets a third arm:
 
   ```ts
@@ -55,7 +55,16 @@ on real files (Considered options), and a probe tested the bundle range.
   never goes to `onError`
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), and the Machine
   routes it, for example to `fail()`
-  ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)).
+  ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)). These checks are for a
+  Handoff of the right shape. The shape is checked where an Agent's value enters: the Menu checks a pick against its
+  schema, and the door checks a Chart at its admission. So an Agent's Handoff of the wrong shape never reaches the
+  nested door.
+
+- **What the ledger check holds, and what it leaves to the Machine.** The check holds that the commit is the head of a
+  `ready` cut in an enclosing Workspace of the run, on that cut's branch. Which of those commits the child takes is the
+  Machine's choice: a Handoff that a pick carries lets the Agent choose among them. The `branch` of the cut's input is
+  not a ledger fact. It names the child's branch, as the `branch` of a branch arm does (ADR-0075), so a Machine that
+  takes it from a pick or a Chart lets the Agent name the branch that a push in the child publishes to.
 
 - **The cut is the only check.** `jr2 up` does not look at a door that takes a Handoff, and the Orchestrator does not
   look a Handoff up when the parent invokes the nested Workspace. A forged Handoff costs one Sandbox, and the cut
@@ -79,57 +88,89 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   `git status` shows ahead and behind.
 - `git log` shows the parent Agents' commits, with their authors and messages.
 - jr2 leaves no other remote, no `refs/jr2/*` ref and no `FETCH_HEAD`.
-- Only `head` and its ancestors cross. The parent's other branches, its untracked and ignored files, its config and its
-  caches stay in the parent Sandbox.
+- Only `head` and its ancestors enter the child's clone, and only the Git LFS objects that their pointers name enter its
+  LFS store. The parent's other branches, its untracked and ignored files, its config and its caches stay in the parent
+  Sandbox.
 
 ### The transport: a git bundle
 
-- **The parent Sandbox writes a bundle of exactly the handed-off range**: `head` and the ancestors that the parent
-  clone's remote-tracking refs do not hold. git writes no bundle for a bare sha, so the step names `head` by a ref in a
-  git folder of its own whose alternates are the clone's objects, as the cut does (ADR-0075), and bundles that ref
-  `--not` the clone's remote-tracking refs. The source Harness writes it as the cut does: through the spawner, in the
-  Sandbox's Landlock domain (ADR-0076), with jr2's cleared env, the cut's pinned config (no hooks, no fsmonitor,
+- **The parent Sandbox writes a bundle of the handed-off range**: `head` and the ancestors that the parent clone's
+  remote-tracking refs do not hold. git writes no bundle for a bare sha, so the step names `head` by a ref in a git
+  folder of its own whose alternates are the clone's objects, as the cut does (ADR-0075), and bundles that ref `--not`
+  the clone's remote-tracking refs. The source Harness writes it as the cut does: through the spawner, in the Sandbox's
+  Landlock domain (ADR-0076), with jr2's cleared env, the cut's pinned config (no hooks, no fsmonitor,
   `core.commitGraph=false`, `core.multiPackIndex=false`, `core.alternateRefsCommand=true`, and the rest of the cut's
   set), a deadline, and a kill of the process group at the deadline. In the domain, the step reads only what an Agent of
   the parent can read itself. The deadline is necessary: in the spike, a FIFO that an Agent planted in the clone held
-  git for ever.
-- **The Orchestrator carries the file, and no route faces a Sandbox.** It already talks to every Harness
+  git for ever. The bundle is the parent domain's file, so jr2 trusts nothing in it: the child's cut takes from it only
+  what the steps below let through.
+- **The Orchestrator carries the files, and no route faces a Sandbox.** It already talks to every Harness
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). When it runs the child's cut Effect, the Orchestrator
-  checks the Handoff of that Effect's input against the ledger, records the source on that cut's intent row, asks the
-  source Harness for the bundle, and sends the file to the child's Harness with the cut. The child makes no request for
-  a Handoff, so no credential of the child's domain reaches one: the Orchestrator sends a bundle only for the source
-  that the cut's own intent row records, never for a cut that the Machine did not ask for. jr2 bounds the size of a
-  Handoff, and a larger one is `refused` with the bound in the reason.
-- **The child's cut fetches from the bundle** into its own fresh clone, with `transfer.fsckObjects=true`, so git checks
-  each object against its id before the clone holds it. Then it makes the branch at `head`.
+  checks the Handoff of that Effect's input against the ledger and records the source on that cut's intent row. Then it
+  uses two legs of the Harness wire, each behind the Harness bearer:
+  - `POST /handoff` on the source Harness, with the path and the head of the ledger row. The source Harness runs the
+    bundle step and answers with one stream: the bundle, then the Git LFS objects.
+  - `PUT /handoffs/<id>` on the child's Harness, with the Effect's id, before the Orchestrator starts the cut's exec
+    (`POST /exec/<id>`, [ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
+    The Orchestrator streams the source's answer into it. The child's Harness writes the files, through the spawner, to
+    a folder of that cut, and the cut removes the folder when it settles.
+
+  The child makes no request for a Handoff, so no credential of the child's domain reaches one: the Orchestrator sends a
+  bundle only for the source that the cut's own intent row records, never for a cut that the Machine did not ask for.
+
+- **One bound covers the bundle and its Git LFS objects together.** A Handoff is the parent Agents' files, and the
+  Orchestrator serves each run of the Instance, so an Agent's file must not steer how much it carries. The source
+  Harness and the Orchestrator each stop the stream at the bound, and the cut is then `refused`, with the bound in the
+  reason.
+- **The child's cut takes only `head`'s closure, and git checks each object.** git before about 2.46 runs no fsck on a
+  fetch from a bundle, whatever `transfer.fsckObjects` says, and a fetch from a bundle stores each object of the
+  bundle's pack. So the cut does not fetch from the bundle. It refuses a bundle unless it has exactly one ref, at
+  `head`. It unbundles into a git folder that it makes in the cut's own folder, whose alternates are the child clone's
+  objects, so that git checks the bundle's prerequisites against the clone. It sets a ref at `head` there, and the clone
+  fetches that ref over `file://` with `transfer.fsckObjects=true`. So only `head`'s closure enters the clone, and git
+  checks each of its objects with fsck, also on git before 2.46 (a probe on git 2.39.5 refused a commit with a bad
+  date). Then the cut makes the branch at `head`.
 - **The cut records its source.** The child cut's intent row keeps the resolved source (the run, the Workspace and the
   ledger row), so a restored run asks the same source, and the cut stays idempotent.
-- **Two kinds of transport error.** When the source Harness answers that the commit, or a prerequisite of the bundle, is
-  not there, the cut is `refused`. When the source Harness does not answer, the cut is `unknown`, and the Machine can
-  cut again. When the child's clone does not hold a prerequisite of the bundle (for example, the remote was force-pushed
-  after the parent fetched), the cut is `refused`, and the reason names the missing commit.
-- **No server.** No process serves git between Sandboxes, no throwaway repository is made, no alternates point at
-  another Sandbox, and no git protocol version is chosen. The bundle and the Git LFS objects that its commits name
-  (below) are the only files that leave the parent Sandbox.
+- **Two kinds of transport error.** An error that the parent's files or the parent's clone cause is `refused`, with the
+  reason, because a cut again meets the same files:
+  - the source Harness answers that the commit, or a prerequisite of the bundle, is not there;
+  - the bundle step passes its deadline (for example, at a FIFO that an Agent planted);
+  - the stream passes the bound;
+  - the bundle has a ref that is not at `head`, or fsck refuses an object;
+  - the child's clone does not hold a prerequisite of the bundle (for example, the remote was force-pushed after the
+    parent fetched). The reason names the missing commit.
+
+  When the source Harness does not answer, the cut is `unknown`, and the Machine can cut again. The Orchestrator waits
+  for the source longer than the bundle step's deadline, so a step that the parent's files hold ends as `refused` and
+  never as `unknown`.
+
+- **No server.** No process serves git between Sandboxes, no alternates point at another Sandbox, and no git protocol
+  version is chosen. On the parent side, the only git folder that jr2 makes is the bundle step's, which holds one ref
+  and reads the clone's objects through its alternates. The child's `file://` fetch runs in the child, between two
+  folders of its own cut. The bundle and the Git LFS objects that its commits name (below) are the only files that leave
+  the parent Sandbox.
 
 ### Large files
 
 - **Git LFS objects travel with the Handoff.** The bundle step also collects each Git LFS object that a bundled commit
   points to and that the parent clone holds. The Orchestrator carries them with the bundle.
-- **The child checks each object's sha256 against its oid** before it puts the object in its clone's LFS store. git-lfs
-  checks only the size of an object in the store, so without this check an object of the same size with other bytes
-  checks out with exit 0. Then the cut's usual ask of the node cache gets the objects that the Handoff did not carry
-  (ADR-0075). A push from the child uploads from its own LFS store, as each push does.
+- **The child lands an object only when a pointer names it and its bytes match.** A pointer in a commit of the
+  handed-off range (the commits that the fetch brought into the clone) must name the object's oid, and the object's
+  sha256 must be its oid. The cut leaves out each other object. git-lfs checks only the size of an object in the store,
+  so without the sha256 check an object of the same size with other bytes checks out with exit 0. Then the cut's usual
+  ask of the node cache gets the objects that the Handoff did not carry (ADR-0075). A push from the child uploads from
+  its own LFS store, as each push does.
 - The surface does not change.
 
 ### An Agent's git and a bare repository
 
-A commit can hold a bare repository in its tree. In the spike, `git status` in a Worktree with an embedded bare
-repository ran that repository's `core.fsmonitor`. So jr2 sets `safe.bareRepository=explicit` for each Agent process,
-through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` in the domain's env (ADR-0076). With it, a
-push, a clone or a fetch by path and `--git-dir` work, and `git -C bare.git` is refused with a message that names the
-setting. jr2's own git already runs with a cleared env and its own config. jr2's entry goes after the image's own
-entries, so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and jr2 needs to read no image.
+A commit can hold a bare repository in its tree. In the spike, `git status` inside the folder of a bare repository that
+a commit holds ran that repository's `core.fsmonitor`. So jr2 sets `safe.bareRepository=explicit` for each Agent
+process, through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` in the domain's env (ADR-0076).
+With it, a push, a clone or a fetch by path and `--git-dir` work, and `git -C bare.git` is refused with a message that
+names the setting. jr2's own git already runs with a cleared env and its own config. jr2's entry goes after the image's
+own entries, so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and jr2 needs to read no image.
 
 ## Example
 
@@ -173,8 +214,13 @@ publishing: {
   showed that protocol v2's `upload-pack` served any object of the store: another branch, a stash, a dangling blob. So
   the server had to hold to v0 and to a store of only `head`'s objects. The serving step also followed an
   `objects/info/alternates` that an Agent wrote, with the server's access, and carried a file that the Agent could not
-  read. A server is a protocol to police for the life of the Sandbox. A bundle is one file of exactly the range, which
-  the domain writes and the child's fsck checks.
+  read. A server is a protocol to police for the life of the Sandbox. A bundle is one file, which the domain writes, and
+  from which the child takes only `head`'s closure through fsck.
+- **The child's cut fetches straight from the bundle**, with `transfer.fsckObjects=true`. Rejected. git before about
+  2.46 runs no fsck on a fetch from a bundle: on git 2.39.5 (the `@kind` Sandbox image) and 2.43, a commit with a bad
+  date landed with exit 0, and the same fetch over `file://` was refused. The fetch also stores each object of the
+  bundle's pack, so a bundle with a second ref put that ref's objects in the child's clone, with no ref to them. A floor
+  of git 2.46 in each Sandbox Image closes only the first of these, and it binds each image that an author brings.
 - **A `handoff()` Effect that seals the Handoff in the parent.** Rejected. The ledger already holds each fact of a
   Handoff, so a seal gives no property that the lookup does not give. It adds an Effect, a state in each parent and a
   key to keep.
@@ -218,5 +264,5 @@ publishing: {
   child pushes it.
 - Each slot needs its own Handoff, door field and cut. A Handoff given to the cut of a slot that holds another Repo is
   `refused` at the cut.
-- Later, without a break: a per-run Repo Slot that takes its Binding from a Handoff, a review Machine in
-  `@jr2/machines`, and a long-lived nested reviewer.
+- Later, without a break: a per-run Repo Slot that takes only its remote and its base from a Handoff (the commit still
+  enters at the cut), a review Machine in `@jr2/machines`, and a long-lived nested reviewer.

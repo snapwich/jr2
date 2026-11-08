@@ -572,5 +572,5 @@ _Avoid_: attach (the Workspace's step, which only clones), provision
 **Handoff**:
 The commit of one Worktree, as a cut in an enclosing Workspace of the same run read it, which a nested Workspace takes
 at its cut. The Machine passes it as data, and jr2 finds each of its facts in the run's ledger before the cut takes it:
-only that commit and its ancestors go into the nested Sandbox.
+only that commit and its ancestors enter the nested Sandbox's clone.
 _Avoid_: handoff branch, remote, hand-off, Forward (the CLI's)

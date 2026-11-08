@@ -53,18 +53,19 @@ another, whatever it writes.
 - **One spawner makes the domain.** At its start, the Harness starts the **spawner**, `effector spawner` on the runtime
   volume ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), confined once. The spawner
   starts each process that the Harness asks for, and it does each file tool's I/O and each read, list and remove of a
-  path that the Harness needs in the Agent's files (the sync's git folders and its bundle). It sends back the output,
-  the exit status, the file's bytes and the names in a folder. A process inherits its parent's domain, so every program
-  of every Agent of the Sandbox is in the one domain. They see, signal and trace each other, as one user's processes do
-  on a machine: a later `bash` call can `kill` or `lsof` a server that an earlier call started. The tools that the model
-  calls do not change: `bash` takes a command, and `read`, `write` and `edit` take a path. If the spawner stops, the
-  Harness starts it again, with the same rules. The new spawner makes a new domain, a sibling of the old one, and the
-  processes that the old spawner started run on in the old domain. A process of the new domain cannot trace one of the
-  old domain, or read its `/proc/<pid>/environ` or its open files. Below ABI 6 it can still signal it, so a later `bash`
-  call can end a server from before the restart; at ABI 6 or later it cannot. The confiner never follows a symbolic link
-  to find what a rule allows: a link gets no rule (what it names gets its own rule where it is allowed, and the kernel
-  checks the path that a link resolves to), and the confiner refuses to start when a rule's path has a link on it. A
-  rule on a link would allow what the link names at each restart, and a confined process can change that.
+  path that the Harness needs in the Agent's files (the sync's git folders and its bundle, and a Handoff's bundle and
+  its Git LFS objects). It sends back the output, the exit status, the file's bytes and the names in a folder. A process
+  inherits its parent's domain, so every program of every Agent of the Sandbox is in the one domain. They see, signal
+  and trace each other, as one user's processes do on a machine: a later `bash` call can `kill` or `lsof` a server that
+  an earlier call started. The tools that the model calls do not change: `bash` takes a command, and `read`, `write` and
+  `edit` take a path. If the spawner stops, the Harness starts it again, with the same rules. The new spawner makes a
+  new domain, a sibling of the old one, and the processes that the old spawner started run on in the old domain. A
+  process of the new domain cannot trace one of the old domain, or read its `/proc/<pid>/environ` or its open files.
+  Below ABI 6 it can still signal it, so a later `bash` call can end a server from before the restart; at ABI 6 or later
+  it cannot. The confiner never follows a symbolic link to find what a rule allows: a link gets no rule (what it names
+  gets its own rule where it is allowed, and the kernel checks the path that a link resolves to), and the confiner
+  refuses to start when a rule's path has a link on it. A rule on a link would allow what the link names at each
+  restart, and a confined process can change that.
 - **A person's shell is a process of the domain.** `jr2 workspace shell`
   ([ADR-0009](0009-cli-and-instance-interface.md)) is `kubectl exec -c harness` of a small client in `/opt/jr2`, which
   starts as the Harness starts (`effector nocore --harness-env`). The client starts nothing itself. It asks the Harness,
@@ -131,13 +132,13 @@ another, whatever it writes.
   that the container started with: the image's `ENV`, `harness.env` and `envFrom`, the proxy and CA variables. jr2's own
   `JR2_*` names are removed, except `JR2_CUSTODIAN_URL`. It also gets `HOME`, `TMPDIR`, and the Stand-ins of the secrets
   that the `workspace()` grants (its `secrets` list), each under its own name, and `safe.bareRepository=explicit` for
-  git, because a commit can hold a bare repository whose config runs a program on a plain `git status` (ADR-0080). The
-  entry goes after the start env's own `GIT_CONFIG_KEY_<n>` entries: with a start env that sets `GIT_CONFIG_COUNT=n`,
-  jr2 sets `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, and `GIT_CONFIG_COUNT=n+1`. So an image's own entries stay,
-  and jr2 needs to read no image. A start-env `GIT_CONFIG_COUNT` that is not a count is replaced, and the Harness logs
-  one line. It never gets what the Harness process added to its own env after the start, and so it never gets the
-  control Stand-in, or the Stand-in of a model key that the `secrets` list does not name. A toolchain and a
-  bring-your-own image work as they work outside jr2.
+  git, because a commit can hold a bare repository whose config runs a program on a `git status` inside its folder
+  (ADR-0080). The entry goes after the start env's own `GIT_CONFIG_KEY_<n>` entries: with a start env that sets
+  `GIT_CONFIG_COUNT=n`, jr2 sets `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, and `GIT_CONFIG_COUNT=n+1`. So an
+  image's own entries stay, and jr2 needs to read no image. A start-env `GIT_CONFIG_COUNT` that is not a count is
+  replaced, and the Harness logs one line. It never gets what the Harness process added to its own env after the start,
+  and so it never gets the control Stand-in, or the Stand-in of a model key that the `secrets` list does not name. A
+  toolchain and a bring-your-own image work as they work outside jr2.
 - **The Harness process runs with jr2's env alone.** node, glibc and OpenSSL read names from the env that load code or
   configuration from a path: `NODE_OPTIONS=--require /app/x.js`, `LD_PRELOAD`, `OPENSSL_CONF`. The image's `ENV` can
   name a file that the domain writes. So the Harness starts as `effector nocore --harness-env -- node …`. The effector
@@ -240,9 +241,9 @@ another, whatever it writes.
     as a constant. It is valid only on `POST /sandboxes/<sandbox>/fetch`
     ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). The Custodian
     accepts the public Stand-in on the fetch route only.
-  - No route gives a Sandbox a Handoff. The Orchestrator sends the bundle to the child's Harness with the cut that asks
-    for it, and asks the source Harness for it on the Harness's own wire
-    ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)), so neither token reaches one.
+  - No route gives a Sandbox a Handoff. The Orchestrator asks the source Harness for the bundle (`POST /handoff`) and
+    puts it to the child's Harness (`PUT /handoffs/<id>`) before the cut that asks for it, each behind the Harness
+    bearer ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)), so neither token reaches one.
   - The Orchestrator accepts each token only on its own routes. A Gate accepts neither, and no other principal of an
     Agent: an Agent never reaches a Gate (ADR-0013).
 - **An engine runs its loop in the Harness process.** pi does: its loop is in the Harness process, and only its tools

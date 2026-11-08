@@ -40,8 +40,8 @@ definition can state.
   [Instance Harness](0031-menu-only-agents-run-on-the-instance-harness.md), always — even when a `workspace()` encloses
   the invocation. Placement is definitional, which is this ADR's thesis extended one step: what an Agent may do to the
   Workspace decides where it runs. (`cwd` is moot for `"none"` — only Working tools consume it.)
-- **The tool layer enforces the honest path.** `access: "read"` withholds `write` and `edit` from the assembled working
-  tools (the tool set that the Harness gives the loop for each Submission). `bash` stays — the reviewer's own
+- **The tool layer enforces the honest path.** `workspace: "read"` withholds `write` and `edit` from the assembled
+  working tools (the tool set that the Harness gives the loop for each Submission). `bash` stays — the reviewer's own
   instructions require running the tests — and the ADR says plainly what that means: a shell can write, so the tool
   layer states intent and stops the honest path. It is known leaky.
 - **The worktree layer keeps the honest path off the branch: a reviewer works in a detached review Worktree.** The
