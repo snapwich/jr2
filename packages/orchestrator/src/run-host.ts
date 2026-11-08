@@ -79,7 +79,6 @@ import {
   DEFAULT_LEASE_INTERVAL_MS,
   WORKSPACE_WAIT_KEY,
   leaseDelay,
-  sandboxNameOf,
   type SandboxPort,
   type WorkspaceWait,
 } from "./workspace.ts";
@@ -357,7 +356,7 @@ function runWaiting(snapshot: unknown, logic?: unknown, path: string[] = []): Ru
 /**
  * The Sandbox of every live Workspace under `actor`, at any depth, by CR name — what a cancel
  * destroys (ADR-0025). Read off the run's own live actor tree: each Workspace holds its Sandbox's
- * name in context (`sandboxNameOf`), the same one its `teardown` deletes.
+ * name in context, the same one its `teardown` deletes.
  * Correct after a restart by construction: `restore()` rebuilds this tree from the persisted
  * snapshot, so a restored run names its Sandboxes before its watch has listed. The Sandbox watch's
  * set, filtered by the run's label, is not: before the watch has listed it holds nothing, and
@@ -373,13 +372,13 @@ function runWaiting(snapshot: unknown, logic?: unknown, path: string[] = []): Ru
  * With `placing`, a Workspace in `placing` is also named: the names that a live Workspace holds
  * now, which a delete must leave alone.
  */
-function runSandboxes(actor: AnyActorRef, runId: string, opts: { placing?: boolean } = {}): string[] {
+function runSandboxes(actor: AnyActorRef, opts: { placing?: boolean } = {}): string[] {
   const out: string[] = [];
   const snap = actor.getSnapshot() as
     | {
         status?: string;
         value?: unknown;
-        context?: { wsId?: unknown; sandbox?: string };
+        context?: { sandbox?: unknown };
         children?: Record<string, AnyActorRef>;
       }
     | undefined;
@@ -390,11 +389,11 @@ function runSandboxes(actor: AnyActorRef, runId: string, opts: { placing?: boole
     logic != null &&
     composesSandbox(logic as AnyStateMachine) &&
     (opts.placing === true || snap.value !== "placing") &&
-    typeof snap.context?.wsId === "string"
+    typeof snap.context?.sandbox === "string"
   ) {
-    out.push(sandboxNameOf(runId, { ...snap.context, wsId: snap.context.wsId }));
+    out.push(snap.context.sandbox);
   }
-  for (const child of Object.values(snap.children ?? {})) out.push(...runSandboxes(child, runId, opts));
+  for (const child of Object.values(snap.children ?? {})) out.push(...runSandboxes(child, opts));
   return out;
 }
 
@@ -3569,7 +3568,7 @@ export class RunHost {
     // The Caller that cancelled it (ADR-0078), saved with the terminal snapshot below.
     if (opts.by) run.cancelledBy = opts.by;
     // Named BEFORE the stop, while the tree still says which Workspaces are live.
-    const sandboxes = opts.keep ? [] : runSandboxes(run.actor, runId);
+    const sandboxes = opts.keep ? [] : runSandboxes(run.actor);
     this.end(run, "cancelled");
     // The run is over, so nothing can use its Workspaces, and each holds its whole Size (ADR-0025).
     // An actor stop skips the wrapper's `teardown` state, so the host runs the same idempotent
@@ -3650,9 +3649,9 @@ export class RunHost {
     if (run.ending !== undefined || run.fault !== undefined || run.failure !== undefined) return;
     const logic = (ref as AnyActorRef & { logic?: unknown }).logic;
     if (ref._parent === undefined || logic == null || !composesSandbox(logic as AnyStateMachine)) return;
-    const snap = ref.getSnapshot() as { value?: unknown; context?: { wsId?: unknown; sandbox?: string } };
-    if (snap.value === "placing" || typeof snap.context?.wsId !== "string") return;
-    this.deleteStopped(runId, sandboxNameOf(runId, { ...snap.context, wsId: snap.context.wsId }), { binding });
+    const snap = ref.getSnapshot() as { value?: unknown; context?: { sandbox?: unknown } };
+    if (snap.value === "placing" || typeof snap.context?.sandbox !== "string") return;
+    this.deleteStopped(runId, snap.context.sandbox, { binding });
   }
 
   /**
@@ -4198,7 +4197,7 @@ export class RunHost {
       sandbox: this.sandbox,
       heldSandboxes: () => {
         const run = this.runs.get(record.runId);
-        return new Set(run ? runSandboxes(run.actor, record.runId, { placing: true }) : []);
+        return new Set(run ? runSandboxes(run.actor, { placing: true }) : []);
       },
       sandboxDeleting: (name) => this.deletes.get(deleteKey(record.runId, name)),
       deleteSandbox: (name, after) => this.deleteStopped(record.runId, name, { binding, after }),
@@ -4635,7 +4634,7 @@ export class RunHost {
         // do (ADR-0025). Named BEFORE the stop, while the tree still says which Workspaces are live.
         if (isFailure(err)) {
           run.failure = failurePayload(err);
-          const sandboxes = runSandboxes(actor, record.runId);
+          const sandboxes = runSandboxes(actor);
           this.persist(run, "failed");
           stopTree(actor);
           void this.destroySandboxes(record.runId, sandboxes, "the end of the failed run");

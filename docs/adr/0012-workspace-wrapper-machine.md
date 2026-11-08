@@ -124,8 +124,7 @@ the same contract as a temp directory.
   the path, cut to fit 63 characters, then 12 hex digits of a sha256 of the run id and the path, which tells apart two
   paths that the cut makes read alike. The Workspace computes the name once, when it starts, and keeps it in its
   context, so a restored run names the same CR, and a parent that invokes the same Machine again from the same state
-  gives the new Workspace the same name. A run saved before the name was kept names its Sandboxes as it did then, by a
-  32-bit hash of its saved id.
+  gives the new Workspace the same name.
 - **Lost workspace: the wrapper emits, the body decides.** While the body runs, a lease actor beside it renews the
   Sandbox's keepalive and follows the Sandbox watch for whether the workspace it attached to is still there (ADR-0021,
   ADR-0063) — continuously, and on snapshot restore as the first tick of that same loop rather than a separate

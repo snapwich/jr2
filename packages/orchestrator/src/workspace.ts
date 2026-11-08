@@ -472,29 +472,6 @@ export function workspaceName(runId: string, wsId: string): string {
 }
 
 /**
- * The name of a Workspace saved before its context kept one: a 32-bit hash of the run id and its
- * `wsId`. A restore of such a run names its Sandbox with this, so the run keeps the CR it placed.
- * New Workspaces use {@link workspaceName}.
- */
-export function legacyWorkspaceName(runId: string, wsId: string): string {
-  let h = 0;
-  for (const ch of `${runId}/${wsId}`) h = (h * 31 + ch.charCodeAt(0)) | 0;
-  const base = `ws-${nameSlug(runId).slice(0, 8)}-${nameSlug(wsId)}`
-    .replace(/-+/g, "-")
-    .replace(/-+$/, "")
-    .slice(0, 55);
-  return `${base}-${(h >>> 0).toString(36)}`;
-}
-
-/**
- * The Sandbox name of a Workspace, off what its context holds: the name it kept, or for a context
- * saved before it kept one, {@link legacyWorkspaceName} of its saved `wsId`.
- */
-export function sandboxNameOf(runId: string, ctx: { wsId: string; sandbox?: string }): string {
-  return ctx.sandbox ?? legacyWorkspaceName(runId, ctx.wsId);
-}
-
-/**
  * A Workspace's stable identity in its run (ADR-0012): the wrapper's actor path below the run's
  * root, each actor id with `%` written `%25` and `/` written `%2F`, then joined by `/`. So two
  * paths never have one spelling, an actor id that holds a `/` (a Pool item's id can) included. A
@@ -511,12 +488,8 @@ export function workspaceId(wrapper: AnyActorRef): string {
 }
 
 /** What names a Workspace's Sandbox, as each of its actors takes it as input. */
-type WsKey = { wsId: string; sandbox?: string };
-const wsKeyOf = (ctx: WsContext): WsKey => ({
-  wsId: ctx.wsId,
-  ...(ctx.sandbox !== undefined ? { sandbox: ctx.sandbox } : {}),
-});
-const nameIn = (system: AnyActorSystem, key: WsKey): string => sandboxNameOf(runBindingOf(system).runId, key);
+type WsKey = { wsId: string; sandbox: string };
+const wsKeyOf = (ctx: WsContext): WsKey => ({ wsId: ctx.wsId, sandbox: ctx.sandbox });
 
 /** The full mechanism-facing handles: what the registrar publishes for ambient resolution
  * (ambient.ts). The body sees only the {@link WorkspaceHandles} subset. */
@@ -544,9 +517,8 @@ type WsContext = {
   runInput: Record<string, unknown>;
   /** This invocation's stable identity in the run ({@link workspaceId}). */
   wsId: string;
-  /** Its Sandbox's name ({@link workspaceName}), computed once when the wrapper starts. Absent in a
-   * context saved before the field: {@link sandboxNameOf} names that one. */
-  sandbox?: string;
+  /** Its Sandbox's name ({@link workspaceName}), computed once when the wrapper starts. */
+  sandbox: string;
   /** Every slot's resolved Binding, by slot, in declaration order — assigned at provision. */
   bindings?: Record<string, ResolvedBinding>;
   endpoint?: string;
@@ -1444,7 +1416,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
     const route = actorRoute(self._parent);
     const bindings = resolveBindings({ workflow: binding.workflow, path }, parts.repos, runInput);
     const port = sandboxOf(system);
-    const name = sandboxNameOf(binding.runId, input);
+    const name = input.sandbox;
     const child = wrapper ? actorPath(wrapper).join("/") : "";
     // A wait opened before a restart is the same wait: its start is in the wrapper's persisted
     // context, never in this actor's input, which a restore replays as it was first invoked.
@@ -1530,7 +1502,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
 
   /** `provisioning`: the placed pod's Ready, under the port's budget, which starts here (ADR-0064). */
   const provision = fromPromise<{ endpoint: string }, WsKey>(async ({ input, system }) =>
-    sandboxOf(system).provision(nameIn(system, input)),
+    sandboxOf(system).provision(input.sandbox),
   );
 
   const attach = fromPromise<
@@ -1541,7 +1513,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
     // and `/work` needs nothing from it — the pod's `fsGroup` already makes it the work group's.
     if (Object.keys(input.bindings).length === 0) return { repos: {} };
     const port = sandboxOf(system);
-    const name = nameIn(system, input);
+    const name = input.sandbox;
     // The attach is loss-aware (ADR-0021): a Sandbox gone or Lost under it fails the attach at
     // once and by name, as it fails the placing and the provisioning — never a transport error
     // one attach window later. Only the cluster's word: a dropped watch says nothing.
@@ -1630,7 +1602,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
    */
   const lease = fromCallback<{ type: string }, WsKey & { judging: boolean }>(({ input, self, system, sendBack }) => {
     const port = sandboxOf(system);
-    const name = nameIn(system, input);
+    const name = input.sandbox;
     let stopped = false;
     let lost = false;
 
@@ -1700,9 +1672,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
     };
   });
 
-  const destroy = fromPromise<void, WsKey>(async ({ input, system }) =>
-    sandboxOf(system).destroy(nameIn(system, input)),
-  );
+  const destroy = fromPromise<void, WsKey>(async ({ input, system }) => sandboxOf(system).destroy(input.sandbox));
 
   /** The lease beside a state's own work — renewing everywhere, judging in `running` alone. */
   const leaseInvoke = (judging: boolean) => ({
@@ -1802,7 +1772,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
                     // with, so the Sandbox the registrar publishes — and the Agent actor records on its
                     // registration — is the one the Custodian's token is scoped to, by construction
                     // (ADR-0013).
-                    sandbox: nameIn(system as AnyActorSystem, wsKeyOf(ctx)),
+                    sandbox: ctx.sandbox,
                     repos: out.repos,
                     // Each slot's Binding url: where a push goes, and the Repo cache its import
                     // borrows from (ADR-0051, ADR-0067).
