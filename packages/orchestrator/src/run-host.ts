@@ -356,8 +356,9 @@ function runWaiting(snapshot: unknown, logic?: unknown, path: string[] = []): Ru
 
 /**
  * The Sandbox of every live Workspace under `actor`, at any depth, by CR name — what a cancel
- * destroys (ADR-0025). Read off the run's own live actor tree: each Workspace holds its `wsId` in
- * context, and the name is a function of the run and that id, the same one its `teardown` deletes.
+ * destroys (ADR-0025). Read off the run's own live actor tree: each Workspace holds its `wsId` (its
+ * actor path, `workspaceId`) in context, and the name is a function of the run and that id, the
+ * same one its `teardown` deletes.
  * Correct after a restart by construction: `restore()` rebuilds this tree from the persisted
  * snapshot, so a restored run names its Sandboxes before its watch has listed. The Sandbox watch's
  * set, filtered by the run's label, is not: before the watch has listed it holds nothing, and
@@ -4423,7 +4424,7 @@ export class RunHost {
           // skips `teardown`, so a Workspace in another region of that Machine does not delete its
           // Sandbox: the host names them before the stop and deletes them after it, as for a failed run.
           // A name that a live Workspace of the run holds after the stop is not deleted: a parent that
-          // invokes the same Machine again gives its new Workspace the same invoke id, and so the same
+          // invokes the same Machine again gives its new Workspace the same actor path, and so the same
           // name, and that Workspace is in `placing` by now.
           if (
             source !== undefined &&

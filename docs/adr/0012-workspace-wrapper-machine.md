@@ -97,6 +97,12 @@ the same contract as a temp directory.
   the CR's name does. A person selects by it with `kubectl -l`; no jr2 reader does. The `jr2 workspace` verbs list the
   CRs by `jr2.dev/run` and compare a handle, `<run-prefix>/<workspace path>`, with the annotation, with no Orchestrator
   (ADR-0009). They do not select by a run prefix, because a label selector matches only a whole value.
+- **The CR's name comes from the run and the path.** It is `ws-`, the start of the run id and a form of the path, cut to
+  fit 63 characters, then a hash of the run id and the path. The path, and not the workspace actor's own invoke id: an
+  invoke id is local to the Machine that invokes it, and a `workspace()` nested in each worker of a Pool has the same
+  invoke id in every worker. A Workspace that is the run's root has no path, and its own actor id takes its place. The
+  Workspace keeps this id in its context, so a restored run names the same CR, and a parent that invokes the same
+  Machine again from the same state gives the new Workspace the same name.
 - **Lost workspace: the wrapper emits, the body decides.** While the body runs, a lease actor beside it renews the
   Sandbox's keepalive and follows the Sandbox watch for whether the workspace it attached to is still there (ADR-0021,
   ADR-0063) — continuously, and on snapshot restore as the first tick of that same loop rather than a separate

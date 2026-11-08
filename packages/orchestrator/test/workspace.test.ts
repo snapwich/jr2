@@ -30,6 +30,7 @@ import {
   type Workspaced,
 } from "../src/workspace.ts";
 import { observe, RunHost, type WorkflowDef } from "../src/run-host.ts";
+import { pool, source, type PoolNextInput } from "../src/pool.ts";
 import { approveDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 class FakeSandbox implements SandboxPort {
@@ -1968,7 +1969,7 @@ test("a caught Failure deletes the Sandbox of a Workspace in another region of t
   await waitFor(() => host.gates(runId).some((g) => g.gate === "after"));
 
   await waitFor(() => destroyed(sandbox).length === 1);
-  assert.deepEqual(destroyed(sandbox), [workspaceName(runId, "F-2")]);
+  assert.deepEqual(destroyed(sandbox), [workspaceName(runId, "inner/F-2")]);
   assert.equal(host.status(runId)?.status, "active", "the parent caught the Failure: the run goes on");
   const settled = renews(sandbox);
   await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
@@ -1981,7 +1982,7 @@ test("a caught Failure deletes the Sandbox of a Workspace in another region of t
 });
 
 test("a parent that catches a Failure and invokes the same Machine again keeps the Sandbox of its new Workspace (ADR-0073)", async () => {
-  // The retry's Workspace has the same invoke id, so it has the same Sandbox name. It is in
+  // The retry's Workspace has the same actor path, so it has the same Sandbox name. It is in
   // `placing` when the host stops the children of the Machine that the Failure ended. The host must
   // not delete that name: the retry holds it.
   const inner = jr2Setup({
@@ -2026,7 +2027,7 @@ test("a parent that catches a Failure and invokes the same Machine again keeps t
   const { runId } = await host.start("outer");
   await waitFor(() => host.gates(runId).length === 2);
   host.sendToGate(runId, "hold", { type: "approve" });
-  const name = workspaceName(runId, "F-2");
+  const name = workspaceName(runId, "inner/F-2");
   const verbs = (): string[] => sandbox.calls.filter((c) => !c.startsWith("renew:"));
   await waitFor(() => verbs().filter((c) => c === `attach:${name}`).length === 2);
   await waitFor(() => host.gates(runId).length === 2);
@@ -2089,14 +2090,14 @@ test("a parent that catches a Failure while the old Workspace is in `placing` ke
   const { runId } = await host.start("outer");
   await waitFor(() => host.gates(runId).length === 1 && sandbox.waiting === 1);
   host.sendToGate(runId, "hold", { type: "approve" });
-  const name = workspaceName(runId, "F-2");
+  const name = workspaceName(runId, "inner/F-2");
   await waitFor(() => sandbox.calls.filter((c) => c === `place:${name}`).length === 2);
   await new Promise((r) => setTimeout(r, 100));
   assert.deepEqual(destroyed(sandbox), [], "the retry holds the name");
 });
 
 test("placing: a parent that re-enters the state keeps the Sandbox of its new Workspace (ADR-0064)", async () => {
-  // A plain re-entry, with no Failure: the new Workspace has the same invoke id, so the same name.
+  // A plain re-entry, with no Failure: the new Workspace has the same actor path, so the same name.
   const outer = jr2Setup({
     actors: { other: workspace(holdOther, { repos: { app: APP } }) },
   }).createMachine({
@@ -2245,4 +2246,81 @@ test("placing: a run that faults elsewhere deletes its Sandbox that never ran â€
   const settled = renews(sandbox);
   await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
   assert.equal(renews(sandbox), settled, "the lease stopped with the run");
+});
+
+// --- A nested Workspace's name, and its end when a Machine stops it (ADR-0012) ------------------
+
+/** A body that works until it is stopped: no gate, so two of them in one run hold no one name. */
+const parkedBody = jr2Setup({
+  types: {} as { input: Workspaced<{}, never> },
+  actors: { work: fromPromise(({ signal }) => new Promise((r) => signal.addEventListener("abort", r))) },
+}).createMachine({
+  id: "parked",
+  on: { "workspace.lost": ".lost" },
+  initial: "working",
+  states: { working: { invoke: { src: "work" } }, lost: { type: "final" } },
+});
+
+/**
+ * A Pool of two items, `a` and `b`, each worker a Workspace whose body invokes one nested Workspace
+ * with the invoke id `review`: the same id in each worker.
+ */
+function nestedPool(): WorkflowDef {
+  const items = ["a", "b"];
+  const review = workspace(parkedBody, {});
+  const workerBody = jr2Setup({
+    types: {} as { input: Workspaced<{}, never> },
+    actors: { review },
+  }).createMachine({
+    id: "worker-body",
+    on: { "workspace.lost": ".lost" },
+    initial: "reviewing",
+    states: { reviewing: { invoke: { id: "review", src: "review" } }, lost: { type: "final" } },
+  });
+  const machine = pool(workspace(workerBody, {}), {
+    id: "nested-pool",
+    source: source<{ id: string }>({
+      next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
+        const id = items.find((i) => !input.active.includes(i) && !input.settled.includes(i));
+        return id === undefined ? null : { id };
+      }),
+    }),
+    itemId: (item: { id: string }) => item.id,
+    cap: 2,
+    itemInput: () => ({}),
+  });
+  return { name: "nested-pool", machine, provide: () => ({}) };
+}
+
+test("a nested Workspace's Sandbox name is its actor path's: two Pool workers' nested Workspaces get two Sandboxes, and a restore keeps both names (ADR-0012)", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const first = new RunHost({ store, sandbox });
+  first.register(nestedPool());
+  const { runId } = await first.start("nested-pool");
+  await waitFor(() => sandbox.calls.filter((c) => c.startsWith("provision:")).length === 4);
+
+  // The workers keep the names they had: their path is their own id.
+  const placed = sandbox.calls.filter((c) => c.startsWith("place:")).map((c) => c.slice("place:".length));
+  assert.equal(placed.length, 4);
+  assert.deepEqual([...sandbox.paths].sort(), ["a", "a/body/review", "b", "b/body/review"]);
+  assert.deepEqual(
+    [...placed].sort(),
+    ["a", "a/body/review", "b", "b/body/review"].map((path) => workspaceName(runId, path)).sort(),
+  );
+  assert.equal(new Set(placed).size, 4, "each Workspace has a Sandbox of its own");
+
+  await first.stop(runId); // a park: the restored run takes the same Sandboxes
+  assert.deepEqual(destroyed(sandbox), []);
+  const second = new RunHost({ store, sandbox });
+  second.register(nestedPool());
+  await second.restore();
+  const before = sandbox.calls.length;
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  const named = new Set(sandbox.calls.slice(before).map((c) => c.slice(c.indexOf(":") + 1)));
+  assert.ok(named.size > 0, "the restored Leases renew");
+  for (const name of named) assert.ok(placed.includes(name), `the restored run names ${name}, which it did not place`);
+
+  await second.cancel(runId);
+  assert.deepEqual([...destroyed(sandbox)].sort(), [...placed].sort());
 });

@@ -37,6 +37,7 @@ import {
   fromPromise,
   sendTo,
   setup,
+  type AnyActorRef,
   type AnyStateMachine,
   type InputFrom,
   type OutputFrom,
@@ -446,9 +447,11 @@ export function sandboxOf(system: AnyActorSystem): SandboxPort {
 }
 
 /**
- * The Sandbox CR name for one workspace invocation: DNS-1123, deterministic from the run and
- * the wrapper's actor id (both stable across restore — that is what lets the lease
- * and a re-run provision find the SAME CR), collision-proofed by a content suffix.
+ * The Sandbox CR name for one workspace invocation: DNS-1123, at most 63 characters, deterministic
+ * from the run and the wrapper's {@link workspaceId}, and collision-proofed by a hash of both. The
+ * id is in the wrapper's persisted context, so a restore names the SAME CR, and the lease and a
+ * re-run provision find it. A parent that invokes the same Machine again from the same state gives
+ * the new wrapper the same path, and so the same name (ADR-0064, ADR-0073).
  */
 export function workspaceName(runId: string, wsId: string): string {
   const slug = (s: string) =>
@@ -460,6 +463,19 @@ export function workspaceName(runId: string, wsId: string): string {
   for (const ch of `${runId}/${wsId}`) h = (h * 31 + ch.charCodeAt(0)) | 0;
   const base = `ws-${slug(runId).slice(0, 8)}-${slug(wsId)}`.replace(/-+/g, "-").replace(/-+$/, "").slice(0, 55);
   return `${base}-${(h >>> 0).toString(36)}`;
+}
+
+/**
+ * A Workspace's stable identity in its run (ADR-0012): the wrapper's actor path below the run's
+ * root, actor ids joined by `/` — the value of the `jr2.dev/workspace-path` annotation. A Workspace
+ * that is the run's root has no path, and its id is its own actor id. The path, and not the
+ * wrapper's own id, because an invoke id is local to the Machine that invokes it: a `workspace()`
+ * invoked inside each worker of a Pool has the same invoke id in every worker, and only the
+ * worker's id (its item's id) above it tells the two apart. Read once, when the wrapper starts, and
+ * kept in its context.
+ */
+export function workspaceId(wrapper: AnyActorRef): string {
+  return actorPath(wrapper).join("/") || wrapper.id;
 }
 
 /** The full mechanism-facing handles: what the registrar publishes for ambient resolution
@@ -486,7 +502,8 @@ type WsContext = {
   /** The wrapper's input, which the body gets (plus `workspace`). Under a parent, `place` replaces
    * it with the door's parsed value. */
   runInput: Record<string, unknown>;
-  /** This invocation's stable identity (the actor id the parent invoked/spawned us under). */
+  /** This invocation's stable identity in the run ({@link workspaceId}): what its Sandbox's name is
+   * derived from. */
   wsId: string;
   /** Every slot's resolved Binding, by slot, in declaration order — assigned at provision. */
   bindings?: Record<string, ResolvedBinding>;
@@ -1352,8 +1369,8 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
    * before the fault, and the fault carries the reason. The host stopping the run for a restart is
    * not an end: the restored run re-enters `placing` and keeps its place. Nor is a name that a live
    * Workspace of the run holds when the delete would run: a parent that re-enters the state, or
-   * catches a Failure and invokes the same Machine again, gives its new Workspace the same invoke id,
-   * and so the same name, which that Workspace has placed again by then (ADR-0073).
+   * catches a Failure and invokes the same Machine again, gives its new Workspace the same actor
+   * path, and so the same name, which that Workspace has placed again by then (ADR-0073).
    */
   const place = fromPromise<
     { bindings: Record<string, ResolvedBinding>; runInput: Record<string, unknown> },
@@ -1598,7 +1615,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
             stopped = true;
             unsubscribe();
             // A parent that caught the defect can invoke the same Machine again: the new Workspace
-            // has the same invoke id, so the same Sandbox name, and its own Lease holds it now.
+            // has the same actor path, so the same Sandbox name, and its own Lease holds it now.
             if (runBindingOf(system).heldSandboxes?.().has(name)) return;
             port.releaseHold(name).catch(() => {});
             return;
@@ -1654,9 +1671,9 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
     actors: { body, place, provision, attach, registrar, lease, destroy, fail: failLogic },
   }).createMachine({
     id: "workspace",
-    context: ({ input, self }: { input: unknown; self: { id: string } }): WsContext => ({
+    context: ({ input, self }: { input: unknown; self: AnyActorRef }): WsContext => ({
       runInput: (input ?? {}) as Record<string, unknown>,
-      wsId: self.id,
+      wsId: workspaceId(self),
     }),
     initial: "placing",
     states: {

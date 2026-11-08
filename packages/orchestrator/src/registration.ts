@@ -766,8 +766,8 @@ export type RunBinding = {
   /**
    * The Sandbox names that a live Workspace of this run holds now, a Workspace in `placing` too
    * (ADR-0064, ADR-0073). A delete that runs after a stop leaves these alone: a parent that invokes
-   * the same Machine again gives its new Workspace the same invoke id, and so the same name. Absent
-   * outside a RunHost: no name is held.
+   * the same Machine again from the same state gives its new Workspace the same actor path, and so
+   * the same name. Absent outside a RunHost: no name is held.
    */
   heldSandboxes?: () => ReadonlySet<string>;
   /**
