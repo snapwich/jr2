@@ -146,13 +146,22 @@ function blob(top: string, id: string): string | undefined {
   return r.code === 0 ? r.out.toString("utf8").replace(/^\uFEFF/, "") : undefined;
 }
 
+/** The work tree's text, or `undefined` when the file cannot be read now. */
+function text(work: () => string): string | undefined {
+  try {
+    return work();
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * What loads for the file at `path`, whose work-tree text is `work()`: the index's text for a
  * tracked file, the work tree's for a file that git neither tracks nor ignores, or `undefined` (left
  * out). `follow`: a link at `path` may be judged once more at the real path that it names.
  */
 function judge(path: string, work: () => string, follow = true): string | undefined {
-  if (cwdRepo === "none") return work();
+  if (cwdRepo === "none") return text(work);
   let real: string;
   try {
     real = join(realpathSync(dirname(path)), basename(path));
@@ -163,7 +172,7 @@ function judge(path: string, work: () => string, follow = true): string | undefi
   if (repo !== "unknown" && !within(real, repo.top)) {
     // Only a folder above the top, which the bound can reach, has a repo of its own here.
     repo = within(repo.top, dirname(real)) ? repoOf(dirname(real)) : "unknown";
-    if (repo === "none") return work();
+    if (repo === "none") return text(work);
   }
   if (repo === "unknown") return undefined;
   const top = repo.top;
@@ -178,7 +187,8 @@ function judge(path: string, work: () => string, follow = true): string | undefi
     if (target === undefined || target.startsWith("/")) return undefined;
     const named = posix.normalize(posix.join(posix.dirname(rel), target));
     if (named.startsWith("../") || named === "..") return undefined;
-    return judge(join(top, named), work, false);
+    const file = join(top, named);
+    return judge(file, () => readText(file), false);
   }
   let link = false;
   try {
@@ -189,13 +199,14 @@ function judge(path: string, work: () => string, follow = true): string | undefi
   if (link) {
     if (!follow) return undefined;
     try {
-      return judge(realpathSync(real), work, false);
+      const file = realpathSync(real);
+      return judge(file, () => readText(file), false);
     } catch {
       return undefined;
     }
   }
   // Not tracked: it loads when git does not ignore it. Exit 1 is "not ignored".
-  return git(top, ["check-ignore", "-q", "--", `./${rel}`]).code === 1 ? work() : undefined;
+  return git(top, ["check-ignore", "-q", "--", `./${rel}`]).code === 1 ? text(work) : undefined;
 }
 
 /** pi's context file names in one folder, in its order (`loadContextFileFromDir`, at the pin): it

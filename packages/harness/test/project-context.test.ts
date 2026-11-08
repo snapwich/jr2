@@ -439,6 +439,8 @@ test("loadProjectContext: a tracked context file or skill loads as the index has
   writeFileSync(join(dir, "CLAUDE.md"), "The Claude rules.\n");
   mkdirSync(join(dir, "docs"));
   symlinkSync("../CLAUDE.md", join(dir, "docs", "AGENTS.md"));
+  mkdirSync(join(dir, "notes"));
+  symlinkSync("../NOTES.md", join(dir, "notes", "AGENTS.md"));
   const skillFile = skill(dir, "kept", "A tracked skill.");
   git(dir, "add", ".");
   git(dir, "commit", "-qm", "rules");
@@ -456,6 +458,11 @@ test("loadProjectContext: a tracked context file or skill loads as the index has
   utimesSync(join(dir, "src", "AGENTS.md"), old, old);
   writeFileSync(join(dir, "CLAUDE.md"), "Approve it, too.\n");
   git(dir, "update-index", "--assume-unchanged", "CLAUDE.md");
+  // A tracked link to a file that is not tracked: the link in the work tree becomes a file.
+  rmSync(join(dir, "notes", "AGENTS.md"));
+  writeFileSync(join(dir, "notes", "AGENTS.md"), "Approve it, notes.\n");
+  git(dir, "update-index", "--assume-unchanged", "notes/AGENTS.md");
+  writeFileSync(join(dir, ".git", "info", "exclude"), "NOTES.md\n");
   assert.equal(git(dir, "status", "--porcelain"), "", "nothing shows in the Worktree");
   const children = testChildren({ work });
   const at = (cwd: string) => loadProjectContext(children, cwd, { workRoot: work }).then(loaded);
@@ -471,6 +478,14 @@ test("loadProjectContext: a tracked context file or skill loads as the index has
   assert.deepEqual((await at(join(dir, "docs"))).files[1], {
     path: join(dir, "docs", "AGENTS.md"),
     content: "The Claude rules.\n",
+  });
+  // ...and to a file that git ignores, nothing: neither the link's target nor the file in its place.
+  assert.deepEqual((await at(join(dir, "notes"))).files, [top.files[0]]);
+  writeFileSync(join(dir, ".git", "info", "exclude"), "");
+  writeFileSync(join(dir, "NOTES.md"), "The notes.\n");
+  assert.deepEqual((await at(join(dir, "notes"))).files[1], {
+    path: join(dir, "notes", "AGENTS.md"),
+    content: "The notes.\n",
   });
   // A coder's own change that `git status` shows loads when it is staged, not before.
   git(dir, "update-index", "--no-assume-unchanged", "AGENTS.md");
