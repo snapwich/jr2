@@ -117,7 +117,7 @@ refusing: kind-jr2 runs Kubernetes <server version>; jr2 needs Kubernetes 1.35 o
 You installed the jr2 CLI globally. It is the command that you use for each step of this tutorial. Each Instance also
 installs its own copy of `@jr2/cli`. In an Instance folder, the global `jr2` gives the command to that copy. Thus the
 version that runs is the version that the Instance pins. The glossary calls this a
-[Handoff](../reference/glossary.md#handoff).
+[Forward](../reference/glossary.md#forward).
 
 You also made a kind cluster. jr2 needs no setup in the cluster other than Kubernetes 1.35 or later. `jr2 up` puts in it
 all that an Instance needs. [Converge](../concepts/converge.md) explains what `jr2 up` makes. The

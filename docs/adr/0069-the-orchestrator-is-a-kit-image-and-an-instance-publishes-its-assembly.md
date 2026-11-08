@@ -49,7 +49,7 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   three, so a new kit dependency cannot reopen the hole. The Assembly keeps `@jr2/machines` and the Instance's own deps.
 - **An Assembly names its exact Kit version, and the door refuses any other.** The Assembly's manifest names the
   `@jr2/orchestrator` version it was written against; admission refuses a mismatch naming both numbers, the refusal of
-  [ADR-0056](0056-a-global-jr2-hands-off-to-the-instances-own-and-an-instance-has-one-kit-version.md) moved to the door.
+  [ADR-0056](0056-a-global-jr2-forwards-to-the-instances-own-and-an-instance-has-one-kit-version.md) moved to the door.
   Not semver: the kit is 0.x and its minors break, `@jr2/machines` peers exact for the same reason, and a compatibility
   range is a promise jr2 cannot test without a version matrix. Loosening is one line later; tightening after a range has
   been promised is not. So one `jr2 up` that bumps the Kit version rolls the Orchestrator image first and publishes the

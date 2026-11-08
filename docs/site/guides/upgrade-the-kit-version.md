@@ -40,7 +40,7 @@ node:      v24.18.0
 
 - `cli` is the CLI that runs: the Instance's own `@jr2/cli`.
 - `global` is your global `jr2`. In an Instance folder, it runs the Instance's own `@jr2/cli`. This is the
-  [Handoff](../reference/glossary.md#handoff). Thus the version of the global `jr2` does not change what the Instance
+  [Forward](../reference/glossary.md#forward). Thus the version of the global `jr2` does not change what the Instance
   runs.
 - `kit` is the Kit version. `ok` means that the CLI and the Instance use the same copy of `@jr2/orchestrator`, and that
   this copy has the version of the CLI.
@@ -229,8 +229,8 @@ would lose the commits that nobody pushed. A Sandbox that starts after the conve
 
 - [Converge](../concepts/converge.md)
 - [Durable runs](../concepts/durable-runs.md)
-- [ADR-0056](../reference/decisions/0056-a-global-jr2-hands-off-to-the-instances-own-and-an-instance-has-one-kit-version.md):
-  the Handoff, and one Kit version for each Instance.
+- [ADR-0056](../reference/decisions/0056-a-global-jr2-forwards-to-the-instances-own-and-an-instance-has-one-kit-version.md):
+  the Forward, and one Kit version for each Instance.
 - [ADR-0072](../reference/decisions/0072-the-docs-ship-inside-the-kit-and-an-instances-agents-md-indexes-them.md): the
   docs in the Kit, and the block in `AGENTS.md`.
 - [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): an

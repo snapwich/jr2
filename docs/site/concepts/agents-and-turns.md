@@ -269,8 +269,9 @@ the next name in the list above is read in its place. It reads a tracked file as
 a change in the work tree from `git status`. Thus your change of a tracked `AGENTS.md` gets to the next conversation
 when you stage or commit it. A new file that git does not ignore is read, and `git status` shows it. When git cannot
 tell, for example when the image has no `git`, jr2 leaves the file out. These rules stop an Agent that changes the
-prompt of another Agent by accident or with little effort. They do not stop an Agent that sets out to do it: for that,
-give the review its own [Workspace](workspaces.md).
+prompt of another Agent by accident or with little effort. They do not stop an Agent that sets out to do it: in one
+Sandbox, each Agent can change all the files. For a review that sees only the commit, give the review its own
+[Workspace](workspaces.md), which takes the commit as a [Handoff](../reference/glossary.md#handoff).
 
 jr2 reads the files with the rights of the Agent's own processes. A link from `AGENTS.md` to a file that the Agent
 cannot read gives no text. In `~/.pi/agent`, jr2 reads only the context file and `skills/`, and not a file such as

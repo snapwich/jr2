@@ -359,7 +359,7 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `jr2 up` typechecks the Instance first.
 - [ADR-0054](../reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md): why
   `jr2 up` refuses an Open part.
-- [ADR-0056](../reference/decisions/0056-a-global-jr2-hands-off-to-the-instances-own-and-an-instance-has-one-kit-version.md):
+- [ADR-0056](../reference/decisions/0056-a-global-jr2-forwards-to-the-instances-own-and-an-instance-has-one-kit-version.md):
   why an Instance has one Kit version.
 - [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): why
   `jr2 up` makes an Assembly and publishes it.

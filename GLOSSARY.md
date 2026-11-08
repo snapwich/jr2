@@ -15,14 +15,14 @@ _Avoid_: workspace (collides with Workspace), project
 
 **jr2 CLI**:
 The `jr2` binary: the primary interface to an Instance, on top of the Orchestrator's API. It is installed globally and
-also in each Instance; inside an Instance, a Handoff makes the Instance's own copy the one that runs.
+also in each Instance; inside an Instance, a Forward makes the Instance's own copy the one that runs.
 _Avoid_: cli tool, launcher (the global copy is the same package)
 
-**Handoff**:
+**Forward**:
 The passing of a command, unchanged, from a global jr2 CLI to the Instance's own copy when the Instance holds a
 different copy; the global copy then does nothing else. Outside an Instance, or when the Instance holds the same copy,
-there is no Handoff.
-_Avoid_: shim, proxy, wrapper, delegate, relaunch, re-exec
+there is no Forward.
+_Avoid_: handoff (a commit that a nested Workspace takes), shim, proxy, wrapper, delegate, relaunch, re-exec
 
 **Kit version**:
 The one version an Instance is: the version of the Orchestrator package that the Instance pins, which is the tag of
@@ -368,7 +368,8 @@ _Avoid_: connector, plugin, integration, extension, tools (unqualified)
 
 **Sandbox**:
 The isolated pod in which an Agent works, with a filesystem of its own. Agents in different Sandboxes share no host
-resources: no ports, no filesystem, no process space.
+resources: no ports, no filesystem, no process space. It is jr2's security boundary: the Agents in one Sandbox share its
+files and have free rein in it, and jr2 trusts nothing that a Sandbox puts out.
 _Avoid_: worker pod, container
 
 **Harness**:
@@ -394,7 +395,7 @@ _Avoid_: shared harness, global harness, dev harness
 The jr2-composed container in every Harness pod, a Sandbox or the Instance Harness, that holds the pod's Held secrets
 and carries the Harness's traffic out. The Agent executes no code in it, and it controls no egress: a client that goes
 around it sends only a Stand-in.
-_Avoid_: proxy (the mechanism, and the Handoff's word), sidecar (its deployment shape), MITM, vault, egress gateway,
+_Avoid_: proxy (the mechanism, and the Forward's word), sidecar (its deployment shape), MITM, vault, egress gateway,
 firewall
 
 **Held secret**:
@@ -564,6 +565,12 @@ work in them.
 _Avoid_: checkout, task branch
 
 **Cut**:
-An Effect's act that makes a Worktree, or reads the one that a cut already made at that path. A cut that cannot happen
-changes nothing.
+An Effect's act that makes a Worktree, or reads the one that a cut already made at that path. In a nested Workspace, a
+cut can make a branch at a Handoff. A cut that cannot happen changes nothing.
 _Avoid_: attach (the Workspace's step, which only clones), provision
+
+**Handoff**:
+The commit of one Worktree, as a cut in an enclosing Workspace of the same run read it, which a nested Workspace takes
+at its cut. The Machine passes it as data, and jr2 finds each of its facts in the run's ledger before the cut takes it:
+only that commit and its ancestors go into the nested Sandbox.
+_Avoid_: handoff branch, remote, hand-off, Forward (the CLI's)

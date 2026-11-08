@@ -72,8 +72,9 @@ inherits a Workspace whose processes are gone, with no way to know why.
     commit has and nothing that a later read of the folder finds.
   - **The limits of that rule.** It keeps one Agent from putting text in another Agent's system prompt by chance or with
     little work. It is not a guarantee against an Agent that sets out to do it
-    ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)): a Workflow that needs more
-    gives the review a Workspace of its own. What stays:
+    ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)): inside the Sandbox the Agents
+    have free rein over the files. An independent review runs in a nested Workspace, which takes the commit as a Handoff
+    ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)). What stays:
     - What an Agent does after the cut and after the load. A file that loaded can be ignored later, a commit in another
       Agent's Worktree makes a file tracked, and a change during the load can race the questions to git.
     - An untracked file shows in a plain `git status` only as its folder, and not at all when the Worktree's config sets

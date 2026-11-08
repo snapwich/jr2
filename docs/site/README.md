@@ -219,7 +219,7 @@ page that uses a term links to the page that owns it, and does not explain the t
 | `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                                     |
 | `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                                         |
 | `concepts/callers-and-hooks`      | Caller, scope, on behalf of, JWT issuer, the record of each act, Hook, Hook kind, the door of a Hook, hook log                 |
-| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Handoff, Kit image, Pinned image, Sandbox Image as an image to build, `gc`                    |
+| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Forward, Kit image, Pinned image, Sandbox Image as an image to build, `gc`                    |
 | `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, `runs.retain`, the space guard                   |
 
 Workspaces owns the Sandbox Image as a part of the Sandbox. Converge owns only how `jr2 up` builds and loads it.

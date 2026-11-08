@@ -168,7 +168,7 @@ Orchestrator that runs.
 [`jr2 status`](../reference/cli.md#status), with no run id, shows the current Assembly and each Assembly that a live run
 holds.
 
-## Kit version and Handoff
+## Kit version and Forward
 
 An Instance has one Kit version: the version of the `@jr2/orchestrator` package that the Instance pins. It is the tag of
 each Kit image, the image of the Orchestrator too. `jr2 init` pins `@jr2/orchestrator` and `@jr2/cli` to one exact
@@ -178,9 +178,9 @@ then it publishes the Assembly for the new version.
 
 You install the [jr2 CLI](../reference/glossary.md#jr2-cli) two times: one time with `npm i -g`, and one time in the
 Instance, from its `package.json`. In an Instance folder, the global `jr2` runs the Instance's own `@jr2/cli`, with the
-same arguments. This is the [Handoff](../reference/glossary.md#handoff). Thus the CLI that runs is always the one that
+same arguments. This is the [Forward](../reference/glossary.md#forward). Thus the CLI that runs is always the one that
 the Instance pins. In the Instance, the version of your global `jr2` does not matter.
-[`jr2 version`](../reference/cli.md#version) shows the CLI that runs, the global CLI that handed off, the Kit version of
+[`jr2 version`](../reference/cli.md#version) shows the CLI that runs, the global CLI that forwarded, the Kit version of
 the Instance, and what the cluster runs.
 
 All the Instances on a cluster share one operator. `jr2 up` upgrades an older operator. It does not downgrade an
@@ -255,7 +255,7 @@ would remove, and removes nothing.
 - [ADR-0045](../reference/decisions/0045-the-platform-joins-the-image-address-and-the-cluster-chooses-it.md): the
   platform is a part of the image tag
 - [ADR-0046](../reference/decisions/0046-a-converge-failure-carries-its-diagnosis.md): a failed converge says why
-- [ADR-0056](../reference/decisions/0056-a-global-jr2-hands-off-to-the-instances-own-and-an-instance-has-one-kit-version.md):
-  the Handoff, and one Kit version for each Instance
+- [ADR-0056](../reference/decisions/0056-a-global-jr2-forwards-to-the-instances-own-and-an-instance-has-one-kit-version.md):
+  the Forward, and one Kit version for each Instance
 - [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): the
   Orchestrator is a Kit image, and an Instance publishes its Assembly

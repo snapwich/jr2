@@ -54,7 +54,7 @@ below explains one field. Set only the fields that your cluster needs.
   PriorityClasses, unless you name your own.
 
 All the Instances on a cluster share one operator. `jr2 up` does not downgrade it. See
-[Converge](../concepts/converge.md#kit-version-and-handoff).
+[Converge](../concepts/converge.md#kit-version-and-forward).
 
 ## Set the registry
 

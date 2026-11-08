@@ -55,7 +55,7 @@ last line is on stdout. The other lines are on stderr.
 and it does not put the images on your computer.
 
 `jr2 kit push` does not read the Instance. In the Instance folder, the global `jr2` runs the Instance's own `@jr2/cli`
-([Handoff](../reference/glossary.md#handoff)), so the command copies the images of the Instance's Kit version. Outside
+([Forward](../reference/glossary.md#forward)), so the command copies the images of the Instance's Kit version. Outside
 an Instance, it copies the images of the version of your global `jr2`.
 
 A version tag of jr2 never moves to different content. Thus `jr2 kit push` does not copy an image that is in the

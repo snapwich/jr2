@@ -159,7 +159,7 @@ jr2 gc [--dry-run]                 # sweep unreachable labeled images — the sa
 jr2 kit push <registry>            # mirror the published Kit images into a self-hosted registry (ADR-0044)
 
 # what runs where
-jr2 version [--local] [--json]     # this jr2, the global that handed off, the Instance's Kit, and what the cluster runs
+jr2 version [--local] [--json]     # this jr2, the global that forwarded, the Instance's Kit, and what the cluster runs
 
 # runs / workflows (wrap the HTTP API)
 jr2 run <workflow> [--input <json>] [--detach]
@@ -273,7 +273,7 @@ when it is asked for.
 
 **`jr2 version` (amended 2026-09-20).** The report you paste into a bug: what is _here_ and what is _deployed_, side by
 side, so the gap between the halves is the answer ("you edited the pin and never ran `jr2 up`"). The local half: `cli`
-(the copy that runs — version + real path, so the path says global or Instance), `global` (the copy that handed off,
+(the copy that runs — version + real path, so the path says global or Instance), `global` (the copy that forwarded,
 ADR-0056), `kit` (the `@jr2/orchestrator` the Instance resolves + the ADR-0056 check result, and
 `package.json pins X, reinstall` when the manifest disagrees with what is installed), `instance` (name, root, and mode:
 kit checkout or installed from which registry — the reader needs the mode to know whether deployed Kit tags are versions
@@ -284,7 +284,7 @@ ConfigMap pods actually read, and one `skew` verdict comparing the two kit numbe
 with the `jr2 up` consequence spelled out and, in checkout mode, a reminder that `same` is weak and the hash is the
 address. Nothing is computed that `jr2 up` computes: no bundle staging, no local hash. It is the one Instance verb that
 reads the Instance without asserting it — a Kit mismatch is a line, never the ADR-0056 refusal, because this is the verb
-you reach for when that refusal fires. It hands off like every verb. The shared addressing flags (`--url`, `-n`,
+you reach for when that refusal fires. It forwards like every verb. The shared addressing flags (`--url`, `-n`,
 `--context`) as every run verb; `--url` leaves only the orchestrator line; `--local` skips the cluster. Exit 0 whatever
 it finds: a report. No registry lookup: "out of date" here means behind the Instance, and `npm view` answers the other
 question.

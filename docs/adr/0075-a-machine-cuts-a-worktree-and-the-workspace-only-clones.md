@@ -36,6 +36,7 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
 
 { path: "/work/app/fix", branch: "docs/123", from?: "v3" }  // a branch Worktree
 { path: "/work/app/review", detach: sha }                   // forced and cleaned on each cut
+{ path: "/work/app/final", handoff, branch?: "docs/123" }   // in a nested Workspace, a branch at a Handoff (ADR-0080)
 
 { outcome: "ready", slot, path, branch: string | null, head, found, stale? }
 { outcome: "refused", reason }  // nothing changed
@@ -49,7 +50,9 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
   from HEAD. A Machine can use one word for both. The rule can relax after v1, and the reverse is a break.
 - **A cut resolves a branch in one order, after a fetch:** a local branch, then `origin/<branch>` with tracking, then a
   new branch from `from` or the Binding's base with no upstream. `found` says which: `local`, `remote` or `none`. A path
-  that a cut already made needs no fetch, and `found` is `held`. A detached cut says `commit`.
+  that a cut already made needs no fetch, and `found` is `held`. A detached cut says `commit`. A cut at a Handoff says
+  `handoff`; it takes the commit from the parent Sandbox and checks the Handoff against the run's ledger
+  ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)).
 - **A failed fetch degrades.** `stale` carries ADR-0053's warning, and the cut uses what the clone holds. A name that
   the clone does not hold is `refused`, because the remote cannot confirm that it is new.
 - **`expect` is static**, so a Chart cannot change it. The string can grow. A boolean cannot, and its absent value and
@@ -323,7 +326,7 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
 - **A re-cut removes each `.gitignore` that the commit does not have**, so that only the commit's own rules keep an
   ignored file. Rejected. It also removed each folder that ignores itself with its own `.gitignore` (a Python `.venv`, a
   `.pytest_cache`, a `.mypy_cache`), so the reviewer installed its tools again at each round. The cut cannot tell such a
-  folder from one that an Agent hid, and the isolation of the Agents of one Workspace is best effort (ADR-0028).
+  folder from one that an Agent hid, and the Agents of one Sandbox have free rein over its files (ADR-0028).
 
 ## Consequences
 
@@ -338,17 +341,14 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   more zombie for each fetch there: 50 fetches left 50, beside the 52 that git leaves by itself with no jr2 program.
 - A kill in the short `update-ref` step leaves a stale ref lock, and no cut removes it. So that name stays `refused`.
 - The cut's own git folder is in the domain's `TMPDIR`, and the Agents run as the same uid in the same domain. So an
-  Agent's process that runs during a cut can write that folder: a race with one cut, not a file put there before it. A
-  domain for each Agent ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md))
-  closes it.
+  Agent's process that runs during a cut can write that folder: a race with one cut, not a file put there before it.
+  Inside the Sandbox the Agents have free rein (ADR-0028), so jr2 accepts it.
 - A `.gitignore` that an Agent writes in another Agent's review Worktree keeps the files that it ignores through a
-  re-cut, and no `git status` there shows them. The cut cannot tell such a file from a `.venv`'s own `.gitignore`. This
-  is one of the limits of the isolation between the Agents of one Workspace (ADR-0028), which is best effort. Such a
-  file does not reach a system prompt: the cut removes an ignored context file or skill, and the project context leaves
-  out an ignored one ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). A Landlock domain for
-  each Agent, in which the Agent writes only its own Worktree, closes it. That is the next step after this decision: it
-  extends the domain for each Agent of
-  [ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md).
+  re-cut, and no `git status` there shows them. The cut cannot tell such a file from a `.venv`'s own `.gitignore`.
+  Inside the Sandbox the Agents have free rein over the files (ADR-0028), so jr2 accepts it. Such a file does not reach
+  a system prompt: the cut removes an ignored context file or skill, and the project context leaves out an ignored one
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). An independent review runs in a nested
+  Workspace, which takes the commit as a Handoff ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)).
 - Each re-cut of a detached Worktree writes each file of the commit again, because the cut does not trust the stat data
   of the Worktree's index.
 - The cut trusts the clone's objects. Each Agent of the Workspace can write the clone's object folder, and git does not
@@ -356,8 +356,11 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   (`.idx`) that points an id at another object, changes what each later cut writes and what each Worktree's git reads.
   The cut and the sync read no commit-graph and no multi-pack-index (`core.commitGraph=false`,
   `core.multiPackIndex=false`): an Agent can write either one with no object rewritten, and git 2.56 then checks out
-  another tree for a commit. This is one of the limits of the isolation between the Agents of one Workspace (ADR-0028):
-  a Workflow that needs more gives the review a Workspace of its own.
+  another tree for a commit. The cut also trusts the clone's LFS store and the clone's `objects/info/alternates`.
+  git-lfs checks an object in the store by its size only, so an Agent that puts other bytes of the same size there
+  changes the large file that a cut writes. An alternate that an Agent adds gives the cut's git folder more objects to
+  read. Inside the Sandbox the Agents have free rein (ADR-0028), so jr2 accepts these. What leaves the Sandbox is
+  checked where it lands: a cut at a Handoff checks each object with fsck and each large file's sha256 (ADR-0080).
 - Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a
   Pool in one clone. They share the one Harness and `/work`. Only the Harness process holds the control credential, and
   each process it starts in `/work` runs confined, so no Agent's code can act as another Agent

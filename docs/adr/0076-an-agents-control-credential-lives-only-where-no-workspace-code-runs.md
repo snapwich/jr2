@@ -14,6 +14,12 @@ Agent writes there — a test file, a git hook, `core.fsmonitor`, a smudge filte
 credential its process can read. So the question is not which container holds the credential. It is which processes run
 code from `/work`.
 
+The Sandbox is the security boundary
+([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)). Inside it the Agents have free
+rein over the files: they share `/work`, the clone and one domain, and jr2 does not keep one Agent's files from another.
+jr2 separates their identities. This decision is that separation for the control credential: no Agent can act as
+another, whatever it writes.
+
 ## Decision
 
 - **The boundary.** A credential that lets a request act for an Agent lives only where no Workspace code runs.
@@ -29,10 +35,12 @@ code from `/work`.
   - each `bash` call, and so each test, build, git hook and planted program that it runs;
   - each process of a search tool (`rg`, `grep`);
   - the I/O of the file tools (read, write, edit);
-  - jr2's own git for the attach, the cut and the sync
+  - jr2's own git for the attach, the cut, the sync and the bundle of a Handoff
     ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md),
-    [ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), because a smudge filter or a textconv
-    in the shared `.git/config` runs in git's process;
+    [ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md),
+    [ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)), because a smudge filter or a textconv in the
+    shared `.git/config` runs in git's process, and because in the domain jr2's git reads only what an Agent can read
+    itself;
   - each `command` Effect that is placed in the Harness, which is each `command` that names no secret;
   - each stdio MCP server of an Agent
     ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)),
@@ -122,9 +130,12 @@ code from `/work`.
 - **The env of the domain is the container's own env, with the granted Stand-ins.** A program in the domain gets the env
   that the container started with: the image's `ENV`, `harness.env` and `envFrom`, the proxy and CA variables. jr2's own
   `JR2_*` names are removed, except `JR2_CUSTODIAN_URL`. It also gets `HOME`, `TMPDIR`, and the Stand-ins of the secrets
-  that the `workspace()` grants (its `secrets` list), each under its own name. It never gets what the Harness process
-  added to its own env after the start, and so it never gets the control Stand-in, or the Stand-in of a model key that
-  the `secrets` list does not name. A toolchain and a bring-your-own image work as they work outside jr2.
+  that the `workspace()` grants (its `secrets` list), each under its own name, and `safe.bareRepository=explicit` for
+  git, through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0` and `GIT_CONFIG_VALUE_0`, because a commit can hold a bare
+  repository whose config runs a program on a plain `git status` (ADR-0080). These names take the place of the image's
+  own, so `jr2 up` warns when a Sandbox Image sets `GIT_CONFIG_COUNT`. It never gets what the Harness process added to
+  its own env after the start, and so it never gets the control Stand-in, or the Stand-in of a model key that the
+  `secrets` list does not name. A toolchain and a bring-your-own image work as they work outside jr2.
 - **The Harness process runs with jr2's env alone.** node, glibc and OpenSSL read names from the env that load code or
   configuration from a path: `NODE_OPTIONS=--require /app/x.js`, `LD_PRELOAD`, `OPENSSL_CONF`. The image's `ENV` can
   name a file that the domain writes. So the Harness starts as `effector nocore --harness-env -- node …`. The effector
@@ -322,8 +333,9 @@ code from `/work`.
 - **The Custodian authenticates the caller.** Rejected alone: every process reaches the Custodian over the one pod
   loopback. The Custodian can tell the Harness from a child only by a secret that the child cannot read, which is this
   decision.
-- **Keep the Sandbox-scoped credential, and call the Agents of one Workspace mutually trusting.** Rejected: a coder
-  beside an independent reviewer in one Workspace is a motivating case.
+- **Keep the Sandbox-scoped credential, and call the Agents of one Workspace mutually trusting.** Rejected: jr2
+  separates the identities of the Agents of one Sandbox, also where it does not separate their files (ADR-0028). A coder
+  whose code picks `pass` as its reviewer ends a review in which the reviewer said nothing.
 - **Refuse all of `169.254.0.0/16` at the egress.** Rejected: NodeLocal DNSCache answers on `169.254.20.10`, so the pods
   of a cluster that runs it lose DNS.
 - **An egress policy with `ipBlock` peers only.** Rejected: a CNI that applies an `ipBlock` to the address of a pod
@@ -339,16 +351,12 @@ code from `/work`.
   the Harness process delivers a pick, for the conversation whose model called the pick.
 - **What remains.**
   - An Agent can still try to persuade another Agent through what that Agent reads: a file, a commit message, the output
-    of a test. That is an attack on content, not a forged pick. The other Agent's model chooses each pick, and the
+    of a test. It can also change those files, because the Agents of one Sandbox have free rein over the files
+    (ADR-0028). That is an attack on content, not a forged pick. The other Agent's model chooses each pick, and the
     Orchestrator judges it against that Turn's Allowed picks
-    ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). The defenses against
-    that are practical, not a guarantee: the cut of a review Worktree
-    ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)) and the rules for the project context
-    ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)) stop one Agent from changing what another
-    reads by chance or with little work, not an Agent that sets out to do it. The Agents of one Workspace share `/work`,
-    the clone, one uid and one domain, and so one Agent's process can race a cut that runs in that domain. A Workflow
-    that needs more gives the review a Workspace of its own
-    ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)).
+    ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). A review that must
+    see only the commit runs in a nested Workspace, which takes the commit as a Handoff
+    ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)).
   - A confined child can spend only a held secret that its `workspace()` grants. Every Stand-in but the fetch Stand-in
     is secret, and the child's env holds only the granted ones (ADR-0059). So code in `/work` reaches a model key only
     when the author grants that key.

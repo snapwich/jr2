@@ -28,13 +28,15 @@ composition and does not replace it. The two uses stay two mechanisms.
   one-shot Chart start is nothing special, `{ chart }` in the body; a named Chart is a name. Every knob is the slot's
   (`wait`, `target`, `input`), so a run-start option that arrives later is a slot option or a door field, never a
   wrapper around the body. Accepted with it: the pick's schema and the callee's door are two schemas the author keeps
-  aligned, and the idiom is to derive one from the other (`reviewDoor.pick({ branch: true })`); the handoff is by
-  reference, a url, a branch and a commit the callee's own Workspace clones, never a Worktree file, because the Effect
-  runs where no Worktree is; no secret rides the body (GitHub's `secrets: inherit` has no counterpart: the callee's
-  Assembly bound its own); `wait` is static, so a Machine that needs both forms declares two slots; the body is plain
-  JSON; and the callee's host-injected fields (`instanceId`) are the callee's host's, written after the parse. `input`
-  on the slot is an optional zod schema: the author's claim about the callee's door, which types the mapper and
-  `fromPick` and is what `jr2 up` compares (below). Without it the mapper returns `unknown` and the door alone checks.
+  aligned, and the idiom is to derive one from the other (`reviewDoor.pick({ branch: true })`); the callee gets the work
+  by reference, a url, a branch and a commit the callee's own Workspace clones, never a Worktree file, because the
+  Effect runs where no Worktree is, and never a Handoff, which only a nested Workspace of the same run takes
+  ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)); no secret rides the body (GitHub's
+  `secrets: inherit` has no counterpart: the callee's Assembly bound its own); `wait` is static, so a Machine that needs
+  both forms declares two slots; the body is plain JSON; and the callee's host-injected fields (`instanceId`) are the
+  callee's host's, written after the parse. `input` on the slot is an optional zod schema: the author's claim about the
+  callee's door, which types the mapper and `fromPick` and is what `jr2 up` compares (below). Without it the mapper
+  returns `unknown` and the door alone checks.
 - **Two placements, read from the target, and the author writes none.** With no `target` the Effect runs in the
   Orchestrator's own process and starts the run through the run host and the ledger directly, no wire and no token: the
   Orchestrator holds the Instance token already

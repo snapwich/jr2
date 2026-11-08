@@ -1,4 +1,4 @@
-# A global `jr2` hands off to the Instance's own, and an Instance has one Kit version
+# A global `jr2` forwards to the Instance's own, and an Instance has one Kit version
 
 [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md) made `jr2 init` pin `@jr2/cli` as
 an exact devDependency beside `@jr2/orchestrator`, and said instances upgrade "by editing two dep lines". That pin only
@@ -12,14 +12,14 @@ patched one symptom of. This ADR settles which binary runs, and what "the Instan
 
 ## Decision
 
-- **A global `jr2` hands off (the gulp/grunt model).** Before any verb, the binary walks up from cwd to `jr2.config.ts`
-  (ADR-0009's root marker). If that folder resolves `@jr2/cli` to a real path other than its own, it runs that package's
-  `bin.jr2` with the same arguments and stdio, and exits with its code. Nothing else — no flag parsing, no verb
-  exceptions (`--url` inside an Instance still hands off; the rule stays one sentence). _Amended 2026-09-20:_ plus one
-  env var, `JR2_HANDOFF_FROM=<version> <realpath>`, naming the copy that handed off. `jr2 version` prints it as the
+- **A global `jr2` forwards (the gulp/grunt model): a Forward.** Before any verb, the binary walks up from cwd to
+  `jr2.config.ts` (ADR-0009's root marker). If that folder resolves `@jr2/cli` to a real path other than its own, it
+  runs that package's `bin.jr2` with the same arguments and stdio, and exits with its code. Nothing else — no flag
+  parsing, no verb exceptions (`--url` inside an Instance still forwards; the rule stays one sentence). It also sets one
+  env var, `JR2_HANDOFF_FROM=<version> <realpath>`, naming the copy that forwarded. `jr2 version` prints it as the
   `global` line, so "is my global out of date" is answered without leaving the Instance; nothing else reads it. It is
   the only fact the local copy cannot learn on its own (`npm ls -g` is slow and per-manager). A global that predates the
-  variable hands off without it, and the report then shows no `global` line at all — indistinguishable from `npx jr2`,
+  variable forwards without it, and the report then shows no `global` line at all — indistinguishable from `npx jr2`,
   and there is no third source to ask.
 - **Spawn, not import.** gulp loads the local gulp in-process because local gulp is a _library_ its CLI drives; here the
   local is a _binary_. Spawning couples the global to one contract — the local package's `bin` field, npm's own, stable
@@ -55,8 +55,8 @@ patched one symptom of. This ADR settles which binary runs, and what "the Instan
 
 - ADR-0043's "edit two dep lines" is amended: an Instance is upgraded by editing two lines **to the same number**, and
   editing one is now a refusal (or an install error), never a silent skew.
-- A global installed before this ADR does not hand off; the user updates it once. After that the global's version stops
+- A global installed before this ADR does not forward; the user updates it once. After that the global's version stops
   mattering inside an Instance, which is the point.
-- The `@dist` tier exercises the handoff for free: its installed global drives an Instance whose own `@jr2/cli` came
+- The `@dist` tier exercises the Forward for free: its installed global drives an Instance whose own `@jr2/cli` came
   from the same verdaccio at a different real path. The mode-line assertion it already makes now asserts the local
   copy's line.
