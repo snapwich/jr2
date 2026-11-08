@@ -381,7 +381,8 @@ _Avoid_: flue agent, server, `local()`
 The loop in a Harness that runs a model's requests and the tool calls of each model answer, for one conversation. The
 Harness can replace it: the engine is not the Harness's contract. What the engine keeps of a conversation is its
 **engine part**, in a folder that the engine names, which jr2's record does not read.
-_Avoid_: runtime, runner, agent loop, harness (the server that holds the engine), Orchestrator
+_Avoid_: runtime, runner, agent loop, harness (the server that holds the engine; also the industry's word for an engine
+such as Claude Code or Codex), Orchestrator
 
 **Instance Harness**:
 The one Harness of an Instance that is in no Sandbox: the Turns of every Menu-only Agent run on it, also when a
