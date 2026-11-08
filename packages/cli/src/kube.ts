@@ -10,9 +10,8 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
-/** How long a RUN-VERB waits to find out whether the cluster is there (ADR-0019). Matches the
- * Harness client's connect bound (`harness-client.ts`), so the two seats that dial across a
- * network agree on what "too long" means. It bounds resolution only: `jr2 up` waits on rollouts
+/** How long a RUN-VERB waits to find out whether the cluster is there (ADR-0019). It bounds
+ * resolution only: `jr2 up` waits on rollouts
  * for minutes, and says so with its own `--timeout`.
  *
  * Spent TWICE, because `--request-timeout` bounds one server request and kubectl retries API

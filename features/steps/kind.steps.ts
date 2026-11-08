@@ -2937,7 +2937,7 @@ async function allPodLogs(world: E2EWorld): Promise<string> {
 // of the window it is spending. That converts 90s from a number read off two GitHub issues into a
 // measurement of THIS cluster, with a regression test around it.
 
-/** The marker the product emits. A contract: `@jr2/orchestrator`'s wire client and `@jr2/harness`'s
+/** The marker the product emits. A contract: `@jr2/orchestrator`'s dial (`dial.ts`) and `@jr2/harness`'s
  * Menu both format it, and neither import can enforce the agreement — the tests on each side quote this
  * exact shape, and a rename made in only one place checks nothing while still passing. */
 const ROUTABILITY_MARKER = "jr2.routability";
@@ -2947,7 +2947,8 @@ const ROUTABILITY_MARKER = "jr2.routability";
  * reading is what proved one number insufficient.
  *
  * A REJECT (kube-proxy, no ready backend) fails instantly, so it spends ATTEMPTS and almost no
- * time. A dropped SYN sits on undici's 10s connect timeout, so it spends TIME and almost no
+ * time. A dropped SYN sits on the connect timeout (10 s in the global fetch; 2 s since the
+ * admission and the attach bound their connect, ADR-0042), so it spends TIME and almost no
  * attempts. Both have now been measured here, one per run: `2 attempts / 10667ms` (a drop) and
  * `3 attempts / 502ms / ECONNREFUSED` (a reject). Neither meter sees the other's mode, so an
  * attempts-only budget would have waved ~40s of a 90s window through without a word, and a
@@ -2955,7 +2956,7 @@ const ROUTABILITY_MARKER = "jr2.routability";
  *
  * The two are calibrated to trip at about the same severity, which is what keeps them from being
  * one meter written twice. Against a 250ms→5s jittered ladder, 8 attempts is ~9–18s of refusal;
- * 30s is a third of the window, or three connect timeouts. Both sit far enough above what this
+ * 30s is a third of the window. Both sit far enough above what this
  * cluster actually does (3 attempts, 10.7s) to be a signal rather than a coin flip — the first
  * draft budgeted 4 attempts against an observed 3, which is not a budget, it is a flake.
  */
@@ -2966,7 +2967,8 @@ type RoutabilityRetry = {
   seat: string;
   attempts: number;
   ms: number;
-  /** The final errno — `ECONNREFUSED` for a REJECT, `UND_ERR_CONNECT_TIMEOUT` for a drop. */
+  /** The final errno — `ECONNREFUSED` for a REJECT, `ETIMEDOUT` (or the global fetch's
+   * `UND_ERR_CONNECT_TIMEOUT`) for a drop. */
   last: string;
   url: string;
   scenario: string;

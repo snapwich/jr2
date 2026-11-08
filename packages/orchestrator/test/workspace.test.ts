@@ -146,10 +146,13 @@ class FakeSandbox implements SandboxPort {
     this.calls.push(`provision:${name}`);
     return { endpoint: "http://sandbox.test" };
   }
-  async attach(req: {
-    name: string;
-    repos: Array<{ slot: string; url: string; ref?: string }>;
-  }): Promise<{ repos: Record<string, string> }> {
+  async attach(
+    req: {
+      name: string;
+      repos: Array<{ slot: string; url: string; ref?: string }>;
+    },
+    _opts?: { signal?: AbortSignal },
+  ): Promise<{ repos: Record<string, string> }> {
     this.calls.push(`attach:${req.name}`);
     this.attached.push(req.repos);
     return { repos: Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}`])) };
@@ -2142,9 +2145,16 @@ test("attaching: a Sandbox Lost under the attach faults the run at once, naming 
   const sandbox = new FakeSandbox();
   let attaching!: () => void;
   const entered = new Promise<void>((r) => (attaching = r));
-  sandbox.attach = () => {
+  let ended: unknown;
+  sandbox.attach = (_req, opts) => {
     attaching();
-    return new Promise(() => {}); // an attach that would otherwise hang for its whole window
+    // An attach that would otherwise hang for its whole window — until its signal ends it.
+    return new Promise((_, reject) =>
+      opts?.signal?.addEventListener("abort", () => {
+        ended = opts.signal!.reason;
+        reject(opts.signal!.reason);
+      }),
+    );
   };
   const host = new RunHost({ store: await mkStore(), sandbox });
   host.register(wsDef());
@@ -2156,6 +2166,7 @@ test("attaching: a Sandbox Lost under the attach faults the run at once, naming 
   assert.equal(final?.status, "error");
   assert.match(final?.fault ?? "", /is Lost while it attached: Evicted: The node was low on resource: memory\./);
   assert.equal(sandbox.listening, 0, "the attach's subscription ends with it");
+  assert.match(String(ended), /is Lost while it attached/, "the losing attach is ended, not left open (ADR-0042)");
 });
 
 test("the lease judges Continuity in `running` alone: a loss before it is the provision's to name", async () => {

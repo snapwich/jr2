@@ -203,7 +203,7 @@ export type MenuOptions = MenuReach & {
 
 /**
  * The marker the `@kind` tier greps for, and therefore a CONTRACT — duplicated verbatim in
- * `@jr2/orchestrator`'s wire client (the two packages share no runtime dependency) and matched in
+ * `@jr2/orchestrator`'s `dial.ts` (the two packages share no runtime dependency) and matched in
  * `features/steps/kind.steps.ts`. Renaming it on one side breaks no build; it silently turns the
  * tier's routability budget into a check that passes because it matches nothing.
  */
