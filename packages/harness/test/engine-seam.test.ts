@@ -13,10 +13,10 @@ import {
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
-  Type,
   type AssistantMessage,
   type Message,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   refuseEngineInDomain,
   type Engine,

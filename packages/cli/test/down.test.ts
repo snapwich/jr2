@@ -101,6 +101,7 @@ function mkSweep(
     build: async () => assert.fail("down builds nothing"),
     imageUser: async () => assert.fail("down inspects nothing") as never,
     imageFiles: async () => assert.fail("down inspects nothing") as never,
+    imageUserContext: async () => assert.fail("down inspects nothing") as never,
     buildablePlatforms: async () => assert.fail("down builds nothing, so it asks no platform") as never,
     push: async () => assert.fail("down pushes nothing"),
     kindLoad: async () => assert.fail("down loads nothing"),

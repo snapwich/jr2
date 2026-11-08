@@ -134,7 +134,10 @@ A confined program can do all that the user of the container can do, with these 
 - It cannot read, write, make, remove, move or link a file in `/run/jr2`. That folder holds the control Stand-in, the
   Stand-in of each Held secret, the socket of the Custodian for the picks, and the conversations of the Harness. A
   program can list the names in `/run/jr2`, as it can list each folder: `ls /` and `find /` work. The names are not
-  secrets.
+  secrets. Two folders there it can read and not change. `/run/jr2/output`: when the output of a `bash` call is too
+  long, the Harness writes all of it to a file there, and the result gives the path of that file.
+  `/run/jr2/user-context`: the image user's `~/.pi/agent`, when the image has one, which jr2 reads for the
+  [project context](agents-and-turns.md#the-project-context).
 - It cannot make a socket in `/run/jr2`. It can connect to the socket of the Custodian, but the Custodian refuses each
   request on the socket that does not have the control Stand-in, and the program cannot read that Stand-in.
 - It cannot trace the Harness process, or read its environment or its memory.
@@ -155,6 +158,12 @@ the use of each Turn, and a call that you did not allow cannot go around that re
 
 The read, write and edit tools reach the same paths as the shell. A path in `/run/jr2`, or a link to one, gives the
 error of a file that the user cannot read. In a path, `~` is the `HOME` of the confined programs.
+
+The [project context](agents-and-turns.md#the-project-context) (`AGENTS.md`, `CLAUDE.md` and the skills of a Worktree,
+or of `/work`) is read by a confined program too. Thus an `AGENTS.md` that links to a file in `/run/jr2` gives no text
+to the model. In the image user's `~/.pi/agent`, which the pod mounts read-only from the image, that program reads only
+the context file and the skills, and not `auth.json`. It reads them in `/run/jr2/user-context`, a second mount of that
+directory, which a confined program cannot move.
 
 The Harness process has its own `HOME`, in `/run/jr2`, from before Node starts. Thus a file that a program writes in its
 `HOME`, such as `~/.aws/config` or a module in `~/.node_modules`, does not change what the Harness process does. The

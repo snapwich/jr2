@@ -106,9 +106,10 @@ Definitions keep converge-time safety; overrides pay the later check for the fle
 ## Consequences
 
 - The definition contract is data-only: what an Agent may do to the Workspace is part of it (`access`, ADR-0028), and so
-  are the MCP servers it uses (ADR-0079); an author's own tool is an MCP server. Skills and subagents have no seat yet.
-  When someone needs them, the contract grows deliberately — there is no eject hatch to a foreign harness project
-  (ADR-0027 deleted it).
+  are the MCP servers it uses (ADR-0079); an author's own tool is an MCP server. Skills and subagents have no seat in it
+  yet; the skills that a repo holds in `.pi/skills`, and those of the Sandbox Image's user, reach an Agent in `/work` as
+  project context (ADR-0062). When someone needs them, the contract grows deliberately — there is no eject hatch to a
+  foreign harness project (ADR-0027 deleted it).
 - Because definitions are plain data, stock ones compose with no API: a Machine carries `agent(coder)`, and a consumer
   retunes it with `customize(machine, { agents: { coder: { model: "…" } } })` (ADR-0049, ADR-0009), or rebinds its
   servers with `{ mcp: [...] }` in the same place.

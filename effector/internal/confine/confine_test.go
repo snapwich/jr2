@@ -307,7 +307,7 @@ func TestTheHarnessDomainDoesWhatTheUidDoesButReachesNothingDenied(t *testing.T)
 	must(t, os.WriteFile(filepath.Join(dirs["a"], "f"), []byte("moved\n"), 0o600))
 	must(t, os.Symlink(control, filepath.Join(dirs["work2"], "to-standin")))
 	must(t, os.Symlink(denied, filepath.Join(dirs["work2"], "to-run-jr2")))
-	rules, err := ForHarness("/", []string{denied})
+	rules, err := ForHarness("/", []string{denied}, nil)
 	must(t, err)
 	if len(rules.ReadExec) != 0 || len(rules.Read) != 0 || !slices.Equal(rules.ReadDir, []string{"/"}) {
 		t.Fatalf("the Harness's domain has rules that are not every right, or READ_DIR on the root: %+v", rules)
@@ -406,7 +406,7 @@ func TestForHarnessCarvesAroundTheDeniedPathOneLevelAtATime(t *testing.T) {
 	must(t, os.Symlink(at("run/jr2/control"), at("etc/control")))
 	must(t, os.Symlink(at("usr/bin"), at("bin")))
 	must(t, os.WriteFile(at("run/pidfile"), nil, 0o600))
-	rules, err := ForHarness(root, []string{at("run/jr2")})
+	rules, err := ForHarness(root, []string{at("run/jr2")}, nil)
 	must(t, err)
 	got := slices.Clone(rules.ReadWrite)
 	slices.Sort(got)
@@ -419,12 +419,12 @@ func TestForHarnessCarvesAroundTheDeniedPathOneLevelAtATime(t *testing.T) {
 		t.Fatalf("READ_DIR %v, want the root alone", rules.ReadDir)
 	}
 	// A folder whose entries are links into the denied path, one level down.
-	rules, err = ForHarness(at("etc"), []string{at("run/jr2")})
+	rules, err = ForHarness(at("etc"), []string{at("run/jr2")}, nil)
 	must(t, err)
 	if len(rules.ReadWrite) != 0 {
 		t.Fatalf("a link into the denied path got a rule: %v", rules.ReadWrite)
 	}
-	if _, err := ForHarness(root, nil); err == nil {
+	if _, err := ForHarness(root, nil, nil); err == nil {
 		t.Fatal("a domain with no denied path was made")
 	}
 }
@@ -444,7 +444,7 @@ func TestARetargetedLinkGivesARestartedDomainNothingDenied(t *testing.T) {
 	denied := at("run/jr2")
 	must(t, os.WriteFile(at("run/jr2/control/standin"), []byte("control-stand-in-value"), 0o400))
 	must(t, os.Symlink(at("w/target"), at("run/link")))
-	rules, err := ForHarness("/", []string{denied})
+	rules, err := ForHarness("/", []string{denied}, nil)
 	must(t, err)
 	for _, p := range rules.ReadWrite {
 		if p == at("run/link") {
@@ -540,7 +540,7 @@ func TestTheAbstractSocketScopeHoldsWhenTheKernelOffersIt(t *testing.T) {
 	lay := newLayout(t)
 	denied := filepath.Join(lay.root, "run-jr2")
 	must(t, os.Mkdir(denied, 0o700))
-	harness, err := ForHarness("/", []string{denied})
+	harness, err := ForHarness("/", []string{denied}, nil)
 	must(t, err)
 	// A credentialed command's child runs the test binary only if its folder is a system path: copy
 	// it into the Effect's own directory, which the child may run from.
@@ -567,9 +567,60 @@ func TestTheAbstractSocketScopeHoldsWhenTheKernelOffersIt(t *testing.T) {
 	}
 }
 
+// ADR-0076: the folder where pi's `bash` keeps a long command's whole output is the Harness's own,
+// in the denied path. The domain reads a file there, by its name, as the model does with `read` or
+// `cat`. It writes, makes, removes, moves and links nothing there, so a command cannot put a link
+// or a FIFO in the place of a file that the Harness opens by its path. A read-only path outside every
+// denied path is refused: it would have every right.
+func TestTheDomainReadsTheHarnessOutputFolderAndChangesNothingThere(t *testing.T) {
+	requireLandlock(t)
+	l := newLayout(t)
+	at := func(p string) string { return filepath.Join(l.root, p) }
+	for _, d := range []string{"run-jr2/output", "run-jr2/control", "w"} {
+		must(t, os.MkdirAll(at(d), 0o700))
+	}
+	denied, output := at("run-jr2"), at("run-jr2/output")
+	full := filepath.Join(output, "pi-bash-0123456789abcdef.log")
+	must(t, os.WriteFile(full, []byte("the whole output\n"), 0o600))
+	must(t, os.WriteFile(at("run-jr2/control/standin"), []byte("control-stand-in-value"), 0o400))
+	rules, err := ForHarness("/", []string{denied}, []string{output})
+	must(t, err)
+	if !slices.Equal(rules.Read, []string{output}) {
+		t.Fatalf("read-only %v, want the output folder alone", rules.Read)
+	}
+	if out, err := confined(t, rules, at("w"), "cat "+full+" && ls "+output); err != nil ||
+		out != "the whole output\npi-bash-0123456789abcdef.log\n" {
+		t.Fatalf("the domain could not read the output folder: %v %q", err, out)
+	}
+	for name, script := range map[string]string{
+		"a write":              "echo x >> " + full,
+		"a truncate":           ": > " + full,
+		"a new file":           "echo x > " + filepath.Join(output, "new"),
+		"a remove":             "rm -f " + full,
+		"a rename":             "mv " + full + " " + full + ".old",
+		"a link":               "ln -s /dev/zero " + filepath.Join(output, "pi-bash-link.log"),
+		"a FIFO":               "mkfifo " + filepath.Join(output, "pi-bash-fifo.log"),
+		"a move of the folder": "mv " + output + " " + at("w/output"),
+		"a read beside it":     "cat " + at("run-jr2/control/standin"),
+	} {
+		if out, err := confined(t, rules, at("w"), script); err == nil {
+			t.Errorf("%s in the output folder passed: %q", name, out)
+		}
+	}
+	if got, err := os.ReadFile(full); err != nil || string(got) != "the whole output\n" {
+		t.Fatalf("the file changed: %v %q", err, got)
+	}
+	if _, err := ForHarness("/", []string{denied}, []string{at("w")}); err == nil {
+		t.Fatal("a read-only path outside every denied path was given")
+	}
+	if _, err := ForHarness("/", []string{denied}, []string{denied}); err == nil {
+		t.Fatal("the denied path itself was given as read-only")
+	}
+}
+
 // `effector harness-rules --deny <path>...` writes ForHarness's rules in confine's own format:
 // Parse reads them back with a program after `--`. Every rule is read and write, none reaches the
-// denied path, and any other flag, a relative path or no --deny at all is refused.
+// denied path, a `--read` folder is read-only, and any other flag, a relative path or no --deny at all is refused.
 func TestHarnessRulesMainWritesConfinesFormat(t *testing.T) {
 	var out, errs bytes.Buffer
 	if code := HarnessRulesMain([]string{"--deny", "/run/jr2"}, &out, &errs); code != 0 {
@@ -589,11 +640,50 @@ func TestHarnessRulesMainWritesConfinesFormat(t *testing.T) {
 			t.Fatalf("%s reaches /run/jr2: %+v", p, rules.ReadWrite)
 		}
 	}
-	for _, bad := range [][]string{{"--deny", "run/jr2"}, {}, {"--rw", "/work"}, {"--deny"}} {
+	out.Reset()
+	if code := HarnessRulesMain([]string{"--deny", "/run/jr2", "--read", "/run/jr2/output"}, &out, &errs); code != 0 ||
+		!strings.Contains(out.String(), "--ro\x00/run/jr2/output\x00") {
+		t.Fatalf("--read: exit %d: %q %s", code, out.String(), errs.String())
+	}
+	for _, bad := range [][]string{{"--deny", "run/jr2"}, {}, {"--rw", "/work"}, {"--deny"}, {"--deny", "/run/jr2", "--read"}} {
 		errs.Reset()
 		if code := HarnessRulesMain(bad, &out, &errs); code != 2 {
 			t.Errorf("%q: exit %d", bad, code)
 		}
+	}
+}
+
+// A --read path that a link is on, at its end or above it, is refused: the caller looked at the
+// path before it asked, so a link there was put in its place (ELOOP). Its own real path is ruled.
+func TestHarnessRulesMainRefusesAReadThroughALink(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	must(t, err)
+	agent := filepath.Join(root, "agent")
+	must(t, os.MkdirAll(filepath.Join(agent, "skills"), 0o700))
+	must(t, os.WriteFile(filepath.Join(agent, "auth.json"), []byte("{}"), 0o600))
+	must(t, os.WriteFile(filepath.Join(agent, "AGENTS.md"), []byte("x"), 0o600))
+	must(t, os.Symlink(filepath.Join(agent, "auth.json"), filepath.Join(agent, "CLAUDE.md")))
+	must(t, os.Symlink(agent, filepath.Join(root, "via")))
+	var out, errs bytes.Buffer
+	for _, read := range []string{filepath.Join(agent, "CLAUDE.md"), filepath.Join(root, "via", "AGENTS.md")} {
+		out.Reset()
+		errs.Reset()
+		if code := HarnessRulesMain([]string{"--deny", agent, "--read", read}, &out, &errs); code != 1 ||
+			out.Len() != 0 || !strings.Contains(errs.String(), "a link is on the path") ||
+			!strings.Contains(errs.String(), "too many levels of symbolic links") {
+			t.Errorf("%s: exit %d, out %q, err %q", read, code, out.String(), errs.String())
+		}
+	}
+	out.Reset()
+	if code := HarnessRulesMain([]string{"--deny", agent, "--read", filepath.Join(agent, "AGENTS.md") + "/",
+		"--read", filepath.Join(agent, "skills")}, &out, &errs); code != 0 ||
+		!strings.Contains(out.String(), "--ro\x00"+filepath.Join(agent, "AGENTS.md")+"\x00") {
+		t.Fatalf("exit %d: %q %s", code, out.String(), errs.String())
+	}
+	// A deny path is still resolved through a link: it names what the domain may not reach.
+	out.Reset()
+	if code := HarnessRulesMain([]string{"--deny", filepath.Join(root, "via")}, &out, &errs); code != 0 {
+		t.Fatalf("deny through a link: exit %d: %s", code, errs.String())
 	}
 }
 

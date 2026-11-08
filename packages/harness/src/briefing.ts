@@ -6,8 +6,11 @@
 // Two parts, placed by how often they change, so the Briefing never breaks the provider's prefix
 // cache (tools → system → messages):
 //
-//   - The STANDING part follows the Agent's `instructions` in the system prompt, in its own
-//     delimited section. It is byte-stable for the seat: composed once from what this pod knows
+//   - The STANDING part is LAST in the system prompt, in its own delimited section: after the
+//     Agent's `instructions`, and after the project context of an Agent in `/work` (the files and
+//     skills that pi finds there, and the image user's context, `project-context.ts`), which is
+//     the repo's text, not jr2's.
+//     It is byte-stable for the seat: composed once from what this pod knows
 //     (its CPUs from the Downward API, its Size from the cgroup) and the definition's `workspace`
 //     access, with no clock, counter or Menu name in it.
 //   - The TURN part follows the Frame's prompt, in its own delimited block, in the newest message —
@@ -54,11 +57,18 @@ export function seatFacts(env: Record<string, string | undefined>, cgroupRoot = 
   };
 }
 
-/** The standing part for one seat: `(instructions, workspace, mcp)` → the system prompt, and
- * `part`, the delimited section alone. `mcp` is true for an Agent whose conversation offers MCP
- * tools (ADR-0079): it is fixed for the conversation, as the tools are. Each section is composed
- * once and cached, so every Turn of the seat sends the same bytes. */
-export type StandingBriefing = ((instructions: string, workspace: Workspace, mcp?: boolean) => string) & {
+/** The standing part for one seat: `(instructions, workspace, mcp, context)` → the system prompt,
+ * and `part`, the delimited section alone. `mcp` is true for an Agent whose conversation offers MCP
+ * tools (ADR-0079): it is fixed for the conversation, as the tools are. `context` is the project
+ * context (`project-context.ts`), "" for none: it goes between the instructions and the standing
+ * part, which a model reads last. Each section is composed once and cached, so every Turn of the
+ * seat sends the same bytes. */
+export type StandingBriefing = ((
+  instructions: string,
+  workspace: Workspace,
+  mcp?: boolean,
+  context?: string,
+) => string) & {
   part: (workspace: Workspace, mcp?: boolean) => string;
 };
 
@@ -74,7 +84,8 @@ export function standingBriefing(facts: SeatFacts): StandingBriefing {
     return text;
   };
   return Object.assign(
-    (instructions: string, workspace: Workspace, mcp = false) => `${instructions}\n\n${part(workspace, mcp)}`,
+    (instructions: string, workspace: Workspace, mcp = false, context = "") =>
+      `${instructions}\n\n${context === "" ? "" : `${context}\n\n`}${part(workspace, mcp)}`,
     { part },
   );
 }

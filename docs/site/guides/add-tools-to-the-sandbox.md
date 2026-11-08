@@ -41,10 +41,13 @@ Run [`jr2 up`](../reference/cli.md#up). It builds the image. Then it loads the i
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 sandbox image "default": building jr2-sandbox-my-instance-default:fce23ddc3cce-amd64
   no USER declared — the pod's uid-1000 fallback applies
+  user context: none (no USER, so the home is jr2's emptyDir)
   kind load → cluster "jr2"
 …
 ```
@@ -52,6 +55,9 @@ sandbox image "default": building jr2-sandbox-my-instance-default:fce23ddc3cce-a
 - The tag is the hash of the files in the folder, then the architecture of the nodes. Your hash is different. A change
   to a file in the folder changes it. The architecture is such as `amd64`.
 - On kind, `jr2 up` loads the image into the cluster. The next line names the cluster.
+- `user context:` names the image user's `~/.pi/agent` directory when the image has one, or tells why there is none. The
+  Agents read its `AGENTS.md` and its skills, from a read-only mount of the image
+  ([the project context](../concepts/agents-and-turns.md#the-project-context)). An image with no `USER` has none.
 - When no file in the folder changed, `jr2 up` does not build the image again. The line then ends with
   `(fresh — build skipped; --force to rebuild anyway)`.
 - `jr2 up` builds the Sandbox Images only when a registered [Machine](../reference/glossary.md#machine) has a

@@ -57,10 +57,38 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
 - **A cut runs on the `command` machinery**: a kit program in the Harness container, no new wire kind, marked
   idempotent. Each thing that an Agent's word can cause settles as `refused`, and never as `onError` (ADR-0067). A cut
   writes a record before it changes git, so `refused` changes nothing and the next cut in the clone repairs a killed
-  cut. It never removes a folder that its record does not name. A re-cut that disagrees with the first cut is `refused`.
-  Cuts of one clone are serialized by a lock.
-- **A detached cut is forced from its own record** and cleaned with `-ffd`. Ignored files stay, because a reviewer runs
-  the tests (ADR-0028).
+  cut. So does a cut that adds again a Worktree whose folder an Agent removed: its record says so before the add, and
+  the next cut removes the half-made folder and adds it again. Under the lock, a cut also removes the folder in `TMPDIR`
+  that a killed cut of the same clone left. It never removes a folder that its record does not name. A re-cut that
+  disagrees with the first cut is `refused`. Cuts of one clone are serialized by a lock.
+- **A cut writes a Worktree's files from a git folder of its own.** The cut runs as the uid of the Workspace's Agents,
+  so they write the clone's config and `info/` folder, and each Worktree's config, index and HEAD. Each of these changes
+  what a checkout writes, and none is in a diff
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)): a filter that a config file names (also in
+  an include, a conditional include, or a Worktree's own config), `info/attributes`, `core.worktree`, a sparse checkout,
+  a skip-worktree or assume-unchanged bit, an index whose stat data an Agent made the same as a changed file's, and the
+  ignore and attributes files of a `HOME` (`~/.config/git/ignore`, read also with no global config). So the cut checks
+  out from a git folder that it makes for that cut, which takes its config, HEAD and index from no file of the clone,
+  and then gives that index to the Worktree. It reads no ignore or attributes file of a `HOME` (`core.excludesFile` and
+  `core.attributesFile` are `/dev/null`). The objects are the clone's (`alternates`), and an Agent writes them too
+  (below). A cut refuses a Worktree whose `.git` names another admin folder, and one whose own git works in another
+  folder (a `core.worktree`): each later git of an Agent there would read that other folder.
+- **A detached cut is forced from its own record** and cleaned with `-ffd`, from the same git folder. Its index starts
+  at the commit that the cut last wrote there, which the record keeps, and not at the Worktree's HEAD, which an Agent
+  sets. So a file that the new commit removed goes. Before the checkout, each `.gitattributes` that is not in that
+  commit goes (`clean -ffdx` with that pathspec), because a `.gitattributes` in the work tree changes the bytes that the
+  checkout writes (`eol`, `working-tree-encoding`, `ident`). Ignored files stay, by each `.gitignore` in the Worktree,
+  also one that the commit does not have, because a reviewer runs the tests (ADR-0028): a folder that ignores itself
+  with its own `.gitignore` (a Python `.venv`, a `.pytest_cache`, a `.mypy_cache`) is the reviewer's tools, and stays
+  from round to round. So a `.gitignore` that an Agent wrote keeps what it ignores too (a limit, below). A rule in the
+  clone's `info/exclude` or in a config keeps nothing. Each context file and skill that pi reads (`AGENTS.override.md`,
+  `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`, and what is in a `.pi/skills` folder) in any folder of the
+  Worktree goes also when it is ignored (`clean -ffdx` with those pathspecs), because an ignored context file is in no
+  diff. A tracked file stays. git does not go into a nested repo that is ignored.
+
+  Only a detached cut is forced and cleaned: a branch Worktree that a cut made is given back as it is (`held`), with the
+  work in it.
+
 - **A cut needs a Repo Slot.** `jr2 up` and the invoke refuse `worktree()` under a Workspace with no Repo Slot, as they
   refuse a `push` (ADR-0051).
 - **v1 has no kit removal.** The docs give a `command` that runs `git worktree remove`.
@@ -272,6 +300,14 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   handbook with no sign, and a read-only slot is a reason for this design.
 - **`cwd` defaults to `/work`.** Rejected, as ADR-0057 rejected it.
 - **A bad path goes to `onError`.** Rejected by ADR-0067: an Agent's param can cause it.
+- **Check out in the Worktree's own git, with each filter that the clone's config names turned off.** Rejected. A filter
+  in a Worktree's own config, in an include or in a conditional include for a branch is not in that list, and a config
+  that an Agent changes between the list and the checkout is not either. The list does not stop a `core.worktree`, a
+  skip-worktree bit or an index whose stat data matches a changed file. The cut's own git folder reads none of these.
+- **A re-cut removes each `.gitignore` that the commit does not have**, so that only the commit's own rules keep an
+  ignored file. Rejected. It also removed each folder that ignores itself with its own `.gitignore` (a Python `.venv`, a
+  `.pytest_cache`, a `.mypy_cache`), so the reviewer installed its tools again at each round. The cut cannot tell such a
+  folder from one that an Agent hid, and the isolation of the Agents of one Workspace is best effort (ADR-0028).
 
 ## Consequences
 
@@ -285,6 +321,26 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
 - The fetch lock's holder ends as an orphan, so PID 1 must reap it. A User Container whose PID 1 does not reap keeps one
   more zombie for each fetch there: 50 fetches left 50, beside the 52 that git leaves by itself with no jr2 program.
 - A kill in the short `update-ref` step leaves a stale ref lock, and no cut removes it. So that name stays `refused`.
+- The cut's own git folder is in the domain's `TMPDIR`, and the Agents run as the same uid in the same domain. So an
+  Agent's process that runs during a cut can write that folder: a race with one cut, not a file put there before it. A
+  domain for each Agent ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md))
+  closes it.
+- A `.gitignore` that an Agent writes in another Agent's review Worktree keeps the files that it ignores through a
+  re-cut, and no `git status` there shows them. The cut cannot tell such a file from a `.venv`'s own `.gitignore`. This
+  is one of the limits of the isolation between the Agents of one Workspace (ADR-0028), which is best effort. Such a
+  file does not reach a system prompt: the cut removes an ignored context file or skill, and the project context leaves
+  out an ignored one ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). A Landlock domain for
+  each Agent, in which the Agent writes only its own Worktree, closes it. That is the next step after this decision: it
+  extends the domain for each Agent of
+  [ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md).
+- Each re-cut of a detached Worktree writes each file of the commit again, because the cut does not trust the stat data
+  of the Worktree's index.
+- The cut trusts the clone's objects. Each Agent of the Workspace can write the clone's object folder, and git does not
+  check an object's content against its id when it reads it. So an Agent that rewrites an object changes what each later
+  cut writes and what each Worktree's git reads. This is one of the limits of the isolation between the Agents of one
+  Workspace (ADR-0028): a Workflow that needs more gives the review a Workspace of its own.
+- When the Git LFS work merges, its `-c` filter pins, `lfs.storage=<clone>/.git/lfs` among them, go also on the git of
+  the cut's fill (the `runner` in `fill`), which reads no config file of the clone.
 - Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a
   Pool in one clone. They share the one Harness and `/work`. Only the Harness process holds the control credential, and
   each process it starts in `/work` runs confined, so no Agent's code can act as another Agent

@@ -111,6 +111,8 @@ Make the file `workflows/task.ts`. Replace `<you>` and `<version>` in it:
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 seats: workflow "task" — who may send what, per state (ADR-0015)
@@ -119,6 +121,7 @@ seats: workflow "task" — who may send what, per state (ADR-0015)
 …
 sandbox image "default": building jr2-sandbox-my-instance-default:5e601a543032-amd64
   no USER declared — the pod's uid-1000 fallback applies
+  user context: none (no USER, so the home is jr2's emptyDir)
   kind load → cluster "jr2"
 …
 repos: 1 bound Repo(s) — the Orchestrator creates their Repo resources at boot and at each publish (ADR-0069); the cache agent clones on first need (`jr2 status` reports sync state)

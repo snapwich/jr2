@@ -38,6 +38,27 @@ export const CONVERSATIONS_VOLUME = "conversations";
  * the Harness confines can make a file there, so none can listen in the Harness's place. */
 export const SHELL_DIR = "/run/jr2/shell";
 export const SHELL_VOLUME = "shell";
+/** The Harness's own folder for the whole output of a long `bash` call (ADR-0076): a folder under
+ * `/run/jr2`, an emptyDir mounted into the Harness container alone. The Harness's TMPDIR is this
+ * folder. Its confined processes read a file there, by the path that the model is given, and make,
+ * change, move and remove nothing there. */
+export const OUTPUT_DIR = "/run/jr2/output";
+export const OUTPUT_VOLUME = "output";
+
+/** The env var that tells the Harness of a Sandbox how far up it reads an Agent's context files
+ * (ADR-0062): `worktree` or `workspace`, the `workspace()`'s `projectContext`. */
+export const PROJECT_CONTEXT_ENV = "JR2_PROJECT_CONTEXT";
+
+/** The env var that tells the Harness of a Sandbox the image user's context folder (ADR-0062),
+ * `<home>/.pi/agent`, which the pod mounts read-only from the Sandbox Image, or `""` when the pod
+ * mounts none. The model sees the folder at this path. */
+export const USER_CONTEXT_ENV = "JR2_USER_CONTEXT";
+/** The volume of that mount: the Sandbox Image again, as an `image` volume. */
+export const USER_CONTEXT_VOLUME = "user-context";
+/** Where the pod mounts the same folder of the image a second time, read-only (ADR-0062): under
+ * `/run/jr2`, where no process that the Harness confines moves a folder, so none can put a folder of
+ * its own in its place. The Harness reads the user context here alone. */
+export const USER_CONTEXT_DIR = "/run/jr2/user-context";
 
 /** The harness config ConfigMap the stock Harness boots from (ADR-0018): what this instance can
  * REACH — the custom model provider minus its key, and the catalog providers' gateways (ADR-0059). No Agents ride it: a Machine carries its own

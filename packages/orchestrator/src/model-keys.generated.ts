@@ -1,4 +1,4 @@
-// Made from @earendil-works/pi-ai 1.4.0 by `just model-keys` (packages/harness/scripts/model-keys.ts).
+// Made from @earendil-works/pi-ai 1.5.0 by `just model-keys` (packages/harness/scripts/model-keys.ts).
 // Do not edit: run the recipe at each pi bump. `model-keys.ts` says what the table means (ADR-0059).
 
 import type { ModelKey } from "./model-keys.ts";

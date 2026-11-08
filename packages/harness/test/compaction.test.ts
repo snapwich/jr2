@@ -1,22 +1,15 @@
-// Compaction's arithmetic (ADR-0036), at the honest tier: the derivation is pure, so the reserve,
-// the small-window floor and the "no declared window means OFF" rule are proven socket-free rather
-// than through the turn loop — and so are the estimate, the cut point and the summary call's retry
-// and abort, over a fake `Models`. The texts the summarizer reads are pinned against pi 0.82.1's
-// own answers in `replay-pi-0.82.1.test.ts`. The MECHANISM — that a cut lands mid-turn and the next
+// Compaction's arithmetic and seat (ADR-0036), at the honest tier: the derivation is pure, so the
+// reserve, the small-window floor and the "no declared window means OFF" rule are proven
+// socket-free rather than through the turn loop — and so are the summary call's retry and abort and
+// the cases where no cut is taken, over a fake `Models`. The cut and the summary texts are pi's own
+// (`pi-compaction.ts`), tested upstream. The MECHANISM — that a cut lands mid-turn and the next
 // request carries it — is a conformance claim and lives in `conformance.test.ts`.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, Model, Models } from "@earendil-works/pi-ai";
-import { compactIfOver, compactionSettingsFor, overContextThreshold, summaryRetryPolicy } from "../src/compaction.ts";
-import type { EngineMessage } from "../src/engine.ts";
-import {
-  compact,
-  estimateContextTokens,
-  estimateTokens,
-  findCutPoint,
-  prepareCompaction,
-} from "../src/compaction-summary.ts";
+import type { Api, AssistantMessage, Message, Model, Models } from "@earendil-works/pi-ai";
+import { compactIfOver, compactionSettingsFor, contextTokens, summaryRetryPolicy } from "../src/compaction.ts";
+import { prepareCompaction, sessionChain, shouldCompact } from "../src/pi-compaction.ts";
 import { EnginePart, type TranscriptEntry } from "../src/transcript.ts";
 
 test("the reserve is one full response, never less than the floor (ADR-0036)", () => {
@@ -67,14 +60,14 @@ test("the retention is jr2's own 20000, and the seam is the conformance suite's 
   assert.equal(compactionSettingsFor({ contextWindow: 200_000, maxTokens: 8192 }, 12).keepRecentTokens, 12);
 });
 
-test("the threshold is strictly over: a context exactly at the reserve still fits", () => {
+test("pi's rule with jr2's setting: strictly over, so a context exactly at the reserve still fits", () => {
   const settings = compactionSettingsFor({ contextWindow: 200_000, maxTokens: 8192 });
-  assert.equal(overContextThreshold(183_615, 200_000, settings), false);
-  assert.equal(overContextThreshold(183_616, 200_000, settings), false, "window − reserve is the last fitting size");
-  assert.equal(overContextThreshold(183_617, 200_000, settings), true);
+  assert.equal(shouldCompact(183_615, 200_000, settings), false);
+  assert.equal(shouldCompact(183_616, 200_000, settings), false, "window − reserve is the last fitting size");
+  assert.equal(shouldCompact(183_617, 200_000, settings), true);
   // A disabled derivation never crosses, whatever the count.
   const off = compactionSettingsFor({ contextWindow: 0, maxTokens: 8192 });
-  assert.equal(overContextThreshold(1_000_000, 0, off), false);
+  assert.equal(shouldCompact(1_000_000, 0, off), false);
 });
 
 test("the summarizer states its own retry budget — pi-ai's default is ZERO attempts past the first", () => {
@@ -87,7 +80,7 @@ test("the summarizer states its own retry budget — pi-ai's default is ZERO att
   assert.deepEqual(summaryRetryPolicy(0), { enabled: false, maxRetries: 0, baseDelayMs: 500 });
 });
 
-// ─── the estimate and the cut point ──────────────────────────────────────────
+// ─── the seat ────────────────────────────────────────────────────────────────
 
 const usage = (input: number) => ({
   input,
@@ -101,7 +94,11 @@ const user = (text: string): TranscriptEntry => ({
   type: "message",
   message: { role: "user", content: [{ type: "text", text }], timestamp: 1 },
 });
-const assistant = (text: string, stopReason: AssistantMessage["stopReason"] = "stop"): TranscriptEntry => ({
+const assistant = (
+  text: string,
+  input = 1000,
+  stopReason: AssistantMessage["stopReason"] = "stop",
+): TranscriptEntry => ({
   type: "message",
   message: {
     role: "assistant",
@@ -109,95 +106,11 @@ const assistant = (text: string, stopReason: AssistantMessage["stopReason"] = "s
     api: "openai-completions",
     provider: "fake",
     model: "model-x",
-    usage: usage(1000),
+    usage: usage(input),
     stopReason,
     timestamp: 2,
   },
 });
-const calls = (id: string): TranscriptEntry => ({
-  type: "message",
-  message: {
-    role: "assistant",
-    content: [{ type: "toolCall", id, name: "bash", arguments: { command: "ls" } }],
-    api: "openai-completions",
-    provider: "fake",
-    model: "model-x",
-    usage: usage(1000),
-    stopReason: "toolUse",
-    timestamp: 2,
-  },
-});
-const answered = (id: string, text: string): TranscriptEntry => ({
-  type: "message",
-  message: {
-    role: "toolResult",
-    toolCallId: id,
-    toolName: "bash",
-    content: [{ type: "text", text }],
-    isError: false,
-    timestamp: 3,
-  },
-});
-const messageOf = (entry: TranscriptEntry) => (entry as { message: EngineMessage }).message;
-
-test("the estimate: characters / 4, 4800 characters an image, a summary by its text", () => {
-  assert.equal(estimateTokens(messageOf(user("12345678"))), 2);
-  assert.equal(estimateTokens(messageOf(user("123456789"))), 3, "rounded up");
-  assert.equal(
-    estimateTokens({
-      role: "toolResult",
-      toolCallId: "i",
-      toolName: "read",
-      content: [{ type: "image", data: "x", mimeType: "image/png" }],
-      isError: false,
-      timestamp: 0,
-    }),
-    1200,
-  );
-  assert.equal(
-    estimateTokens({ role: "compactionSummary", summary: "x".repeat(40), tokensBefore: 1, timestamp: 0 }),
-    10,
-  );
-});
-
-test("the context estimate: the newest valid usage plus the estimate of what came after it", () => {
-  const messages = [user("hello"), assistant("hi"), user("12345678")].map(messageOf);
-  // `totalTokens` is 0, so the usage is the sum of its parts: 1000 + 10.
-  assert.deepEqual(estimateContextTokens(messages), {
-    tokens: 1012,
-    usageTokens: 1010,
-    trailingTokens: 2,
-    lastUsageIndex: 1,
-  });
-  // An aborted or an errored message carries no valid usage.
-  const aborted = [user("hello"), assistant("hi", "aborted")].map(messageOf);
-  assert.equal(estimateContextTokens(aborted).lastUsageIndex, null);
-});
-
-test("the cut point: at a user message, inside a turn (a split turn), or none", () => {
-  const entries = [user("u".repeat(400)), calls("c1"), answered("c1", "r".repeat(400)), assistant("a".repeat(400))];
-  // A budget that the last message alone fills: the cut is at it, inside the turn that the user
-  // message started.
-  assert.deepEqual(findCutPoint(entries, 0, entries.length, 50), {
-    firstKeptEntryIndex: 3,
-    turnStartIndex: 0,
-    isSplitTurn: true,
-  });
-  // A budget that the whole turn fills: the cut is at the user message, which splits nothing.
-  assert.deepEqual(findCutPoint(entries, 0, entries.length, 400), {
-    firstKeptEntryIndex: 0,
-    turnStartIndex: -1,
-    isSplitTurn: false,
-  });
-  // A tool result is never a cut point: with only tool results there is none.
-  assert.deepEqual(findCutPoint([answered("c1", "r")], 0, 1, 1), {
-    firstKeptEntryIndex: 0,
-    turnStartIndex: -1,
-    isSplitTurn: false,
-  });
-});
-
-// ─── the summary call ────────────────────────────────────────────────────────
 
 const model = {
   id: "model-x",
@@ -212,42 +125,73 @@ const model = {
   maxTokens: 8192,
 } as Model<Api>;
 
-/** A fake registry that answers each summary call with the next step of `answers`. */
+type Seen = { signal?: AbortSignal; maxTokens?: number };
+
+/** A fake registry that answers each summary call with the next step of `answers`. pi asks through
+ * the stream function, and reads its `result()`. */
 function scripted(
   answers: Array<Partial<AssistantMessage> | ((signal?: AbortSignal) => Promise<Partial<AssistantMessage>>)>,
 ) {
-  const seen: Array<{ signal?: AbortSignal }> = [];
+  const seen: Seen[] = [];
   const models = {
-    completeSimple: async (_m: Model<Api>, _context: unknown, options: { signal?: AbortSignal }) => {
+    streamSimple: (_m: Model<Api>, _context: unknown, options: Seen) => {
       seen.push(options);
       const step = answers[seen.length - 1] ?? {};
-      const answer = typeof step === "function" ? await step(options.signal) : step;
       return {
-        role: "assistant",
-        content: [{ type: "text", text: "SUMMARY" }],
-        api: "openai-completions",
-        provider: "fake",
-        model: "model-x",
-        usage: usage(10),
-        stopReason: "stop",
-        timestamp: 0,
-        ...answer,
-      } as AssistantMessage;
+        result: async () =>
+          ({
+            role: "assistant",
+            content: [{ type: "text", text: "SUMMARY" }],
+            api: "openai-completions",
+            provider: "fake",
+            model: "model-x",
+            usage: usage(10),
+            stopReason: "stop",
+            timestamp: 0,
+            ...(typeof step === "function" ? await step(options.signal) : step),
+          }) as AssistantMessage,
+      };
     },
   } as unknown as Models;
   return { models, seen };
 }
 
-const settings = { enabled: true, reserveTokens: 16_384, keepRecentTokens: 1_000_000 };
-const prepared = () =>
-  prepareCompaction(new EnginePart("t", [user("hello"), assistant("hi")], undefined, undefined).branch(), settings)!;
+/** A transcript whose newest usage fills the window: the next request cuts. */
+const full = (): TranscriptEntry[] => [
+  user("hello"),
+  assistant("hi", 190_000),
+  user("again"),
+  assistant("ok", 190_000),
+];
 const fast = (maxRetries: number) => ({ enabled: maxRetries > 0, maxRetries, baseDelayMs: 1 });
-const seatOf = (models: Models, maxRetries: number, signal?: AbortSignal) => ({
+const seatFor = (part: EnginePart, models: Models, maxRetries: number, signal?: AbortSignal) => ({
+  part,
   models,
   model,
   thinkingLevel: "off" as const,
+  // Keep the second prompt and its answer: the cut is at a user message, so one summary request.
+  settings: compactionSettingsFor(model, 3),
   retry: fast(maxRetries),
   signal,
+});
+const messageOf = (entry: TranscriptEntry) => (entry as { message: Message }).message;
+const compactions = (part: EnginePart) => part.all().filter((entry) => entry.type === "compaction");
+
+test("a cut at a Submission's prompt is a split turn: pi's cut moves back over the mark", () => {
+  // The mark is a custom entry with no context (`sessionChain`), as pi's own state entries are, so
+  // the cut that falls on the second prompt moves back to the mark, and the turn it splits is the
+  // first Submission's.
+  const entries: TranscriptEntry[] = [
+    { type: "submission" },
+    user("u".repeat(400)),
+    assistant("a".repeat(400)),
+    { type: "submission" },
+    user("v".repeat(400)),
+  ];
+  const prepared = prepareCompaction(sessionChain(entries), { enabled: true, reserveTokens: 1, keepRecentTokens: 50 });
+  assert.ok(prepared);
+  assert.equal(prepared.firstKeptEntryId, "3");
+  assert.equal(prepared.isSplitTurn, true);
 });
 
 test("the summary call retries a transient error: a 503, then the summary", async () => {
@@ -255,24 +199,29 @@ test("the summary call retries a transient error: a 503, then the summary", asyn
     { stopReason: "error", errorMessage: "503 Service Unavailable", content: [] },
     {},
   ]);
-  const done = await compact(prepared(), seatOf(models, 2), settings);
+  const part = new EnginePart("t", full(), undefined, undefined);
+  assert.ok(await compactIfOver(seatFor(part, models, 2)));
   assert.equal(seen.length, 2);
-  assert.equal(done.summary, "SUMMARY");
+  assert.match((compactions(part)[0] as { summary: string }).summary, /^SUMMARY/);
 });
 
 test("a summary call that fails each retry fails with pi's words; with no retries it is asked once", async () => {
   const failing = { stopReason: "error" as const, errorMessage: "500 Internal Server Error", content: [] };
   const three = scripted([failing, failing, failing]);
-  await assert.rejects(compact(prepared(), seatOf(three.models, 2), settings), {
+  const part = new EnginePart("t", full(), undefined, undefined);
+  await assert.rejects(compactIfOver(seatFor(part, three.models, 2)), {
     message: "Summarization failed: 500 Internal Server Error",
   });
   assert.equal(three.seen.length, 3);
+  assert.equal(compactions(part).length, 0, "a failed summary appends nothing");
   const once = scripted([failing]);
-  await assert.rejects(compact(prepared(), seatOf(once.models, 0), settings), /^Error: Summarization failed/);
+  await assert.rejects(compactIfOver(seatFor(part, once.models, 0)), /^Error: Summarization failed/);
   assert.equal(once.seen.length, 1);
 });
 
-test("the summary call gets the run's signal: an abort during the summary ends it", async () => {
+test("an abort during the summary ends it, and appends nothing: pi would store the summary it got", async () => {
+  // pi fails a summary that ended `error` or `length`, not one that ended `aborted`. The seat
+  // throws for an aborted run, so no empty or partial summary becomes the context.
   const controller = new AbortController();
   const { models, seen } = scripted([
     (signal) =>
@@ -281,48 +230,94 @@ test("the summary call gets the run's signal: an abort during the summary ends i
         setTimeout(() => controller.abort(), 10);
       }),
   ]);
-  await assert.rejects(compact(prepared(), seatOf(models, 2, controller.signal), settings), {
+  const part = new EnginePart("t", full(), undefined, undefined);
+  const before = part.all().length;
+  await assert.rejects(compactIfOver(seatFor(part, models, 2, controller.signal)), {
     message: "Summarization aborted",
   });
-  assert.equal(seen[0]!.signal, controller.signal);
+  assert.equal(seen[0]!.signal, controller.signal, "the summary call gets the run's signal");
+  assert.equal(part.all().length, before, "the aborted summary appended no Compaction");
 });
 
-test("a model that states no maxTokens: the summary's budget is 0.8 of the reserve, with no cap", async () => {
-  // Each replay case has maxTokens 8192, which caps the budget. With no maxTokens (0) the cap is
-  // gone, and the budget is floor(0.8 × 16384) = 13107 — pi 0.82.1's number.
-  const budgetOf = async (maxTokens: number) => {
-    const { models, seen } = scripted([{}]);
-    await compact(prepared(), { ...seatOf(models, 0), model: { ...model, maxTokens } }, settings);
-    assert.equal(seen.length, 1, "no split turn: one summary request");
-    return (seen[0] as { maxTokens?: number }).maxTokens;
-  };
-  assert.equal(await budgetOf(0), 13_107);
-  assert.equal(await budgetOf(8192), 8192);
+test("the summary request states no maxTokens: its budget is the model's output limit (pi #9512)", async () => {
+  const { models, seen } = scripted([{}]);
+  await compactIfOver(seatFor(new EnginePart("t", full(), undefined, undefined), models, 0));
+  assert.equal(seen.length, 1, "no split turn: one summary request");
+  assert.equal(seen[0]!.maxTokens, undefined);
 });
 
 test("an aborted run asks for no summary over a full window: the summary call is never made (I-10)", async () => {
   // pi-ai sends nothing on an aborted signal, so only a count of the calls can see this check.
-  const full = (): TranscriptEntry => {
-    const entry = assistant("hi");
-    (entry as { message: AssistantMessage }).message.usage = usage(190_000);
-    return entry;
-  };
-  const part = () => new EnginePart("t", [user("hello"), full(), user("again"), full()], undefined, undefined);
-  const seatFor = (models: Models, signal: AbortSignal | undefined) => ({
-    part: part(),
-    models,
-    model,
-    thinkingLevel: "off" as const,
-    settings: compactionSettingsFor(model, 1_000),
-    retry: fast(0),
-    signal,
-  });
   const live = scripted([{}]);
-  assert.ok(await compactIfOver(seatFor(live.models, undefined)), "the window is full: a live run cuts");
+  assert.ok(
+    await compactIfOver(seatFor(new EnginePart("t", full(), undefined, undefined), live.models, 0)),
+    "the window is full: a live run cuts",
+  );
   assert.equal(live.seen.length, 1);
   const controller = new AbortController();
   controller.abort();
   const ended = scripted([{}]);
-  assert.equal(await compactIfOver(seatFor(ended.models, controller.signal)), undefined);
+  assert.equal(
+    await compactIfOver(seatFor(new EnginePart("t", full(), undefined, undefined), ended.models, 0, controller.signal)),
+    undefined,
+  );
   assert.equal(ended.seen.length, 0, "an ended run buys no summarizer round-trip");
+});
+
+test("no second cut on the reading that crossed: pi's estimate does not trust a usage from before the cut", async () => {
+  // A cut keeps recent assistant messages, and so the usage that crossed. A request after the cut
+  // that ends `error` adds no usage of its own. pi's projected estimate then counts the text of the
+  // context, which the cut made small.
+  const { models, seen } = scripted([{}, {}]);
+  const part = new EnginePart("t", full(), undefined, undefined);
+  assert.ok(await compactIfOver(seatFor(part, models, 0)));
+  part.appendMessage(messageOf(assistant("", 0, "error")));
+  assert.equal(await compactIfOver(seatFor(part, models, 0)), undefined);
+  assert.equal(seen.length, 1, "one summary request for one crossing");
+  // A usage AFTER the cut that crosses again is trusted, and cuts again.
+  part.appendMessage(messageOf(user("more")));
+  part.appendMessage(messageOf(assistant("big", 190_000)));
+  assert.ok(await compactIfOver(seatFor(part, models, 0)));
+  assert.equal(compactions(part).length, 2);
+});
+
+test("a second cut when the text itself is still over: pi's estimate counts the text, and the text crosses", async () => {
+  // The other side of the case above. After a cut and a request that ends `error`, pi's projected
+  // estimate counts the text of the context (chars/4). When that text is still over the window less
+  // the reserve, the context really is over, and the next request cuts again by pi's rule. A pi bump
+  // that changes this rule fails here.
+  const { models, seen } = scripted([{}, {}]);
+  const part = new EnginePart("t", full(), undefined, undefined);
+  assert.ok(await compactIfOver(seatFor(part, models, 0)));
+  part.appendMessage(messageOf(user("x".repeat(800_000))));
+  part.appendMessage(messageOf(assistant("", 0, "error")));
+  assert.ok(await compactIfOver(seatFor(part, models, 0)), "the text estimate crossed, so pi cuts again");
+  assert.equal(seen.length, 2, "one summary request for each crossing");
+  assert.equal(compactions(part).length, 2);
+});
+
+test("the text estimate counts the system prompt, and a provider's usage, which counts it already, is not added to (ADR-0036)", () => {
+  const system = "s".repeat(4000); // 1000 tokens by pi's chars/4
+  // No usage since the newest cut: the text of the messages, plus the system prompt.
+  const textOnly = sessionChain([user("x".repeat(400)), assistant("", 0, "error")]);
+  assert.equal(contextTokens(textOnly, system) - contextTokens(textOnly), 1000);
+  // A usage: the provider counted the whole request, the system prompt in it.
+  const withUsage = sessionChain(full());
+  assert.equal(contextTokens(withUsage, system), contextTokens(withUsage));
+});
+
+test("a context whose messages fit and whose system prompt does not is cut: up to 256 KiB of project context is in it (ADR-0036, ADR-0062)", async () => {
+  // 100k tokens of messages and no usage since the newest cut: under the window less the reserve
+  // (200000 - 16384). With 100k tokens of system prompt, over it.
+  const entries = () => [user("x".repeat(200_000)), assistant("", 0, "error"), user("y".repeat(200_000))];
+  const fits = scripted([{}]);
+  assert.equal(
+    await compactIfOver(seatFor(new EnginePart("t", entries(), undefined, undefined), fits.models, 0)),
+    undefined,
+  );
+  assert.equal(fits.seen.length, 0);
+  const over = scripted([{}]);
+  const part = new EnginePart("t", entries(), undefined, undefined);
+  assert.ok(await compactIfOver({ ...seatFor(part, over.models, 0), systemPrompt: "p".repeat(400_000) }));
+  assert.equal(over.seen.length, 1, "the system prompt took it over");
 });

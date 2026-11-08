@@ -1,10 +1,11 @@
 // Working tools (ADR-0027/0028): the assembled set per definition, the ADR-0028 workspace filter,
-// and jr2's own grep/glob against a real fixture tree. grep must not require ripgrep on PATH —
-// the fallback test strips rg from PATH, so the plain-grep path is exercised deterministically.
+// jr2's own grep and pi's find with jr2's glob against a real fixture tree, and the declarations
+// that the model reads. Neither search requires ripgrep on PATH — the fallback tests strip rg from
+// PATH, so the plain-grep and plain-find paths are exercised deterministically.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,12 @@ import { testChildren } from "./support/children.ts";
 const source = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "working-tools");
 const fixtures = join(mkdtempSync(join(tmpdir(), "jr2-working-tools-")), "working-tools");
 cpSync(source, fixtures, { recursive: true });
+// pi's ignore list for find: `node_modules` and `.git` (the checkout ignores a node_modules, so the
+// copy gets them here).
+for (const dir of ["node_modules/pkg", ".git/hooks"]) {
+  mkdirSync(join(fixtures, dir), { recursive: true });
+  writeFileSync(join(fixtures, dir, "index.js"), "ignored\n");
+}
 const definition = { instructions: "test", model: "anthropic/claude-x" };
 const children = testChildren({ work: fixtures });
 
@@ -36,14 +43,14 @@ async function output(t: WorkingTool, params: unknown): Promise<string> {
   return first.text;
 }
 
-test("the full set is read, write, edit, bash, grep, glob", () => {
+test("the full set is read, write, edit, bash, grep, find", () => {
   assert.deepEqual(names(workingToolsFor(definition, fixtures, { children })), [
     "read",
     "write",
     "edit",
     "bash",
     "grep",
-    "glob",
+    "find",
   ]);
   assert.deepEqual(names(workingToolsFor({ ...definition, workspace: "write" }, fixtures, { children })), [
     "read",
@@ -51,7 +58,7 @@ test("the full set is read, write, edit, bash, grep, glob", () => {
     "edit",
     "bash",
     "grep",
-    "glob",
+    "find",
   ]);
 });
 
@@ -60,7 +67,7 @@ test('workspace "read" withholds write and edit — bash stays (ADR-0028)', () =
     "read",
     "bash",
     "grep",
-    "glob",
+    "find",
   ]);
 });
 
@@ -76,12 +83,10 @@ test('workspace "none" withholds the entire set — the Menu-only Agent (ADR-002
   assert.deepEqual(names(workingToolsFor({ ...definition, workspace: "none" }, fixtures, { children })), []);
 });
 
-test("grep/glob schemas: pattern required, path optional", () => {
-  for (const name of ["grep", "glob"]) {
-    const schema = tool(name).parameters as { properties: Record<string, unknown>; required?: string[] };
-    assert.deepEqual(Object.keys(schema.properties), ["pattern", "path"]);
-    assert.deepEqual(schema.required, ["pattern"]);
-  }
+test("grep's schema: pattern required, path optional", () => {
+  const schema = tool("grep").parameters as { properties: Record<string, unknown>; required?: string[] };
+  assert.deepEqual(Object.keys(schema.properties), ["pattern", "path"]);
+  assert.deepEqual(schema.required, ["pattern"]);
 });
 
 test("grep: matching lines come back as file:line:text", async () => {
@@ -126,43 +131,74 @@ test("grep: a broken pattern throws — pi renders the message as the isError re
   await assert.rejects(output(tool("grep"), { pattern: "[unclosed" }));
 });
 
-test("glob: a basename pattern matches at any depth", async () => {
-  assert.equal(await output(tool("glob"), { pattern: "*.ts" }), "./alpha.ts");
-  assert.equal(await output(tool("glob"), { pattern: "*.txt" }), "./sub/bravo.txt");
+/** A domain whose PATH holds `find` alone of the search programs: rg and fd resolve to nothing. */
+function withoutRg(): { children: ReturnType<typeof testChildren>; done: () => void } {
+  const bin = mkdtempSync(join(tmpdir(), "jr2-no-rg-"));
+  for (const name of ["find", "sh"]) {
+    const found = (process.env.PATH ?? "")
+      .split(delimiter)
+      .map((dir) => join(dir, name))
+      .find(existsSync);
+    assert.ok(found, `no ${name} on PATH — cannot exercise the fallback`);
+    symlinkSync(found, join(bin, name));
+  }
+  return {
+    children: testChildren({ work: fixtures, env: { PATH: bin } }),
+    done: () => rmSync(bin, { recursive: true, force: true }),
+  };
+}
+
+for (const [how, using] of [
+  ["rg", () => ({ children, done: () => {} })],
+  ["plain find, where rg is absent", withoutRg],
+] as const) {
+  test(`find (${how}): a basename pattern matches at any depth; a pattern with a / matches the path at any depth`, async () => {
+    const { children: c, done } = using();
+    try {
+      assert.equal(await output(tool("find", c), { pattern: "*.ts" }), "alpha.ts");
+      assert.equal(await output(tool("find", c), { pattern: "*.txt" }), "sub/bravo.txt");
+      assert.equal(await output(tool("find", c), { pattern: "sub/*.txt" }), "sub/bravo.txt");
+      assert.equal(await output(tool("find", c), { pattern: "**/*.txt" }), "sub/bravo.txt");
+    } finally {
+      done();
+    }
+  });
+
+  test(`find (${how}): path narrows the search, the paths are relative to it, and pi's ignore list holds`, async () => {
+    const { children: c, done } = using();
+    try {
+      assert.equal(await output(tool("find", c), { pattern: "*.txt", path: "sub" }), "bravo.txt");
+      assert.equal(await output(tool("find", c), { pattern: "*.ts", path: "sub" }), "No files found matching pattern");
+      assert.equal(await output(tool("find", c), { pattern: "*.js" }), "No files found matching pattern");
+    } finally {
+      done();
+    }
+  });
+}
+
+test("find: the limit bounds the results and says so", async () => {
+  assert.equal(await output(tool("find"), { pattern: "*", limit: 1 }), "alpha.ts\n\n[1 results limit reached]");
 });
 
-test("glob: a pattern with directories matches against the path", async () => {
-  assert.equal(await output(tool("glob"), { pattern: "sub/*.txt" }), "./sub/bravo.txt");
-  assert.equal(await output(tool("glob"), { pattern: "**/*.txt" }), "./sub/bravo.txt");
+test("find: a missing directory is pi's error", async () => {
+  await assert.rejects(
+    tool("find").execute("call-1", { pattern: "*", path: "no-such-dir" } as never),
+    /^Error: Path not found: .*no-such-dir$/,
+  );
 });
 
-test('glob: path narrows the search; zero matches answers "no matches"', async () => {
-  assert.equal(await output(tool("glob"), { pattern: "*.md", path: "sub" }), "no matches");
-  assert.equal(await output(tool("glob"), { pattern: "*.ts", path: "sub" }), "no matches");
-});
-
-test("glob: a missing directory throws", async () => {
-  await assert.rejects(output(tool("glob"), { pattern: "*", path: "no-such-dir" }));
-});
-
-test("each Working tool declares to the model what pi 0.82.1 declared, byte for byte (ADR-0027)", async () => {
-  // The fixture is the tools block of the golden capture made on pi 0.82.1 (`working-tools`), with
-  // the Menu tools left out. JSON text, so the key order counts: it is part of what a provider caches.
+test("each Working tool declares to the model what the capture holds, byte for byte (ADR-0027)", async () => {
+  // The fixture is pi-coding-agent 1.5.0's declarations of read, write, edit, bash and find, and
+  // jr2's grep, as the model reads them. JSON text, so the key order counts: it is part of what a
+  // provider caches. A pin bump that changes what the model reads fails here: read the change, and
+  // write the fixture again in the same commit.
   const { toToolDeclaration } = await import("@earendil-works/pi-ai");
   const { readFileSync } = await import("node:fs");
-  const golden = JSON.parse(readFileSync(join(dirname(source), "working-tool-declarations.json"), "utf8")) as Array<{
-    name: string;
-    description: string;
-    parameters: unknown;
-    strict: boolean;
-  }>;
+  const golden = JSON.parse(readFileSync(join(dirname(source), "working-tool-declarations.json"), "utf8")) as unknown[];
   const declared = workingToolsFor(definition, fixtures, { children }).map(toToolDeclaration);
   assert.deepEqual(
     declared.map((d) => d.name),
-    golden.map((g) => g.name),
+    ["read", "write", "edit", "bash", "grep", "find"],
   );
-  for (const [i, tool] of declared.entries()) {
-    const { strict: _strict, ...expected } = golden[i]!;
-    assert.equal(JSON.stringify(tool), JSON.stringify(expected), `${tool.name}'s declaration changed`);
-  }
+  assert.equal(JSON.stringify(declared), JSON.stringify(golden));
 });

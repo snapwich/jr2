@@ -1,30 +1,34 @@
 // Compaction (ADR-0036): the cut a Turn takes on its OWN context, mid-flight — what the model
 // still sees, replaced by a summary plus a retained tail. jr2's shape is one long agentic turn per
-// Submission (ADR-0027), so a window fills in the middle of a Turn, not between Turns. pi 1.x has no
-// Compaction, so jr2 owns all of it: this module decides WHEN to cut and appends the cut to the
-// engine part (`transcript.ts`); `compaction-summary.ts` decides WHAT the cut is. The seat is the
-// engine's `beforeRequest` hook (`turn.ts`), which fires before each provider request, the first one
-// included; the rebuilt context it returns is the context of this request and of the rest of the run.
+// Submission (ADR-0027), so a window fills in the middle of a Turn, not between Turns. The seat is
+// the engine's `beforeRequest` hook (`turn.ts`), which fires before each provider request, the first
+// one included; the rebuilt context it returns is the context of this request and of the rest of
+// the run.
 //
-// The thresholds are jr2-owned turn mechanics (ADR-0016): derived from the model, no author
-// surface, not a Dial (ADR-0018). They and the algorithm are jr2's, so a pin bump cannot move when
-// a cut occurs. The summarizer is the Turn's own model, thinking level and abort signal: mechanism
-// inherits from the Dials, and a summary jr2 no longer wants must not outlive the run that asked for
-// it (ADR-0024).
+// The Harness decides when, by pi's rule (`shouldCompact` over pi's projected estimate), with jr2's
+// derivation of the reserve as pi's per-model setting. The cut, the summary request and its texts
+// are pi's (`pi-compaction.ts`), so a pi bump can move them. The thresholds are jr2-owned turn
+// mechanics (ADR-0016): derived from the model, no author surface, not a Dial (ADR-0018). The
+// summarizer is the Turn's own model, thinking level, stream and abort signal: mechanism inherits
+// from the Dials, and a summary jr2 no longer wants must not outlive the run that asked for it
+// (ADR-0024).
 
 import type { Api, Model, Models, ModelThinkingLevel, RetryPolicy } from "@earendil-works/pi-ai";
+import type { EngineMessage } from "./engine.ts";
 import {
   compact,
-  estimateContextTokens,
+  estimateContext,
   estimateTokens,
-  getLastAssistantUsage,
   prepareCompaction,
+  sessionChain,
+  shouldCompact,
+  transcriptCompaction,
   type CompactionSettings,
-} from "./compaction-summary.ts";
-import type { EngineMessage } from "./engine.ts";
+} from "./pi-compaction.ts";
+import { unlimitedPayload } from "./provider.ts";
 import type { EnginePart } from "./transcript.ts";
 
-export type { CompactionSettings } from "./compaction-summary.ts";
+export type { CompactionSettings } from "./pi-compaction.ts";
 
 /** The reserve floor. The threshold is checked BEFORE a request that may emit up to `maxTokens`,
  * so a reserve smaller than one full response reserves nothing — hence `max(floor, maxTokens)`.
@@ -39,14 +43,16 @@ const SMALL_WINDOW_RESERVE_MIN = 1024;
  * everything before them becomes the summary. The value pi ships, restated as jr2's own. */
 const KEEP_RECENT_TOKENS = 20_000;
 /** The summarizer's retry budget. pi-ai's `retryAssistantCall` makes no attempt past the first
- * without a policy, and the turn's own stream `maxRetries` never reaches this call — the summary
- * request is jr2's own (`compaction-summary.ts`). So ADR-0036's retry budget is stated here. */
+ * without a policy, and the turn's own stream `maxRetries` never reaches this call — pi's summary
+ * request is a call of its own. So ADR-0036's retry budget is stated here. */
 const SUMMARY_RETRIES = 2;
 const SUMMARY_RETRY_BASE_DELAY_MS = 500;
 
 /**
  * The compaction settings for one model — the whole jr2-owned derivation, pure so the arithmetic is
- * proven socket-free rather than through the turn loop. `keepRecentTokens` is a parameter only
+ * proven socket-free rather than through the turn loop. It is pi's per-model setting: pi's flat
+ * reserve of 16384 relies on pi's own compact-and-retry after an overflow, which jr2's seam does not
+ * have. `keepRecentTokens` is a parameter only
  * because the conformance suite cannot afford a 20000-token transcript; production never passes it
  * (ADR-0036: `TurnDeps` carries test seams, never an author surface).
  */
@@ -66,19 +72,6 @@ export function compactionSettingsFor(
   return { enabled: true, reserveTokens, keepRecentTokens };
 }
 
-/**
- * Whether a context of this size crosses the reserve. The boundary is strictly over: a context
- * exactly at `window - reserve` still fits.
- */
-export function overContextThreshold(
-  contextTokens: number,
-  contextWindow: number,
-  settings: CompactionSettings,
-): boolean {
-  if (!settings.enabled) return false;
-  return contextTokens > contextWindow - settings.reserveTokens;
-}
-
 /** The summarizer's retry policy. `maxRetries` is the Turn's own (`TurnDeps.maxRetries`) when the
  * composition set one, so a rig that forbids provider retries forbids them here too. */
 export function summaryRetryPolicy(maxRetries: number = SUMMARY_RETRIES): RetryPolicy {
@@ -95,7 +88,22 @@ export type CompactionSeat = {
   settings: CompactionSettings;
   retry: RetryPolicy;
   signal: AbortSignal | undefined;
+  /** The system prompt of the request: the text estimate counts it (`contextTokens`). */
+  systemPrompt?: string;
 };
+
+/**
+ * The tokens of the next request's context, by pi's projected estimate. When the estimate is the
+ * text of the messages alone (no usage since the newest cut: the first request, or the one after a
+ * cut), it adds the system prompt's text by pi's own heuristic (chars/4): the instructions, the
+ * project context (up to 256 KiB, ADR-0062) and the standing part. pi's own sessions put the system
+ * prompt in the context as a message, which pi counts; jr2 gives it to the engine apart, so pi's
+ * estimate does not see it. A usage counts it already.
+ */
+export function contextTokens(chain: ReturnType<typeof sessionChain>, systemPrompt = ""): number {
+  const { tokens, fromUsage } = estimateContext(chain);
+  return fromUsage ? tokens : tokens + Math.ceil(systemPrompt.length / 4);
+}
 
 /** A cut that was taken: the rebuilt context to send, and the two numbers the log line reports. */
 export type Cut = {
@@ -108,8 +116,10 @@ export type Cut = {
  * Take a Compaction if the engine part's context crosses the reserve, and answer with the rebuilt
  * context — or `undefined` when nothing was cut, which is every ordinary request. Called before a
  * request, so the request that NOTICED is already compacted and no round-trip is spent on a full
- * window. The estimate is of the engine part's context, without the leading system message: the
- * system prompt was never counted.
+ * window. The estimate is pi's, of the engine part's projected context, plus the system prompt when
+ * the estimate is text alone (`contextTokens`). pi's estimate does not trust a usage from before the
+ * newest cut (it estimates the text then), so a cut whose next request failed does not cut again on
+ * the reading that crossed.
  *
  * Failure is a throw, deliberately: the loop turns it into a failed run, which settles the
  * Submission `failed` as an ADR-0016 infra fault — a legible compaction failure beats walking into
@@ -121,58 +131,43 @@ export async function compactIfOver(seat: CompactionSeat): Promise<Cut | undefin
   // nothing on an aborted signal, so this check is what keeps the summary call from being made at
   // all (`compaction.test.ts`).
   if (seat.signal?.aborted) return undefined;
-  const estimate = estimateContextTokens(seat.part.context());
-  if (!overContextThreshold(estimate.tokens, seat.model.contextWindow, seat.settings)) return undefined;
+  const chain = sessionChain(seat.part.all());
+  if (!shouldCompact(contextTokens(chain, seat.systemPrompt), seat.model.contextWindow, seat.settings))
+    return undefined;
 
-  // The branch the next cut works on. It reaches back past the newest Compaction to the first entry
-  // that Compaction keeps: the entry stores no tail, so the previous cut's kept work is still ON the
-  // branch — which is exactly what lets the next cut summarize it rather than delete it.
-  const branch = seat.part.branch();
-  // The stale-reading latch. The estimate reads the last VALID assistant usage, and a cut
-  // deliberately RETAINS recent assistant messages — so the reading that triggered a cut survives
-  // it. When the request after a cut ends `error` or `aborted` it contributes no usage of its own,
-  // the old number is still the newest one, and the next request would cut AGAIN on a context nothing
-  // has grown since: a second summarizer round-trip, and a second summary over work the first one
-  // already covered. The question is therefore about what landed AFTER the newest cut.
-  let newestCut = -1;
-  for (let i = branch.entries.length - 1; i >= 0; i--) {
-    if (branch.entries[i]!.type === "compaction") {
-      newestCut = i;
-      break;
-    }
-  }
-  if (newestCut >= 0 && !getLastAssistantUsage(branch.entries.slice(newestCut + 1))) return undefined;
-
-  // `undefined` is "nothing to cut", not a failure — an empty branch, or one whose newest entry is
-  // already a compaction. The turn proceeds over the threshold; if the context truly cannot fit,
+  // `undefined` is "nothing to cut", not a failure — an empty transcript, or one whose newest entry
+  // is already a compaction. The turn proceeds over the threshold; if the context truly cannot fit,
   // the overflow is the provider's answer and settles as infra.
-  const prepared = prepareCompaction(branch, seat.settings);
+  const prepared = prepareCompaction(chain, seat.settings);
   if (!prepared) return undefined;
 
-  const cut = await compact(
-    prepared,
-    {
-      models: seat.models,
-      model: seat.model,
-      thinkingLevel: seat.thinkingLevel,
-      retry: seat.retry,
-      signal: seat.signal,
+  const { models } = seat;
+  const result = await compact(prepared, {
+    model: seat.model,
+    thinkingLevel: seat.thinkingLevel,
+    signal: seat.signal,
+    retry: seat.retry,
+    // A custom model with no limit at all sends none (`unlimitedPayload`, ADR-0018). pi sets no
+    // `maxTokens` on a summary: its budget is the model's output limit.
+    streamFn: (model, context, options) => {
+      const onPayload = unlimitedPayload(model, options?.onPayload);
+      return models.streamSimple(model, context, { ...options, ...(onPayload ? { onPayload } : {}) });
     },
-    seat.settings,
-  );
+  });
+  // pi does not fail a summary that an abort ended: it would store an empty or a partial summary.
+  // A run that aborted during the summary appends nothing.
+  if (seat.signal?.aborted) throw new Error("Summarization aborted");
   // The entry stores `firstKept` and no tail (the engine part's format). The context rule rebuilds
   // `[summary, ...tail, ...after]` from it, and the next cut can reach the tail and summarize it.
-  seat.part.appendCompaction({ ...cut, timestamp: Date.now() });
+  seat.part.appendCompaction(transcriptCompaction(result, Date.now()));
 
   const rebuilt = seat.part.context();
   return {
     messages: rebuilt,
-    tokensBefore: cut.tokensBefore,
-    // The character heuristic, NOT `estimateContextTokens`: the retained tail still carries the
-    // pre-cut assistant usage, which measured the request that filled the window. Counting it here
-    // would print a cut that changed nothing. Mixed units against `tokensBefore` (a provider
-    // number) — the line reports the size of what remains, and a reader needs the order of
+    tokensBefore: result.tokensBefore,
+    // The character heuristic of the context that remains. Mixed units against `tokensBefore` (a
+    // provider number) — the line reports the size of what remains, and a reader needs the order of
     // magnitude, not a reconciliation.
-    tokensAfter: rebuilt.reduce((total, message) => total + estimateTokens(message), 0),
+    tokensAfter: rebuilt.reduce((total, message: EngineMessage) => total + estimateTokens(message), 0),
   };
 }

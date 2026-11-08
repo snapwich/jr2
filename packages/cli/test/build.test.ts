@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, readlink, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { KIT_VERSION } from "@jr2/orchestrator/internal";
+import { KIT_VERSION, readImageRefs } from "@jr2/orchestrator/internal";
 import {
   assertEmulation,
   buildSandboxImage,
@@ -38,6 +38,11 @@ import {
   type BuildRequest,
   type ObservedImage,
   type RunCommand,
+  firstTarEntry,
+  foldersTo,
+  imageHome,
+  userContextFolders,
+  userContextPath,
 } from "../src/build.ts";
 import { imageContextDigest } from "@jr2/orchestrator/internal";
 
@@ -49,6 +54,7 @@ function nullPort(): BuildPort {
     build: async () => {},
     imageUser: async () => "",
     imageFiles: async () => ({ present: [], passwd: "" }),
+    imageUserContext: async () => ({ none: "the image has no /home/u/.pi/agent" }),
     push: async () => {},
     kindLoad: async () => {},
     hostImages: async () => [],
@@ -939,4 +945,87 @@ test("a missing host image is recognized in each verb's own words, and nothing e
   ]) {
     assert.ok(!isMissingHostImage(new Error(said)), said);
   }
+});
+
+test("imageHome: the image's HOME when its ENV sets one, else the USER's passwd entry, by name or by uid", () => {
+  const passwd = "root:x:0:0:root:/root:/bin/sh\nnode:x:1000:1000::/home/node:/bin/bash\nweb:x:33:33::www:/bin/sh\n";
+  assert.equal(imageHome("node", [], passwd), "/home/node");
+  assert.equal(imageHome("1000", ["PATH=/bin"], passwd), "/home/node");
+  assert.equal(imageHome("1000:2000", [], passwd), "/home/node");
+  assert.equal(imageHome("node", ["HOME=/srv/app/"], passwd), "/srv/app");
+  assert.equal(imageHome("4242", [], passwd), undefined, "a uid with no entry has no home");
+  assert.equal(imageHome("web", [], passwd), undefined, "a home that is no absolute path");
+  assert.equal(imageHome("node", [], ""), undefined);
+});
+
+test("userContextPath: a home with an empty, . or .. part gives none, so the record is one the Orchestrator reads (ADR-0062)", async () => {
+  const passwd = "node:x:1000:1000::/home/node:/bin/bash\n";
+  assert.deepEqual(userContextPath("node", [], passwd), { dir: "/home/node/.pi/agent" });
+  assert.deepEqual(userContextPath("node", ["HOME=/srv/app/"], passwd), { dir: "/srv/app/.pi/agent" });
+  assert.deepEqual(userContextPath("node", ["HOME=/"], passwd), { dir: "/.pi/agent" });
+  for (const home of ["/home//u", "/home/./u", "/home/u/..", "/home/x/../u", "//home/u"]) {
+    const fact = userContextPath("node", [`HOME=${home}`], passwd);
+    assert.ok("none" in fact, home);
+    assert.match(fact.none, /empty, \. or \.\. part/, home);
+  }
+  assert.deepEqual(userContextPath("", [], passwd), { none: "no USER, so the home is jr2's emptyDir" });
+  // Each folder that the CLI records, the Orchestrator reads: the map that `jr2 up` writes parses.
+  const dir = (userContextPath("node", ["HOME=/home/node"], passwd) as { dir: string }).dir;
+  const file = join(await mkdtemp(join(tmpdir(), "images-")), "images.json");
+  const map = { harness: "h", custodian: "c", sandbox: { s: "s" }, sandboxUserContext: { s: dir } };
+  await writeFile(file, JSON.stringify(map));
+  const refs = await readImageRefs(file);
+  assert.equal(refs.sandboxUserContext?.["s"], dir);
+});
+
+test("userContextFolders: a link anywhere on the path, ~/.pi among them, gives none and names it (ADR-0062)", async () => {
+  const image = (types: Record<string, "dir" | "link" | "file">) => async (p: string) => types[p];
+  const dirs = { "/home": "dir", "/home/node": "dir", "/home/node/.pi": "dir", "/home/node/.pi/agent": "dir" } as const;
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image(dirs)), { dir: "/home/node/.pi/agent" });
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image({ ...dirs, "/home/node/.pi": "link" })), {
+    none: "/home/node/.pi is a link, and the mount needs a real folder",
+  });
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image({ ...dirs, "/home/node": "link" })), {
+    none: "/home/node is a link, and the mount needs a real folder",
+  });
+  assert.deepEqual(
+    await userContextFolders("/home/node/.pi/agent", image({ ...dirs, "/home/node/.pi/agent": "link" })),
+    {
+      none: "/home/node/.pi/agent is a link, and the mount needs a real folder",
+    },
+  );
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image({ ...dirs, "/home/node/.pi": "file" })), {
+    none: "/home/node/.pi is not a folder",
+  });
+  const { "/home/node/.pi/agent": _agent, ...noAgent } = dirs;
+  assert.deepEqual(await userContextFolders("/home/node/.pi/agent", image(noAgent)), {
+    none: "the image has no /home/node/.pi/agent",
+  });
+});
+
+test("foldersTo: each folder from / to the image user's context folder", () => {
+  assert.deepEqual(foldersTo("/home/node/.pi/agent"), [
+    "/home",
+    "/home/node",
+    "/home/node/.pi",
+    "/home/node/.pi/agent",
+  ]);
+});
+
+test("firstTarEntry: the type of the first entry of docker cp's tar, past a pax header; nothing before a whole header", () => {
+  const header = (name: string, flag: string, size = 0): Buffer => {
+    const b = Buffer.alloc(512);
+    b.write(name, 0, "latin1");
+    b.write(size.toString(8).padStart(11, "0"), 124, "latin1");
+    b.write(flag, 156, "latin1");
+    return b;
+  };
+  assert.equal(firstTarEntry(header("agent/", "5")), "dir");
+  assert.equal(firstTarEntry(header(".pi", "2")), "link");
+  assert.equal(firstTarEntry(header("x", "1")), "link");
+  assert.equal(firstTarEntry(header("passwd", "0", 3)), "file");
+  const pax = Buffer.concat([header("PaxHeaders/agent", "x", 600), Buffer.alloc(1024), header("agent/", "5")]);
+  assert.equal(firstTarEntry(pax), "dir");
+  assert.equal(firstTarEntry(pax.subarray(0, 1200)), undefined);
+  assert.equal(firstTarEntry(Buffer.alloc(100)), undefined);
 });

@@ -8,7 +8,7 @@
 
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -33,7 +33,8 @@ import { runSubmissionFor } from "../src/turn.ts";
 import { MemoryGuard } from "../src/memory-guard.ts";
 import type { HistoryView, MemoryKillsResponse, Notice, Settlement, StreamEvent } from "../src/wire.ts";
 import { startAnthropicGateway, type AnthropicGateway } from "./support/anthropic-gateway.ts";
-import { testChildren } from "./support/children.ts";
+import { deniedDir, testChildren } from "./support/children.ts";
+import type { ChildPolicy } from "../src/children.ts";
 import { unixFetch } from "../src/unix-fetch.ts";
 import {
   CONTROL_STAND_IN,
@@ -127,6 +128,15 @@ let sweptApp: Hono;
 /** The same composition with a memory guard that fires as a `bash` call starts (ADR-0061): a
  * scripted cgroup and recorded effects, so nothing is really killed. */
 let guardedApp: Hono;
+/** The same composition with a work root of its own (ADR-0075), so a Frame's cwd in
+ * `<contextWork>/<slot>/<folder>` is a Repo Slot's Worktree and gets its project context (ADR-0062).
+ * Its domain is also denied `contextHeld`, which stands for a file under `/run/jr2`. */
+let contextApp: Hono;
+/** The same, with a child entry that does not exist: each project context load fails. */
+let failingContextApp: Hono;
+let contextWork: string;
+let contextHeld: string;
+const contextLog: string[] = [];
 const firing = { on: false };
 const firingGuard = new MemoryGuard(
   { limit: () => 2 * 1024 ** 3, usage: () => (firing.on ? 1.95 * 1024 ** 3 : 100 * 1024 ** 2) },
@@ -189,6 +199,8 @@ before(async () => {
     retries?: "harness";
     guard?: MemoryGuard;
     sweepWaitMs?: number;
+    children?: ChildPolicy;
+    projectContext?: { workRoot?: string; entry?: string; log?: (line: string) => void };
   };
   const serverWith = (seams?: Seams, conversationsDir?: string, registry = models): HarnessServer =>
     harnessServer({
@@ -245,6 +257,18 @@ before(async () => {
   retryApp = appWith({ retries: "harness" });
   sweptApp = appWith({ sweepWaitMs: 10_000 });
   guardedApp = appWith({ guard: firingGuard });
+  contextWork = await mkdtemp(join(tmpdir(), "conf-work-"));
+  contextHeld = deniedDir("held-");
+  const contextChildren = testChildren({ tmp: tmpdir(), work: contextWork, deny: [contextHeld] });
+  const contextSeams = { log: (line: string) => void contextLog.push(line) };
+  contextApp = appWith({
+    children: contextChildren,
+    projectContext: { workRoot: contextWork, log: contextSeams.log },
+  });
+  failingContextApp = appWith({
+    children: contextChildren,
+    projectContext: { workRoot: contextWork, log: contextSeams.log, entry: join(contextWork, "no-such-entry.mjs") },
+  });
   const openRouter = modelsFor(
     { provider: { ...harness.provider!, baseUrl: `${provider.url.replace(/\/v1$/, "")}/openrouter.ai/v1` } },
     {},
@@ -388,7 +412,7 @@ test("the Menu is fixed for a conversation: two Submissions with different Allow
   assert.equal(JSON.stringify(two.tools), JSON.stringify(one.tools), "the tools block is byte-identical");
   const names = one.tools.map((tool) => tool.function?.name);
   assert.ok(names.includes("mcp__jr2__dispute") && names.includes("mcp__jr2__finish"), `the whole Menu: ${names}`);
-  for (const working of ["read", "write", "edit", "bash", "grep", "glob"]) {
+  for (const working of ["read", "write", "edit", "bash", "grep", "find"]) {
     assert.ok(names.includes(working), `the Working tools ride along (missing: ${working})`);
   }
   assert.equal(systemText(two), systemText(one), "the system prompt — instructions and standing part — is too");
@@ -449,6 +473,89 @@ test("the Briefing: the standing part follows the instructions; the Turn part na
   assert.ok(turn.includes(`Working directory: ${cwd}`), turn);
   assert.match(turn, /killed at its memory limit \(peak 1\.9Gi of 2Gi\) during `tester`'s Turn/);
   assert.match(turn, /This conversation is new; earlier context is gone \(the last one was lost\)/);
+});
+
+test("the project context: a Worktree's AGENTS.md and .pi/skills are in the system prompt between the instructions and the standing part, the same bytes on each Submission; a Menu-only Agent reads none (ADR-0062)", async () => {
+  const dir = join(contextWork, "app", "default");
+  await mkdir(join(dir, ".pi", "skills", "release-notes"), { recursive: true });
+  await writeFile(join(dir, "AGENTS.md"), "Run `node --test` before you pick.\n");
+  await writeFile(
+    join(dir, ".pi", "skills", "release-notes", "SKILL.md"),
+    "---\nname: release-notes\ndescription: Write the release notes.\n---\nThe steps.\n",
+  );
+  provider.reset([{ text: "Looked." }, { text: "Looked again." }, { text: "Decided." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/project-context";
+
+  const first = await admit(iid, "Look around.", undefined, AGENT, contextApp, { cwd: dir });
+  assert.equal((await settled(iid, first, AGENT, contextApp)).outcome, "completed");
+  // A change to AGENTS.md during the conversation does not move the system prompt: the provider's
+  // prefix cache holds (ADR-0029).
+  await writeFile(join(dir, "AGENTS.md"), "Other rules.\n");
+  const second = await admit(iid, "Look again.", undefined, AGENT, contextApp, { cwd: dir });
+  assert.equal((await settled(iid, second, AGENT, contextApp)).outcome, "completed");
+
+  const [one, two] = provider.calls;
+  const system = systemText(one);
+  assert.ok(
+    system.startsWith(
+      `${definitions[AGENT]!.instructions}\n\n<project_context>\nProject-specific instructions and guidelines:\n\n` +
+        `<project_instructions path="${join(dir, "AGENTS.md")}">\nRun \`node --test\` before you pick.\n\n</project_instructions>\n</project_context>\n\n<skills>\n`,
+    ),
+    system,
+  );
+  assert.ok(system.includes(`<location>${join(dir, ".pi", "skills", "release-notes", "SKILL.md")}</location>`), system);
+  // The Briefing's standing part is last, where a model obeys it (ADR-0029).
+  assert.match(system, /<\/skills>\n\n<jr2-briefing>\n[\s\S]*<\/jr2-briefing>$/);
+  assert.equal(systemText(two), system, "byte-equal on the next Submission");
+  assert.doesNotMatch(JSON.stringify(two), /Other rules/);
+
+  // A Menu-only Agent in the same folder has no files, so it reads no project context.
+  const decided = await admit("conf/project-context-menu-only", "Decide.", undefined, DECISIONER, contextApp, {
+    cwd: dir,
+  });
+  assert.equal((await settled("conf/project-context-menu-only", decided, DECISIONER, contextApp)).outcome, "completed");
+  assert.doesNotMatch(systemText(provider.calls[2]), /project_context|<skills>|node --test/);
+});
+
+test("the project context: an AGENTS.md that links to a file under /run/jr2 fails in the domain, and its content is nowhere in what the provider gets (ADR-0062, ADR-0076)", async () => {
+  const secret = "held-stand-in-5d2e81";
+  await writeFile(join(contextHeld, "standin"), `${secret}\n`);
+  const dir = join(contextWork, "app", "leak");
+  await mkdir(dir, { recursive: true });
+  await symlink(join(contextHeld, "standin"), join(dir, "AGENTS.md"));
+  provider.reset([{ text: "Looked." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/project-context-link";
+
+  const admission = await admit(iid, "Look around.", undefined, AGENT, contextApp, { cwd: dir });
+  assert.equal((await settled(iid, admission, AGENT, contextApp)).outcome, "completed");
+  assert.equal(provider.calls.length, 1);
+  assert.doesNotMatch(systemText(provider.calls[0]), /project_context/);
+  assert.ok(!JSON.stringify(provider.calls).includes(secret), "the held file's content is in no request");
+});
+
+test("the project context: a child that fails gives none, the pod log says so once, and the Turn runs (ADR-0062)", async () => {
+  const dir = join(contextWork, "app", "failing");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "AGENTS.md"), "Rules that do not load.\n");
+  provider.reset([{ text: "Looked." }, { text: "Looked again." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/project-context-failing";
+  const mark = contextLog.length;
+
+  const first = await admit(iid, "Look around.", undefined, AGENT, failingContextApp, { cwd: dir });
+  assert.equal((await settled(iid, first, AGENT, failingContextApp)).outcome, "completed");
+  const second = await admit(iid, "Look again.", undefined, AGENT, failingContextApp, { cwd: dir });
+  assert.equal((await settled(iid, second, AGENT, failingContextApp)).outcome, "completed");
+  assert.ok(systemText(provider.calls[0]).startsWith(`${definitions[AGENT]!.instructions}\n\n<jr2-briefing>\n`));
+  assert.equal(systemText(provider.calls[1]), systemText(provider.calls[0]));
+  const lines = contextLog.slice(mark);
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(
+    lines[0]!,
+    new RegExp(`^jr2 harness: no project context from ${dir}: the child that loads it failed: it exited 1`),
+  );
 });
 
 test("an older Orchestrator's surface still runs: its `accepts` is the tools and the Allowed picks (ADR-0029 skew)", async () => {
@@ -533,7 +640,7 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
   assert.equal((await settled(iid, admission, DECISIONER)).outcome, "aborted");
 
   // The Menu is the whole toolset: on every request the model saw its Menu and NOTHING else —
-  // no read/write/edit/bash/grep/glob was offered, so none was executable (ADR-0028).
+  // no read/write/edit/bash/grep/find was offered, so none was executable (ADR-0028).
   for (const call of provider.calls) {
     assert.deepEqual(
       (call.tools ?? []).map((tool) => tool.function?.name),
@@ -582,10 +689,11 @@ test("the Frame's cwd is re-read per Submission: two turns of one conversation w
   assert.ok(!afterSecond.includes("MARK_ALPHA"), "turn 2 did not stay rooted where turn 1 was");
 });
 
-test("a bash command killed by a signal reaches the model as an error naming the signal, never a pass (ADR-0061)", async () => {
-  // pi-agent-core 0.82.1 reports a signal death as `exitCode: code ?? 0`, so the model read a
-  // killed Playwright run — output stopped partway — as success. The wrapped tool (bash-tool.ts)
-  // is what the real turn loop hands pi; this is the canary for a pi bump that changes the seam.
+test("a bash command killed by a signal reaches the model as an error, never a pass (ADR-0061)", async () => {
+  // pi-agent-core 0.82.1 reported a signal death as `exitCode: code ?? 0`, so the model read a
+  // killed Playwright run — output stopped partway — as success. The tool is pi-coding-agent's
+  // `bash` with jr2's operations (`tool-ops.ts`), which the real turn loop hands pi; this is the
+  // canary for a pi bump that changes the seam.
   provider.reset([
     { toolCall: { id: "call_1", name: "bash", args: JSON.stringify({ command: "echo started; sh -c 'kill -9 $$'" }) } },
     { text: "The command was killed." },
@@ -596,7 +704,7 @@ test("a bash command killed by a signal reaches the model as an error naming the
   assert.equal((await settled(iid, admission)).outcome, "completed");
   const result = JSON.stringify(provider.calls[1]?.messages.at(-1) ?? {});
   assert.match(result, /started/);
-  assert.match(result, /Command killed by signal SIGKILL \(exit 137\)/);
+  assert.match(result, /Command exited with code 137/);
 });
 
 test("a guard kill during a bash call is told to that conversation: the pod's list names it in `told` (ADR-0061, ADR-0062)", async () => {
@@ -2125,9 +2233,11 @@ test("a SECOND cut in one Submission keeps the first cut's retained tail (ADR-00
 test("a cut followed by a request that FAILS does not cut again on the stale reading (ADR-0036)", async () => {
   // pi's estimate reads the last VALID assistant usage, and a cut deliberately RETAINS recent
   // assistant messages — so the reading that triggered a cut survives it. A request that ends
-  // `error` contributes no usage of its own, leaving that stale number the newest one: without the
-  // latch the next Submission on this conversation cuts AGAIN, spending a summarizer round-trip
-  // and a second summary on a context nothing has grown since.
+  // `error` contributes no usage of its own, leaving that stale number the newest one. pi's projected
+  // estimate (estimateProjectedContextTokens) does not trust a usage from before the newest
+  // compaction entry, and estimates the text instead; if it trusted the stale number, the next
+  // Submission on this conversation would cut AGAIN, spending a summarizer round-trip and a second
+  // summary on a context nothing has grown since.
   provider.reset([
     { toolCall: { id: "call_1", name: "bash", args: '{"command":"echo MARK_ONE"}' } },
     {
@@ -2150,7 +2260,7 @@ test("a cut followed by a request that FAILS does not cut again on the stale rea
   assert.equal((await settled(iid, next, AGENT, compactApp)).outcome, "completed");
   assert.equal(provider.summaries.length, 1, "the stale reading did not buy a second cut");
   // The content assertion is the one that bites: it fails on loss, not on a summarizer count, so it
-  // survives a refactor that merely moves the latch.
+  // survives a change to where the stale reading is refused (jr2's adapter or pi's estimate).
   assert.ok(
     JSON.stringify(provider.calls.at(-1)!.messages).includes("MARK_TWO"),
     "the first cut's retained tail is still in the context",
@@ -2848,7 +2958,8 @@ test("the thinking level line: a level the model lacks names the level the Harne
 test("the thinking level line: Claude Sonnet 5.5 at off names the effort that the Harness's request sent (ADR-0023)", async () => {
   // jr2's default level is `off`, which this model lacks. The Anthropic adapter then sends its
   // default effort, `high`, and sets the word from that request: the line gives the choice to the
-  // Harness, not to the provider.
+  // Harness, not to the provider. Since pi-ai 1.5.0 the effort in force is the last system marker
+  // of the messages; the top-level effort is a fixed `low`, part of the cached prefix.
   sandbox.reset(surfaceWith("review_verdict"));
   const iid = "conf/thinking-line-sonnet-5-5";
   const before = anthropicGateway.seen.length;
@@ -2865,7 +2976,9 @@ test("the thinking level line: Claude Sonnet 5.5 at off names the effort that th
   }
   const sent = anthropicGateway.seen.slice(before);
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0]!.body.output_config, { effort: "high" });
+  assert.deepEqual(sent[0]!.body.output_config, { effort: "low" });
+  const messages = sent[0]!.body.messages as { role: string; output_config?: unknown }[];
+  assert.deepEqual(messages.at(-1), { role: "system", content: [], output_config: { effort: "high" } });
   assert.ok(
     (printed.get(iid) ?? "").includes(
       `[reviewer] [${iid}] [thinking level] anthropic/claude-sonnet-5-5 has no level "off"; ` +
@@ -2900,6 +3013,115 @@ test("M10: argument text that does not parse is refused, and the call does not r
   assert.ok(text.endsWith(`\n\nReceived arguments:\n${args}`), text);
   const { existsSync } = await import("node:fs");
   assert.equal(existsSync(marker), false, "the call did not run");
+});
+
+test("M13: a TypeBox schema's argument is coerced by pi-schema — a number in a string runs as a number (pi-ai 1.5)", async () => {
+  // pi-ai 1.5 validates with pi-schema, not TypeBox. The Working tools' schemas stay TypeBox
+  // (ADR-0027), and pi-schema's conversion keys on their JSON Schema, so `"5"` still becomes 5.
+  provider.reset([
+    { toolCall: { id: "call_c", name: "bash", args: '{"command":"echo coerced","timeout":"5"}' } },
+    { text: "Ran." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/coerced-argument";
+  assert.equal((await settled(iid, await admit(iid, "Run it."))).outcome, "completed");
+  assert.equal(toolResultText(provider.calls[1], "call_c"), "coerced\n");
+});
+
+test("M14: a missing required argument is refused in pi-schema's words (pi-ai 1.5)", async () => {
+  // The text the model reads: pi-ai 1.5 names each failed path (`- command: missing`), then the
+  // arguments it received.
+  provider.reset([{ toolCall: { id: "call_r", name: "bash", args: '{"timeout":5}' } }, { text: "Noted." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/missing-argument";
+  assert.equal((await settled(iid, await admit(iid, "Run it."))).outcome, "completed");
+  assert.equal(
+    toolResultText(provider.calls[1], "call_r"),
+    'Validation failed for tool "bash":\n  - command: missing\n\nReceived arguments:\n{\n  "timeout": 5\n}',
+  );
+});
+
+test("M15: a Menu pick's arguments are checked as the model wrote them: pi's coercion is refused, and the model corrects the pick (ADR-0027)", async () => {
+  // pi-ai 1.5 coerces EVERY tool schema with pi-schema (`compile({ coerce: true })`): `3.5` for an
+  // integer would become 3, `null` for a string "null", one value for an array `["one"]`. jr2
+  // checks a pick's arguments before that (`strict-arguments.ts`), so the Machine never gets a
+  // converted value: the model reads pi's refusal, and its corrected pick is the Delivery.
+  const wrong = '{"count":3.5,"label":null,"tags":"one"}';
+  provider.reset([
+    { text: "", toolCall: { id: "call_1", name: "mcp__jr2__tally", args: wrong } },
+    {
+      text: "",
+      toolCall: { id: "call_2", name: "mcp__jr2__tally", args: '{"count":3,"label":"three","tags":["one"]}' },
+    },
+  ]);
+  const input = {
+    type: "object",
+    properties: {
+      count: { type: "integer" },
+      label: { type: "string" },
+      tags: { type: "array", items: { type: "string" } },
+    },
+    required: ["count", "label", "tags"],
+  };
+  const event = { name: "tally", description: "Deliver the tally.", input, semantics: "ack" as const };
+  sandbox.reset({ ...surfaceAllowing([], []), menu: [event], allowed: ["tally"] });
+  const iid = "conf/strict-pick";
+  assert.equal((await settled(iid, await admit(iid, "Tally it."))).outcome, "aborted");
+  assert.equal(
+    toolResultText(provider.calls[1], "call_1"),
+    'Validation failed for tool "mcp__jr2__tally":\n' +
+      "  - count: expected integer, got number\n" +
+      "  - label: expected string, got null\n" +
+      "  - tags: expected array, got string\n\n" +
+      `Received arguments:\n${JSON.stringify(JSON.parse(wrong), null, 2)}`,
+  );
+  assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 3, label: "three", tags: ["one"] }]);
+  // The printed conversation (ADR-0023) shows each pick as the model wrote it.
+  assert.match(printed.get(iid) ?? "", /\[tally\] \{"count":3\.5,"label":null,"tags":"one"\}/);
+});
+
+test("M16: a number in a string is refused for a Menu pick, and runs as a number for a Working tool (ADR-0027)", async () => {
+  // pi converts `"5"` to 5 for every schema. The Working tools are pi's own and keep that (M13);
+  // a pick is checked as the model wrote it.
+  provider.reset([
+    { text: "", toolCall: { id: "call_s", name: "mcp__jr2__tally", args: '{"count":"5"}' } },
+    { text: "", toolCall: { id: "call_t", name: "mcp__jr2__tally", args: '{"count":5}' } },
+  ]);
+  const input = { type: "object", properties: { count: { type: "integer" } }, required: ["count"] };
+  const event = { name: "tally", description: "Deliver the tally.", input, semantics: "ack" as const };
+  sandbox.reset({ ...surfaceAllowing([], []), menu: [event], allowed: ["tally"] });
+  const iid = "conf/strict-pick-string";
+  assert.equal((await settled(iid, await admit(iid, "Tally it."))).outcome, "aborted");
+  assert.match(
+    toolResultText(provider.calls[1], "call_s"),
+    /^Validation failed for tool "mcp__jr2__tally":\n {2}- count: expected integer, got string\n/,
+  );
+  assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 5 }]);
+});
+
+test("M17: a Menu pick whose argument text does not parse is refused in pi's words, with that text, not as missing fields (ADR-0027)", async () => {
+  // pi-ai makes such text `{}` with `argumentsError`. jr2's strict check sees only the `{}`, so it
+  // lets pi's validation say the parse error. Told that "count" was missing, the model would fix
+  // the wrong thing.
+  const args = '{"count":3,"label":';
+  provider.reset([
+    { text: "", toolCall: { id: "call_p", name: "mcp__jr2__tally", args } },
+    { text: "", toolCall: { id: "call_q", name: "mcp__jr2__tally", args: '{"count":3,"label":"three"}' } },
+  ]);
+  const input = {
+    type: "object",
+    properties: { count: { type: "integer" }, label: { type: "string" } },
+    required: ["count", "label"],
+  };
+  const event = { name: "tally", description: "Deliver the tally.", input, semantics: "ack" as const };
+  sandbox.reset({ ...surfaceAllowing([], []), menu: [event], allowed: ["tally"] });
+  const iid = "conf/strict-pick-malformed";
+  assert.equal((await settled(iid, await admit(iid, "Tally it."))).outcome, "aborted");
+  const text = toolResultText(provider.calls[1], "call_p");
+  assert.ok(text.startsWith('Invalid arguments for tool "mcp__jr2__tally": '), text);
+  assert.ok(text.endsWith(`\n\nReceived arguments:\n${args}`), text);
+  assert.doesNotMatch(text, /missing/);
+  assert.deepEqual(sandbox.delivered, [{ type: "tally", count: 3, label: "three" }]);
 });
 
 test("M11: another model's thinking is not sent after a model Dial change (pi-ai 1.4)", async () => {

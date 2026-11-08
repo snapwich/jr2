@@ -43,16 +43,25 @@ definition can state.
 - **The tool layer enforces the honest path.** `access: "read"` withholds `write` and `edit` from the assembled working
   tools (the tool set that the Harness gives the loop for each Submission). `bash` stays — the reviewer's own
   instructions require running the tests — and the ADR says plainly what that means: a shell can write, so the tool
-  layer states intent and stops the honest path. It is known leaky, and it is not the guarantee.
+  layer states intent and stops the honest path. It is known leaky, and it is not the containment.
 - **The worktree layer contains the blast radius: a reviewer works in a detached review Worktree.** The Machine cuts it
   with `worktree()`, `{ path, detach: sha }`, at the sha under review, with a detached HEAD, sibling to the coder's
   Worktree per the Project layout ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). A write
   there cannot move the branch or dirty the coder's Worktree; a rogue commit lands on a detached HEAD and goes when the
   next cut forces the folder. This is not a permission boundary — it is containment, the property ADR-0024 bought for
-  turns, bought for the filesystem.
-- **Two layers, one structure: the tool list is the hint, the worktree is the guarantee** — the same shape as ADR-0024's
-  receipt (hint) and abort (guarantee). Neither layer alone: tools without the worktree leak through bash; the worktree
-  without tools invites the model to fight its checkout instead of declining politely.
+  turns, bought for the filesystem. The reviewer's `bash` still reaches all of `/work`.
+- **Two layers, one structure: the tool list is the hint, the worktree is the containment** — the same shape as
+  ADR-0024's receipt (hint) and abort (guarantee). Neither layer alone: tools without the worktree leak through bash;
+  the worktree without tools invites the model to fight its checkout instead of declining politely.
+- **The Agents of one Workspace are isolated from each other as well as is practical, and no more.** The cut of the
+  review Worktree (ADR-0075) and the rules for the project context
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)) stop one Agent from changing, by chance or
+  with little work, the files that another Agent reviews or the text in its system prompt. They are not a guarantee
+  against an Agent that sets out to do it. The Agents share `/work`, the clone's config and objects, one uid and one
+  Landlock domain ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). So an
+  Agent can still write in another Agent's Worktree, rewrite an object of the clone, or race a cut or a load. The known
+  limits are in ADR-0062 and ADR-0075. A defense is loosened only when it makes the Agents work less well. A Workflow
+  that needs more isolation gives the review a Workspace of its own (below); the default stays one Workspace.
 - **An MCP allowlist is a guarantee about the credential, and jr2 offers it only where it can keep it.** An Agent's MCP
   tools ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md))
   spend the server's token, so the allowlist guards that token, not the Workspace. A remote server needs a list (tool
@@ -67,9 +76,13 @@ definition can state.
   because no Workspace code can spend the secret.
 - **A state before the reviewing state cuts the review Worktree on each round.** The sha under review moves between
   rounds, so each round cuts the one folder again at the new sha. The cut forces the folder to the commit and cleans it
-  with `-ffd`. Ignored files stay, because the reviewer runs the tests. The folder's path frames the reviewer's turn —
-  cwd and prompt — instead of the coder's Worktree. What is decided here is the seat: worktree mechanics stay in
-  `worktree()` and the Machine's states, never in Agent instructions.
+  with `-ffd`, from a git folder of its own, so no config, attributes file or index that an Agent wrote changes the
+  files. Files that a `.gitignore` in the Worktree ignores stay, because the reviewer runs the tests and keeps its tools
+  (a `.venv`) from round to round, except the context files and skills that pi reads (ADR-0075). So a `.gitignore` that
+  another Agent wrote also keeps the files that it ignores: one of the limits above, which a Landlock domain for each
+  Agent, in which the Agent writes only its own Worktree, closes. The folder's path frames the reviewer's turn — cwd and
+  prompt — instead of the coder's Worktree. What is decided here is the seat: worktree mechanics stay in `worktree()`
+  and the Machine's states, never in Agent instructions.
 
 ## Considered options
 
@@ -80,8 +93,13 @@ definition can state.
 - **Wait for flue 2.0's tool exports.** Rejected with ADR-0027.
 - **A read-only filesystem for the reviewer.** Rejected: the reviewer must run tests and builds, which write caches,
   `node_modules`, temp files. Read-only breaks the persona's own job description.
-- **A separate reviewer Sandbox.** Rejected: it pays a pod per review round and breaks ADR-0012's premise — coder and
-  reviewer share one Workspace so the review sees exactly the bytes the coder produced, on the shared clone's economics.
+- **A review Workspace of its own, as the default.** Not the default: one Workspace is cheaper, and ADR-0012's premise
+  is that coder and reviewer share one Workspace, so the review reads the bytes the coder produced, on the shared
+  clone's economics. A Workflow MAY use a second Workspace for stronger isolation, with no kit change: the coder's body
+  invokes a review `workspace()` from its own `actors`, the coder pushes its branch, and the review cuts the pushed
+  commit. Measured on 2026-11-07, each review round then costs about 5 to 7 s more (a pod, an attach and a clone), a
+  second install of the dependencies, and a second Size that the cluster holds while the review runs. The branch is on
+  the remote before the review, and each round is a new Workspace, so the reviewer keeps no memory of the last round.
 - **Naming the field `tools: ["read", "grep", ...]`.** Rejected: it names the Harness's menu, breaks when a tool is
   renamed, and says nothing about the Agent. `workspace` describes the persona's relationship to the thing it works in;
   the tool list is derived mechanism.

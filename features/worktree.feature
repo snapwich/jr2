@@ -29,7 +29,7 @@ Feature: Worktrees in a real pod
 
   Rule: a cut survives a kill and a dead remote
 
-    A kill stops a cut in the middle of `git worktree add`: its folder and its `locked` entry exist.
+    A kill stops a cut in the middle: its folder and its admin entry exist, and the entry has no index yet.
     A dead remote is a repository that is gone after the attach.
 
     Scenario Outline: <what>

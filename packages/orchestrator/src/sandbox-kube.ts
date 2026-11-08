@@ -47,6 +47,8 @@
 //                             (ADR-0031: a Harness restart inside the pod keeps its conversations)
 //   volume        shell       an emptyDir → /run/jr2/shell, the Harness container's alone: the
 //                             socket of a person's shell (`jr2 workspace shell`, ADR-0076)
+//   volume        output      an emptyDir → /run/jr2/output, the Harness container's alone: the
+//                             whole output of a long `bash` call, which the domain reads (ADR-0076)
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
 //   container     harness     the Sandbox Image, command overridden, /work + /opt/jr2 mounted
@@ -110,6 +112,12 @@ import {
   CONVERSATIONS_VOLUME,
   SHELL_DIR,
   SHELL_VOLUME,
+  OUTPUT_DIR,
+  OUTPUT_VOLUME,
+  PROJECT_CONTEXT_ENV,
+  USER_CONTEXT_DIR,
+  USER_CONTEXT_ENV,
+  USER_CONTEXT_VOLUME,
   HELD_MOUNT,
   CA_CONFIGMAP,
   heldManifestKey,
@@ -682,7 +690,13 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   // The gate rides LAST (ADR-0058): the digest of the bearer the Orchestrator derives for THIS
   // Sandbox. A digest because the Agent reads this env; last because a `harness.env` entry of the
   // same name must not be able to choose the Harness's credential.
-  const harnessEnv = (name: string, custodian: CustodianComposition, hints: HarnessEnvVar[]): HarnessEnvVar[] => {
+  const harnessEnv = (
+    name: string,
+    custodian: CustodianComposition,
+    hints: HarnessEnvVar[],
+    projectContext: "worktree" | "workspace",
+    userContext: string | undefined,
+  ): HarnessEnvVar[] => {
     if (!opts.signingKey) throw new Error("kubeSandbox: a Harness needs a signingKey to check its bearer");
     return [
       ...(cfg().env ?? []),
@@ -690,6 +704,12 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // The CPU hints (ADR-0060) are mechanism: they say what the Size gives, so they win over a
       // `harness.env` entry of the same name.
       ...hints,
+      // How far up the Harness reads an Agent's context files (ADR-0062): the `workspace()`'s
+      // word, so no `harness.env` entry chooses it.
+      { name: PROJECT_CONTEXT_ENV, value: projectContext },
+      // The image user's context folder that this pod mounts read-only from the image (ADR-0062),
+      // or "" for none: always set, so no `harness.env` entry names a folder that is not that mount.
+      { name: USER_CONTEXT_ENV, value: userContext ?? "" },
       // Where the Harness persists its conversations (ADR-0031) — the volume below, mechanism, so
       // no `harness.env` entry chooses it.
       { name: CONVERSATIONS_DIR_ENV, value: CONVERSATIONS_DIR },
@@ -743,6 +763,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     homeVolume: Array<{ name: string; emptyDir: Record<string, never> }>;
     homeMount: Array<{ name: string; mountPath: string }>;
     securityContext: typeof HARDENED & { runAsUser?: number };
+    /** The image user's context folder that the pod mounts read-only from the image (ADR-0062). */
+    userContext?: string;
   };
 
   const seatFor = async (
@@ -754,7 +776,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     // ADR-0037's chain (images.ts). It is async because a `file:` context is keyed by its content
     // digest, which is a directory walk — the price of the host and the pod agreeing about an
     // image without a path table (ADR-0049).
-    const { ref: image, fallbackSeat, refusedUser } = await resolveSandboxImage(refs, name, held);
+    const { ref: image, fallbackSeat, refusedUser, userContext } = await resolveSandboxImage(refs, name, held);
     // Fail HERE, before a Secret or a CR exists, on a `USER` the kubelet will refuse (images.ts).
     // The alternative is the worst shape a failure has: the preflight container never starts, so
     // it has no logs, and the whole 120s Ready budget burns before anything is said. The converge
@@ -773,7 +795,14 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     // `HOME`, and jr2 touches neither — the human who execs in lands in the environment the
     // image's author built, dotfiles included.
     if (!fallbackSeat) {
-      return { image, env: [], homeVolume: [], homeMount: [], securityContext: HARDENED };
+      return {
+        image,
+        env: [],
+        homeVolume: [],
+        homeMount: [],
+        securityContext: HARDENED,
+        ...(userContext !== undefined ? { userContext } : {}),
+      };
     }
     return {
       image,
@@ -796,6 +825,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       userResources?: Size;
       effector?: string;
       assembly?: string;
+      projectContext?: "worktree" | "workspace";
     },
     refs: ImageRefs,
     repos: FencedRepo[],
@@ -882,7 +912,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // Marked (`harness-env.ts`, ADR-0076): the Harness's start tells jr2's names from the image's.
         ...(() => {
           const marked = markHarnessEnv(
-            [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv())],
+            [
+              ...seat.env,
+              ...harnessEnv(req.name, custodian, cpuHintEnv(), req.projectContext ?? "worktree", seat.userContext),
+            ],
             cfg().envFrom ?? [],
           );
           return { env: marked.env, ...(marked.envFrom.length ? { envFrom: marked.envFrom } : {}) };
@@ -919,8 +952,17 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           // The shell socket's folder (ADR-0076): the Harness listens there for `jr2 workspace
           // shell`, in the Harness container ALONE, where no process that it confines makes a file.
           { name: SHELL_VOLUME, emptyDir: {} },
+          // The Harness's TMPDIR (ADR-0076): pi's `bash` keeps a long command's whole output
+          // there and opens it by its path again. The Harness container ALONE, and its confined
+          // processes read there and write nothing, so none can put a link in a file's place. No
+          // `sizeLimit`: the kubelet would evict the pod past it. The Harness prunes the folder
+          // after each `bash` call (`output-folder.ts`).
+          { name: OUTPUT_VOLUME, emptyDir: {} },
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,
+          // The image user's context (ADR-0062): the Sandbox Image itself, a second time, for the
+          // read-only mount below. Only when the converge saw that folder in the image.
+          ...(seat.userContext !== undefined ? [{ name: USER_CONTEXT_VOLUME, image: { reference: seat.image } }] : []),
           // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
           ...custodian.volumes,
           // The Sandbox Effector's (ADR-0068): its secrets, its key and config, its scratch.
@@ -934,7 +976,21 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           RUNTIME_VOLUME_MOUNT,
           { name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR },
           { name: SHELL_VOLUME, mountPath: SHELL_DIR },
+          { name: OUTPUT_VOLUME, mountPath: OUTPUT_DIR },
           ...seat.homeMount,
+          // Twice, read-only. At its own path (`JR2_USER_CONTEXT`): a program that reads
+          // `~/.pi/agent` reads the image's files, and no Agent writes them. And under /run/jr2: an
+          // Agent can move `~/.pi` in its HOME and put a folder of its own in its place, and under
+          // /run/jr2 it moves nothing. The Harness reads the user context there alone, and the
+          // system prompt names its files there, where the model reads a skill's file (ADR-0062).
+          ...(seat.userContext !== undefined
+            ? [seat.userContext, USER_CONTEXT_DIR].map((mountPath) => ({
+                name: USER_CONTEXT_VOLUME,
+                mountPath,
+                subPath: seat.userContext!.slice(1),
+                readOnly: true,
+              }))
+            : []),
           ...custodian.harnessMounts,
         ],
       },

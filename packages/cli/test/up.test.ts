@@ -334,6 +334,8 @@ function fakeBuild(
     /** What a Sandbox Effector's image holds (ADR-0068), by image ref: which paths, and /etc/passwd.
      * Default: every path asked for, and a passwd entry for uid 1000 — an image a push can use. */
     imageFiles?: (image: string, paths: readonly string[]) => { present: string[]; passwd: string };
+    /** The image user's context folder that a Sandbox Image has (ADR-0062). Default: none. */
+    userContext?: string;
     /** What the two stores hold when the post-converge sweep looks (ADR-0039). Empty by default,
      * so a test that is not about the sweep sees one narrated line and no removals. */
     hostImages?: ObservedImage[];
@@ -383,6 +385,10 @@ function fakeBuild(
       // list is in the registry buildx pushed it to — two reads, recorded as two lines.
       record.push(`${platforms.length > 1 ? "imagetools" : "inspect-user"} ${image}`);
       return opts.imageUser ?? "";
+    },
+    imageUserContext: async (image, _platforms, user) => {
+      record.push(`inspect-user-context ${image} ${JSON.stringify(user)}`);
+      return opts.userContext !== undefined ? { dir: opts.userContext } : { none: "the image has no ~/.pi/agent" };
     },
     imageFiles: async (image, _platforms, paths) => {
       record.push(`inspect-files ${image}`);
@@ -660,6 +666,7 @@ function mkWorld(
     kitDir?: string;
     imageUser?: string;
     imageFiles?: (image: string, paths: readonly string[]) => { present: string[]; passwd: string };
+    userContext?: string;
     /** What the Instance typecheck says (ADR-0050). Default: it passes. */
     typecheck?: Io["typecheck"];
     hostImages?: ObservedImage[];
@@ -688,6 +695,7 @@ function mkWorld(
       files: over.bundleFiles,
       imageUser: over.imageUser,
       imageFiles: over.imageFiles,
+      userContext: over.userContext,
       hostImages: over.hostImages,
       nodeImages: over.nodeImages,
       sweepFails: over.sweepFails,
@@ -1114,6 +1122,19 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   assert.equal(await up([], stale.io), 0);
   assert.ok(stale.built.includes(`inspect-user ${images.sandbox.default}`), "the seat is read again");
   assert.deepEqual(imagesOf(stale).sandboxUser, { default: "" }, "…and the record converges complete");
+
+  // The same for the image user's context folder (ADR-0062): a record without it is read again.
+  const { sandboxUserContext: _noContext, ...older } = images;
+  const noContext = mkWorld(root, { kitDir: kit });
+  noContext.kube.set("", "namespace", "myinst", {
+    metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } },
+  });
+  noContext.kube.set("myinst", "deployment", "jr2-orchestrator", {
+    metadata: { name: "jr2-orchestrator", annotations: { "jr2.dev/images": JSON.stringify(older, null, 2) } },
+  });
+  assert.equal(await up([], noContext.io), 0);
+  assert.ok(noContext.built.includes(`inspect-user-context ${images.sandbox.default} ""`), "the folder is read again");
+  assert.deepEqual(imagesOf(noContext).sandboxUserContext, { default: "" });
 });
 
 test("a silent record consults the host daemon: host-built refs skip their builds, never their delivery (ADR-0041)", async () => {
@@ -1521,6 +1542,15 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
   const declared = mkWorld(root, { kitDir: kit, imageUser: "app" });
   assert.equal(await up(["--yes", "--force"], declared.io), 0);
   assert.deepEqual(imagesOf(declared).sandboxUser, { default: "app" });
+  // The image user's context folder rides the same record (ADR-0062): `""` for none, the folder
+  // when the image has it, read off the image with the USER it declares.
+  assert.deepEqual(imagesOf(w).sandboxUserContext, { default: "" });
+  assert.ok(declared.built.includes(`inspect-user-context ${ref} "app"`));
+  assert.match(w.err.join("\n"), /user context: none \(the image has no ~\/\.pi\/agent\)/);
+  const withContext = mkWorld(root, { kitDir: kit, imageUser: "app", userContext: "/home/app/.pi/agent" });
+  assert.equal(await up(["--yes", "--force"], withContext.io), 0);
+  assert.deepEqual(imagesOf(withContext).sandboxUserContext, { default: "/home/app/.pi/agent" });
+  assert.match(withContext.err.join("\n"), /user context: \/home\/app\/\.pi\/agent, mounted read-only from the image/);
 
   // No Machine composing a Sandbox, no Sandbox Image build — said out loud, not skipped silently
   // (ADR-0051: the switch is the walk, not a config key).

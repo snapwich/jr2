@@ -161,7 +161,7 @@ export type AgentDefinition = {
   // detached Worktree is the containment. `"none"` frames no directory — only Working tools
   // consume one — and places the Turn on the Instance Harness (ADR-0031).
   /** What the Agent may do to the Workspace. Default: `"write"`.
-   * - `"write"`: all the Working tools (read, write, edit, bash, grep, glob).
+   * - `"write"`: all the Working tools (read, write, edit, bash, grep, find).
    * - `"read"`: no write or edit tool. The Agent keeps bash, so `"read"` does not stop a command
    *   that writes. To keep the Agent from changing the branch, frame its Turn in a detached
    *   Worktree: cut it with `{ path, detach: sha }`, then give that `path` as `cwd`.

@@ -26,8 +26,9 @@ SDK-verified model of the five wire endpoints. And the base flue builds on is pu
 (MIT, independent of flue's authors) — from which flue imports only the low-level `Agent` loop and reimplements the
 rest. jr2 takes the same slim core: pi-agent-core gives the `Agent` loop, its tool hooks (`beforeToolCall`,
 `finishTurn`, `prepareRequest`), the abort, the steering queue and an in-process event stream. The tool-restriction gap
-does not exist for a caller that owns tool assembly. jr2 owns the rest: the engine part on disk, Compaction
-([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md)) and the six Working tools, whose text the model reads.
+does not exist for a caller that owns tool assembly. jr2 owns the rest: the engine part on disk, the I/O of the Working
+tools, and `grep`. The other Working tools and Compaction are pi-coding-agent's, at the same pin, over jr2's I/O and
+jr2's engine part ([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md)).
 
 ## Decision
 
@@ -35,7 +36,7 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
   `@earendil-works/pi-ai` (pinned exact; a minor can break, and pi 1.0 removed the session, Compaction and the coding
   tools from pi-agent-core) and Hono, which the repo already uses. The stock image keeps its tag
   (`jr2-harness:<kitversion>`) and every operator contract: numeric uid, binding `:8080` is Ready, `git` in the image —
-  plus `ripgrep` for the grep tool.
+  plus `ripgrep` for the `grep` and `find` tools.
 - **pi is the engine, not the contract.** The Harness keeps its contract in jr2's own shapes. One seam (`Engine`,
   `engine.ts`) is the interface between the Turn and the engine. The Turn gives the engine one Submission's run: the
   model, the thinking level, the system prompt, the tools, the context and the prompt. It hears the run as events
@@ -80,39 +81,81 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
     neither is the answer of a pick that the Harness may have delivered (ADR-0002), because an error reads as a failed
     pick, and a cut pick may have run.
 
-  The seam's tools, events and hooks are jr2's types. The seam's messages are pi-ai's provider messages, plus jr2's
-  Compaction summary. pi-ai is the provider library, not the engine (see below), so these shapes are not the engine's.
-  An adapter (`EngineAdapter`) opens the conversation's engine part and makes its engine. `pi-engine.ts` is the one
-  adapter, and the one module that imports pi-agent-core. It holds pi's `Agent` loop, its hooks and events, and the
-  leading system message that carries the system prompt and the tool declarations (pi 1.x's way).
+  The seam's tools, events and hooks are jr2's types. The seam's messages are pi-ai's provider messages, plus a
+  Compaction summary in pi's shape. pi-ai is the provider library, not the engine (see below), so these shapes are not
+  the engine's. An adapter (`EngineAdapter`) opens the conversation's engine part and makes its engine. `pi-engine.ts`
+  is the one adapter, and the one module that runs pi-agent-core. It holds pi's `Agent` loop, its hooks and events, and
+  the leading system message that carries the system prompt and the tool declarations (pi 1.x's way).
 
   The engine part (ADR-0031) is engine-named: the adapter chooses its directory (`engine/pi`). Its format is jr2's
-  transcript (`transcript.ts`), not pi's, because pi 1.x keeps no conversation. The Turn and Compaction (ADR-0036) read
-  and write it. So the adapter does not own the format. It owns the name. The name is the guard: only the engine that
-  wrote a part is known to read it correctly, because that engine's loop decides what goes into it. So a Harness on
-  another engine opens another directory, does not read pi's part, and continues from the record's history.
+  transcript (`transcript.ts`), not pi's, because pi-agent-core keeps no conversation. The Turn and Compaction
+  (ADR-0036) read and write it. So the adapter does not own the format. It owns the name. The name is the guard: only
+  the engine that wrote a part is known to read it correctly, because that engine's loop decides what goes into it. So a
+  Harness on another engine opens another directory, does not read pi's part, and continues from the record's history.
 
   pi-ai is the provider library that every engine sends its requests through, so the Harness uses it directly:
   - the model catalog and the custom provider (`provider.ts`);
   - the message and tool-declaration types;
-  - TypeBox `Type` for the Working tools' schemas (pi-ai coerces the arguments of a TypeBox schema differently from
-    those of a plain JSON Schema);
-  - `uuidv7`, for two ids that go to a provider as a prompt-cache key (pi-ai's `sessionId`): the engine part's id, and
-    the id of each Compaction summary request;
-  - `contentText`: the summary request joins a message's text by pi-ai's rule, as pi 0.82.1 did;
-  - `retryAssistantCall`: the summary call retries by the same rule as each provider request.
+  - the check of a tool call's arguments. pi-ai checks the arguments of each tool against its schema by one rule
+    (pi-schema), for a TypeBox schema and a plain JSON Schema the same. Where a value does not agree with the schema and
+    a conversion exists, it converts the value: `3.5` for an integer becomes `3`, `null` for a required string becomes
+    `"null"`, one value for an array becomes an array of one, and `"42"` for a number becomes `42`. A Working tool gets
+    the converted value: the Working tools are pi's own.
+  - **A Menu pick and an MCP tool call are checked as the model wrote them, and a value that does not fit is refused.**
+    Before pi-ai's conversion, jr2 checks the arguments against the schema with pi-schema and no conversion
+    (`strict-arguments.ts`, each Menu tool's and MCP tool's `prepareArguments`). A refused call gets pi-ai's own text
+    (`Validation failed for tool …`, each path and why, then the arguments it received) as its tool result, so the model
+    can correct the call. Argument text that does not parse is pi's to refuse: pi-ai makes it `{}` and keeps the parse
+    error beside it, which the check does not see. So empty arguments that pi refuses too go on to pi, which says the
+    parse error and the text first (M17), and the model is not told that each field is missing. So the Delivery of a
+    pick (a Door's, a Chart's) and the arguments that an MCP server gets are what the model wrote, and the printed
+    conversation ([ADR-0023](0023-the-harness-prints-the-conversation.md)) shows the same values. Three reasons: a
+    converted value is a silent change of data (`null` arrives as the word `"null"`); the Chart's refuse-then-fix loop
+    is what the `chart-refusal` claim measures ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)), and a
+    conversion would let a Chart pass that the model never fixed; and the model reads a refusal where pi 1.4 refused, so
+    what it reads stays as it was before 1.5. pi 1.4 also converted `"42"` for a number and `null` for a string to `""`;
+    jr2 refuses both now. Conformance tests (M15, M16, M17, and the MCP suite's) hold the refusal for a pick and an MCP
+    tool call, and M13 holds the conversion for a Working tool, so a bump that changes either fails them;
+  - `uuidv7`, for the engine part's id, which goes to a provider as a prompt-cache key (pi-ai's `sessionId`).
+
+  The Working tools' schemas are TypeBox, as upstream's tool definitions are. `Type` comes from `typebox`, a direct
+  dependency, because pi-ai no longer exports it.
+
+  The Harness also imports `@earendil-works/pi-coding-agent` (MIT), at the exact pin of its siblings: pi-coding-agent
+  pins pi-agent-core and pi-ai, so the four pins (with pi-mcp) move together. Two modules of the Harness process import
+  it: `pi-compaction.ts`, for Compaction (ADR-0036), and `pi-tools.ts`, for the Working tools (below). Each imports
+  files of the package's `dist` by a file URL, not the package root. The root costs about 45 MB more in the Harness
+  process than these files, and it adds signal-exit's `SIGINT` and `SIGTERM` listeners. A unit test fails when a pin
+  bump moves one of these files or a name in it. A child in the domain also imports pi's project context loaders
+  (`loadProjectContextFiles`, `loadSkills`, `formatSkillsForPrompt`): `project-context-main.ts`, which the Harness
+  process never imports ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)).
 
   A second engine is a second adapter. One module chooses the Harness's adapter (`engine-choice.ts`), and the Turn names
   no adapter: a test rig can pass another (`TurnDeps.engineAdapter`). So a second engine changes `engine-choice.ts`, not
   the Turn. The Working tools, the printer, the transcript and Compaction do not change.
 
-- **The Working tools run as confined children beside the engine.** The engine runs in the Harness process, which runs
-  jr2's code only and holds the control credential
-  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). Each process that a
-  Working tool starts — each `bash` call and what it runs, and the search tools' `rg` or `grep` — runs confined by the
-  Effector's Landlock confiner ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), with an
-  explicit env. The file tools (read, write, edit) run in the Harness process, and resolve each path beneath `/work`,
-  with no escape by `..` or by a symbolic link. A second engine keeps this rule: it is the Harness's, not pi's.
+- **The Working tools are pi-coding-agent's, and jr2 gives them their I/O.** `read`, `write`, `edit`, `bash` and `find`
+  are upstream's tool definitions (`create*ToolDefinition`): their declarations, their result texts and their error
+  texts are pi's, at the pin. jr2 gives each one its `Operations` (`tool-ops.ts`). The engine runs in the Harness
+  process, which runs jr2's code only and holds the control credential
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). So each file op of a
+  Working tool, and each process that one starts — each `bash` call and what it runs, and the search tools' `rg`, `grep`
+  or `find` — runs in the domain, through the spawner, confined by the Effector's Landlock confiner
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), with an explicit env. A failed file op
+  reads as Node's error for the same system call, so the model reads the text that pi's own `fs` calls would give. A
+  second engine keeps this rule: it is the Harness's, not pi's.
+  - `grep` is jr2's. pi's own `grep` starts `rg` in the Harness process, outside the domain, and it can download `rg`.
+    jr2's `grep` runs `rg` in the domain, with a plain `grep` fallback when the image has no `rg`.
+  - `find` is pi's, with jr2's search: `rg --files` in the domain, by pi's rules for a pattern and pi's ignore list,
+    with a plain `find` fallback.
+  - jr2 changes what pi does in three places, each for a reason of the domain or of the Harness process. `~` in a path
+    is the domain's `HOME`, not the Harness's (ADR-0076). `read` sends an image as its bytes and resizes none, and it
+    omits a BMP with a text that says so, because a decode in the Harness process can take the process past its memory
+    ([ADR-0061](0061-a-memory-kill-ends-the-agents-processes-not-the-harness.md)). `bash` tells the model of no variable
+    of pi's session (`PI_SESSION_ID` and the others): a command's env is the domain's.
+  - A capture (`working-tool-declarations.json`) holds the declaration of each Working tool as the model reads it, byte
+    for byte. A pin bump that changes one fails the test, and the bump's commit writes the capture again after a person
+    reads the change.
 - **Assembly is runtime construction, not codegen.** `main.ts` constructs the server and listens; each admission carries
   its Agent's definition (ADR-0049), validated loudly and re-read per Submission. `boot.mjs`, the generated shims, the
   boot-time `flue build`, and the readiness lag it caused are deleted, and so — later — was the `JR2_AGENTS_JSON` roster
@@ -212,6 +255,12 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
   tool), and the other model answers in parallel. Rejected. It is narrower, and independent reads keep their speed. But
   it leaves the race between Working tools: a `write` and the `bash` test run that reads its file. Also, the seam would
   have no rule of its own: the order would be a fact of which tools a model answer holds.
+- **Keep jr2's port of pi 0.82.1's Working tools** (their code and texts in jr2, held to pi 0.82.1 by a replay test).
+  Rejected: it is a second copy of code that upstream maintains and fixes, and it ages from the day it is ported. Its
+  only gain, that a bump cannot move a tool's text, the declaration capture gives as a loud failure instead.
+- **Let pi-ai convert a pick's and an MCP tool call's arguments** (pi 1.5's rule, for every schema). Rejected: the
+  Machine or the MCP server would get a value that the model did not write, and the printed conversation would show
+  another. A Chart could pass by conversion where the model never fixed it.
 - **Give `beforeToolCall` the names of the calls ahead of the call in its model answer** (`earlier`), for the first-pick
   rule. Rejected. The list names a call that the engine did not prepare (an unknown tool, invalid arguments), so the
   rule blocked a valid pick behind it. And the position of a call in the list needs the call's id, which a provider can
@@ -238,9 +287,14 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)) against a real one —
   run all three before bumping the pin.
 - **The pinning risk moves; it does not vanish.** pi releases often and a minor can break. The pin is exact, a bump is a
-  deliberate kit change gated by the conformance suite, and the breaking surface is now the `Agent` loop's hooks and
-  pi-ai's provider adapters — not a code generator, a CLI build, and a process-global registry. What pi removed jr2 now
-  owns, so a bump cannot move it: the Working tools keep their text, and Compaction its algorithm.
+  deliberate kit change gated by the conformance suite, and the breaking surface is now the `Agent` loop's hooks,
+  pi-ai's provider adapters and pi-coding-agent's tools, Compaction and loaders — not a code generator, a CLI build, and
+  a process-global registry. jr2 owns the engine part and `grep`, so a bump cannot move them. A bump can move the rest
+  of what the model reads: the declarations and texts of the other Working tools, Compaction's cut, its summary text and
+  its rule, which files of the project context load, and the frame of the skills. The declaration capture, the
+  conformance suite and `@model` are its canaries. The design accepts three costs for code that upstream maintains: a
+  bump can change what the model reads; pi-coding-agent's SDK breaks in minors, and jr2 imports private files of its
+  `dist`; and the Harness process holds a larger dependency tree, about 52 MB more memory for Compaction and the tools.
 - **Migration is phased behind the wire.** Because both ends speak the same protocol, the image swap and the
   Orchestrator client swap are independent commits, each leaving every tier green; an old Orchestrator drives the new
   image and vice versa. `@flue/*` leaves the repo when the last pin (the retired contract tier) is deleted.

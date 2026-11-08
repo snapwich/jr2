@@ -106,10 +106,11 @@ runs in CI. **You run it.**
 **When.** After any change to what the model reads or is offered, before calling the change done: the Briefing
 (`packages/harness/src/briefing.ts`), the Chart briefing (`CHART_BRIEFING`, `packages/orchestrator/src/chart.ts`), the
 Menu's rendering or its refusal text, the frame of a Steering message, the nudge, the Working tools and their
-descriptions, how the Harness gives an Agent its MCP tools and their results, Compaction's summary, the admit body's
-notices, the pi pin, a provider adapter, or an authoring surface that changes a Frame. Also before bumping pi: it is the
-third canary beside conformance and `@kind`. If you are reviewing a feature or refactor that touched one of these and
-did not run it, say so.
+descriptions, how the Harness gives an Agent its MCP tools and their results, the check of a tool call's arguments
+(`strict-arguments.ts`), the project context (which files load, their bound and their frame:
+`packages/harness/src/project-context.ts`), Compaction's summary, the admit body's notices, the pi pin, a provider
+adapter, or an authoring surface that changes a Frame. Also before bumping pi: it is the third canary beside conformance
+and `@kind`. If you are reviewing a feature or refactor that touched one of these and did not run it, say so.
 
 **How.**
 

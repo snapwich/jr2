@@ -16,8 +16,12 @@
 //     answers the first answer's `found`, so a cut that a restart sent twice never reads as resumed work.
 //   - The Orchestrator sends the base on each cut: an Agent's checkout in `default/` cannot move it. A
 //     name resolves by refs/remotes/origin first (the local `main` is frozen at the clone), then a tag.
-//   - No hook and no filter runs: a cleared environment and sync.ts's config, with each filter that
-//     the clone names turned off.
+//   - No hook runs: a cleared environment and sync.ts's config. The files of a Worktree come through
+//     a git folder of the cut's own (`fill`), which takes only the clone's objects: no config, no
+//     index and no ignore or attributes rule of the clone, of a config file or of the cut's HOME
+//     changes what is checked out. A re-cut first removes each `.gitattributes` file that the last
+//     commit it wrote does not have, so that only the commit's own attributes apply. It keeps each
+//     `.gitignore` and each file that one ignores (ADR-0075).
 //   - The lock is a flock on a descriptor no child inherits, so nothing that outlives this process
 //     can hold it. Node has no flock: a small program takes it on our descriptor, then exits.
 //   - The fetch lock (jr2-upload-pack, ADR-0075) is a second lock with one rule: a fetch waits only
@@ -29,8 +33,9 @@
 //     name that is not known with a stale fetch is `refused`: it is never `none`.
 
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { closeSync, openSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -62,8 +67,15 @@ export type CutAnswer =
   | { outcome: "refused"; reason: string };
 
 /** The seams of the tests. `lock`: the program that takes a flock on its stdin. `env`: added to the
- * cleared environment. `staleWindowMs`: how long a warned fetch answers for the next cuts. */
-export type CutPaths = { workRoot: string; lock: readonly string[]; env?: NodeJS.ProcessEnv; staleWindowMs?: number };
+ * cleared environment. `staleWindowMs`: how long a warned fetch answers for the next cuts. `tmp`:
+ * where the cut makes its own folder; the default is TMPDIR. */
+export type CutPaths = {
+  workRoot: string;
+  lock: readonly string[];
+  env?: NodeJS.ProcessEnv;
+  staleWindowMs?: number;
+  tmp?: string;
+};
 
 export const POD_CUT_PATHS: CutPaths = { workRoot: "/work", lock: ["/opt/jr2/bin/cut-lock"] };
 
@@ -99,8 +111,15 @@ export function pathFault(path: unknown, workRoot: string): string | undefined {
 
 // --- git, with nothing of the Agent's in the way ------------------------------------------------------
 
-/** sync.ts's CLEAN, and `safe.directory`, because the cleared environment reads no global config. */
+/** sync.ts's CLEAN, and `safe.directory`, because the cleared environment reads no global config.
+ * And no ignore or attributes file of a HOME: git reads `$HOME/.config/git/ignore` and `attributes`
+ * (or the same files under `XDG_CONFIG_HOME`) when no config names another file, also with
+ * `GIT_CONFIG_GLOBAL=/dev/null`. The cut's HOME is a folder in TMPDIR, which the Agents write. */
 const CLEAN = [
+  "-c",
+  "core.excludesFile=/dev/null",
+  "-c",
+  "core.attributesFile=/dev/null",
   "-c",
   "core.hooksPath=/dev/null",
   "-c",
@@ -122,9 +141,10 @@ const CLEAN = [
 ];
 
 type Git = { code: number; out: string; err: string };
-type Runner = (cwd: string, args: readonly string[]) => Promise<Git>;
+type Runner = (cwd: string, args: readonly string[], maxBuffer?: number) => Promise<Git>;
 
-function runner(paths: CutPaths, home: string, filters: { args: string[] }): Runner {
+/** git with the cleared environment, and `extra` added to it (`fill`'s own git folder). */
+function runner(paths: CutPaths, home: string, extra: NodeJS.ProcessEnv = {}): Runner {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: home,
@@ -135,35 +155,15 @@ function runner(paths: CutPaths, home: string, filters: { args: string[] }): Run
     GIT_TERMINAL_PROMPT: "0",
     ...(process.env.JR2_CUSTODIAN_URL ? { JR2_CUSTODIAN_URL: process.env.JR2_CUSTODIAN_URL } : {}),
     ...paths.env,
+    ...extra,
   };
-  return (cwd, args) =>
+  return (cwd, args, maxBuffer = 16 << 20) =>
     new Promise((resolve) => {
-      execFile(
-        "git",
-        ["-C", cwd, ...CLEAN, ...filters.args, ...args],
-        { env, maxBuffer: 16 << 20 },
-        (error, stdout, stderr) => {
-          const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
-          resolve({ code, out: stdout.trim(), err: stderr.trim() });
-        },
-      );
+      execFile("git", ["-C", cwd, ...CLEAN, ...args], { env, maxBuffer }, (error, stdout, stderr) => {
+        const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
+        resolve({ code, out: stdout.trim(), err: stderr.trim() });
+      });
     });
-}
-
-/** Each filter the clone's config names, turned off (`-c filter.x.smudge=`). */
-async function filtersOf(git: Runner, clone: string): Promise<string[]> {
-  const listed = await git(clone, ["config", "--local", "--name-only", "--get-regexp", "^filter\\."]);
-  const names = new Set(listed.out.split("\n").flatMap((l) => l.match(/^filter\.(.+)\.[^.]+$/)?.[1] ?? []));
-  return [...names].flatMap((n) => [
-    "-c",
-    `filter.${n}.smudge=`,
-    "-c",
-    `filter.${n}.clean=`,
-    "-c",
-    `filter.${n}.process=`,
-    "-c",
-    `filter.${n}.required=false`,
-  ]);
 }
 
 const exists = (path: string): Promise<boolean> =>
@@ -221,10 +221,17 @@ type CutRecord = {
   found: CutFound;
   /** The commit a branch that this cut made started at. */
   start?: string;
+  /** The commit that the last fill of a detached Worktree wrote: the next re-cut starts its index
+   * there, never at a HEAD that an Agent set. */
+  sha?: string;
+  /** A done record whose folder a cut is adding again (`addAgain`): a kill can leave a folder with
+   * no index or no files. The next cut removes that folder, which the record names, and adds it
+   * again. */
+  adding?: boolean;
   made: { folder?: boolean; branch?: boolean; upstream?: boolean };
 };
 
-type Clone = { clone: string; records: string; git: Runner };
+type Clone = { clone: string; records: string; git: Runner; paths: CutPaths; home: string };
 
 const recordFile = (c: Clone, path: string): string => join(c.records, `${path.split("/").pop()!}.json`);
 
@@ -403,20 +410,29 @@ export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> 
   const slot = req.path.slice(paths.workRoot.length + 1).split("/")[0]!;
   const clone = `${paths.workRoot}/${slot}/default`;
   if (!(await exists(`${clone}/.git`))) return refused(`no Repo Slot "${slot}" in this Workspace`);
-  const home = await mkdtemp(join(tmpdir(), "jr2-cut-"));
-  try {
-    const filters = { args: [] as string[] };
-    const git = runner(paths, home, filters);
-    filters.args = await filtersOf(git, clone);
-    const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git };
-    return await locked(clone, paths, async () => {
+  return locked(clone, paths, async () => {
+    // A cut that a kill stopped leaves its folder, with an index of the Worktree's files in it. Under
+    // the lock no other cut of this clone lives, so each folder of this clone's name is a dead one.
+    const tmp = paths.tmp ?? tmpdir();
+    const prefix = tmpPrefix(clone);
+    for (const name of await readdir(tmp).catch(() => [] as string[])) {
+      if (name.startsWith(prefix)) await rm(join(tmp, name), { recursive: true, force: true });
+    }
+    const home = await mkdtemp(join(tmp, prefix));
+    try {
+      const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git: runner(paths, home), paths, home };
       await recover(c);
-      return cutLocked(req, slot, c, paths);
-    });
-  } finally {
-    await rm(home, { recursive: true, force: true });
-  }
+      return await cutLocked(req, slot, c, paths);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 }
+
+/** The name of a cut's own folder in TMPDIR starts with this, one for each clone: so the sweep of one
+ * clone's cut, under that clone's lock, removes no folder of a live cut of another clone. */
+const tmpPrefix = (clone: string): string =>
+  `jr2-cut-${createHash("sha256").update(clone).digest("hex").slice(0, 12)}-`;
 
 type Ready = Extract<CutAnswer, { outcome: "ready" }>;
 type ReadyOf = (branch: string | null, head: string, found: CutFound, stale?: string) => Ready;
@@ -479,12 +495,37 @@ function expectFault(req: CutRequest, there: boolean): string | undefined {
   return undefined;
 }
 
-/** Add the Worktree of a done record again: the folder is gone, and an entry can be left. */
-async function addAgain(c: Clone, path: string, what: readonly string[]): Promise<Git> {
-  const admin = await adminOf(c, path);
+/**
+ * Add the Worktree of a done record again: the folder is gone, and an entry can be left. `what` is
+ * `["--detach", sha]` or `[branch]`, and `sha` the commit that the folder gets. The record says
+ * `adding` before git changes anything, and is written again with `sha` after the fill: a kill
+ * between the two leaves a folder that has a HEAD and no index or no files, which a `held` answer
+ * would give back as it is, and `git commit -a` there commits the removal of each file.
+ */
+async function addAgain(
+  c: Clone,
+  rec: CutRecord,
+  what: readonly string[],
+  sha: string,
+  next: Pick<CutRecord, "id" | "found" | "detach">,
+): Promise<string | undefined> {
+  const { adding: _, ...done } = rec;
+  await writeRecord(c, { ...done, adding: true });
+  const admin = await adminOf(c, rec.path);
   if (admin) await rm(admin, { recursive: true, force: true });
   await c.git(c.clone, ["worktree", "prune"]);
-  return steady(() => c.git(c.clone, ["worktree", "add", ...what.slice(0, -1), "--", path, what[what.length - 1]!]));
+  const add = await steady(() =>
+    c.git(c.clone, ["worktree", "add", "--no-checkout", ...what.slice(0, -1), "--", rec.path, what[what.length - 1]!]),
+  );
+  if (add.code !== 0) {
+    // git made no folder: a folder that is there now is not the cut's.
+    await writeRecord(c, done);
+    return add.err;
+  }
+  const fault = await fill(c, rec.path, sha, { detach: what[0] === "--detach" });
+  if (fault !== undefined) return fault;
+  await writeRecord(c, { ...done, ...next, ...(what[0] === "--detach" ? { sha } : {}) });
+  return undefined;
 }
 
 /** What a merge or a rebase left is not a commit, and a forced checkout leaves it. So is a lock that
@@ -502,6 +543,108 @@ const HALF_DONE = [
   "sequencer",
 ];
 
+/** The files whose rules change the bytes that a checkout writes. A re-cut removes each one that is
+ * not in the commit that it last wrote, before the checkout (ADR-0075). A `.gitignore` stays: a
+ * folder that ignores itself (`.venv`, `.pytest_cache`) is the reviewer's tools. */
+const ATTRIBUTES_PATHSPECS = [":(glob)**/.gitattributes"];
+
+/**
+ * The files that pi-coding-agent reads into an Agent's system prompt from a folder of a Worktree
+ * (ADR-0062), at the pin: the context file names of `loadProjectContextFiles`, and what is in a
+ * `.pi/skills` folder (`loadSkills`), in each folder of the Worktree. As git pathspecs: `**` also
+ * matches the Worktree's root. git does not go into a nested repo that is ignored.
+ */
+export const CONTEXT_PATHSPECS = [
+  ...["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"].map((name) => `:(glob)**/${name}`),
+  ":(glob)**/.pi/skills/**",
+];
+
+/** Two paths are one folder: git answers real paths, and a test's root can be a link. */
+const samePath = (a: string, b: string): boolean => {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Put the files of `sha` in the Worktree at `path` (ADR-0075), through a git folder of the cut's
+ * own: its HEAD, its index and its config are the cut's, and it takes the clone's objects by
+ * `alternates`. So nothing that an Agent wrote in the clone or the Worktree changes what is checked
+ * out: not a filter or `core.worktree` in any config file or include, not `info/attributes`, not an
+ * ignore or attributes file in the cut's HOME, not an index whose stat data an Agent matched to a
+ * changed file, not a skip-worktree or assume-unchanged bit, not a sparse checkout, and (below) not a
+ * `.gitattributes` in the work tree that the commit does not have. Then the index is copied into the
+ * Worktree's admin folder, and a detached Worktree's HEAD is set to `sha`.
+ *
+ * `again`: the folder holds the files of the commit that the cut last wrote there, `again`, and an
+ * Agent's changes. The index is seeded from that commit (the record's, never a HEAD that an Agent
+ * set), so a file that the new commit removed goes. Then each `.gitattributes` that is not in that
+ * commit goes, before the checkout, because it changes the bytes that a checkout writes (`eol`,
+ * `working-tree-encoding`, `ident`). After the checkout, `clean -ffd` removes what is not in the
+ * commit. Ignored files stay, by each `.gitignore` in the work tree, because a reviewer runs the
+ * tests and a folder that ignores itself (`.venv`) is the reviewer's tools (ADR-0028). So a
+ * `.gitignore` that an Agent wrote also keeps what it ignores: a known limit, which a domain for each
+ * Agent closes (ADR-0075). An ignore rule of the clone's `info/exclude` or of a config keeps nothing.
+ * The context files and skills that pi reads go also when they are ignored.
+ *
+ * It refuses a Worktree whose `.git` names another admin folder, and one whose own git would work
+ * in another folder (a `core.worktree` in its config): each later git of an Agent there would read
+ * that other folder. Returns the fault, or `undefined`.
+ */
+async function fill(
+  c: Clone,
+  path: string,
+  sha: string,
+  opts: { detach: boolean; again?: string },
+): Promise<string | undefined> {
+  const admin = await adminOf(c, path);
+  if (admin === undefined) return `${path} has no admin folder in the clone`;
+  const gitDir = await c.git(path, ["rev-parse", "--absolute-git-dir"]);
+  if (gitDir.code !== 0) return `${path} is a folder and no longer a Worktree: ${gitDir.err}`;
+  if (!samePath(gitDir.out, admin)) return `${path}'s .git names ${gitDir.out}, not its own admin folder ${admin}`;
+  const top = await c.git(path, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !samePath(top.out, path)) {
+    return `git in ${path} works in ${top.code === 0 ? top.out : `no folder (${top.err})`}: a core.worktree in its config moves it`;
+  }
+  for (const state of HALF_DONE) await rm(`${admin}/${state}`, { recursive: true, force: true });
+  const own = await mkdtemp(join(c.home, "fill-"));
+  await mkdir(join(own, "objects", "info"), { recursive: true });
+  await mkdir(join(own, "refs"));
+  await writeFile(join(own, "objects", "info", "alternates"), `${c.clone}/.git/objects\n`);
+  await writeFile(join(own, "HEAD"), `${sha}\n`);
+  await writeFile(
+    join(own, "config"),
+    sha.length === 64
+      ? "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n"
+      : "[core]\n\trepositoryformatversion = 0\n",
+  );
+  const git = runner(c.paths, c.home, { GIT_DIR: own, GIT_WORK_TREE: path });
+  if (opts.again !== undefined) {
+    const seed = await git(path, ["read-tree", opts.again]);
+    if (seed.code !== 0) return seed.err;
+    const attributes = await git(path, ["clean", "-ffdxq", "--", ...ATTRIBUTES_PATHSPECS]);
+    if (attributes.code !== 0) return attributes.err;
+  }
+  const co = await git(path, ["checkout", "-q", "-f", "--detach", sha]);
+  if (co.code !== 0) return co.err;
+  if (opts.again !== undefined) {
+    // `-ff`: a nested repo goes too. No `-x`: a reviewer runs the tests (ADR-0028).
+    const clean = await git(path, ["clean", "-ffdq"]);
+    if (clean.code !== 0) return clean.err;
+    const context = await git(path, ["clean", "-ffdxq", "--", ...CONTEXT_PATHSPECS]);
+    if (context.code !== 0) return context.err;
+  }
+  await copyFile(join(own, "index"), `${admin}/index.jr2-cut`);
+  await rename(`${admin}/index.jr2-cut`, `${admin}/index`);
+  if (opts.detach) {
+    const head = await steady(() => c.git(path, ["update-ref", "--no-deref", "HEAD", sha]));
+    if (head.code !== 0) return head.err;
+  }
+  return undefined;
+}
+
 /** A path a cut made. The record says what it is, and a re-cut agrees with it or is refused. */
 async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf): Promise<CutAnswer> {
   if (rec.branch !== undefined && req.branch !== rec.branch) {
@@ -513,23 +656,24 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
   if (req.from !== undefined && req.from !== rec.from) {
     return refused(`${req.path} was cut from ${rec.from ?? "the base"}, not ${req.from}`);
   }
+  if (rec.adding) {
+    // A kill stopped an add of this folder again: what is there is the cut's, half made.
+    const admin = await adminOf(c, req.path);
+    if (admin) await rm(admin, { recursive: true, force: true });
+    await rm(req.path, { recursive: true, force: true });
+  }
   if (req.detach !== undefined) {
     const sha = await commitOf(c, req.detach);
     if (sha === undefined) return refused(`no commit "${req.detach}" in this clone`);
-    if (!(await exists(req.path))) {
-      const add = await addAgain(c, req.path, ["--detach", sha]);
-      if (add.code !== 0) return refused(add.err);
+    const next = { id: req.id, detach: req.detach, found: "commit" as const };
+    if (await exists(req.path)) {
+      const fault = await fill(c, req.path, sha, { detach: true, again: rec.sha ?? sha });
+      if (fault !== undefined) return refused(fault);
+      await writeRecord(c, { ...rec, ...next, sha });
     } else {
-      const gitDir = await c.git(req.path, ["rev-parse", "--absolute-git-dir"]);
-      if (gitDir.code !== 0) return refused(`${req.path} is a folder and no longer a Worktree: ${gitDir.err}`);
-      for (const state of HALF_DONE) await rm(`${gitDir.out}/${state}`, { recursive: true, force: true });
-      const co = await steady(() => c.git(req.path, ["checkout", "--detach", "-f", sha]));
-      if (co.code !== 0) return refused(co.err);
-      // `-ff`: a nested repo goes too. No `-x`: a reviewer runs the tests (ADR-0028).
-      const clean = await c.git(req.path, ["clean", "-ffd"]);
-      if (clean.code !== 0) return refused(clean.err);
+      const fault = await addAgain(c, rec, ["--detach", sha], sha, next);
+      if (fault !== undefined) return refused(fault);
     }
-    await writeRecord(c, { ...rec, id: req.id, detach: req.detach, found: "commit" });
     return ready(null, sha, "commit");
   }
   const branch = rec.branch!;
@@ -537,9 +681,8 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
   if (head === undefined) return refused(`the branch ${branch} of ${req.path} is gone`);
   if (!(await exists(req.path))) {
     // An Agent removed the folder. The branch keeps the commits, and only they come back.
-    const add = await addAgain(c, req.path, [branch]);
-    if (add.code !== 0) return refused(add.err);
-    await writeRecord(c, { ...rec, id: req.id, found: "local" });
+    const fault = await addAgain(c, rec, [branch], head, { id: req.id, found: "local" });
+    if (fault !== undefined) return refused(fault);
     return ready(branch, head, "local");
   }
   const again = rec.id === req.id;
@@ -566,12 +709,13 @@ async function firstDetach(req: CutRequest, c: Clone, paths: CutPaths, ready: Re
     made: { folder: true },
   };
   await writeRecord(c, rec);
-  const add = await steady(() => c.git(c.clone, ["worktree", "add", "--detach", "--", req.path, sha]));
-  if (add.code !== 0) {
+  const add = await steady(() => c.git(c.clone, ["worktree", "add", "--no-checkout", "--detach", "--", req.path, sha]));
+  const fault = add.code !== 0 ? add.err : await fill(c, req.path, sha, { detach: true });
+  if (fault !== undefined) {
     await undo(c, rec);
-    return refused(add.err);
+    return refused(fault);
   }
-  await writeRecord(c, { ...rec, state: "done" });
+  await writeRecord(c, { ...rec, state: "done", sha });
   return ready(null, sha, "commit");
 }
 
@@ -635,8 +779,10 @@ async function firstBranch(req: CutRequest, c: Clone, paths: CutPaths, ready: Re
       if (set.code !== 0) return failed(set);
     }
   }
-  const add = await steady(() => c.git(c.clone, ["worktree", "add", "--", req.path, branch]));
+  const add = await steady(() => c.git(c.clone, ["worktree", "add", "--no-checkout", "--", req.path, branch]));
   if (add.code !== 0) return failed(add);
+  const fault = await fill(c, req.path, start, { detach: false });
+  if (fault !== undefined) return failed({ code: 1, out: "", err: fault });
   await writeRecord(c, { ...rec, state: "done" });
   return ready(branch, start, found, stale);
 }

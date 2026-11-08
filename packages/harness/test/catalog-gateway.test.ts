@@ -47,7 +47,9 @@ test("Claude Sonnet 5.5 through the gateway: no temperature at off or high, and 
   // jr2's default level is `off`, which this model lacks (`thinkingLevelMap.off` is null). pi-ai's
   // adapter then sends its default effort, `high`, and puts that word on the answer. The word comes
   // from the request, not from the provider: the Turn prints that the Harness sent it (`ranAt`,
-  // ADR-0023).
+  // ADR-0023). Since pi-ai 1.5.0 the top-level effort of a model with mid-conversation effort is a
+  // fixed `low` (it is part of the cached prefix), and the effort in force is the last system
+  // marker of the messages.
   const gateway = await startAnthropicGateway();
   try {
     const models = modelsFor({ catalog: { anthropic: { baseUrl: gateway.url } } }, { ANTHROPIC_API_KEY: "x" });
@@ -58,7 +60,9 @@ test("Claude Sonnet 5.5 through the gateway: no temperature at off or high, and 
     assert.equal(off.stopReason, "stop", off.errorMessage ?? "");
     assert.equal(high.stopReason, "stop", high.errorMessage ?? "");
     for (const { body } of gateway.seen) assert.equal("temperature" in body, false);
-    assert.deepEqual(gateway.seen[0]!.body.output_config, { effort: "high" });
+    assert.deepEqual(gateway.seen[0]!.body.output_config, { effort: "low" });
+    const messages = gateway.seen[0]!.body.messages as { role: string; output_config?: unknown }[];
+    assert.deepEqual(messages.at(-1), { role: "system", content: [], output_config: { effort: "high" } });
     assert.equal(off.providerThinkingLevel, "high");
   } finally {
     await gateway.close();

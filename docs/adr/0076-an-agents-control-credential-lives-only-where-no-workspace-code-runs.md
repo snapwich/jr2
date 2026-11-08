@@ -74,16 +74,18 @@ code from `/work`.
   first frame carries a digest of the control Stand-in, which it reads from the file and which the domain cannot read.
   The Stand-in itself never goes on the socket. Without the proof, the Harness starts nothing.
 - **The domain can do what the container's uid can do, except reach jr2's secrets.** The rules give every right on every
-  path, with one exception: `/run/jr2`. There the domain can list the names in each folder, and do nothing else.
+  path, with one exception: `/run/jr2`. There the domain can list the names in each folder, and do nothing else, except
+  read the files in `/run/jr2/output` (below) and in `/run/jr2/user-context`, the image user's context
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), which the pod also mounts at `~/.pi/agent`.
   Landlock only narrows the Unix permissions, so a confined program can do everything that the uid can do without
   Landlock, except:
   - reach the contents of `/run/jr2`: read, write, truncate, make, remove, move or link a file or a folder there.
     `/run/jr2` holds the control Stand-in, each held secret's Stand-in, the folder of the Custodian's control socket,
-    the folder of the shell's socket, and the Harness's conversations. Every path that jr2 holds for the Harness alone
-    is under `/run/jr2`. Landlock allows a path only by its rules, so the confiner allows every sibling of `/run/jr2`
-    and of each folder above it, one level at a time. It also gives the root the right to list names on its whole tree,
-    so `ls /`, `ls /run` and `find /` work as they do outside jr2. That right lists the names under `/run/jr2` too: a
-    held secret's name, a conversation's file name. These names are not secrets.
+    the folder of the shell's socket, the Harness's conversations, and the Harness's output folder. Every path that jr2
+    holds for the Harness alone is under `/run/jr2`. Landlock allows a path only by its rules, so the confiner allows
+    every sibling of `/run/jr2` and of each folder above it, one level at a time. It also gives the root the right to
+    list names on its whole tree, so `ls /`, `ls /run` and `find /` work as they do outside jr2. That right lists the
+    names under `/run/jr2` too: a held secret's name, a conversation's file name. These names are not secrets.
   - trace the Harness process, or read its `/proc/<pid>/environ` or `/proc/<pid>/mem`. A confined process cannot ptrace
     a process outside its domain.
   - at Landlock ABI 6 or later, connect to an abstract Unix socket that a process outside the domain made. The
@@ -149,8 +151,10 @@ code from `/work`.
     `JR2_HARNESS_ENV_NAMES` the effector starts nothing.
 
   At its start, before it loads any other module, the Harness refuses to run when a folder where node looks for a module
-  is outside `/opt/jr2` and `/run/jr2`, and it checks that its `HOME` is `/run/jr2/home`. A change of `HOME` after node
-  started is too late, so the Harness never makes one.
+  is outside `/opt/jr2` and `/run/jr2`, and it checks that its `HOME` is `/run/jr2/home`. One folder is trusted where it
+  is: node's own `<prefix>/lib/node`, beside node's binary, because a process that can write there can also replace
+  node. In a pod it is `/opt/jr2/lib/node`. A change of `HOME` after node started is too late, so the Harness never
+  makes one.
 
   A name of jr2's env that names a credential file which the Harness process reads (`AWS_CONFIG_FILE`,
   `GOOGLE_APPLICATION_CREDENTIALS`, and the others) is the admin's choice. `jr2 up` refuses such a path in a folder that
@@ -158,16 +162,46 @@ code from `/work`.
   Sandbox's uid can write a folder of the image is the image's, and jr2 cannot read it.
 
 - **The file tools reach what `bash` reaches.** Their I/O runs in the spawner, so the kernel applies the domain's rules
-  to them. A path under `/run/jr2`, or a symbolic link to one, fails with the error that an unreadable file gives. `~`
-  in a path is the domain's `HOME`, as it is for `bash`.
+  to them. A path under `/run/jr2`, or a symbolic link to one, fails with the error that an unreadable file gives:
+  Landlock does not stop `stat`, so pi's check that a file is there passes, and the open fails
+  (`EACCES: permission denied, open '<path>'`). `~` in a path is the domain's `HOME`, as it is for `bash`: pi expands
+  `~` to the `HOME` of the process that runs it, which is the Harness's, so jr2 expands it first.
+- **The project context is read in the domain.** pi-coding-agent's `loadProjectContextFiles` and `loadSkills` read an
+  Agent's `AGENTS.md`, `CLAUDE.md` and skills in the process that calls them
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). So the Harness runs them in a child that the
+  spawner starts, with the module check above as its first import and an env of two names: `HOME=/run/jr2/home`, and the
+  names of the domain's git config files, as data that only its git reads. The child writes one line of JSON, and the
+  Harness reads it as untrusted data, at most 256 KiB. An `AGENTS.md` that links to a file under `/run/jr2` fails at the
+  open, in the domain, and pi goes on to the next name. When the Sandbox pod mounts the image user's context folder
+  (`~/.pi/agent`, read-only from the Sandbox Image, ADR-0062, a second time at `/run/jr2/user-context`, where the child
+  reads it), the child is confined further: `effector confine`, run in the domain, adds rules that deny that folder
+  except the names that pi's loaders read there (its context file and `skills/`), each only to read. Landlock adds a
+  ruleset to the domain's, so the child keeps no right that the domain does not have. A name that is a symbolic link
+  gets no rule, so a read through it is a read of the path that it names: a link to `auth.json` fails. The Harness
+  computes these rules at each load, in its own process: it lists the names with `lstat`, and `effector harness-rules`
+  resolves each path. That folder is a read-only mount, so no process of the domain makes, changes or removes a name
+  there. `harness-rules` refuses a `--read` path that a link is on (ELOOP), so a link there stops the child: no project
+  context, and one line in the pod log. The folder and each folder above it are jr2's, so the Harness's `lstat` reads no
+  path that the domain can write.
 - **The Harness process touches no path that the domain can write.** Each path in the Agent's files that the Harness
-  reads, lists or removes goes through the spawner. The one exception is the file that holds the full output of a `bash`
-  call. The Harness makes it in the domain's `TMPDIR`, with a name that must be new and must not be a link, and it
-  writes through that open file alone. If the file did not land in `TMPDIR`, the Harness removes it and refuses. The
-  Harness process has its own `HOME`, `/run/jr2/home`, from its start (above), which does not exist and which no process
-  can make, because code in the Harness process reads files under `HOME`: node looks for modules in `~/.node_modules`,
-  the AWS SDK reads `~/.aws/config`, which can name a `credential_process` to run, and Google's library reads
-  `~/.config/gcloud`. The domain keeps the Workspace's `HOME`.
+  reads, lists or removes goes through the spawner. pi's Working tools look at a path in the Harness process: `read`
+  tries the variants of a name with `access`, and `write` and `edit` order their calls by the `realpath` of the file.
+  These tell only whether a name is there and where a link points, which `stat` in the domain tells too, and they read
+  no content. The file that holds the full output of a `bash` call is the Harness's own. pi's `bash` makes it in the
+  Harness process's `TMPDIR` and opens it by its path again to read it, so the Harness's `TMPDIR` is `/run/jr2/output`:
+  an emptyDir of the Harness container alone, where the domain reads a file and writes, makes, removes, moves and links
+  nothing. So no command can put a link or a FIFO in the place of that file. The model reads the file by the path in the
+  result, with `read` or `bash`. A Harness without that folder refuses to serve. Nothing of pi removes a file there, so
+  the Harness bounds the folder: when a `bash` call ends, it removes the oldest files until the folder holds at most 256
+  MiB. It keeps the newest file, and each file that a call in flight can still use (one changed after the oldest call in
+  flight started). So the folder holds at most 256 MiB, plus the newest file, plus the files of the calls in flight. A
+  model that reads a removed file gets the error of a missing file. The bound is not an emptyDir `sizeLimit`: the
+  kubelet evicts the pod when a disk-backed emptyDir passes its limit, which would lose the Workspace for one long
+  output. The domain keeps the `TMPDIR` that the container started with, so an image's own `TMPDIR` works as it works
+  outside jr2. The Harness process has its own `HOME`, `/run/jr2/home`, from its start (above), which does not exist and
+  which no process can make, because code in the Harness process reads files under `HOME`: node looks for modules in
+  `~/.node_modules`, the AWS SDK reads `~/.aws/config`, which can name a `credential_process` to run, and Google's
+  library reads `~/.config/gcloud`. The domain keeps the Workspace's `HOME`.
 - **One secret control Stand-in for each Sandbox.** Only the Harness process holds it, as a file under `/run/jr2`. It is
   in no env of the domain. The Custodian puts the Sandbox's control token in its place on the control routes (ADR-0059),
   and the real token never leaves the Custodian.
@@ -278,6 +312,11 @@ code from `/work`.
   an engine with its own process (above): there, a sibling in the one domain forges the engine's Menu calls at once.
 - **The file tools do their I/O in the Harness, with a check of the path.** Rejected. It puts the rule in two places,
   the kernel and jr2's code, and the check in code must handle each symbolic link and each race.
+- **The full output of a `bash` call in the domain's `TMPDIR`, with a check after the command.** Rejected. pi's `bash`
+  opens the file by its path again after the command ends, and a process that the command left running can put a link to
+  `/dev/zero` or a FIFO in its place between the check and that open. The Harness then reads without end, or waits for
+  ever. It also needs the Harness's `TMPDIR` to be the domain's, so a Sandbox Image with its own `TMPDIR` cannot serve.
+  A folder that the domain only reads closes both.
 - **The control routes on a loopback port.** Rejected. A confined program can bind `127.0.0.1:<port>` while the
   Custodian restarts, and it then receives the secret control Stand-in on the Harness's next request.
 - **The Custodian authenticates the caller.** Rejected alone: every process reaches the Custodian over the one pod
@@ -302,7 +341,14 @@ code from `/work`.
   - An Agent can still try to persuade another Agent through what that Agent reads: a file, a commit message, the output
     of a test. That is an attack on content, not a forged pick. The other Agent's model chooses each pick, and the
     Orchestrator judges it against that Turn's Allowed picks
-    ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)).
+    ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). The defenses against
+    that are practical, not a guarantee: the cut of a review Worktree
+    ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)) and the rules for the project context
+    ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)) stop one Agent from changing what another
+    reads by chance or with little work, not an Agent that sets out to do it. The Agents of one Workspace share `/work`,
+    the clone, one uid and one domain, and so one Agent's process can race a cut that runs in that domain. A Workflow
+    that needs more gives the review a Workspace of its own
+    ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)).
   - A confined child can spend only a held secret that its `workspace()` grants. Every Stand-in but the fetch Stand-in
     is secret, and the child's env holds only the granted ones (ADR-0059). So code in `/work` reaches a model key only
     when the author grants that key.

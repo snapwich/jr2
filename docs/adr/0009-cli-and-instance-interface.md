@@ -93,7 +93,8 @@ package may ship whole Machines with their Agents and image inside (ADR-0049). B
 as-is or through `customize(machine, { agents: { coder: { model: "…" } } })`. An Agent's tools beyond its own come from
 the MCP servers that it names, and the same `customize()` rebinds them
 ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). Adding
-skills waits on the definition contract growing that seat (ADR-0018).
+skills to a definition waits on the definition contract growing that seat (ADR-0018); a repo's own skills reach an Agent
+in its Worktree ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)).
 
 ## Orchestrator HTTP API (hono, run-addressed-by-id)
 

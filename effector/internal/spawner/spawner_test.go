@@ -574,7 +574,7 @@ func TestInTheDomainSpawnsShareItAndReachNothingDenied(t *testing.T) {
 	if err := os.Symlink(standin, filepath.Join(work, "link")); err != nil {
 		t.Fatal(err)
 	}
-	rules, err := confine.ForHarness("/", []string{denied})
+	rules, err := confine.ForHarness("/", []string{denied}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

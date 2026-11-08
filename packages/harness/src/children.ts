@@ -1,16 +1,19 @@
 // The Harness's children (ADR-0076, ADR-0077): how the Harness of a Sandbox starts each process
 // that a model drives or that runs Workspace code — each `bash` call, each search tool, jr2's own
-// git for the attach and the sync, and each `command` Effect placed here (the cut among them) — and
+// git for the attach and the sync, each `command` Effect placed here (the cut among them), and the
+// child that reads an Agent's project context (`project-context.ts`) — and
 // where the file tools do their I/O. All of it runs in ONE Landlock domain, which the Harness is not
 // in: the Harness starts the spawner once (`spawner.ts`), confined by the Effector's confiner on the
 // runtime volume, and asks it for each process and each file op:
 //
 //   /opt/jr2/bin/effector confine <rules> -- /opt/jr2/bin/effector spawner
 //
-// The rules are `confine.ForHarness`'s, which `effector harness-rules --deny /run/jr2` writes once
-// at start: every right on every path except `/run/jr2`. That folder holds the control Stand-in,
-// each held secret's Stand-in, the Custodian's control socket's folder, and the Harness's
-// conversations. A confined process cannot ptrace one outside its domain, so `/proc/<harness>/environ`
+// The rules are `confine.ForHarness`'s, which `effector harness-rules --deny /run/jr2 --read
+// /run/jr2/output` writes once at start: every right on every path except `/run/jr2`, and read alone
+// in `/run/jr2/output` (and in `/run/jr2/user-context`, when the pod mounts the image user's context
+// there, ADR-0062). That folder holds the control Stand-in, each held secret's Stand-in, the
+// Custodian's control socket's folder, and the Harness's conversations; its `output` folder holds
+// the whole output of a long `bash` call, which the model reads (`OUTPUT_DIR`). A confined process cannot ptrace one outside its domain, so `/proc/<harness>/environ`
 // and `/mem` stay closed.
 //
 // The domain's env is the env that the container STARTED with — the image's `ENV`, `harness.env`,
@@ -24,10 +27,18 @@
 // serve (`probeLandlock`), and every process here starts through the spawner.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { accessSync, constants, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { open, unlink, type FileHandle } from "node:fs/promises";
+import {
+  accessSync,
+  constants,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { SpawnError, Spawner, SpawnerGoneError, type SpawnExit, type Spawned } from "./spawner.ts";
 
@@ -44,6 +55,22 @@ export const CONTROL_SOCKET = `${RUNTIME_SECRETS}/custodian/control.sock`;
 /** Where a Harness keeps its conversations (ADR-0031): under `/run/jr2`, so no process of the
  * domain reads another Agent's conversation (ADR-0076). */
 export const CONVERSATIONS_DIR = `${RUNTIME_SECRETS}/conversations`;
+/**
+ * The Harness's own folder for the whole output of a long `bash` call (ADR-0076): an emptyDir of
+ * the Harness container's alone (sandbox-kube.ts), which the domain reads and does not write. pi's
+ * `bash` makes that file in this process's `os.tmpdir()` and opens it by its path again to read
+ * it, so the Harness's TMPDIR is this folder (`useOutputDir`): there, no process of the domain can
+ * put a link or a FIFO in the file's place. The model reads the file by the path that pi gives.
+ */
+export const OUTPUT_DIR = `${RUNTIME_SECRETS}/output`;
+/**
+ * Where the pod mounts the image user's context folder (`~/.pi/agent`) a second time, read-only
+ * from the Sandbox Image (ADR-0062): the Harness and the child that loads the project context read
+ * it here alone. The domain reads it and changes nothing there, and it can move neither this folder
+ * nor a folder above it, as it can move `~/.pi` in its HOME. `@jr2/orchestrator`'s `USER_CONTEXT_DIR`
+ * is the mount's path; a test holds the two equal, as the other paths here that the pod mounts.
+ */
+export const USER_CONTEXT_DIR = `${RUNTIME_SECRETS}/user-context`;
 /** Where the Harness of a Sandbox listens for a person's shell (`workspace-shell.ts`): in a folder
  * of the Harness container's alone under `/run/jr2`, where no process of the domain makes a file. */
 export const SHELL_SOCKET = `${RUNTIME_SECRETS}/shell/shell.sock`;
@@ -137,6 +164,9 @@ export type ChildPolicy = {
   readonly env: Readonly<Record<string, string>>;
   /** The one spawner of the domain. */
   readonly spawner: Spawner;
+  /** The confiner that made the domain. A process of the domain can confine a child of its own
+   * further with it (`effector confine`): Landlock adds the new rules to the domain's. */
+  readonly confiner: string;
 };
 
 /** A program on `path`, or undefined. The Harness's check before it names a shell: the spawner
@@ -252,10 +282,12 @@ function real(p: string): string {
 
 /**
  * The rules of the domain, as `effector harness-rules` writes them (`confine.ForHarness`): one call
- * at start. Every right on every path but each of `deny`.
+ * at start. Every right on every path but each of `deny`, and read alone in each of `read`, which
+ * lies in a path of `deny`.
  */
-export function harnessRules(confiner: string, deny: readonly string[]): string[] {
-  const out = execFileSync(confiner, ["harness-rules", ...deny.flatMap((d) => ["--deny", d])], {
+export function harnessRules(confiner: string, deny: readonly string[], read: readonly string[] = []): string[] {
+  const args = [...deny.flatMap((d) => ["--deny", d]), ...read.flatMap((r) => ["--read", r])];
+  const out = execFileSync(confiner, ["harness-rules", ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: {},
@@ -292,6 +324,8 @@ export type PolicyInputs = {
   control: string | undefined;
   /** The paths that the domain may not reach. Default: `/run/jr2` alone. */
   deny?: readonly string[];
+  /** The folders in a path of `deny` that the domain may read and not write. Default: `OUTPUT_DIR`. */
+  read?: readonly string[];
   /** Where the spawner's start and restarts are said. Default: `console.error`. */
   log?: (line: string) => void;
 };
@@ -319,42 +353,37 @@ export function childPolicy(inputs: PolicyInputs): ChildPolicy {
     home,
     tmp,
   });
-  const rules = harnessRules(confiner, deny);
+  const rules = harnessRules(confiner, deny, (inputs.read ?? [OUTPUT_DIR]).map(real));
   const spawner = new Spawner({
     argv: [confiner, "confine", ...rules, "--", confiner, "effector", "spawner"],
     env: {},
     ...(inputs.log ? { log: inputs.log } : {}),
   });
-  return { env, spawner };
+  return { env, spawner, confiner };
 }
 
 /**
- * A new file of the Harness's own in the domain's TMPDIR, opened once: the bash tool's full output.
- * The domain writes in that folder, so the Harness writes there through the handle alone, never by
- * path again. One component below TMPDIR, created here (`O_EXCL`), never a link (`O_NOFOLLOW`). If
- * the domain moved TMPDIR and put a link in its place, the file lands elsewhere: the Harness reads
- * where it landed, and removes it and refuses when that is not TMPDIR (ADR-0076).
+ * Make `dir` this process's TMPDIR (ADR-0076): the folder where pi's `bash` makes a long command's
+ * whole output (`OUTPUT_DIR`). It must be a folder, not a link, that this process can write. The
+ * domain keeps its own TMPDIR, from the start env (`childPolicy`), so call this after the domain is
+ * made. A Harness whose folder is not there cannot serve: pi would write the file where the domain
+ * writes, and open it there by its path again.
  */
-export async function createInTmp(children: ChildPolicy, name: string): Promise<{ path: string; file: FileHandle }> {
-  const dir = children.env.TMPDIR ?? tmpdir();
-  const path = join(dir, name);
-  const file = await open(
-    path,
-    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-    0o600,
-  );
-  let landed: string;
+export function useOutputDir(dir: string, env: NodeJS.ProcessEnv = process.env): void {
+  const fix = `mount a folder of the Harness container's own at ${dir} (ADR-0076)`;
+  let stat;
   try {
-    landed = readlinkSync(`/proc/self/fd/${file.fd}`);
+    stat = lstatSync(dir);
+  } catch (err) {
+    throw new Error(`the Harness's output folder ${dir} is not there (${(err as Error).message}): ${fix}`);
+  }
+  if (!stat.isDirectory()) throw new Error(`the Harness's output folder ${dir} is not a folder: ${fix}`);
+  try {
+    accessSync(dir, constants.W_OK);
   } catch {
-    landed = path;
+    throw new Error(`the Harness cannot write its output folder ${dir}: ${fix}`);
   }
-  if (dirname(landed) !== dir) {
-    await file.close();
-    await unlink(landed).catch(() => {});
-    throw new Error(`the folder ${dir} was moved while ${name} was made in it: the file is not written (ADR-0076)`);
-  }
-  return { path, file };
+  env.TMPDIR = dir;
 }
 
 /** A process the domain ran to its end, as `execFile` answers one. */
@@ -384,6 +413,9 @@ export function runIn(
     timeoutMs?: number;
     maxBuffer?: number;
     encoding?: BufferEncoding;
+    /** The process's `oom_score_adj`, written when it has started (ADR-0061): 1000 makes it the
+     * kernel's first choice at the memory limit, never the Harness. Best effort, as for `exec`. */
+    oomScoreAdj?: number;
   },
 ): Promise<RunResult> {
   const env: Record<string, string> = {};
@@ -431,6 +463,19 @@ export function runIn(
     if (opts.input !== undefined) {
       proc.write(opts.input);
       proc.end();
+    }
+    const adj = opts.oomScoreAdj;
+    if (adj !== undefined) {
+      proc.started.then(
+        (pid) => {
+          try {
+            writeFileSync(`/proc/${pid}/oom_score_adj`, String(adj));
+          } catch {
+            // Not Linux, or no /proc, or it has ended: nothing to mark.
+          }
+        },
+        () => {},
+      );
     }
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     if (opts.timeoutMs !== undefined) {

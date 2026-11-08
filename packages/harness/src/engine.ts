@@ -37,17 +37,17 @@ import type {
   Model,
   Models,
   ModelThinkingLevel,
-  Static,
   TextContent,
   Tool,
   ToolResultMessage,
-  TSchema,
 } from "@earendil-works/pi-ai";
+import type { Static, TSchema } from "typebox";
 import type { EngineSeat } from "./record.ts";
 import type { EnginePart } from "./transcript.ts";
 
 /** A Compaction's summary as the loop carries it (ADR-0036): the context's first message after a
- * cut. `convertToLlm` makes it the user message the model reads (`turn.ts`). */
+ * cut, in pi's shape (pi-coding-agent's `CompactionSummaryMessage`, which its root does not
+ * export). `convertToLlm` makes it pi's user message that the model reads (`turn.ts`). */
 export type CompactionSummaryMessage = {
   role: "compactionSummary";
   summary: string;

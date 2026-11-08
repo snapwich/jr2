@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { globalPathsFault } from "../src/module-paths.ts";
+import { globalPathsFault, ownLibNode } from "../src/module-paths.ts";
 
 test("globalPathsFault: an entry outside /opt/jr2 and /run/jr2 is a fault that names it", () => {
   assert.equal(
@@ -21,6 +21,16 @@ test("globalPathsFault: an entry outside /opt/jr2 and /run/jr2 is a fault that n
   // A folder that only starts with a trusted root's name is not under it; NODE_PATH's are refused too.
   assert.ok(globalPathsFault(["/opt/jr2x/lib/node"]) !== undefined);
   assert.ok(globalPathsFault(["/app/node_modules", "/opt/jr2/lib/node"]) !== undefined);
+});
+
+test("globalPathsFault: node's own <prefix>/lib/node is trusted where it is, and no other folder of that name", () => {
+  assert.equal(ownLibNode("/usr/local/bin/node"), "/usr/local/lib/node");
+  const paths = ["/run/jr2/home/.node_modules", "/usr/local/lib/node"];
+  assert.equal(globalPathsFault(paths, undefined, "/usr/local/lib/node"), undefined);
+  assert.match(
+    globalPathsFault(paths, undefined, "/opt/node/lib/node") ?? "",
+    /looks for modules in \/usr\/local\/lib\/node,/,
+  );
 });
 
 // The guard is `main.ts`'s first import: a node whose HOME is a folder that the domain writes does

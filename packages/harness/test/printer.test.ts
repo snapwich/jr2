@@ -8,13 +8,14 @@ import assert from "node:assert/strict";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, JsonObject } from "@earendil-works/pi-ai";
 import type { EngineEvent } from "../src/engine.ts";
+import type { EngineMessage } from "../src/engine.ts";
 import { engineEvent } from "../src/pi-engine.ts";
 import { receiptProse } from "../src/menu.ts";
 import { menuToolName } from "../src/menu-tools.ts";
 import { attachPrinter, renderMessage, renderToolInput } from "../src/printer.ts";
 
 /** A tool's result as pi records it: the text the model reads, and whether it reads as an error. */
-function toolResult(toolName: string, text: string, isError = false): AgentMessage {
+function toolResult(toolName: string, text: string, isError = false): EngineMessage {
   return {
     role: "toolResult",
     toolCallId: "tc-1",
@@ -22,15 +23,15 @@ function toolResult(toolName: string, text: string, isError = false): AgentMessa
     content: [{ type: "text", text }],
     isError,
     timestamp: 0,
-  } as AgentMessage;
+  } as EngineMessage;
 }
 
-function user(content: unknown): AgentMessage {
-  return { role: "user", content, timestamp: 0 } as AgentMessage;
+function user(content: unknown): EngineMessage {
+  return { role: "user", content, timestamp: 0 } as EngineMessage;
 }
 
-function assistant(content: AssistantMessage["content"]): AgentMessage {
-  return { role: "assistant", content, stopReason: "stop", timestamp: 0 } as unknown as AgentMessage;
+function assistant(content: AssistantMessage["content"]): EngineMessage {
+  return { role: "assistant", content, stopReason: "stop", timestamp: 0 } as unknown as EngineMessage;
 }
 
 function toolCall(name: string, args: Record<string, unknown>): AssistantMessage["content"][number] {

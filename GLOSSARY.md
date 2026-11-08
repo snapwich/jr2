@@ -297,7 +297,7 @@ _Avoid_: turn (a Turn is the Agent's whole answer to its Frame), round, iteratio
 
 **Compaction**:
 The cut that the Harness makes in a conversation's model context during a Turn: a summary plus a retained tail replaces
-the earlier context. jr2 alone decides when it occurs, and it changes what the model sees, never what jr2
+the earlier context. The Harness decides when it occurs, by pi's rule, and it changes what the model sees, never what jr2
 recorded.
 _Avoid_: summarization (one part of a Compaction), truncation (the failure that Compaction prevents), pruning
 
@@ -339,6 +339,16 @@ the Frame's prompt that carries the Allowed picks, any **notices**, and a **pick
 parameter needs one (a Chart).
 _Avoid_: system prompt (the Turn part is not in it), preamble, header, instructions (identity's word), nudge (a
 re-prompt of an open Turn)
+
+**Project context**:
+The repo's own text to an Agent in `/work`: the context files (`AGENTS.md`, `CLAUDE.md`) from its working directory up
+to its Worktree's root (in `/work` or a slot's folder, that folder alone), or up to `/work` when the Workspace's
+`projectContext` is `"workspace"`; the skills in `.pi/skills`, as pi finds them; of these, only the files that git does
+not ignore, and a tracked file as the index has it; and the Sandbox Image's user context
+(`~/.pi/agent`), when the image has one, which the pod mounts read-only from the image. It is in
+the system prompt after the `instructions` and before the Briefing's standing part. It is loaded once for each folder of
+a conversation. A Menu-only Agent has none.
+_Avoid_: Briefing (jr2's own text), instructions (identity's word), memory
 
 **Working tools**:
 The file and shell tools that the Harness runs in its own container: what an Agent may do, as its Menu is what it may

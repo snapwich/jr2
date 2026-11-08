@@ -15,13 +15,17 @@ running `bash` call, anything the Agent left running from earlier calls (a dev s
 
 Layers, each a backstop for the one before:
 
-1. **A process killed by a signal is an error.** jr2's bash tool reads the shell's exit: a signal death, of the command
-   or of the shell, reports the signal and never exit 0. A Harness conformance test holds it (ADR-0027).
+1. **A process killed by a signal is an error.** jr2's shell for the `bash` Working tool reads the shell's exit: a
+   signal death, of the command or of the shell, is exit `128 + n` for signal `n`, and never exit 0. The model reads
+   pi's text for a failed command (`Command exited with code 137`), which does not name the signal. A Harness
+   conformance test holds it (ADR-0027).
 2. **`tini` is PID 1 in the Harness container**, shipped on `/opt/jr2`, so killed trees leave no zombies. Not
    `shareProcessNamespace` — ADR-0005 keeps it off for good.
-3. **The `bash` Working tool starts each command with `oom_score_adj=1000`**, inherited by its children. It needs no
-   privilege, and on a node whose owner set the kubelet's `singleProcessOOMKill: true` the kernel then picks the Agent's
-   process, not the Harness.
+3. **The `bash` Working tool starts each command with `oom_score_adj=1000`**, inherited by its children. The Harness
+   gives the same mark to each other process that it starts for an Agent's work: a `command` Effect's process, and the
+   child that loads the project context ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), which
+   imports pi-coding-agent and reads files that the Agent writes. It needs no privilege, and on a node whose owner set
+   the kubelet's `singleProcessOOMKill: true` the kernel then picks the Agent's process, not the Harness.
 4. **The Harness guards its own cgroup.** Every 10–20 ms it reads anon + shmem from `memory.stat` against `memory.max`
    (never `memory.current`, which counts reclaimable page cache). Near the limit it kills all of the Agent's processes,
    checks usage again, clears `/dev/shm`, and the running `bash` call returns
@@ -39,6 +43,13 @@ Layers, each a backstop for the one before:
    publishes the container's last end on the Sandbox all the same, so before each admission into the Workspace the
    Orchestrator reads it from the Sandbox watch, and a last end `OOMKilled` that no notice told yet tells the next Agent
    (ADR-0062).
+
+The guard kills the Agent's processes, never the Harness, so the Harness process does no work on the Agent's files whose
+memory grows with what a file holds. The `read` Working tool sends an image as its bytes: it decodes, resizes and
+converts none in the Harness process. A small file can hold a large image (a 300 KB PNG decodes to 400 MB), and pi's
+resize and its BMP conversion decode the whole image in the process that calls them. So jr2 turns pi's resize off, and a
+BMP is omitted with a text that says so
+([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)).
 
 The guard is best-effort and says so: a fast enough spike beats any poll. The lab won 35/35 on arm64 at 50 ms, 6/6 on
 amd64 at 10 ms (0.8% of a core), and only half on amd64 at 50 ms; it fired at 90–96% of the limit. Layer 5 covers what

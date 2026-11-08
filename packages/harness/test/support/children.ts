@@ -58,7 +58,7 @@ export function deniedDir(prefix = "denied-"): string {
  * A domain over a test's own folders: a HOME and a TMPDIR of its own unless it names them, and a
  * folder of its own that stands for `/run/jr2` (`deniedDir`), denied with each of `deny`. `standIns` and
  * `granted` are the held secrets and the `workspace()`'s grant; `control` the control Stand-in,
- * which the domain never gets; `env` more of the container's start env. `work` and `repos` are
+ * which the domain never gets; `read` the folders in a denied path that it only reads; `env` more of the container's start env. `work` and `repos` are
  * made when the test names none, and need no rule: the domain reaches every path but the denied.
  */
 export function testChildren(
@@ -71,6 +71,8 @@ export function testChildren(
     granted?: readonly string[];
     control?: string;
     deny?: readonly string[];
+    /** Folders in a path of `deny` that the domain reads and does not write (`OUTPUT_DIR` in a pod). */
+    read?: readonly string[];
     env?: Record<string, string>;
   } = {},
 ): ChildPolicy {
@@ -95,5 +97,6 @@ export function testChildren(
     standIns: opts.standIns ?? new Map(),
     control: opts.control,
     deny: [deniedDir("run-jr2-"), ...(opts.deny ?? [])],
+    read: opts.read ?? [],
   });
 }

@@ -34,8 +34,9 @@ import type {
 } from "@earendil-works/pi-ai";
 import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
+import type { OutputFolder } from "./output-folder.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
-import { compactionSummaryText } from "./compaction-summary.ts";
+import { summaryLlmMessage } from "./pi-compaction.ts";
 import { RunawayError, TURN_OVER, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
 import {
   ackNotices,
@@ -78,6 +79,7 @@ import { mcpServersFor, resolveDefinition, type HarnessSpec, type ResolvedDefini
 import type { HistoryMessage, SubmissionUsage } from "./wire.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
 import { workingToolsFor } from "./working-tools.ts";
+import { hasProjectContext, projectContexts, type ContextOptions } from "./project-context.ts";
 
 /** What one conversation's turn loop needs. `appendMessage` is the Conversation's stream seam —
  * completed messages land on the durable stream and the history view through it. */
@@ -115,10 +117,20 @@ export type TurnDeps = {
   /** The process's memory guard (ADR-0061), watching every `bash` call. `main.ts` passes the one
    * over this pod's cgroup; omitted, no guard watches. */
   guard?: MemoryGuard;
+  /** The Harness's output folder (ADR-0076), which each `bash` call prunes when it ends. `main.ts`
+   * passes the Sandbox's; omitted, nothing prunes. */
+  output?: OutputFolder;
   /** The Briefing's standing part for this pod (ADR-0062), composed once from its seat's facts so
    * every Turn sends the same bytes. `main.ts` passes the pod's; omitted, a seat that knows no
    * CPUs and no Size — a host run. */
   standing?: StandingBriefing;
+  /** The project context's load (`project-context.ts`, ADR-0062): its scope (the Workspace's
+   * `projectContext`) and the image user's context mount, which `main.ts` passes; where its failure
+   * is said (default `console.error`, the pod log); and, for a test, another child entry, bounds,
+   * or work root. */
+  projectContext?: ContextOptions & {
+    log?: (line: string) => void;
+  };
   /** ADR-0035's runaway bounds — jr2-owned defaulted knobs (ADR-0016), no author surface. These
    * seams exist for the conformance suite alone, which cannot afford 128 provider rounds. */
   stepBudget?: number;
@@ -155,6 +167,8 @@ type Assembled = {
     thinkingLevel: ModelThinkingLevel;
     /** The Menu's pick briefings (`briefingsOf`): fixed with the Menu, read once per Submission. */
     briefings: ReadonlyMap<string, string>;
+    /** This Submission's system prompt: Compaction's text estimate counts it (ADR-0036). */
+    systemPrompt: string;
   };
 };
 
@@ -175,17 +189,13 @@ function usageOf(message: AssistantMessage): SubmissionUsage {
 
 /**
  * The messages the provider gets (the `convertToLlm` hook), from the loop's: the cut picks settled
- * (`settleCutPicks`), and a Compaction's summary as the user message pi 0.82.1 made of it. The
+ * (`settleCutPicks`), and a Compaction's summary as the user message pi makes of it. The
  * system message, user, assistant and tool result messages pass; nothing else is sent. It must not
  * throw (the seam's contract), and nothing in it does.
  */
 export function convertToLlm(messages: EngineMessage[]): Message[] {
   return settleCutPicks(messages).flatMap((m): Message[] => {
-    if (m.role === "compactionSummary") {
-      return [
-        { role: "user", content: [{ type: "text", text: compactionSummaryText(m.summary) }], timestamp: m.timestamp },
-      ];
-    }
+    if (m.role === "compactionSummary") return summaryLlmMessage(m);
     if (m.role === "system" || m.role === "user" || m.role === "assistant" || m.role === "toolResult") return [m];
     return [];
   });
@@ -204,6 +214,12 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   const out: PrinterOut = keep ? { write: (chunk) => base.write(chunk), keep: (body) => keep.add(body) } : base;
   const summaryRetry = summaryRetryPolicy(deps.maxRetries);
   const standing = deps.standing ?? standingBriefing({});
+  /** The project context of this conversation, by folder (ADR-0062): loaded in the domain once for
+   * each, so the system prompt is the same bytes on each Submission there. */
+  const { log: contextLog, ...contextOptions } = deps.projectContext ?? {};
+  const projectContextOf = deps.children
+    ? projectContexts(deps.children, contextLog ?? ((line) => console.error(line)), contextOptions)
+    : undefined;
   /** The last Allowed-picks list the model read (`between-steps.ts`): the Turn part sets it per
    * Submission, every receipt and refusal through `onAllowed`. */
   const told = new ToldPicks();
@@ -319,12 +335,22 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       mcpList = await mcp.conversation.tools(servers.servers, definition.cwd, signal);
     }
 
+    // The project context (ADR-0062): an Agent with Working tools in `/work` reads the context
+    // files up to the Workspace's bound, its skills, and the image user's context. Loaded in the
+    // domain, never in this process; a load that fails gives none, and the Turn goes on.
+    const projectContext =
+      projectContextOf && hasProjectContext(definition.workspace, definition.cwd, contextOptions.workRoot)
+        ? await projectContextOf(definition.cwd, signal)
+        : "";
+    const systemPrompt = standing(definition.instructions, definition.workspace, mcpList.length > 0, projectContext);
+
     if (!assembled) {
       const current: Assembled["current"] = {
         definition,
         model,
         thinkingLevel,
         briefings: briefingsOf(read.menu),
+        systemPrompt,
       };
       // Opened, not created, when the conversation was rebuilt: the engine part a previous process
       // wrote (ADR-0031).
@@ -357,6 +383,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
               settings: compactionSettingsFor(current.model, deps.keepRecentTokens),
               retry: summaryRetry,
               signal: runSignal,
+              systemPrompt: current.systemPrompt,
             });
             if (!cut) return undefined;
             printLines(out, deps.agentName, deps.instanceId, [
@@ -515,6 +542,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       assembled.current.model = model;
       assembled.current.thinkingLevel = thinkingLevel;
       assembled.current.briefings = briefingsOf(read.menu);
+      assembled.current.systemPrompt = systemPrompt;
     }
 
     const { engine, part, current } = assembled;
@@ -531,6 +559,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         guard: deps.guard,
         owner: { agent: deps.agentName, instanceId: deps.instanceId },
         children: deps.children,
+        output: deps.output,
       }),
       ...(mcp ? mcpTools(mcp.conversation, mcpList) : []),
       ...(menuTools(menu) as EngineTool[]),
@@ -553,8 +582,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       printLines(out, deps.agentName, deps.instanceId, cuts.flatMap(renderMessage));
       // The Briefing's Turn part FOLLOWS the Frame's prompt (ADR-0062): the author's task reads
       // first, and the Allowed picks last, where a model obeys them (ADR-0029, measured).
-      // The system prompt is the instructions, then the Briefing's standing part (byte-stable for
-      // the seat, ADR-0062). The engine leads every request with it and the tools' declarations.
+      // The system prompt is the instructions, then the project context, then the Briefing's
+      // standing part LAST (byte-stable for the seat, ADR-0062). The engine leads every request
+      // with it and the tools' declarations.
       // The admission's notices, then those the surface read reserved (ADR-0062): one Turn part.
       const notices = [...(submission.notices ?? []), ...read.notices.map((n) => n.notice)];
       // …and the slot's Steering messages, the admission's then the read's, each in its author's
@@ -577,7 +607,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       await engine.run({
         model,
         thinkingLevel,
-        systemPrompt: standing(definition.instructions, definition.workspace, mcpList.length > 0),
+        systemPrompt,
         tools,
         context,
         prompt,

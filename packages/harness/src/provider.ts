@@ -437,8 +437,10 @@ export function lacksLevel(model: Model<Api>, asked: ModelThinkingLevel): boolea
 }
 
 /** The adapters that set `providerThinkingLevel` from the request that they build, not from the
- * answer: Anthropic sends `output_config.effort` (`high` when it gets no effort), and OpenAI
- * responses sends its configuration effort. Of the other adapters, only pi's own messages API sets
+ * answer: Anthropic sends the effort in force as the `output_config.effort` of the last system
+ * marker of `messages` (`high` when it gets no effort; the top-level `output_config` is a fixed
+ * `low`, part of the cached prefix, since pi-ai 1.5), and OpenAI responses sends its configuration
+ * effort. Of the other adapters, only pi's own messages API sets
  * the word, and it reads it from the answer. */
 const REQUEST_SIDE_LEVEL: ReadonlySet<Api> = new Set<Api>(["anthropic-messages", "openai-responses"]);
 

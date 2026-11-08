@@ -551,6 +551,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     orchestrator: refs.orchestrator,
     sandbox: {},
     sandboxUser: {},
+    sandboxUserContext: {},
   };
 
   // ONE transport branch for every image (ADR-0038), so Kit images and Sandbox Images cannot
@@ -729,14 +730,23 @@ export async function up(args: string[], io: Io): Promise<number> {
       // declared. A record from a kit that predates `sandboxUser` names the right image and
       // silently drops the fallback fact, which surfaces as a pod that will not start — so it reads
       // as stale here and the image is re-inspected (the host skip below then spends no build).
+      // The image user's context folder (ADR-0062) is such a fact too: a record without it reads as
+      // stale, so the image is read again.
       const remembered = previous?.sandboxUser?.[key];
-      if (previous?.sandbox?.[key] === ref && remembered !== undefined && values.force !== true) {
+      const rememberedContext = previous?.sandboxUserContext?.[key];
+      if (
+        previous?.sandbox?.[key] === ref &&
+        remembered !== undefined &&
+        rememberedContext !== undefined &&
+        values.force !== true
+      ) {
         // Unlike a Kit image there is no rollout to verify a Sandbox Image against, so a
         // recorded-but-absent ref only shows up as ImagePullBackOff at the next provision —
         // `--force` rebuilds and re-delivers it. The seat is carried forward from the same record:
         // the tag is a content address, so the image the record names declares what it declared.
         activity(io, `sandbox image "${image.name}": ${ref} (fresh — build skipped; --force to rebuild anyway)`);
         converged.sandboxUser[key] = remembered;
+        converged.sandboxUserContext[key] = rememberedContext;
       } else {
         assertDeliverable();
         if (await hostBuilt(ref)) {
@@ -758,6 +768,17 @@ export async function up(args: string[], io: Io): Promise<number> {
         const user = await onHost(ref, () => build.imageUser(ref, platforms));
         converged.sandboxUser[key] = user;
         activity(io, `  ${user ? `USER ${user}` : "no USER declared — the pod's uid-1000 fallback applies"}`);
+        // The image user's context folder (ADR-0062): the pod mounts that folder of the image again,
+        // read-only, so no Agent writes what each Agent reads. Recorded here because a provision
+        // cannot look in an image, and a mount of a path that the image lacks stops the container.
+        const context = await onHost(ref, () => build.imageUserContext(ref, platforms, user));
+        converged.sandboxUserContext[key] = "dir" in context ? context.dir : "";
+        activity(
+          io,
+          "dir" in context
+            ? `  user context: ${context.dir}, mounted read-only from the image`
+            : `  user context: none (${context.none})`,
+        );
         await onHost(ref, () => deliver(ref));
       }
       converged.sandbox[key] = ref;
@@ -1341,8 +1362,17 @@ export async function up(args: string[], io: Io): Promise<number> {
  * registry ref is exactly that absent case by construction — it is never built,
  * never inspected, never in this map — so it runs as whatever its own `USER` says, and one that
  * would run as root fails the Harness container's `runAsNonRoot` at provision.
+ *
+ * `sandboxUserContext` is another such answer (ADR-0062): the image user's context folder
+ * (`<home>/.pi/agent`) when the image has it as a real folder, `""` when it has none. The pod
+ * mounts that folder of the image again, read-only; an absent key mounts nothing.
  */
-type ConvergedImages = ImageRefs & { operator?: string; orchestrator?: string; sandboxUser: Record<string, string> };
+type ConvergedImages = ImageRefs & {
+  operator?: string;
+  orchestrator?: string;
+  sandboxUser: Record<string, string>;
+  sandboxUserContext: Record<string, string>;
+};
 
 /** The map the LAST converge recorded, off the Orchestrator Deployment's annotation. Anything
  * unreadable (absent, hand-edited, a foreign shape) reads as "no record", which costs a rebuild —

@@ -1,49 +1,65 @@
 // Working tools (ADR-0027/0028): the file and shell tools the Harness executes in its own
-// container — what an Agent may DO (the Menu, read through the Custodian, is what it may SAY). All
-// six are jr2's: read/write/edit (`file-tools.ts`) and bash (`bash-tool.ts`, ADR-0061) are ports of
-// pi-agent-core 0.82.1's, which pi 1.x removed, and keep the text the model reads; grep and glob are
-// jr2-written (`rg` with a plain-`grep` fallback when rg is absent; `find`). `rg` is vendored into
-// the image at /opt/jr2/bin and reached off PATH, never by absolute path, so a user's own rg in a
-// Sandbox Image wins (ADR-0037) and the plain-grep fallback still covers a host run. Each tool
-// closes over the Frame's `cwd` (ADR-0057). The definition's `workspace` filters the set: `"read"`
-// withholds write and edit (ADR-0028) — bash stays, because the tool layer states intent and stops
-// the honest path; the worktree layer is the containment. `"none"` withholds the whole set — the
-// Menu-only Agent has no data plane at all.
+// container — what an Agent may DO (the Menu, read through the Custodian, is what it may SAY).
+// `read`, `write`, `edit`, `bash` and `find` are pi-coding-agent's (`pi-tools.ts`), with jr2's
+// operations (`tool-ops.ts`): their declarations and their texts are upstream's, at the pin. `grep`
+// is jr2's: pi's own `grep` starts `rg` in this process, outside the domain, and can download rg.
+// jr2's runs `rg` in the domain, with a plain-`grep` fallback when rg is absent. `rg` is vendored
+// into the image at /opt/jr2/bin and reached off PATH, never by absolute path, so a user's own rg
+// in a Sandbox Image wins (ADR-0037). Each tool closes over the Frame's `cwd` (ADR-0057). The
+// definition's `workspace` filters the set: `"read"` withholds write and edit (ADR-0028) — bash
+// stays, because the tool layer states intent and stops the honest path; the worktree layer is the
+// containment. `"none"` withholds the whole set — the Menu-only Agent has no data plane at all.
 //
-// Every process a tool starts, and every file op of the file tools, runs in the domain, started by
-// the spawner with the domain's env (`children.ts`, `spawner.ts`, ADR-0076): the kernel applies the
-// domain's rules to each. What the model reads does not change.
+// Every process a tool starts, and every file op, runs in the domain, started by the spawner with
+// the domain's env (`children.ts`, `spawner.ts`, ADR-0076): the kernel applies the domain's rules to
+// each.
 
-import { Type } from "@earendil-works/pi-ai";
-import { bashTool } from "./bash-tool.ts";
+import { join } from "node:path";
+import { Type } from "typebox";
+import type { TextContent } from "@earendil-works/pi-ai";
 import { runIn, type ChildPolicy, type RunResult } from "./children.ts";
 import type { EngineTool, EngineToolResult } from "./engine.ts";
-import { fileTools } from "./file-tools.ts";
 import type { GuardOwner, MemoryGuard } from "./memory-guard.ts";
+import type { OutputFolder } from "./output-folder.ts";
+import {
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createFindToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+  type PiToolDefinition,
+} from "./pi-tools.ts";
 import type { AgentDefinition } from "./spec.ts";
+import { bashOps, editOps, findOps, ImageOmitted, readOps, writeOps } from "./tool-ops.ts";
 
 /** A Working tool, in the shape the engine runs (`engine.ts`). */
 export type WorkingTool = EngineTool;
 
-/** Output bound for grep/glob — a search that would flood the context truncates, loudly. */
+/** Output bound for grep — a search that would flood the context truncates, loudly. */
 const MAX_LINES = 200;
 
 /**
  * The Working tools for one definition, rooted at `cwd` — the Turn's Frame, resolved (ADR-0057:
  * where a Turn works rides the Turn, never the definition, because a worktree path exists only
- * once a run does). Full set (default `workspace: "write"`): read, write, edit, bash, grep, glob.
+ * once a run does). Full set (default `workspace: "write"`): read, write, edit, bash, grep, find.
  * `workspace: "read"` withholds write and edit; `workspace: "none"` withholds everything — the
  * Agent converses and picks from its Menu alone (ADR-0028). That field IS the definition's own
  * (`spec.ts`, mirroring the Orchestrator's `AgentDefinition`): what an Agent may do is identity.
  * `guard` is the process's memory guard, which watches every `bash` call (ADR-0061); `owner` is
  * the conversation the tools serve (ADR-0062). `children` is the domain: where the tools start a
- * process and do their file I/O (ADR-0076). A Harness with none (the Instance Harness) gives Working
+ * process and do their file I/O (ADR-0076). `output` is the Harness's output folder, which each
+ * `bash` call prunes when it ends (`output-folder.ts`, ADR-0076). A Harness with none (the Instance Harness) gives Working
  * tools to no Agent, and says so.
  */
 export function workingToolsFor(
   definition: AgentDefinition,
   cwd: string,
-  opts: { guard?: MemoryGuard | undefined; owner?: GuardOwner | undefined; children?: ChildPolicy | undefined } = {},
+  opts: {
+    guard?: MemoryGuard | undefined;
+    owner?: GuardOwner | undefined;
+    children?: ChildPolicy | undefined;
+    output?: OutputFolder | undefined;
+  } = {},
 ): WorkingTool[] {
   if (definition.workspace === "none") return [];
   const children = opts.children;
@@ -53,14 +69,157 @@ export function workingToolsFor(
         "needs the Harness of a Sandbox (ADR-0031, ADR-0076)",
     );
   }
-  const search: WorkingTool[] = [grepTool(cwd, children), globTool(cwd, children)];
-  const bash = bashTool({ cwd, children, guard: opts.guard, owner: opts.owner }) as WorkingTool;
+  const files = children.spawner;
   const home = children.env.HOME ?? "/";
-  return [
-    ...fileTools(cwd, { files: children.spawner, home, readOnly: definition.workspace === "read" }),
-    bash,
-    ...search,
-  ];
+  // No resize: pi's resize decodes the whole image in this process (ADR-0061).
+  const read = omitting(
+    engineTool(createReadToolDefinition(cwd, { operations: readOps(files), autoResizeImages: false }), home),
+  );
+  const write = engineTool(createWriteToolDefinition(cwd, { operations: writeOps(files) }), home);
+  const edit = engineTool(createEditToolDefinition(cwd, { operations: editOps(files) }), home);
+  const bash = pruning(
+    guarded(
+      engineTool(
+        createBashToolDefinition(cwd, { operations: bashOps(children), exposeSessionEnvironment: false }),
+        home,
+      ),
+      opts.guard,
+      opts.owner,
+    ),
+    opts.output,
+  );
+  const find = engineTool(createFindToolDefinition(cwd, { operations: findOps(children) }), home);
+  const grep = grepTool(cwd, children);
+  return definition.workspace === "read" ? [read, bash, grep, find] : [read, write, edit, bash, grep, find];
+}
+
+const UNICODE_SPACES = /[  -   　]/g;
+
+/**
+ * `~` in a tool's `path` as the domain's HOME (ADR-0076). pi expands `~` to this process's HOME,
+ * which is the Harness's own under `/run/jr2`: the domain cannot reach it, and `bash` expands `~`
+ * to the domain's. So jr2 expands it first, after pi's own two rules that come before `~` (the
+ * Unicode spaces become a plain space, and a leading `@` goes).
+ */
+export function homePath(path: string, home: string): string {
+  const spaced = path.replace(UNICODE_SPACES, " ");
+  const bare = spaced.startsWith("@") ? spaced.slice(1) : spaced;
+  if (bare === "~") return home;
+  if (bare.startsWith("~/")) return join(home, bare.slice(2));
+  return path;
+}
+
+/**
+ * pi's tool definition in the shape the engine runs. The model reads the name, the description and
+ * the parameters; `prepareArguments` stays (`edit`'s legacy form). The label, the renderers, the
+ * prompt snippet and guidelines (jr2's system prompt is its own, ADR-0062) and
+ * `constrainedSampling` go: each provider request keeps its shape, with no strict tool schema. A
+ * result that pi marks `isError` is a throw with its text, which the engine makes the error result
+ * that the model reads.
+ */
+function engineTool(definition: PiToolDefinition, home: string): EngineTool {
+  return {
+    name: definition.name,
+    description: definition.description,
+    parameters: definition.parameters,
+    ...(definition.prepareArguments ? { prepareArguments: definition.prepareArguments } : {}),
+    async execute(toolCallId, params, signal) {
+      const args = params as Record<string, unknown>;
+      const at = typeof args.path === "string" ? { ...args, path: homePath(args.path, home) } : args;
+      // pi's tools read the context only for its cwd and its model, and fall back on their own.
+      const result = await definition.execute(toolCallId, at, signal, undefined, undefined as never);
+      const content = result.content as EngineToolResult["content"];
+      if (result.isError) throw new Error(textOf(content));
+      return { content };
+    },
+  };
+}
+
+/** `read` with a BMP's answer: the text alone, and no image (`ImageOmitted`). */
+function omitting(read: EngineTool): EngineTool {
+  return {
+    ...read,
+    async execute(toolCallId, params, signal) {
+      try {
+        return await read.execute(toolCallId, params, signal);
+      } catch (err) {
+        if (err instanceof ImageOmitted) return { content: [{ type: "text", text: err.message }] };
+        throw err;
+      }
+    },
+  };
+}
+
+function textOf(content: EngineToolResult["content"]): string {
+  return content
+    .filter((c): c is TextContent => c.type === "text")
+    .map((c) => c.text)
+    .join("\n");
+}
+
+/** `bash` that prunes the Harness's output folder when it ends (`output-folder.ts`, ADR-0076). */
+export function pruning(bash: EngineTool, output: OutputFolder | undefined): EngineTool {
+  if (output === undefined) return bash;
+  return {
+    ...bash,
+    async execute(toolCallId, params, signal) {
+      const end = output.call();
+      try {
+        return await bash.execute(toolCallId, params, signal);
+      } finally {
+        end();
+      }
+    },
+  };
+}
+
+/** The status lines of pi's `bash` that a memory kill makes: the exit code is the kill's. */
+const KILLED_STATUS =
+  /(?:^|\n\n)(?:\(no output\)\n\n)?Command (?:exited with code \d+|terminated without an exit code)$/;
+
+/**
+ * `bash` under the memory guard (ADR-0061): the guard watches while the call runs; when it fires,
+ * the call answers its `killed: memory limit …` text, after what the Agent saw of the command. The
+ * exit status goes (the kill made it); an abort or a timeout stays. The answer is the model's
+ * now: its conversation was told of the kill (ADR-0062).
+ */
+export function guarded(
+  bash: EngineTool,
+  guard: Pick<MemoryGuard, "watch"> | undefined,
+  owner: GuardOwner | undefined,
+): EngineTool {
+  if (guard === undefined) return bash;
+  return {
+    ...bash,
+    async execute(toolCallId, params, signal) {
+      const watch = guard.watch(owner);
+      let outcome: { result: EngineToolResult } | { error: unknown };
+      try {
+        outcome = { result: await bash.execute(toolCallId, params, signal) };
+      } catch (error) {
+        outcome = { error };
+      } finally {
+        watch.end();
+      }
+      const verdict = watch.verdict();
+      if (verdict === undefined) {
+        if ("error" in outcome) throw outcome.error;
+        return outcome.result;
+      }
+      const seen =
+        "error" in outcome
+          ? outcome.error instanceof Error
+            ? outcome.error.message
+            : String(outcome.error)
+          : textOf(outcome.result.content);
+      const kept = seen
+        .replace(KILLED_STATUS, "")
+        .replace(/^\(no output\)$/, "")
+        .trimEnd();
+      watch.told();
+      throw new Error(kept ? `${kept}\n\n${verdict}` : verdict);
+    },
+  };
 }
 
 const grepSchema = Type.Object({
@@ -84,30 +243,6 @@ function grepTool(cwd: string, children: ChildPolicy): EngineTool<typeof grepSch
       if (r.code === 0) return text(bounded(r.stdout));
       if (r.code === 1 && !r.stderr) return text("no matches");
       throw new Error(r.stderr.trim() || r.error?.message || `search exited ${r.code}`);
-    },
-  };
-}
-
-const globSchema = Type.Object({
-  pattern: Type.String({ description: "Filename pattern, e.g. `*.ts` or `src/**/*.test.ts`" }),
-  path: Type.Optional(
-    Type.String({ description: "Directory to search, relative to the working directory (default: all of it)" }),
-  ),
-});
-
-function globTool(cwd: string, children: ChildPolicy): EngineTool<typeof globSchema> {
-  return {
-    name: "glob",
-    description: `Find files by name pattern. Answers matching paths, first ${MAX_LINES}.`,
-    parameters: globSchema,
-    execute: async (_id, { pattern, path }, signal) => {
-      // A slash-less pattern matches basenames anywhere (-name); a pattern with directories
-      // matches against the whole path — find's `*` spans `/`, so `**` collapses to `*`.
-      const matcher = pattern.includes("/") ? ["-path", `*/${pattern.replaceAll("**", "*")}`] : ["-name", pattern];
-      const r = await run(children, "find", [path ?? ".", "-type", "f", ...matcher], cwd, signal);
-      if (r.code !== 0) throw new Error(r.stderr.trim() || r.error?.message || `find exited ${r.code}`);
-      const found = r.stdout.split("\n").filter(Boolean).sort().join("\n");
-      return text(found ? bounded(found) : "no matches");
     },
   };
 }

@@ -105,6 +105,7 @@ function mkBuild(images: { host?: ObservedImage[]; node?: ObservedImage[] } = {}
     build: async () => assert.fail("gc builds nothing"),
     imageUser: async () => assert.fail("gc inspects nothing") as never,
     imageFiles: async () => assert.fail("gc inspects nothing") as never,
+    imageUserContext: async () => assert.fail("gc inspects nothing") as never,
     buildablePlatforms: async () => assert.fail("gc builds nothing, so it asks no platform") as never,
     push: async () => assert.fail("gc pushes nothing"),
     kindLoad: async () => assert.fail("gc loads nothing"),

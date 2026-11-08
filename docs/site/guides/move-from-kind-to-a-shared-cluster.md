@@ -214,6 +214,8 @@ it continues. In CI, add `--yes`.
 jr2 up --context <context>
 ```
 
+<!-- output: not run -->
+
 ```text
 → .env: JR2_REGISTRY, …
 jr2 up — instance "my-instance" → context <context> / namespace my-instance
@@ -228,6 +230,7 @@ images: installed kit — the published v<version> Harness, operator and Orchest
 priority: the Instance's own — control "platform-critical", sandbox "batch-low"
 sandbox image "default": building <registry>/jr2-sandbox-my-instance-default:6389bdf72d50-amd64
   no USER declared — the pod's uid-1000 fallback applies
+  user context: none (no USER, so the home is jr2's emptyDir)
   push → <registry>
 …
 assembly: publishing 6355c2bb032a (no current Assembly)

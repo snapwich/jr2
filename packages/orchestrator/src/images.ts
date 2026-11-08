@@ -62,6 +62,15 @@ export type ImageRefs = {
    * applies no fallback, which is the safe direction (the image keeps its own identity).
    */
   sandboxUser?: Record<string, string>;
+  /**
+   * The image user's context folder of each BUILT Sandbox Image, keyed by the same key
+   * (ADR-0062): `<home>/.pi/agent` when the image has it as a real folder, `""` when it has none.
+   * The Sandbox pod mounts that folder of the image again, read-only, at the same path, so the
+   * Agents read it and none writes it. A provision cannot look in an image, and a mount of a path
+   * the image lacks stops the container, so only the converge's record decides. An absent key (a
+   * registry ref, or an older converge's map) mounts nothing.
+   */
+  sandboxUserContext?: Record<string, string>;
 };
 
 /**
@@ -123,7 +132,25 @@ export async function readImageRefs(path: string): Promise<ImageRefs> {
     if (typeof value !== "string") bad(`\`sandboxUser.${name}\` is not a USER (got ${JSON.stringify(value)})`);
     sandboxUser[name] = value as string;
   }
-  return { harness, custodian, sandbox, sandboxUser };
+  const contextRaw = map["sandboxUserContext"];
+  if (contextRaw !== undefined && (typeof contextRaw !== "object" || contextRaw === null || Array.isArray(contextRaw)))
+    bad("`sandboxUserContext` must be an object of name → folder");
+  const sandboxUserContext: Record<string, string> = {};
+  for (const [name, value] of Object.entries((contextRaw ?? {}) as Record<string, unknown>)) {
+    // `""` is "the image has none". A folder is an absolute path that is its own normal form: it is
+    // a mount's `mountPath`, and its `subPath` in the image.
+    if (typeof value !== "string" || (value !== "" && !isMountFolder(value)))
+      bad(`\`sandboxUserContext.${name}\` is not an absolute folder (got ${JSON.stringify(value)})`);
+    sandboxUserContext[name] = value as string;
+  }
+  return { harness, custodian, sandbox, sandboxUser, sandboxUserContext };
+}
+
+/** An absolute path with no `.`, `..` or empty part and no `/` at its end, and not `/` itself: a
+ * folder that a Sandbox pod mounts as the image user's context (ADR-0062). `jr2 up` records only
+ * such a folder, so the record that it writes is one that {@link readImageRefs} reads. */
+export function isMountFolder(path: string): boolean {
+  return /^(\/[^/\0]+)+$/.test(path) && !path.split("/").some((part) => part === "." || part === "..");
 }
 
 /**
@@ -238,7 +265,16 @@ export type ResolvedImage = {
    * waiting reason is not visible to it.
    */
   refusedUser?: string;
+  /** The image user's context folder that the pod mounts again from the image, read-only
+   * (ADR-0062): only a BUILT image whose record names one. */
+  userContext?: string;
 };
+
+/** The recorded user context folder of `key`, when there is one (ADR-0062). */
+function userContextOf(refs: ImageRefs, key: string): Pick<ResolvedImage, "userContext"> {
+  const dir = refs.sandboxUserContext?.[key];
+  return dir ? { userContext: dir } : {};
+}
 
 /** The recorded `USER`, judged. `uid:gid` is split because docker records the whole `USER` line;
  * only the uid half decides. */
@@ -310,11 +346,15 @@ export async function resolveSandboxImage(
   if (image === undefined) {
     const ref = refs.sandbox["default"];
     if (ref === undefined) return { ref: refs.harness, fallbackSeat: false };
-    return { ref, ...judgeUser(refs.sandboxUser?.["default"]) };
+    return { ref, ...judgeUser(refs.sandboxUser?.["default"]), ...userContextOf(refs, "default") };
   }
   if (!isImageContext(image)) return { ref: image, fallbackSeat: false };
   const key = await imageKey(image);
-  return { ref: builtRef(refs, key, image, "Sandbox Image", held), ...judgeUser(refs.sandboxUser?.[key]) };
+  return {
+    ref: builtRef(refs, key, image, "Sandbox Image", held),
+    ...judgeUser(refs.sandboxUser?.[key]),
+    ...userContextOf(refs, key),
+  };
 }
 
 /**

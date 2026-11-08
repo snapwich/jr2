@@ -41,6 +41,7 @@ function fixturePort(tree: (out: string) => Tree): BuildPort {
     build: docker,
     imageUser: docker,
     imageFiles: docker,
+    imageUserContext: docker,
     buildablePlatforms: docker,
     push: docker,
     kindLoad: docker,

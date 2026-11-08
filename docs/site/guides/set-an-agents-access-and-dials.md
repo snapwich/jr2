@@ -33,8 +33,8 @@ where its Turns run. The default is `"write"`.
 
 | `workspace`         | The Working tools                            | Where the Turn runs                                                                |
 | ------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `"write"` (default) | read, write, edit, bash, grep and glob       | The [Sandbox](../reference/glossary.md#sandbox) of the Workspace                   |
-| `"read"`            | read, bash, grep and glob: no write, no edit | The Sandbox of the Workspace                                                       |
+| `"write"` (default) | read, write, edit, bash, grep and find       | The [Sandbox](../reference/glossary.md#sandbox) of the Workspace                   |
+| `"read"`            | read, bash, grep and find: no write, no edit | The Sandbox of the Workspace                                                       |
 | `"none"`            | none                                         | The [Instance Harness](../reference/glossary.md#instance-harness), with no Sandbox |
 
 An Agent with `"write"` or `"read"` works in a Sandbox. Thus invoke it in the body of a
@@ -50,6 +50,13 @@ branch, give its Turn a detached [Worktree](../reference/glossary.md#worktree):
 
 The Worktree holds the commit, with no branch. In the example, the path is `/work/app/review`, and the commit comes from
 the run input. [Cut a Worktree](cut-a-worktree.md) tells more.
+
+The Agents of one Workspace share `/work`. jr2 keeps them apart as well as it can without less effective Agents: each
+cut of the review Worktree writes the commit again, and the prompt of an Agent gets no text that `git status` does not
+show. This stops an Agent that changes the work of a different Agent by accident or with little effort. It does not stop
+an Agent that sets out to do it. For more isolation, give the review its own Workspace: a state of the coder's body
+invokes a second `workspace()`, after the coder pushes its branch. Each review round then costs about 5 to 7 seconds
+more, a second install of the dependencies, and a second Size while the review runs.
 
 The access is a part of the identity of the Agent. Only the definition sets it. A Turn cannot change it.
 

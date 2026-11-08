@@ -32,12 +32,12 @@
 // `BuildPort` is what the converge logic drives (tests fake it); `pnpmDockerBuild` is the real one:
 // pnpm + docker + kind + crictl subprocesses.
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { cp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { contentHash, KIT_VERSION } from "@jr2/orchestrator/internal";
+import { contentHash, isMountFolder, KIT_VERSION } from "@jr2/orchestrator/internal";
 import { LABEL_INSTANCE } from "./deploy.ts";
 
 const exec = promisify(execFile);
@@ -87,6 +87,16 @@ export type BuildPort = {
    * never started, so nothing of the image runs. A multi-platform build is read for its first
    * platform: the files a push needs do not differ by architecture. */
   imageFiles(image: string, platforms: readonly string[], paths: readonly string[]): Promise<ImageFiles>;
+  /**
+   * The image user's context folder (ADR-0062): `<home>/.pi/agent`, where `<home>` is the image's
+   * `HOME`, or the home of `user` in its `/etc/passwd`. The folder is `dir` only when each folder
+   * of that path is a real folder, no link, because the Sandbox pod mounts that path of the image
+   * again, read-only, and a path the image lacks stops the container. Else `none` says why. An
+   * image with no `USER` (`user` is `""`) has none: ADR-0037's fallback home is an emptyDir. Read
+   * off a container created and never started; a multi-platform build is read for its first
+   * platform, from the registry, as {@link imageFiles} reads it.
+   */
+  imageUserContext(image: string, platforms: readonly string[], user: string): Promise<UserContextFact>;
 
   /** What this host can build for: its own platform, plus every foreign one binfmt emulation
    * registers (`docker buildx inspect`'s `Platforms:` line). The converge's binfmt preflight
@@ -1074,6 +1084,125 @@ const BIG = { maxBuffer: 64 * 1024 * 1024 };
 /** What {@link BuildPort.imageFiles} reads off an image. */
 export type ImageFiles = { present: string[]; passwd: string };
 
+/** What {@link BuildPort.imageUserContext} finds: the image user's context folder, or why none. */
+export type UserContextFact = { dir: string } | { none: string };
+
+/** The folder of pi's user context in a home (pi's `agentDir`). */
+export const USER_CONTEXT_SUBDIR = ".pi/agent";
+
+/**
+ * The home of the image's `user` (a name or a uid, with an optional `:group`): the image's own
+ * `HOME`, when its `ENV` sets one, else the user's entry in its `/etc/passwd`. `undefined` when
+ * neither says, or the home is not an absolute path.
+ */
+export function imageHome(user: string, env: readonly string[], passwd: string): string | undefined {
+  const set = [...env]
+    .reverse()
+    .find((e) => e.startsWith("HOME="))
+    ?.slice("HOME=".length);
+  const name = user.split(":")[0]!;
+  const entry = passwd
+    .split("\n")
+    .map((line) => line.split(":"))
+    .find((f) => f.length >= 7 && (f[0] === name || f[2] === name));
+  const home = set !== undefined && set !== "" ? set : entry?.[5];
+  if (home === undefined || !home.startsWith("/")) return undefined;
+  return home.replace(/\/+$/, "") || "/";
+}
+
+/**
+ * The image user's context folder by the image's `USER`, `ENV` and `/etc/passwd` (ADR-0062), or why
+ * it has none, before any folder in the image is read. The folder is one that the Orchestrator
+ * mounts ({@link isMountFolder}): a home with an empty, `.` or `..` part (`HOME=/home//u`) gives none,
+ * because the Orchestrator refuses the whole image map for one such folder.
+ */
+export function userContextPath(user: string, env: readonly string[], passwd: string): UserContextFact {
+  // ADR-0037's fallback seat runs with HOME=/home/jr2 on an emptyDir: the image has nothing there.
+  if (user === "") return { none: "no USER, so the home is jr2's emptyDir" };
+  const home = imageHome(user, env, passwd);
+  if (home === undefined) return { none: `no home for USER ${user} (no HOME, and no entry in /etc/passwd)` };
+  const dir = home === "/" ? `/${USER_CONTEXT_SUBDIR}` : `${home}/${USER_CONTEXT_SUBDIR}`;
+  if (!isMountFolder(dir))
+    return { none: `the home ${home} has an empty, . or .. part, and a mount needs a plain path` };
+  return { dir };
+}
+
+/**
+ * The image user's context folder `dir` when each folder of its path, from `/`, is a real folder in
+ * the image (`typeOf`: the type of a path there, `undefined` when it is not there). A link anywhere
+ * on the path, `~/.pi` among them, gives none, and says which: the mount's `subPath` must be a real
+ * folder, and the kubelet would follow a link out of the image's folder.
+ */
+export async function userContextFolders(
+  dir: string,
+  typeOf: (path: string) => Promise<"dir" | "link" | "file" | undefined>,
+): Promise<UserContextFact> {
+  for (const folder of foldersTo(dir)) {
+    const type = await typeOf(folder);
+    if (type === undefined) return { none: `the image has no ${dir}` };
+    if (type === "link") return { none: `${folder} is a link, and the mount needs a real folder` };
+    if (type !== "dir") return { none: `${folder} is not a folder` };
+  }
+  return { dir };
+}
+
+/** Each folder from `/` to `dir`, `/` left out: `/home/u/.pi/agent` → `/home`, `/home/u`, … */
+export function foldersTo(dir: string): string[] {
+  const parts = dir.split("/").filter(Boolean);
+  return parts.map((_, i) => `/${parts.slice(0, i + 1).join("/")}`);
+}
+
+/**
+ * The type of the first entry of a tar stream (`docker cp <container>:<path> -` puts the path
+ * itself first): `"dir"`, `"link"` (a symbolic or hard link), `"file"`, or `undefined` when the
+ * bytes hold no whole header yet. A pax or GNU header before it is passed over.
+ */
+export function firstTarEntry(tar: Buffer): "dir" | "link" | "file" | undefined {
+  let at = 0;
+  for (;;) {
+    if (tar.length < at + 512) return undefined;
+    const flag = String.fromCharCode(tar[at + 156]!);
+    if (!"xgLK".includes(flag)) {
+      if (flag === "5") return "dir";
+      if (flag === "1" || flag === "2") return "link";
+      return "file";
+    }
+    const size = parseInt(
+      tar
+        .subarray(at + 124, at + 136)
+        .toString("latin1")
+        .replace(/\0.*$/s, "")
+        .trim() || "0",
+      8,
+    );
+    at += 512 + Math.ceil((Number.isFinite(size) ? size : 0) / 512) * 512;
+  }
+}
+
+/** The type of `path` in `container`, by the first header of `docker cp`'s tar: `undefined` when
+ * the path is not there. The copy stops at that header, so a large folder is not read. */
+function pathType(container: string, path: string): Promise<"dir" | "link" | "file" | undefined> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("docker", ["cp", `${container}:${path}`, "-"], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = Buffer.alloc(0);
+    let err = "";
+    let found: "dir" | "link" | "file" | undefined;
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (found !== undefined) return;
+      out = Buffer.concat([out, chunk]);
+      found = firstTarEntry(out);
+      if (found !== undefined) child.kill();
+    });
+    child.stderr.on("data", (chunk: Buffer) => (err += chunk.toString("utf8")));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (found !== undefined) return resolve(found);
+      if (/could not find the file|no such file or directory/i.test(err)) return resolve(undefined);
+      reject(new Error(`docker cp ${path}: ${err.trim() || `exit ${code}`}`));
+    });
+  });
+}
+
 /** The one file a `docker cp … -` tar stream carries, as text: a 512-byte header whose size field
  * (octal, at offset 124) says how long the content after it is. */
 export function tarFileText(tar: Buffer): string {
@@ -1141,6 +1270,33 @@ export const pnpmDockerBuild: BuildPort = {
         () => "",
       );
       return { present, passwd };
+    } finally {
+      await exec("docker", ["rm", "-f", container]).catch(() => undefined);
+    }
+  },
+
+  async imageUserContext(image, platforms, user) {
+    if (user === "") return userContextPath(user, [], "");
+    const platform = platforms.length > 1 ? ["--platform", platforms[0]!] : [];
+    const { stdout } = await exec("docker", ["create", ...platform, "--entrypoint", "/jr2-not-run", image], BIG);
+    const container = stdout.trim();
+    try {
+      const { stdout: envJson } = await exec(
+        "docker",
+        ["container", "inspect", "--format", "{{json .Config.Env}}", container],
+        BIG,
+      );
+      const env = (JSON.parse(envJson) as string[] | null) ?? [];
+      const passwd = await exec("docker", ["cp", "-L", `${container}:/etc/passwd`, "-"], {
+        ...BIG,
+        encoding: "buffer",
+      }).then(
+        ({ stdout: tar }) => tarFileText(tar as Buffer),
+        () => "",
+      );
+      const path = userContextPath(user, env, passwd);
+      if ("none" in path) return path;
+      return await userContextFolders(path.dir, (folder) => pathType(container, folder));
     } finally {
       await exec("docker", ["rm", "-f", container]).catch(() => undefined);
     }

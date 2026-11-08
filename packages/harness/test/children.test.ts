@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,7 @@ import {
   readStandIns,
   RUNTIME_SECRETS,
   runIn,
+  useOutputDir,
 } from "../src/children.ts";
 import { deniedDir, testChildren, testConfiner } from "./support/children.ts";
 
@@ -122,6 +123,27 @@ test("childPolicy refuses a HOME or a TMPDIR in what the domain may not reach", 
       }),
     /TMPDIR is .*run-jr2, which is in/,
   );
+});
+
+// ADR-0076: pi's bash writes a long command's whole output in this process's TMPDIR, and opens it
+// by its path again. So the Harness's TMPDIR is its own output folder, which the domain reads and
+// does not write, and the domain keeps the TMPDIR of the start env, whatever the image sets.
+test("useOutputDir: the Harness's TMPDIR is its output folder, and the domain keeps the start env's TMPDIR", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "jr2-output-dir-")));
+  const output = join(root, "output");
+  mkdirSync(output);
+  const env: NodeJS.ProcessEnv = { TMPDIR: "/tmp" };
+  useOutputDir(output, env);
+  assert.equal(env.TMPDIR, output);
+  const link = join(root, "link");
+  symlinkSync(output, link);
+  assert.throws(() => useOutputDir(link, {}), /output folder .*link is not a folder: mount a folder/);
+  assert.throws(() => useOutputDir(join(root, "missing"), {}), /output folder .*missing is not there/);
+  writeFileSync(join(root, "file"), "");
+  assert.throws(() => useOutputDir(join(root, "file"), {}), /is not a folder/);
+  const imageTmp = mkdtempSync(join(tmpdir(), "jr2-image-tmp-"));
+  const domain = testChildren({ tmp: imageTmp });
+  assert.equal(domain.env.TMPDIR, realpathSync(imageTmp), "the domain's TMPDIR is the image's, not the Harness's");
 });
 
 test("lookPath: the program by PATH — never by a relative PATH entry", () => {
@@ -292,4 +314,25 @@ test("an image-only NODE_OPTIONS and LD_LIBRARY_PATH reach the domain's env and 
     Object.keys(domain).filter((n) => n.startsWith("JR2_") && n !== "JR2_CUSTODIAN_URL"),
     [],
   );
+});
+
+test("runIn marks a process it starts with the oom_score_adj it is given, and its children inherit it (ADR-0061)", async () => {
+  const domain = testChildren();
+  // The mark lands after the start; a child forked after it inherits it.
+  const argv = ["sh", "-c", "sleep 0.5; cat /proc/self/oom_score_adj"];
+  const marked = await runIn(domain, argv, { cwd: "/", oomScoreAdj: 1000 });
+  assert.equal(marked.stdout.trim(), "1000");
+  const plain = await runIn(domain, argv, { cwd: "/" });
+  assert.notEqual(plain.stdout.trim(), "1000");
+});
+
+test("the pod paths the Harness reads are the ones the Orchestrator mounts: @jr2/orchestrator's names.ts (ADR-0062, ADR-0076)", async () => {
+  // The two packages share no runtime dependency, so each states the path, and this holds them equal.
+  const harness = await import("../src/children.ts");
+  const names = await import("@jr2/orchestrator/internal");
+  assert.equal(harness.USER_CONTEXT_DIR, names.USER_CONTEXT_DIR);
+  assert.equal(harness.OUTPUT_DIR, names.OUTPUT_DIR);
+  assert.equal(harness.CONVERSATIONS_DIR, names.CONVERSATIONS_DIR);
+  assert.equal(join(harness.SHELL_SOCKET, ".."), names.SHELL_DIR);
+  assert.equal(join(harness.CONTROL_SOCKET, ".."), names.CUSTODIAN_SOCKET_DIR);
 });

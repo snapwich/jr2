@@ -32,7 +32,10 @@ import {
   SHELL_SOCKET,
   STANDINS_DIR,
   assertHarnessHome,
+  OUTPUT_DIR,
+  USER_CONTEXT_DIR,
   takeStartEnv,
+  useOutputDir,
   type ChildPolicy,
 } from "./children.ts";
 import { syncer } from "./sync.ts";
@@ -52,6 +55,8 @@ import {
 } from "./startup.ts";
 import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
+import { contextScopeOf, userContextMount } from "./project-context.ts";
+import { OutputFolder } from "./output-folder.ts";
 import { unixFetch } from "./unix-fetch.ts";
 import { keepSendOver } from "./keep.ts";
 import { serveShells } from "./workspace-shell.ts";
@@ -149,6 +154,13 @@ const models = modelsFor(harness, process.env);
 // (ADR-0076). An empty value keeps them in memory alone (a test's Harness).
 const conversationsDir = process.env.JR2_CONVERSATIONS_DIR ?? CONVERSATIONS_DIR;
 
+// The image user's context (ADR-0062): the pod mounts the image's `~/.pi/agent` (`JR2_USER_CONTEXT`)
+// a second time, read-only, at /run/jr2/user-context, and the Harness reads it there alone. It is
+// checked now, once, before the domain is made: the domain reads it, and moves nothing there. No
+// announced folder, no user context: a `~/.pi/agent` that an Agent makes is never read. The Instance
+// Harness has no domain and no Workspace, so none.
+const userContext = menuOnly ? undefined : userContextMount(process.env.JR2_USER_CONTEXT);
+
 // The domain (ADR-0076): the one spawner, confined, and the env of each process in it. The Instance
 // Harness has none — a Menu-only Agent has no Working tools (ADR-0031).
 let children: ChildPolicy | undefined;
@@ -170,6 +182,9 @@ if (!menuOnly) {
       confiner,
       standIns,
       control,
+      // The domain reads the image user's context mount too, under /run/jr2: the child that loads
+      // the project context is in the domain (ADR-0062).
+      read: [OUTPUT_DIR, ...(userContext !== undefined && !("fault" in userContext) ? [USER_CONTEXT_DIR] : [])],
     });
   } catch (err) {
     refuse(`the Harness cannot start its domain: ${err instanceof Error ? err.message : String(err)}`);
@@ -180,6 +195,14 @@ if (!menuOnly) {
   if (children) {
     try {
       assertHarnessHome(process.env, children);
+    } catch (err) {
+      refuse(err instanceof Error ? err.message : String(err));
+    }
+    // pi's `bash` writes a long command's whole output in this process's TMPDIR, and opens it by
+    // its path again: the Harness's output folder, which the domain reads and does not write
+    // (ADR-0076). The domain keeps the TMPDIR that the container started with.
+    try {
+      useOutputDir(OUTPUT_DIR);
     } catch (err) {
       refuse(err instanceof Error ? err.message : String(err));
     }
@@ -233,6 +256,24 @@ guard.start();
 // every conversation sends the same bytes. Unknown where this is not a Sandbox, and then unsaid.
 const standing = standingBriefing(seatFacts(process.env));
 
+// The Harness's output folder (ADR-0076): each `bash` call prunes it when it ends.
+const output = new OutputFolder(OUTPUT_DIR);
+
+// The project context's reach (ADR-0062): the Workspace's bound on the context files
+// (`JR2_PROJECT_CONTEXT`, the `workspace()`'s `projectContext`), and the image user's context mount,
+// checked above.
+if (userContext !== undefined && "fault" in userContext) {
+  console.error(`jr2 harness: no user context: ${userContext.fault} (ADR-0062)`);
+} else if (userContext !== undefined) {
+  console.error(
+    `jr2 harness: the image user's context in ${userContext.image} is read, from a read-only mount at ${userContext.dir} (ADR-0062)`,
+  );
+}
+const projectContext = {
+  scope: contextScopeOf(process.env.JR2_PROJECT_CONTEXT),
+  ...(userContext !== undefined && !("fault" in userContext) ? { userContext } : {}),
+};
+
 // The MCP servers of the Instance (ADR-0079): a remote server's one connection for this pod, and the
 // stdio servers of each conversation, which start in the domain. The Instance Harness has no domain,
 // so it starts no stdio server, and its admission refuses a definition that names one.
@@ -246,7 +287,8 @@ const harnessWire = harnessServer({
       menu,
       guard,
       standing,
-      ...(children ? { children } : {}),
+      ...(children ? { children, output } : {}),
+      projectContext,
       mcp: {
         conversation: mcpHost.conversation(conversationKey(seat.agentName, seat.instanceId), seat.mcpTools),
         servers: harness,

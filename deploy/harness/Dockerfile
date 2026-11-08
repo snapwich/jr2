@@ -38,11 +38,12 @@
 #     (ADR-0037): relocating git means /usr/lib/git-core, the template dir, and git-remote-https →
 #     curl + openssl + a CA store.
 #     jr2 vendors what is self-contained (a static rg, node's two C++ libs) and asks for the rest.
-#   - ripgrep in the runtime image: the grep Working tool shells out to `rg` (ADR-0027). It is no
-#     longer apt's — it is the vendored static-musl binary at /opt/jr2/bin/rg, reachable because the
-#     HARNESS PROCESS appends /opt/jr2/bin to PATH at startup (startup.ts). Dropping apt's ripgrep
-#     does not fail loudly without that append: grep silently falls through to plain `grep`
-#     (working-tools.ts).
+#   - ripgrep in the runtime image: the grep Working tool shells out to `rg`, and the find Working
+#     tool lists files with `rg --files` (ADR-0027). It is no longer apt's — it is the vendored
+#     static-musl binary at /opt/jr2/bin/rg, reachable because the HARNESS PROCESS appends
+#     /opt/jr2/bin to PATH at startup (startup.ts). Dropping apt's ripgrep does not fail loudly
+#     without that append: grep silently falls through to plain `grep` (working-tools.ts), and find
+#     to `find` (tool-ops.ts).
 #
 # Secrets: NONE are baked, and none arrive either: this container holds Stand-ins, each a file
 # under /run/jr2 that only the Harness process reads, and the Custodian beside it holds the control
