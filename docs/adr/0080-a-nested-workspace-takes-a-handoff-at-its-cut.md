@@ -56,9 +56,11 @@ on real files (Considered options), and a probe tested the bundle range.
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), and the Machine
   routes it, for example to `fail()`
   ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)). These checks are for a
-  Handoff of the right shape. The shape is checked where an Agent's value enters: the Menu checks a pick against its
-  schema, and the door checks a Chart at its admission. So an Agent's Handoff of the wrong shape never reaches the
-  nested door.
+  Handoff of the right shape. The shape is checked where an Agent's value enters. The Menu checks a pick against its
+  schema, so a pick's Handoff of the wrong shape never reaches the nested door. A Chart is different: the door checks
+  only the literal parts of a Chart's `input` at its admission, and a reference such as `{ "$ref": "event.h" }` resolves
+  at the invoke. A wrong shape there is that invoke's error, as for each input that a Chart lends
+  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)).
 
 - **What the ledger check holds, and what it leaves to the Machine.** The check holds that the commit is the head of a
   `ready` cut in an enclosing Workspace of the run, on that cut's branch. Which of those commits the child takes is the
@@ -104,6 +106,19 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   the parent can read itself. The deadline is necessary: in the spike, a FIFO that an Agent planted in the clone held
   git for ever. The bundle is the parent domain's file, so jr2 trusts nothing in it: the child's cut takes from it only
   what the steps below let through.
+- **The step also reads the files, as a stream.** In the same step, under the same deadline and kill, a process of the
+  domain reads the bundle and each Git LFS object (below) and writes them to its stdout. The spawner sends that output
+  to the source Harness as output frames, and the Harness pauses and resumes it as it sends on. The process opens only a
+  regular file, so it does not read a FIFO, a device or a link to one. The Harness does not use the spawner's whole-file
+  read for a Handoff, and it counts the bytes as they come (the bound, below). A read that an Agent's file holds ends at
+  the deadline, as git does.
+- **An empty range carries nothing.** When a remote-tracking ref of the parent clone already reaches `head`, git writes
+  no bundle (`Refusing to create empty bundle`). This occurs when the parent pushed the branch before the final review,
+  or when the branch has no commit of its own. The bundle step finds this before it writes a bundle, and the source
+  Harness answers "nothing to carry": no bundle and no Git LFS objects. The child's cut then takes `head` from its own
+  clone after its fetch (ADR-0075), when the clone holds it, and the node cache gives the Git LFS objects. An Agent can
+  set a remote-tracking ref of the parent clone to `head`, so the child's clone can lack `head`. The cut is then
+  `refused`, and the reason names the commit.
 - **The Orchestrator carries the files, and no route faces a Sandbox.** It already talks to every Harness
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). When it runs the child's cut Effect, the Orchestrator
   checks the Handoff of that Effect's input against the ledger and records the source on that cut's intent row. Then it
@@ -112,11 +127,14 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
     bundle step and answers with one stream: the bundle, then the Git LFS objects.
   - `PUT /handoffs/<id>` on the child's Harness, with the Effect's id, before the Orchestrator starts the cut's exec
     (`POST /exec/<id>`, [ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
-    The Orchestrator streams the source's answer into it. The child's Harness writes the files, through the spawner, to
-    a folder of that cut, and the cut removes the folder when it settles.
+    The Orchestrator streams the source's answer into it. The child's Harness writes the files to a folder of that cut
+    through a process that the spawner starts in the child's domain and that stdin frames feed, so neither Harness holds
+    the whole stream. The cut removes the folder when it settles.
 
   The child makes no request for a Handoff, so no credential of the child's domain reaches one: the Orchestrator sends a
-  bundle only for the source that the cut's own intent row records, never for a cut that the Machine did not ask for.
+  bundle only for the source that the cut's own intent row records, never for a cut that the Machine did not ask for. A
+  re-cut that is `held` (the child's ledger holds a `ready` cut of the path with the same Handoff) needs no file, so the
+  Orchestrator uses neither leg for it, and it does not need the source.
 
 - **One bound covers the bundle and its Git LFS objects together.** A Handoff is the parent Agents' files, and the
   Orchestrator serves each run of the Instance, so an Agent's file must not steer how much it carries. The source
@@ -136,10 +154,15 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   reason, because a cut again meets the same files:
   - the source Harness answers that the commit, or a prerequisite of the bundle, is not there;
   - the bundle step passes its deadline (for example, at a FIFO that an Agent planted);
+  - the bundle file is not a regular file;
   - the stream passes the bound;
   - the bundle has a ref that is not at `head`, or fsck refuses an object;
   - the child's clone does not hold a prerequisite of the bundle (for example, the remote was force-pushed after the
-    parent fetched). The reason names the missing commit.
+    parent fetched). The reason names the missing commit;
+  - the range is empty, and the child's clone does not hold `head` after its fetch. The reason names the commit.
+
+  A Git LFS object that is not a regular file in the parent clone is left out of the stream, and the child asks the node
+  cache for it, as for each object that the Handoff does not carry.
 
   When the source Harness does not answer, the cut is `unknown`, and the Machine can cut again. The Orchestrator waits
   for the source longer than the bundle step's deadline, so a step that the parent's files hold ends as `refused` and
@@ -169,8 +192,10 @@ A commit can hold a bare repository in its tree. In the spike, `git status` insi
 a commit holds ran that repository's `core.fsmonitor`. So jr2 sets `safe.bareRepository=explicit` for each Agent
 process, through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` in the domain's env (ADR-0076).
 With it, a push, a clone or a fetch by path and `--git-dir` work, and `git -C bare.git` is refused with a message that
-names the setting. jr2's own git already runs with a cleared env and its own config. jr2's entry goes after the image's
-own entries, so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and jr2 needs to read no image.
+names the setting. The git of the cut, the sync and the bundle step runs with jr2's cleared env and its own config. The
+attach runs its git with the domain's env, and so with this entry: a clone and an `upload-pack` by path work under it.
+jr2's entry goes after the image's own entries, so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and jr2
+needs to read no image.
 
 ## Example
 
