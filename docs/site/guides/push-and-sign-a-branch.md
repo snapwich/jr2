@@ -360,7 +360,9 @@ ends `and <n> more` when there are more:
 When jr2 cannot ask the batch API, `<why>` tells the cause:
 
 - The server refuses the batch request: `the LFS server answered the batch request <status>[: <rule>][ (<message>)]`.
-  For example, the push credential cannot write LFS objects. `<rule>` is `the server refused the credential` or
+  For example, the push credential cannot read LFS objects. A credential that can read and cannot write passes this
+  request, because the request asks only which objects the server holds. Then git-lfs fails. `<rule>` is
+  `the server refused the credential` or, for an https push,
   `jr2 sends the push token only to the push url's origin (scheme, host, port), and the LFS server is on another origin`.
 - The batch request gets no answer: `the LFS server's batch request failed: <error>` or
   `the LFS server's batch answer did not come: the timeout passed`.
@@ -372,7 +374,9 @@ When jr2 cannot ask the batch API, `<why>` tells the cause:
 - The server is ssh, and jr2 cannot reach it: `the LFS server is ssh, and the push has no ssh credential`,
   `the LFS server's ssh url could not be read` or `the LFS server's ssh url is not one jr2 runs ssh to`.
 - The server speaks `git-lfs-transfer`, and the session fails: `git-lfs-transfer on the LFS server: <error>` or
-  `git-lfs-transfer on the LFS server did not answer: the timeout passed`.
+  `git-lfs-transfer on the LFS server did not answer: the timeout passed`. An answer that does not end is refused:
+  `<error>` is `the LFS server sent a message of more than 4096 packets` or
+  `the LFS server sent a message of more than 16777216 bytes`.
 - The server does not speak `git-lfs-transfer`, and `git-lfs-authenticate` fails too:
   `<authenticate>; before it, git-lfs-transfer failed: <error>`. `<authenticate>` is
   `git-lfs-authenticate on the LFS server failed: <error>`, `git-lfs-authenticate on the LFS server gave no href` or

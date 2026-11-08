@@ -175,8 +175,9 @@ The token goes only to the origin of the Repo url: its scheme, its host and its 
 origin gets no token. A public server works, and a private server fails. An ssh key goes only to the host of the Repo
 url. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the full rule.
 
-An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or `git-lfs-authenticate`. The Repo
-cache and a `push` try `git-lfs-transfer` first, as git-lfs does by default. Then they try `git-lfs-authenticate`.
+An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or give an https server through
+`git-lfs-authenticate`. The Repo cache and a `push` try `git-lfs-transfer` first, as git-lfs does by default. When the
+server does not speak it, they use `git-lfs-authenticate`.
 
 ## Rules
 

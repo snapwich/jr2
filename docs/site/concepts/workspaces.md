@@ -150,8 +150,9 @@ and in each Worktree, a large file has its contents, not its pointer:
 
 The `.lfsconfig` file at the base of the Binding names the LFS server. Without it, the server is the one that git-lfs
 gets from the Repo's url. The [Orchestrator](../reference/glossary.md#orchestrator) names that base from the run's
-Binding. It ignores a base that the pod sends. Thus an Agent cannot send the Repo cache or the push to an LFS server of
-its choice. [Architecture](architecture.md#large-files-in-the-repo-cache) tells which server gets the credential.
+Binding. The pod sends no base, and the Orchestrator reads no base in an ask from a pod. Thus an Agent cannot send the
+Repo cache or the push to an LFS server of its choice. [Architecture](architecture.md#large-files-in-the-repo-cache)
+tells which server gets the credential.
 
 A large file uses the disk of `/work` more than one time. The clone keeps one copy of it in its own LFS store.
 `default/` and each Worktree that holds the file keep one more copy each.

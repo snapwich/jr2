@@ -225,17 +225,18 @@ Custodian, the Orchestrator, then the Repo cache. The Repo cache then gets them 
 credential. A large file in the cache goes when the cache of its Repo goes.
 
 The `.lfsconfig` file at the base of the [Binding](../reference/glossary.md#binding) names the LFS server. The
-Orchestrator gives that base from the run's Binding, and ignores a base that the pod sends. When two
-[Repo Slots](../reference/glossary.md#repo-slot) bind one Repo on two bases, the first slot's base names the server for
-the Repo cache. A push reads `.lfsconfig` at the Binding's base of its own slot. The Repo cache accepts only these
-servers:
+Orchestrator gives that base from the run's Binding. The pod sends no base, and the Orchestrator reads no base in an ask
+from a pod. When two [Repo Slots](../reference/glossary.md#repo-slot) bind one Repo on two bases, the first slot's base
+names the server for the Repo cache. A push reads `.lfsconfig` at the Binding's base of its own slot. The Repo cache
+accepts only these servers:
 
 - an `https://` or `http://` server,
 - an ssh server on the host of an ssh Repo url, so that the ssh key never goes to a different host,
 - a `file://` server for a `file://` Repo.
 
-An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or `git-lfs-authenticate`. The Repo
-cache tries `git-lfs-transfer` first, as git-lfs does by default. Then it tries `git-lfs-authenticate`.
+An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or give an https server through
+`git-lfs-authenticate`. The Repo cache tries `git-lfs-transfer` first, as git-lfs does by default. When the server does
+not speak it, the Repo cache uses `git-lfs-authenticate`.
 
 The token goes only to the origin of the Repo: its scheme, its host and its port. Thus:
 
