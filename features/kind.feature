@@ -446,6 +446,34 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the upload holds the command's line and the writer's, and the command ran in the shared folder
       And the run's Sandbox is destroyed
 
+  Rule: a nested Workspace has a Sandbox of its own, and loses it when a Machine of the run stops it
+    ADR-0012. The `nested` and `pooled` workflows invoke a child `workspace()` from a state of a parent
+    Workspace's body (`_nested.ts`); the child prints its pod's hostname, which is its Sandbox's name.
+    A Sandbox's name comes from its Workspace's actor path, so two Pool workers that invoke their
+    children with one invoke id have two Sandboxes, and a parent that enters the state again gives
+    its new child the same name. A parent that leaves the state stops the child, and a stop skips the
+    wrapper's `teardown`, so the host deletes the Sandbox, not the operator's idle timeout. A cancel
+    deletes every Sandbox of the run.
+
+    Scenario: two Pool workers' nested Workspaces have a Sandbox each, and each one's second round takes its name over
+      Given the kind instance is serving
+      When I start the "pooled" workflow as "pool" with input '{}'
+      Then "pool" ends done, and each worker ran its two rounds in a Sandbox name that no other worker had
+      And no Sandbox of "pool" is left within 60 seconds
+
+    Scenario: a parent that leaves its nested Workspace's state deletes that Sandbox, and a cancel deletes both
+      Given the kind instance is serving
+      When I start the "nested" workflow as "leaving" with input '{"mode":"leave","sleep":"600"}'
+      Then "leaving" has its parent's Sandbox and its nested Workspace's Sandbox Ready
+      When I send "leave" to the Gate of "leaving"
+      Then the nested Workspace's Sandbox of "leaving" is deleted within 60 seconds, and the run and its parent's Sandbox go on
+      When I start the "nested" workflow as "cancelled" with input '{"mode":"leave","sleep":"600"}'
+      Then "cancelled" has its parent's Sandbox and its nested Workspace's Sandbox Ready
+      When I cancel "cancelled"
+      Then no Sandbox of "cancelled" is left within 60 seconds
+      When I cancel "leaving"
+      Then no Sandbox of "leaving" is left within 60 seconds
+
   Rule: a signed push leaves the Sandbox Effector signed, and the sync moves the Agent's branch to it
     ADR-0067, ADR-0051. The `pushed` workflow binds the seed's push remote over ssh; its
     `git.credentials` entry names the deploy key the seed's sshd authorizes and the key the
