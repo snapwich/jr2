@@ -116,10 +116,12 @@ alternates point at the read-only cache — existing objects are read from the c
 `.git`. `default/` stays on the Binding's base: a branch is attached, a tag or a commit is detached, and with no base it
 is the Repo's default branch, as gwtmux's `default/` is outside the cluster. No work happens in it: work happens in the
 Worktrees, and `default/` is the reference tree that a human, a tool or an Agent that only reads finds where it expects
-one. Not `--no-checkout`: an empty working tree reads as every tracked file deleted to `git status`, which misleads an
-Agent that looks. A Worktree's folder cannot be named `default`, and a cut of the branch that `default/` holds is
-`refused`, with a reason that names `/work/<slot>/default`. `origin`'s push url is the binding's own spelling, so a
-Machine that bound over ssh pushes over ssh even when the cache was cloned over https.
+one. So `default/` is checked out before any Agent works: the attach clones with `--no-checkout`, gets the base's Git
+LFS objects (ADR-0053), and then checks out the base, so that each large file is smudged and not left as its pointer. A
+`default/` that stays empty would read as every tracked file deleted to `git status`, which misleads an Agent that
+looks. A Worktree's folder cannot be named `default`, and a cut of the branch that `default/` holds is `refused`, with a
+reason that names `/work/<slot>/default`. `origin`'s push url is the binding's own spelling, so a Machine that bound
+over ssh pushes over ssh even when the cache was cloned over https.
 
 This does **not** reintroduce jr's contention: the shared `.git` here is _per-Sandbox_, so what contends stays in one
 pod and never crosses the fleet. Inside the pod it is the author's choice. A Machine that runs concurrent Agents in

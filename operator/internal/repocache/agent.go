@@ -119,6 +119,10 @@ type Agent struct {
 	CloneTimeout         time.Duration
 	FetchTimeout         time.Duration
 	OnDemandFetchTimeout time.Duration
+	// LFSTimeout is the budget of an LFS ask, from the `at` of the latest
+	// ask that one `git lfs fetch` serves (ADR-0053); zero means
+	// defaultLFSTimeout.
+	LFSTimeout time.Duration
 	// Now is the clock; tests fix it.
 	Now func() time.Time
 }
@@ -136,7 +140,10 @@ type Agent struct {
 //     `jr2 status` sees a private repo's error before any run does (ADR-0048);
 //   - a cache → pin gc, then fetch when a pod on this node asks — by having
 //     been created, or by carrying an ask marked since the last attempt
-//     (ADR-0053) — when the refresh interval elapsed, or when the spec changed.
+//     (ADR-0053) — when the refresh interval elapsed, or when the spec changed;
+//   - then, with a pod on this node that mounts the cache, serve the LFS asks
+//     of those pods that are due (ADR-0053): get the asked objects into a
+//     present cache, or answer that the cache is absent.
 //
 // A clone, probe, or pin that fails returns an error so the queue retries with
 // backoff; a fetch that fails degrades the cache to stale and waits for the
@@ -175,12 +182,29 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 		return ctrl.Result{}, err
 	}
 	if !present(dir) {
+		// The LFS serve comes after the clone or the probe, because each of
+		// them writes this node's entry, and the LFS answer goes into it. A
+		// clone that worked serves the asks; a clone that failed answers each
+		// due pod that the cache is absent. After a probe no pod mounts the
+		// cache, so the serve only removes the items of pods that left.
+		var result ctrl.Result
 		if wanted {
-			return a.clone(ctx, &repo, key)
+			result, err = a.clone(ctx, &repo, key)
+		} else {
+			err = a.probe(ctx, &repo)
 		}
-		return a.probe(ctx, &repo)
+		if lfsErr := a.serveLFS(ctx, &repo, key, dir, present(dir)); lfsErr != nil && err == nil {
+			err = lfsErr
+		}
+		return result, err
 	}
-	return a.refresh(ctx, &repo, dir, asked)
+	result, err := a.refresh(ctx, &repo, dir, asked)
+	// After the refresh, also when it returns early: an LFS ask is not a reason
+	// to fetch git, and a git fetch that is not due does not hold the LFS ask.
+	if lfsErr := a.serveLFS(ctx, &repo, key, dir, true); lfsErr != nil && err == nil {
+		err = lfsErr
+	}
+	return result, err
 }
 
 // demand reports whether any pod on this node mounts the key's cache, and the
@@ -351,9 +375,9 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 // longer holds — the directory was removed, or the node was re-imaged under
 // its name — and it must not stand: the operator places Sandboxes by it, and
 // `jr2 status` reports it. The probe is the write that corrects it.
-func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result, error) {
+func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) error {
 	if entry := a.own(repo); entry != nil && !entry.Present && entry.Synced && entry.ObservedGeneration == repo.Generation {
-		return ctrl.Result{}, nil
+		return nil
 	}
 	started := a.now()
 	entry := corev1alpha1.RepoNodeStatus{
@@ -374,13 +398,13 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 		entry.LastError = err.Error()
 	}
 	if reportErr := a.report(ctx, repo, entry); reportErr != nil {
-		return ctrl.Result{}, reportErr
+		return reportErr
 	}
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("probe Repo %s: %w", repo.Name, err)
+		return fmt.Errorf("probe Repo %s: %w", repo.Name, err)
 	}
 	logf.FromContext(ctx).V(1).Info("Probed", "key", repo.Name)
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // refresh keeps a present cache pinned and fetched. The fetch is on demand (a

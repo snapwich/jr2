@@ -201,6 +201,44 @@ spec:
                         instant a Sandbox's Ready compares against its own creation (ADR-0051).
                       format: date-time
                       type: string
+                    lfs:
+                      description: |-
+                        LFS holds, for each pod on this node that asked this cache for Git LFS
+                        objects, the last LFS ask the agent served (ADR-0053). It is the agent's
+                        record of what it served, so an agent that restarts does not serve an ask
+                        again. The agent removes the item of a pod that no longer mounts the
+                        cache.
+                      items:
+                        description: RepoLFSAnswer is the cache agent's answer to
+                          one pod's LFS ask (ADR-0053).
+                        properties:
+                          asked:
+                            description: |-
+                              Asked is the `at` of the ask that the agent served, copied as is from
+                              the pod's `jr2.dev/lfs-<key>` annotation. The Orchestrator compares it
+                              with its own `at` as an instant.
+                            type: string
+                          attempted:
+                            description: Attempted is when the agent started to get
+                              the objects for this ask.
+                            format: date-time
+                            type: string
+                          error:
+                            description: |-
+                              Error is git-lfs's own words when an asked object is still not in the
+                              cache after the attempt; empty when the cache holds every asked object.
+                            type: string
+                          pod:
+                            description: Pod is the name of the pod that asked.
+                            type: string
+                        required:
+                        - asked
+                        - pod
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - pod
+                      x-kubernetes-list-type: map
                     node:
                       description: Node is the node this entry describes.
                       type: string
@@ -6436,6 +6474,33 @@ spec:
                       description: Key is the Repo cache key, as spec.repos names
                         it.
                       type: string
+                    lfs:
+                      description: |-
+                        LFS is the state of this Sandbox's last Git LFS ask on this key
+                        (ADR-0053). It is absent when the Sandbox carries no
+                        `jr2.dev/lfs-<key>` annotation.
+                      properties:
+                        answered:
+                          description: |-
+                            Answered is the `at` of the last ask that the agent served for this Pod,
+                            as the agent wrote it. It is absent when the agent has served no ask for
+                            this Pod. An answered before asked is an older ask's answer.
+                          type: string
+                        asked:
+                          description: |-
+                            Asked is the `at` of the Sandbox's `jr2.dev/lfs-<key>` annotation, as
+                            the annotation writes it.
+                          type: string
+                        error:
+                          description: |-
+                            Error is git-lfs's own words when an object of the mark that answered
+                            names is still not in the cache. It goes with answered, also when
+                            answered is before asked: an ask that waits on that earlier mark is
+                            answered by it.
+                          type: string
+                      required:
+                      - asked
+                      type: object
                   required:
                   - asked
                   - key

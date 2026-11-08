@@ -23,6 +23,7 @@ import {
   createEffectorClient,
   MAX_START_BYTES,
   PushOutputShape,
+  PushStartShape,
   type CommandStartRequest,
   type PushStartRequest,
 } from "../src/effector-wire.ts";
@@ -160,6 +161,7 @@ test("a push: the start names the Workspace's repositories and Binding; the pinn
   assert.equal(req.push.branch, "jr2/run-1");
   assert.equal(req.push.sign, true);
   assert.equal(req.push.pin, undefined, "the Effector reads the tip");
+  assert.equal(req.push.base, undefined, "a Binding that names no base sends none");
   await until(async () => Object.values(await ledger(rig.store, rig.runId)).some((r) => "pinned" in r));
   const row = Object.values(await ledger(rig.store, rig.runId)).find((r) => r.kind === "push") as Extract<
     EffectRow,
@@ -185,6 +187,19 @@ test("a push: the start names the Workspace's repositories and Binding; the pinn
   });
   assert.equal(result.sync, "synced");
   assert.equal("syncReason" in result, false);
+});
+
+test("a push sends the run's Binding base, where the LFS server is read from `.lfsconfig`, and never the base that the pod's attach reported (ADR-0051, ADR-0067)", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  // `bases` is what the attach in the pod answered; `bindingBases` is the run's own Binding.
+  const h = { ...ws(), bases: { app: "attacker" }, bindingBases: { app: "release/2.x" } };
+  const rig = await started(pushWith(port(fake), {}, new FakeSync().factory) as AnyEffect, undefined, undefined, h);
+  await waitFor(() => fake.starts.length === 1);
+  const req = fake.starts[0]!.req as PushStartRequest;
+  assert.equal(req.push.base, "release/2.x");
+  assert.ok(PushStartShape.safeParse(JSON.parse(JSON.stringify(req))).success);
+  fake.settle({ ...pushed("a".repeat(40)) });
+  await waitFor(() => rig.host.status(rig.runId)?.value === "done");
 });
 
 test("an unsigned push is sync `skipped`, and no sync is asked", async () => {

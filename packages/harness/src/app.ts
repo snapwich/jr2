@@ -57,6 +57,7 @@ import {
   type AdmissionBody,
   type AdmissionRequest,
   type AttachError,
+  type AttachPending,
   type AttachRequest,
   type SyncAnswer,
   type SyncRequest,
@@ -111,6 +112,9 @@ export type HarnessAppDeps = {
   checkAdmission?: (resolved: ResolvedDefinition) => string | undefined;
   /** Does this folder exist? The pod's filesystem, in `main.ts`. Absent in a test with no `/work`. */
   frameExists?: (path: string) => boolean;
+  /** How long one `POST /attach` waits for the attach before it answers 202 "still attaching".
+   * Default {@link ATTACH_POLL_MS}; short in tests. */
+  attachPollMs?: number;
   /** How long a live long-poll parks before 204 "nothing yet". Default 25s (the stub's
    * cadence); short in tests. */
   longPollMs?: number;
@@ -185,6 +189,14 @@ function bearerOf(c: Context): string | undefined {
   return match?.[1]?.trim() || undefined;
 }
 
+/** How long one `POST /attach` waits before it answers 202: far below undici's 300 s for the headers,
+ * as a long-poll's 25 s is. */
+export const ATTACH_POLL_MS = 25_000;
+/** How long the answer of an attach that ended waits for the request that takes it. */
+const ATTACH_KEEP_MS = 120_000;
+
+type Settled<T> = { ok: true; value: T } | { ok: false; err: unknown };
+
 /** The five wire routes over a map of Conversations, created on POST (admission creates). */
 export function harnessApp(deps: HarnessAppDeps): Hono {
   return harnessServer(deps).app;
@@ -194,6 +206,9 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
  * on POST (admission creates) — with the drain beside it. */
 export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   const longPollMs = deps.longPollMs ?? 25_000;
+  const attachPollMs = deps.attachPollMs ?? ATTACH_POLL_MS;
+  // The attaches that run, or that ended and whose answer no request took yet, by request body.
+  const attaches = new Map<string, { done: Promise<Settled<AttachResponse>> }>();
   const root = deps.conversationsDir;
   // A record that cannot be written ends the process (ADR-0031): the restart settles what it cut,
   // and a crash loop on a full volume is louder than a Turn that never settles.
@@ -529,13 +544,42 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     const body = await c.req.json().catch(() => undefined);
     const fault = attachFault(body);
     if (fault) return c.json<AttachError>({ error: fault }, 400);
-    try {
-      return c.json(await deps.attach(body as AttachRequest));
-    } catch (err) {
-      const slot = err instanceof AttachFault ? err.slot : undefined;
-      const error = err instanceof Error ? err.message : String(err);
-      return c.json<AttachError>({ error, ...(slot !== undefined ? { slot } : {}) }, 500);
+    // A cold attach can take longer than one request may wait: it downloads the base's large files
+    // (ADR-0053), and undici, the Orchestrator's fetch, gives up on headers after 300 s. So a request
+    // waits at most one poll and answers 202; the attach goes on, and a request with the same body
+    // waits on it again. An answer that no request took is kept for a short time, then dropped: the
+    // next request runs the attach again, which is idempotent.
+    const key = JSON.stringify(body);
+    let entry = attaches.get(key);
+    if (entry === undefined) {
+      const started: { done: Promise<Settled<AttachResponse>> } = {
+        done: deps.attach(body as AttachRequest).then(
+          (value) => ({ ok: true as const, value }),
+          (err: unknown) => ({ ok: false as const, err }),
+        ),
+      };
+      entry = started;
+      attaches.set(key, started);
+      void started.done.then(() => {
+        const drop = setTimeout(() => {
+          if (attaches.get(key) === started) attaches.delete(key);
+        }, ATTACH_KEEP_MS);
+        drop.unref?.();
+      });
     }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      entry.done,
+      new Promise<undefined>((r) => (timer = setTimeout(() => r(undefined), attachPollMs))),
+    ]);
+    clearTimeout(timer);
+    if (settled === undefined) return c.json<AttachPending>({ attaching: true }, 202);
+    if (attaches.get(key) === entry) attaches.delete(key);
+    if (settled.ok) return c.json(settled.value);
+    const err = settled.err;
+    const slot = err instanceof AttachFault ? err.slot : undefined;
+    const error = err instanceof Error ? err.message : String(err);
+    return c.json<AttachError>({ error, ...(slot !== undefined ? { slot } : {}) }, 500);
   });
 
   // The sync (ADR-0067): after a push whose published commit is not the Agent's own, the Agent's

@@ -71,8 +71,13 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
   out from a git folder that it makes for that cut, which takes its config, HEAD and index from no file of the clone,
   and then gives that index to the Worktree. It reads no ignore or attributes file of a `HOME` (`core.excludesFile` and
   `core.attributesFile` are `/dev/null`). The objects are the clone's (`alternates`), and an Agent writes them too
-  (below). A cut refuses a Worktree whose `.git` names another admin folder, and one whose own git works in another
-  folder (a `core.worktree`): each later git of an Agent there would read that other folder.
+  (below). The one filter that this checkout runs is jr2's Git LFS filter, set by `-c` with git-lfs and jr2's transfer
+  agent at their absolute paths on the runtime volume, and with `lfs.storage` at the clone's LFS store. The git folder's
+  alternates also name the node cache's object store that the clone borrows from, because git-lfs reads the large files
+  beside each alternate and does not follow an alternate's own alternates
+  ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). A cut refuses a
+  Worktree whose `.git` names another admin folder, and one whose own git works in another folder (a `core.worktree`):
+  each later git of an Agent there would read that other folder.
 - **A detached cut is forced from its own record** and cleaned with `-ffd`, from the same git folder. Its index starts
   at the commit that the cut last wrote there, which the record keeps, and not at the Worktree's HEAD, which an Agent
   sets. So a file that the new commit removed goes. Before the checkout, each `.gitattributes` that is not in that
@@ -91,6 +96,17 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
 
 - **A cut needs a Repo Slot.** `jr2 up` and the invoke refuse `worktree()` under a Workspace with no Repo Slot, as they
   refuse a `push` (ADR-0051).
+- **A cut gets its commit's large files first.** After the fetch and before it changes git, a cut asks the node cache
+  for each Git LFS object of its commit
+  ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). An object that the
+  cache does not hold and cannot get makes the cut `refused`, and the reason names the file. The ask gets what is left
+  of the Effect's `timeout` less one minute for the checkout, so an object that does not come in time also makes the cut
+  `refused`, naming the file, and never ends the Effect at its `timeout`. When no time is left, no ask goes, and the
+  refusal says that the Effect's timeout left no time to ask for the file. With `worktree()`'s default of `"10m"` and a
+  fetch that spends its two budgets, the ask has 6.5 minutes. With a remote that is down and every object held, the cut
+  is `ready` with `stale`.
+- **A cut checks out no submodule.** A submodule's folder stays empty. A Machine that works in a submodule's code binds
+  that Repo as its own Repo Slot.
 - **v1 has no kit removal.** The docs give a `command` that runs `git worktree remove`.
 
 ### What names a Worktree
@@ -312,7 +328,7 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
 ## Consequences
 
 - After v1, these are additive: a removal Effect, a sparse checkout, a new Worktree source, `to`, a relaxed `branch` or
-  `cwd`, a later outcome, and durable output under `/work/.jr2/` or on its own mount.
+  `cwd`, a later outcome, durable output under `/work/.jr2/` or on its own mount, and submodules.
 - Park and restore can only restore all of `/work`. A restore from the remote alone cannot work: settled cuts do not run
   again, and unpushed work is gone. v1 does not promise that form.
 - A packaged Machine with two slots still needs a static `slot` on its `push`.
@@ -342,8 +358,6 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   `core.multiPackIndex=false`): an Agent can write either one with no object rewritten, and git 2.56 then checks out
   another tree for a commit. This is one of the limits of the isolation between the Agents of one Workspace (ADR-0028):
   a Workflow that needs more gives the review a Workspace of its own.
-- When the Git LFS work merges, its `-c` filter pins, `lfs.storage=<clone>/.git/lfs` among them, go also on the git of
-  the cut's fill (the `runner` in `fill`), which reads no config file of the clone.
 - Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a
   Pool in one clone. They share the one Harness and `/work`. Only the Harness process holds the control credential, and
   each process it starts in `/work` runs confined, so no Agent's code can act as another Agent

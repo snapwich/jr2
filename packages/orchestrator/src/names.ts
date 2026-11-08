@@ -233,6 +233,19 @@ export function workspaceLabel(path: string): string {
  * the Orchestrator, read by the operator. */
 export const askedAnnotation = (key: string): string => `jr2.dev/asked-${key}`;
 
+/** The mark an LFS ask leaves on a Sandbox CR, per Repo key (ADR-0053): the JSON
+ * `{at, base, objects: ["<oid> <size>", ...]}`, where `objects` is the union of the open asks and
+ * `at` increases strictly for each Sandbox and key. The operator copies it onto the pod, and the
+ * node's cache agent gets the objects it names. It is separate from {@link askedAnnotation}, so an
+ * LFS ask causes no git fetch. */
+export const lfsAnnotation = (key: string): string => `jr2.dev/lfs-${key}`;
+
+/** The Binding's base of one Repo of a Sandbox, per Repo key (ADR-0051), written by the
+ * Orchestrator when it makes the CR; absent for the Repo's default branch. An LFS ask names this
+ * base, never one that the pod sends, so an Agent cannot choose the `.lfsconfig` that picks the LFS
+ * server. Only the Orchestrator reads it; its prefix is not `lfs-`, so the operator copies nothing. */
+export const baseAnnotation = (key: string): string => `jr2.dev/base-${key}`;
+
 /** The two PriorityClasses `jr2 up` creates, cluster-scoped, beside the CRDs (ADR-0060) — unless
  * `priorityClasses` in jr2.config.ts names existing ones. `jr2-control` (100000,
  * PreemptLowerPriority) is for the Orchestrator, the operator and the Repo cache agent: small, fixed,

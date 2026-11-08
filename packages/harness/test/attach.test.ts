@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,6 +50,18 @@ async function layout() {
     `#!/bin/sh\nprintf '%s %s\\n' "$1" "$(ls -A "$1" | wc -l)" >> ${JSON.stringify(stamped)}\n`,
   );
   await chmod(join(runtime, "bin", "work-acl"), 0o755);
+  // The two LFS programs, stubbed: no file of this Repo is an LFS file, so git never starts git-lfs.
+  // jr2-lfs records its arguments and what the checkout held when it ran, and prints `lfsAnswer`.
+  const lfsCalls = join(root, "jr2-lfs.calls");
+  const lfsAnswer = join(root, "jr2-lfs.answer");
+  await writeFile(lfsAnswer, `${JSON.stringify({ pointers: 0, asked: 0, missing: [] })}\n`);
+  await writeFile(
+    join(runtime, "bin", "jr2-lfs"),
+    `#!/bin/sh\nprintf '%s | %s | %s\\n' "$*" "$PWD" "$(ls -A | tr '\\n' ' ')" >> ${JSON.stringify(lfsCalls)}\ncat ${JSON.stringify(lfsAnswer)}\n`,
+  );
+  await chmod(join(runtime, "bin", "jr2-lfs"), 0o755);
+  await writeFile(join(runtime, "bin", "git-lfs"), "#!/bin/sh\necho 'the stub git-lfs ran' >&2\nexit 9\n");
+  await chmod(join(runtime, "bin", "git-lfs"), 0o755);
   const workRoot = join(root, "work");
   // Confined as in a pod (ADR-0076): the whole fixture is the children's TMPDIR, so the stubbed
   // runtime runs and the clone lands; the caches are read only.
@@ -59,7 +71,9 @@ async function layout() {
     paths: { workRoot, reposMount, runtime },
     env: { GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_SYSTEM: "/dev/null" },
   });
-  return { root, src, git, workRoot, reposMount, runtime, stamped, globalConfig, attach };
+  const lfsCallsOf = async (): Promise<string[]> =>
+    existsSync(lfsCalls) ? (await readFile(lfsCalls, "utf8")).trim().split("\n") : [];
+  return { root, src, git, workRoot, reposMount, runtime, stamped, globalConfig, attach, lfsAnswer, lfsCallsOf };
 }
 
 test("attach clones each slot off its cache, splits fetch from push, and cuts no Worktree", async () => {
@@ -241,4 +255,254 @@ test("the slot's folder is made in the domain: a /work that links to a denied fo
     },
   );
   assert.deepEqual(await readdir(denied), [], "the Harness process made no folder through the link");
+});
+
+// --- Git LFS (ADR-0053) ----------------------------------------------------------------------------------
+
+const LFS_HOOKS = ["post-checkout", "post-commit", "post-merge", "pre-push"];
+
+test("the attach writes git-lfs's filter and jr2's transfer agent in the clone's config, by absolute path", async () => {
+  const l = await layout();
+  await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
+  const dflt = join(l.workRoot, "app", "default");
+  const bin = join(l.runtime, "bin");
+  const local = (key: string) => l.git(dflt, "config", "--local", key);
+  assert.equal(local("filter.lfs.process"), `${bin}/git-lfs filter-process`);
+  assert.equal(local("filter.lfs.clean"), `${bin}/git-lfs clean -- %f`);
+  assert.equal(local("filter.lfs.smudge"), `${bin}/git-lfs smudge -- %f`);
+  assert.equal(local("filter.lfs.required"), "true");
+  assert.equal(local("lfs.standalonetransferagent"), "jr2");
+  assert.equal(local("lfs.customtransfer.jr2.path"), `${bin}/jr2-lfs`);
+  assert.equal(local("lfs.customtransfer.jr2.args"), "transfer");
+  assert.equal(local("lfs.customtransfer.jr2.concurrent"), "true");
+  assert.equal(local("lfs.customtransfer.jr2.direction"), "download");
+  // No `git lfs install`: nothing global, and no hooksPath anywhere.
+  assert.equal((await readFile(l.globalConfig, "utf8")).includes("lfs"), false);
+  assert.throws(() => l.git(dflt, "config", "core.hooksPath"));
+});
+
+test("the attach writes git-lfs's four hooks by absolute path, and only where the clone has none", async () => {
+  const l = await layout();
+  const dflt = join(l.workRoot, "app", "default");
+  // A kill after the clone, and a hook that a user wrote before the next attach.
+  await mkdir(join(l.workRoot, "app"), { recursive: true });
+  l.git(l.root, "clone", "-q", "--shared", "--no-checkout", join(l.reposMount, KEY), dflt);
+  const mine = "#!/bin/sh\necho mine\n";
+  await writeFile(join(dflt, ".git", "hooks", "post-commit"), mine, { mode: 0o755 });
+  await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
+  const hooks = join(dflt, ".git", "hooks");
+  assert.equal(await readFile(join(hooks, "post-commit"), "utf8"), mine, "a hook that a user wrote stays");
+  for (const hook of LFS_HOOKS.filter((h) => h !== "post-commit")) {
+    const text = await readFile(join(hooks, hook), "utf8");
+    assert.equal(text, `#!/bin/sh\nexec '${join(l.runtime, "bin", "git-lfs")}' ${hook} "$@"\n`, hook);
+    assert.ok(((await stat(join(hooks, hook))).mode & 0o111) !== 0, `${hook} is executable`);
+  }
+  assert.deepEqual(
+    (await readdir(hooks)).filter((f) => f.includes("jr2-tmp")),
+    [],
+    "no temp file is left",
+  );
+});
+
+test("the attach asks for the base's large files before the checkout, and then checks out the base", async () => {
+  const l = await layout();
+  await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "develop" }] });
+  const dflt = join(l.workRoot, "app", "default");
+  const calls = await l.lfsCallsOf();
+  assert.equal(calls.length, 1, calls.join("\n"));
+  const [args, cwd, held] = calls[0]!.split(" | ");
+  assert.equal(args, `fetch --identity ${IDENTITY} -- ${l.git(l.src, "rev-parse", "develop")}`);
+  assert.equal(cwd, dflt);
+  assert.equal(held?.trim(), ".git", "nothing was checked out when jr2-lfs ran");
+  assert.equal(l.git(dflt, "status", "--porcelain"), "", "the checkout is whole");
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "HEAD"), "develop");
+});
+
+test("a kill between the clone and the checkout: the next attach places default/ on the base", async () => {
+  const l = await layout();
+  const dflt = join(l.workRoot, "app", "default");
+  await mkdir(join(l.workRoot, "app"), { recursive: true });
+  l.git(l.root, "clone", "-q", "--shared", "--no-checkout", join(l.reposMount, KEY), dflt);
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
+  assert.equal(res.bases.app, "main");
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(l.git(dflt, "rev-parse", "HEAD"), l.git(l.src, "rev-parse", "main"));
+  assert.equal(l.git(dflt, "status", "--porcelain"), "", "default/ holds the base's files");
+  // A kill after a checkout of another base, before the base was recorded.
+  const other = await layout();
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "develop" }] };
+  const oDflt = join(other.workRoot, "app", "default");
+  await mkdir(join(other.workRoot, "app"), { recursive: true });
+  other.git(other.root, "clone", "-q", "--shared", "--no-checkout", join(other.reposMount, KEY), oDflt);
+  other.git(oDflt, "checkout", "-q", "--track", "-b", "develop", "origin/develop");
+  other.git(oDflt, "branch", "-D", "main");
+  assert.deepEqual((await other.attach(req)).bases, { app: "develop" });
+  assert.equal(other.git(oDflt, "symbolic-ref", "--short", "HEAD"), "develop");
+  assert.equal(other.git(oDflt, "status", "--porcelain"), "");
+});
+
+/** A file in the base, so that a checkout writes something: `a.txt` and `b.txt` on main. */
+function withFiles(l: Awaited<ReturnType<typeof layout>>) {
+  execFileSync("sh", ["-c", "printf 'aaa\\n' > a.txt && printf 'bbb\\n' > b.txt"], { cwd: l.src });
+  l.git(l.src, "add", ".");
+  l.git(l.src, "-c", "user.email=t@jr2", "-c", "user.name=t", "commit", "-q", "-m", "files");
+  l.git(l.src, "push", "-q", join(l.reposMount, KEY), "main");
+}
+
+test("a kill inside the checkout: the next attach removes the locks it left and places default/", async () => {
+  const l = await layout();
+  withFiles(l);
+  const dflt = join(l.workRoot, "app", "default");
+  await mkdir(join(l.workRoot, "app"), { recursive: true });
+  l.git(l.root, "clone", "-q", "--shared", "--no-checkout", join(l.reposMount, KEY), dflt);
+  // What a checkout killed half way leaves: one file half written, the index lock, a ref lock.
+  await writeFile(join(dflt, "a.txt"), "aa");
+  await writeFile(join(dflt, ".git", "index.lock"), "");
+  await writeFile(join(dflt, ".git", "HEAD.lock"), "");
+  await writeFile(join(dflt, ".git", "refs", "heads", "main.lock"), "");
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
+  assert.equal(res.bases.app, "main");
+  assert.equal(l.git(dflt, "rev-parse", "HEAD"), l.git(l.src, "rev-parse", "main"));
+  assert.equal(l.git(dflt, "status", "--porcelain"), "", "default/ holds the base's files");
+  assert.equal(await readFile(join(dflt, "a.txt"), "utf8"), "aaa\n");
+  assert.equal(existsSync(join(dflt, ".git", "index.lock")), false);
+});
+
+test("a kill inside the clone: the next attach clones again and places default/", async () => {
+  const l = await layout();
+  withFiles(l);
+  const dflt = join(l.workRoot, "app", "default");
+  await mkdir(join(l.workRoot, "app"), { recursive: true });
+  l.git(l.root, "clone", "-q", "--shared", "--no-checkout", join(l.reposMount, KEY), dflt);
+  // A clone cut short: refs, but no origin/HEAD yet.
+  l.git(dflt, "remote", "set-head", "origin", "-d");
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
+  assert.equal(res.bases.app, "main");
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"), "origin/main");
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(l.git(dflt, "status", "--porcelain"), "");
+  assert.equal(await readFile(join(dflt, "b.txt"), "utf8"), "bbb\n");
+});
+
+test("an empty Repo attaches, as before the LFS ask: no checkout, no ask, and an empty base", async () => {
+  const l = await layout();
+  const key = "example-test-acme-empty-12345678";
+  l.git(l.root, "init", "-q", "--bare", join(l.reposMount, key));
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key }] };
+  assert.deepEqual((await l.attach(req)).bases, { app: "" });
+  assert.deepEqual((await l.attach(req)).bases, { app: "" }, "a second attach also works");
+  assert.equal((await l.lfsCallsOf()).length, 0);
+});
+
+test("a key that an Agent gave a second value: a second attach sets one value again", async () => {
+  const l = await layout();
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
+  await l.attach(req);
+  const dflt = join(l.workRoot, "app", "default");
+  l.git(dflt, "config", "--add", "filter.lfs.required", "false");
+  l.git(dflt, "config", "--add", "gc.auto", "5");
+  l.git(dflt, "config", "--add", "protocol.ext.allow", "always");
+  await l.attach(req);
+  assert.equal(l.git(dflt, "config", "--get-all", "filter.lfs.required"), "true");
+  assert.equal(l.git(dflt, "config", "--get-all", "gc.auto"), "0");
+  assert.equal(l.git(dflt, "config", "--get-all", "protocol.ext.allow"), "user");
+});
+
+test("a large file that the node cache cannot get fails the attach, naming the slot, the file and the reason", async () => {
+  const l = await layout();
+  const missing = [
+    { path: "assets/logo.png", oid: "a".repeat(64), reason: "batch response: Repository or object not found" },
+  ];
+  await writeFile(l.lfsAnswer, `${JSON.stringify({ pointers: 1, asked: 1, missing })}\n`);
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
+  const err = await l.attach(req).then(
+    () => assert.fail("expected the attach to fail"),
+    (e: unknown) => e,
+  );
+  assert.ok(err instanceof AttachFault);
+  assert.equal(err.slot, "app");
+  assert.match(err.message, /slot "app"/);
+  assert.match(err.message, /assets\/logo\.png/);
+  assert.match(err.message, /Repository or object not found/);
+  const dflt = join(l.workRoot, "app", "default");
+  assert.deepEqual(await readdir(dflt), [".git"], "nothing is checked out");
+  assert.throws(() => l.git(dflt, "config", "--local", "jr2.base"), "the base is not recorded");
+  // The cache gets the object later: the next attach places default/.
+  await writeFile(l.lfsAnswer, `${JSON.stringify({ pointers: 1, asked: 1, missing: [] })}\n`);
+  assert.deepEqual((await l.attach(req)).bases, { app: "main" });
+  assert.equal(l.git(dflt, "status", "--porcelain"), "");
+});
+
+test("a second attach asks for no large file: the base is placed", async () => {
+  const l = await layout();
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
+  await l.attach(req);
+  await l.attach(req);
+  assert.equal((await l.lfsCallsOf()).length, 1);
+});
+
+test("an empty Repo, then an Agent's work in default/ and the remote's first commit: a re-attach keeps the work", async () => {
+  const l = await layout();
+  const key = "example-test-acme-empty-12345678";
+  const cache = join(l.reposMount, key);
+  l.git(l.root, "init", "-q", "--bare", cache);
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key }] };
+  assert.deepEqual((await l.attach(req)).bases, { app: "" });
+  const dflt = join(l.workRoot, "app", "default");
+  // An Agent's commit, and an edit that it did not commit yet.
+  await writeFile(join(dflt, "work.txt"), "committed\n");
+  l.git(dflt, "add", "work.txt");
+  l.git(dflt, "-c", "user.email=a@jr2", "-c", "user.name=a", "commit", "-q", "-m", "agent");
+  const agentCommit = l.git(dflt, "rev-parse", "HEAD");
+  await writeFile(join(dflt, "work.txt"), "edited\n");
+  // The remote gets its first commit, and the node cache fetches it.
+  const other = join(l.root, "other");
+  l.git(l.root, "init", "-q", "-b", "main", other);
+  l.git(other, "-c", "user.email=t@jr2", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first");
+  l.git(other, "push", "-q", cache, "main");
+  // A live git of the Agent's holds the index.
+  await writeFile(join(dflt, ".git", "index.lock"), "");
+  assert.deepEqual((await l.attach(req)).bases, { app: "" }, "the recorded base stays");
+  assert.equal(await readFile(join(dflt, "work.txt"), "utf8"), "edited\n", "the edit stays");
+  assert.equal(l.git(dflt, "rev-parse", "HEAD"), agentCommit, "the commit stays");
+  assert.ok(existsSync(join(dflt, ".git", "index.lock")), "the attach removes no lock of a placed clone");
+  assert.equal((await l.lfsCallsOf()).length, 0);
+});
+
+test("a clone whose jr2.base someone removed: a re-attach forces nothing, keeps the work, and records the base", async () => {
+  const l = await layout();
+  withFiles(l);
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "develop" }] };
+  await l.attach(req);
+  const dflt = join(l.workRoot, "app", "default");
+  l.git(dflt, "config", "--unset", "jr2.base");
+  await writeFile(join(dflt, "work.txt"), "uncommitted\n");
+  l.git(dflt, "-c", "core.hooksPath=/dev/null", "checkout", "-q", "-b", "agent-work");
+  await writeFile(join(dflt, ".git", "index.lock"), "");
+  assert.deepEqual((await l.attach(req)).bases, { app: "develop" });
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "HEAD"), "agent-work", "no checkout ran");
+  assert.equal(await readFile(join(dflt, "work.txt"), "utf8"), "uncommitted\n");
+  assert.ok(existsSync(join(dflt, ".git", "index.lock")), "no lock was removed");
+  assert.equal(l.git(dflt, "config", "--local", "jr2.base"), "develop");
+  assert.equal((await l.lfsCallsOf()).length, 1, "only the first attach asked");
+});
+
+test("a re-attach writes no key that holds its value, and removes only a config.lock that a kill left", async () => {
+  const l = await layout();
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
+  await l.attach(req);
+  const dflt = join(l.workRoot, "app", "default");
+  const lock = join(dflt, ".git", "config.lock");
+  // A git of an Agent's holds the config now: a re-attach that has nothing to write does not wait on it.
+  await writeFile(lock, "");
+  assert.deepEqual((await l.attach(req)).bases, { app: "main" });
+  assert.ok(existsSync(lock), "a young lock stays");
+  // A kill in a write of an earlier re-attach: an old lock, and a key to write again.
+  const old = new Date(Date.now() - 5 * 60_000);
+  const { utimes } = await import("node:fs/promises");
+  await utimes(lock, old, old);
+  execFileSync("sh", ["-c", `printf '[gc]\\n\\tauto = 5\\n' >> ${JSON.stringify(join(dflt, ".git", "config"))}`]);
+  assert.deepEqual((await l.attach(req)).bases, { app: "main" });
+  assert.equal(existsSync(lock), false, "the old lock went");
+  assert.equal(l.git(dflt, "config", "--get-all", "gc.auto"), "0");
 });

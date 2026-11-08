@@ -105,6 +105,10 @@ credential. It runs against one commit of that branch, not against the live Work
 The Sandbox Effector runs in the Sandbox Image, or in the image of the `effector` option of `workspace()`. Thus that
 image must hold the program.
 
+The program gets the files of the commit in a copy of its own. In that copy, each Git LFS file is its pointer, not its
+contents. Thus a program that must read a large file cannot run as a `command` with an Effect secret. Read
+[Large files and submodules](../concepts/workspaces.md#large-files-and-submodules).
+
 ## Call a URL
 
 `http(definition)` makes one call to a URL. The definition fixes all of the call except what `request` makes:

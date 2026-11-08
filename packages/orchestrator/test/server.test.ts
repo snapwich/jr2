@@ -20,6 +20,7 @@ import { EMPTY_HELD, workspaceHeldPod } from "../src/held-secrets.ts";
 import { kubeRepos } from "../src/repos.ts";
 import { kubeSandbox } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
+import { sandboxToken } from "../src/tokens.ts";
 import { FIXTURE_ASSEMBLY, publishTree, scratchInstance } from "./_assembly.ts";
 
 const KEY_B64 = Buffer.alloc(32, 7).toString("base64");
@@ -206,6 +207,68 @@ test("a published Machine composing a Sandbox + JR2_NAMESPACE → the data plane
       api.calls.some((c) => c.method === "GET" && c.target === "sandboxes/sb-1" && c.namespace === "ws"),
       "the ask read the Sandbox in the namespace",
     );
+  } finally {
+    await inst.close();
+    for (const d of [dir, src]) await rm(d, { recursive: true, force: true });
+  }
+});
+
+test("the fetch route takes an LFS ask: it checks the lfs part, keeps the scope, and passes the ask to the port (ADR-0053)", async () => {
+  const src = await mkWorkspaceAssembly();
+  const { api, kube } = fakeCluster();
+  const app = repoIdentity("https://example.test/app.git");
+  api.seed("sandboxes", {
+    // The Orchestrator's own record of the Binding's base, written when it made the CR (ADR-0051).
+    metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" }, annotations: { [`jr2.dev/base-${app.key}`]: "main" } },
+    spec: { repos: [{ key: app.key }] },
+  } as never);
+  const { inst, dir } = await bootPublished(src, kube);
+  const token = sandboxToken(Buffer.from(KEY_B64, "base64"), "sb-1");
+  const ask = (body: unknown, as = token, sandbox = "sb-1") =>
+    fetch(`${inst.url}/sandboxes/${sandbox}/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${as}` },
+      body: JSON.stringify(body),
+    });
+  const oid = "a".repeat(64);
+  const lfs = (part: Record<string, unknown>) => ({ identity: app.identity, lfs: { ...part } });
+  try {
+    // Each bad part is a 400 that says what is wrong, and nothing is marked.
+    const bad: Array<[unknown, RegExp]> = [
+      [{ identity: app.identity, lfs: "x" }, /lfs must be an object/],
+      [lfs({ objects: [{ oid: "A".repeat(64), size: 1 }] }), /oid must be 64 lowercase hex/],
+      [lfs({ objects: [{ oid: "a".repeat(63), size: 1 }] }), /oid must be 64 lowercase hex/],
+      [lfs({ objects: [{ oid, size: -1 }] }), /size must be an integer of 0 or more/],
+      [lfs({ objects: [{ oid, size: 1.5 }] }), /size must be an integer/],
+      [lfs({ objects: [{ oid, size: "1" }] }), /size must be an integer/],
+      [lfs({ objects: [] }), /1 to 256 objects/],
+      [lfs({ objects: Array.from({ length: 257 }, () => ({ oid, size: 1 })) }), /at most 256/],
+    ];
+    for (const [body, words] of bad) {
+      const res = await ask(body);
+      assert.equal(res.status, 400, JSON.stringify(body).slice(0, 80));
+      assert.match(((await res.json()) as { error: string }).error, words);
+    }
+    assert.ok(!api.calls.some((c) => c.method === "PATCH"), "a refused ask marks nothing");
+
+    // The scope is the fetch's: another Sandbox's token is a 403, a Repo it does not mount a 404.
+    // The pod's `base` is accepted and not read: the mark names the base off the CR.
+    const good = lfs({ base: "-not-read", objects: [{ oid, size: 3 }] });
+    assert.equal((await ask(good, sandboxToken(Buffer.from(KEY_B64, "base64"), "sb-2"))).status, 403);
+    assert.equal((await ask({ ...good, identity: "example.test/infra" })).status, 404);
+
+    // A good ask reaches the port: one LFS mark, and the landing is its answer.
+    const answered = ask(good);
+    const patch = await until(api, (c) => c.method === "PATCH" && c.target === "sandboxes/sb-1");
+    const annotations = (patch.body as { metadata: { annotations: Record<string, string> } }).metadata.annotations;
+    assert.deepEqual(Object.keys(annotations), [`jr2.dev/lfs-${app.key}`]);
+    const mark = JSON.parse(annotations[`jr2.dev/lfs-${app.key}`]!) as { at: string; base: string; objects: string[] };
+    assert.equal(mark.base, "main");
+    assert.deepEqual(mark.objects, [`${oid} 3`]);
+    api.setStatus("sandboxes", "sb-1", { repos: [{ key: app.key, lfs: { asked: mark.at, answered: mark.at } }] });
+    const res = await answered;
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { lfs: { answered: mark.at } });
   } finally {
     await inst.close();
     for (const d of [dir, src]) await rm(d, { recursive: true, force: true });

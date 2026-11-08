@@ -296,7 +296,9 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 	repos := env("JR2_EFFECTOR_REPOS", "/repos")
 	r.Push = &pushkind.Runner{Config: config, WorkRoot: work, ReposRoot: repos, GitRoot: gitDir,
 		Scratch: filepath.Join(scratch, "push"), Helper: self, CAFile: os.Getenv("JR2_CA_FILE"), Scrubber: scrubber,
-		AllowLocal: allowLocalRemotes}
+		AllowLocal: allowLocalRemotes,
+		// jr2's own git-lfs, on the runtime volume, uploads a push's LFS objects (ADR-0067).
+		GitLFS: pushkind.DefaultGitLFS}
 	if _, err := confine.Probe(); err != nil {
 		return nil, fmt.Errorf("landlock: unavailable on node %s (%v): jr2 requires Landlock on every Sandbox node "+
 			"(ADR-0077) — keep this node out with sandbox.nodeSelector or a taint, or enable Landlock in its kernel",

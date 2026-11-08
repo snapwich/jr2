@@ -142,6 +142,21 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   comment saying to narrow it before anything untrusted can start a run, and that it also pushes: a `push()` whose Repo
   Slot url it matches, a per-run url included, spends the same token or key — so the open fence is in the user's file
   and commit, never implied.
+- **A Repo's LFS objects live in its cache, and its token stays on its own origin.** A Repo that stores files with Git
+  LFS needs no declaration: the commit's `.gitattributes` says so. The cache keeps the LFS objects beside the bare
+  repository, in its `lfs/objects`, and gets only the objects that a pod asks for (ADR-0053), never the whole history.
+  The LFS server is the one that `.lfsconfig` names at the Binding's base, or else the one that git-lfs derives from the
+  url. The Orchestrator names that base, from the run's Binding, for the cache agent's LFS ask and for a push's upload
+  (ADR-0067), and it ignores a base that a pod sends: so an Agent cannot point the cache agent or the Effector at an LFS
+  server of its choice. When two Repo Slots bind one Repo on two bases, the first slot's base names the server for the
+  cache agent's ask, and a push reads `.lfsconfig` at the Binding's base of its own slot. Who can push to that base
+  writes its `.lfsconfig`, so the cache accepts only an http(s) server, an ssh server on the host of an ssh Repo's url,
+  or a file server for a file Repo: never a path on the node, and the Repo's ssh key never goes to another host. The
+  credential helper still answers only for the Repo's own origin (scheme, host and port), so an LFS server on another
+  origin gets no token, also after a redirect: a public one works, and a private one fails with git-lfs's error. An href
+  in the server's batch answer on the Repo's own origin can get the token, as git-lfs gives it after a 401. An href on
+  any other origin, as GitHub's object store is, gets only the headers of the batch answer. The server cannot change
+  what a file holds, because git-lfs checks each object against its oid. An evicted cache takes its LFS objects with it.
 - **An entry may carry a push credential and a signing key** (ADR-0067), checked by shape when the config loads:
   `push?: { sshKey } | { token }`, the credential a `push()` to a Binding under the entry spends — absent, the clone
   credential pushes, and an entry with no credential admits a clone, never a push; a token goes Basic over https through

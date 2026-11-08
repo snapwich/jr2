@@ -24,6 +24,13 @@
 //     out. A re-cut first removes each `.gitattributes` file that the last commit it wrote does not
 //     have, so that only the commit's own attributes apply. It keeps each `.gitignore` and each file
 //     that one ignores (ADR-0075).
+//   - The one filter that a cut's checkout runs is jr2's own LFS filter, set by `-c` by the absolute
+//     paths of the runtime volume, with jr2's transfer agent: no config of the Agent's chooses the
+//     program (ADR-0053). It reads the large files from the clone's LFS store and the node cache's.
+//   - A cut gets its commit's large files first (ADR-0075). After the fetch and before git changes
+//     anything, `jr2-lfs fetch <commit>` asks the node cache for each LFS object that no store holds.
+//     A file whose object the cache cannot get makes the cut `refused`, naming the file. A remote that
+//     is down with every object held is `ready` with `stale`. No submodule is fetched or checked out.
 //   - The lock is a flock on a descriptor no child inherits, so nothing that outlives this process
 //     can hold it. Node has no flock: a small program takes it on our descriptor, then exits.
 //   - The fetch lock (jr2-upload-pack, ADR-0075) is a second lock with one rule: a fetch waits only
@@ -39,10 +46,12 @@ import { createHash } from "node:crypto";
 import { closeSync, openSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /** The input of one cut. `id` is the Effect's id. `base` is where a new branch starts with no `from`:
- * the Binding's own ref, which no run can name, so the branch rule does not hold it. */
+ * the Binding's own ref, which no run can name, so the branch rule does not hold it. `timeoutMs` is the
+ * Effect's timeout, which the Harness counts from the start of this process: the ask for the large
+ * files gets the part of it that is left (`CUT_LFS_MARGIN_MS`). */
 export type CutRequest = {
   id: string;
   path: string;
@@ -51,6 +60,7 @@ export type CutRequest = {
   detach?: string;
   expect?: "new" | "existing";
   base?: string;
+  timeoutMs?: number;
 };
 
 /** What a cut found at the path or under the name. */
@@ -68,18 +78,26 @@ export type CutAnswer =
     }
   | { outcome: "refused"; reason: string };
 
-/** The seams of the tests. `lock`: the program that takes a flock on its stdin. `env`: added to the
- * cleared environment. `staleWindowMs`: how long a warned fetch answers for the next cuts. `tmp`:
- * where the cut makes its own folder; the default is TMPDIR. */
+/** The seams of the tests. `lock`: the program that takes a flock on its stdin. `gitLfs` and
+ * `jr2Lfs`: the two LFS programs (ADR-0053). `env`: added to the cleared environment.
+ * `staleWindowMs`: how long a warned fetch answers for the next cuts. `tmp`: where the cut makes its
+ * own folder; the default is TMPDIR. */
 export type CutPaths = {
   workRoot: string;
   lock: readonly string[];
+  gitLfs: string;
+  jr2Lfs: string;
   env?: NodeJS.ProcessEnv;
   staleWindowMs?: number;
   tmp?: string;
 };
 
-export const POD_CUT_PATHS: CutPaths = { workRoot: "/work", lock: ["/opt/jr2/bin/cut-lock"] };
+export const POD_CUT_PATHS: CutPaths = {
+  workRoot: "/work",
+  lock: ["/opt/jr2/bin/cut-lock"],
+  gitLfs: "/opt/jr2/bin/git-lfs",
+  jr2Lfs: "/opt/jr2/bin/jr2-lfs",
+};
 
 // --- The shared rules ------------------------------------------------------------------------------
 
@@ -146,12 +164,39 @@ const CLEAN = [
   "checkout.guess=false",
 ];
 
+/**
+ * The LFS server url of `fill`'s git-lfs. No server is asked (the transfer agent is standalone), but
+ * git-lfs reads `lfs.<url>.standalonetransferagent` before `lfs.standalonetransferagent`. With this
+ * url and its own key pinned, no `lfs.<url>.*` key (of a `.lfsconfig` in the commit) chooses the agent.
+ */
+const PINNED_LFS_URL = "https://jr2-cut.invalid/lfs";
+
+/** jr2's own LFS filter and transfer agent, by `-c` on `fill`'s git, so that the program that a
+ * checkout starts is jr2's (ADR-0053). The keys are the attach's (attach.ts). `lfs.storage` is the
+ * clone's LFS store, where git-lfs keeps what it gets: `fill`'s git folder is the cut's, and goes. */
+function lfsPins(paths: CutPaths, clone: string): string[] {
+  return [
+    ["lfs.url", PINNED_LFS_URL],
+    [`lfs.${PINNED_LFS_URL}.standalonetransferagent`, "jr2"],
+    ["filter.lfs.process", `${paths.gitLfs} filter-process`],
+    ["filter.lfs.clean", `${paths.gitLfs} clean -- %f`],
+    ["filter.lfs.smudge", `${paths.gitLfs} smudge -- %f`],
+    ["filter.lfs.required", "true"],
+    ["lfs.standalonetransferagent", "jr2"],
+    ["lfs.customtransfer.jr2.path", paths.jr2Lfs],
+    ["lfs.customtransfer.jr2.args", "transfer"],
+    ["lfs.customtransfer.jr2.concurrent", "true"],
+    ["lfs.customtransfer.jr2.direction", "download"],
+    ["lfs.storage", `${clone}/.git/lfs`],
+  ].flatMap(([k, v]) => ["-c", `${k}=${v}`]);
+}
+
 type Git = { code: number; out: string; err: string };
 type Runner = (cwd: string, args: readonly string[], maxBuffer?: number) => Promise<Git>;
 
-/** git with the cleared environment, and `extra` added to it (`fill`'s own git folder). */
-function runner(paths: CutPaths, home: string, extra: NodeJS.ProcessEnv = {}): Runner {
-  const env: NodeJS.ProcessEnv = {
+/** The cleared environment of each program that the cut starts. */
+function cutEnv(paths: CutPaths, home: string): NodeJS.ProcessEnv {
+  return {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: home,
     LC_ALL: "C",
@@ -161,11 +206,16 @@ function runner(paths: CutPaths, home: string, extra: NodeJS.ProcessEnv = {}): R
     GIT_TERMINAL_PROMPT: "0",
     ...(process.env.JR2_CUSTODIAN_URL ? { JR2_CUSTODIAN_URL: process.env.JR2_CUSTODIAN_URL } : {}),
     ...paths.env,
-    ...extra,
   };
+}
+
+/** git with the cleared environment, and `extra` added to it and `pins` after CLEAN (`fill`'s own
+ * git folder and jr2's LFS filter). */
+function runner(paths: CutPaths, home: string, extra: NodeJS.ProcessEnv = {}, pins: readonly string[] = []): Runner {
+  const env: NodeJS.ProcessEnv = { ...cutEnv(paths, home), ...extra };
   return (cwd, args, maxBuffer = 16 << 20) =>
     new Promise((resolve) => {
-      execFile("git", ["-C", cwd, ...CLEAN, ...args], { env, maxBuffer }, (error, stdout, stderr) => {
+      execFile("git", ["-C", cwd, ...CLEAN, ...pins, ...args], { env, maxBuffer }, (error, stdout, stderr) => {
         const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
         resolve({ code, out: stdout.trim(), err: stderr.trim() });
       });
@@ -237,7 +287,15 @@ type CutRecord = {
   made: { folder?: boolean; branch?: boolean; upstream?: boolean };
 };
 
-type Clone = { clone: string; records: string; git: Runner; paths: CutPaths; home: string };
+type Clone = {
+  clone: string;
+  records: string;
+  git: Runner;
+  paths: CutPaths;
+  home: string;
+  /** Ask for the large files of a commit: the words of a refusal, or undefined when each is held. */
+  largeFiles: (commit: string) => Promise<string | undefined>;
+};
 
 const recordFile = (c: Clone, path: string): string => join(c.records, `${path.split("/").pop()!}.json`);
 
@@ -396,12 +454,106 @@ async function fetched(c: Clone, paths: CutPaths): Promise<string | undefined> {
   }
 }
 
+// --- The large files ------------------------------------------------------------------------------------
+
+/** One LFS file of a commit whose object no store holds, as `jr2-lfs fetch` prints it. */
+export type MissingFile = { path: string; oid: string; reason: string };
+
+/** The `missing` list of `jr2-lfs fetch`'s one JSON line, or undefined when the output is not one. */
+export function largeFilesMissing(stdout: string): MissingFile[] | undefined {
+  const line = stdout.trim().split("\n").pop() ?? "";
+  try {
+    const parsed = JSON.parse(line) as { missing?: unknown } | null;
+    return Array.isArray(parsed?.missing) ? (parsed.missing as MissingFile[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** At most this many files are named when large files cannot be had. */
+const NAMED_FILES = 5;
+
+/** The words for large files that cannot be had: each file (at most a few) and the cache's reason. */
+export function describeMissing(missing: readonly MissingFile[], of: string): string {
+  const named = missing
+    .slice(0, NAMED_FILES)
+    .map((m) => `${m.path} (${String(m.oid).slice(0, 12)}): ${m.reason}`)
+    .join("; ");
+  const more = missing.length > NAMED_FILES ? `; and ${missing.length - NAMED_FILES} more` : "";
+  const files = missing.length === 1 ? "the large file" : `${missing.length} large files`;
+  return `the node cache cannot get ${files} of ${of}: ${named}${more}`;
+}
+
+/**
+ * What the cut keeps of its Effect's timeout after the ask for the large files: the checkout that
+ * copies them out of the cache, and the answer. The ask gets the rest, so a cut whose large files do
+ * not come in time ends `refused`, naming the files, and not at the Effect's timeout (ADR-0075).
+ * With `worktree()`'s default of 10 minutes, a fetch that spends its two budgets (2 × 75 s) leaves the
+ * ask 10 min − 150 s − 60 s = 6.5 minutes. The node cache's own LFS budget is 10 minutes, so an
+ * object that comes later is in the cache for the next cut.
+ */
+export const CUT_LFS_MARGIN_MS = 60_000;
+
+/**
+ * Ask the node cache for the LFS objects of `commit` (ADR-0053, ADR-0075): `jr2-lfs fetch` asks for
+ * each object that no store holds, waits for the landing, and names each file whose object is still
+ * missing. A commit with no LFS file makes no ask. When the Effect's timeout left no time for the
+ * ask (`budgetMs` of zero or less), jr2-lfs sends none, and the refusal names each file that no
+ * store holds. jr2-lfs runs no program of the clone's config. It gets `safe.directory` by env,
+ * because the cleared environment reads no global config.
+ */
+async function askLargeFiles(
+  paths: CutPaths,
+  home: string,
+  clone: string,
+  commit: string,
+  budgetMs: number | undefined,
+): Promise<string | undefined> {
+  const env: NodeJS.ProcessEnv = {
+    ...cutEnv(paths, home),
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: "*",
+  };
+  const args = [
+    "fetch",
+    ...(budgetMs !== undefined ? ["--budget", `${Math.max(0, Math.floor(budgetMs))}ms`] : []),
+    "--",
+    commit,
+  ];
+  const r = await new Promise<Git>((resolve) => {
+    execFile(paths.jr2Lfs, args, { cwd: clone, env, maxBuffer: 16 << 20 }, (error, stdout, stderr) => {
+      const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
+      resolve({ code, out: stdout.trim(), err: stderr.trim() || (error?.message ?? "") });
+    });
+  });
+  if (r.code !== 0) return `cannot ask for the large files of ${commit}: ${r.err || r.out || `exit ${r.code}`}`;
+  const missing = largeFilesMissing(r.out);
+  if (missing === undefined)
+    return `jr2-lfs printed no result for the large files of ${commit}: ${r.out.slice(0, 200)}`;
+  if (missing.length === 0) return undefined;
+  if (budgetMs !== undefined && budgetMs <= 0) return describeNoTime(missing, commit);
+  return describeMissing(missing, commit);
+}
+
+/** The refusal of a cut whose Effect's timeout left no time to ask for its large files. */
+function describeNoTime(missing: readonly MissingFile[], of: string): string {
+  const named = missing
+    .slice(0, NAMED_FILES)
+    .map((m) => `${m.path} (${String(m.oid).slice(0, 12)})`)
+    .join("; ");
+  const more = missing.length > NAMED_FILES ? `; and ${missing.length - NAMED_FILES} more` : "";
+  const files = missing.length === 1 ? "the large file" : `${missing.length} large files`;
+  return `the Effect's timeout left no time to ask the node cache for ${files} of ${of}: ${named}${more}`;
+}
+
 // --- The cut --------------------------------------------------------------------------------------------
 
 const refused = (reason: string): CutAnswer => ({ outcome: "refused", reason: reason.slice(0, 1024) });
 
 /** The cut, in this process. */
 export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> {
+  const started = Date.now();
   const bad = pathFault(req.path, paths.workRoot);
   if (bad !== undefined) return refused(bad);
   if ((req.branch === undefined) === (req.detach === undefined)) return refused("a cut names a branch or a commit");
@@ -426,7 +578,11 @@ export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> 
     }
     const home = await mkdtemp(join(tmp, prefix));
     try {
-      const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git: runner(paths, home), paths, home };
+      // The ask's budget is what is left of the Effect's timeout, counted from the start, less the margin.
+      const ends = typeof req.timeoutMs === "number" ? started + req.timeoutMs - CUT_LFS_MARGIN_MS : undefined;
+      const largeFiles = (commit: string) =>
+        askLargeFiles(paths, home, clone, commit, ends === undefined ? undefined : ends - Date.now());
+      const c: Clone = { clone, records: `${clone}/.git/jr2-cuts`, git: runner(paths, home), paths, home, largeFiles };
       await recover(c);
       return await cutLocked(req, slot, c, paths);
     } finally {
@@ -583,7 +739,9 @@ const samePath = (a: string, b: string): boolean => {
  * changed file, not a skip-worktree or assume-unchanged bit, not a sparse checkout, not a commit-graph
  * or a multi-pack-index that an Agent forged (CLEAN), and (below) not a `.gitattributes` in the work
  * tree that the commit does not have. Then the index is copied into the Worktree's admin folder, and
- * a detached Worktree's HEAD is set to `sha`. A known limit: a pack index (`.idx`) that an Agent
+ * a detached Worktree's HEAD is set to `sha`. The one filter that runs is jr2's LFS filter (`lfsPins`),
+ * which reads the large files that the cut asked for first from the clone's LFS store and, by the
+ * alternates, the node cache's (`alternatesOf`). A known limit: a pack index (`.idx`) that an Agent
  * forged in the clone can give a commit the bytes of another object, because git 2.56 reads a pack
  * without a check of the object's hash and no config turns a pack index off.
  *
@@ -621,7 +779,7 @@ async function fill(
   const own = await mkdtemp(join(c.home, "fill-"));
   await mkdir(join(own, "objects", "info"), { recursive: true });
   await mkdir(join(own, "refs"));
-  await writeFile(join(own, "objects", "info", "alternates"), `${c.clone}/.git/objects\n`);
+  await writeFile(join(own, "objects", "info", "alternates"), await alternatesOf(c.clone));
   await writeFile(join(own, "HEAD"), `${sha}\n`);
   await writeFile(
     join(own, "config"),
@@ -629,7 +787,7 @@ async function fill(
       ? "[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n"
       : "[core]\n\trepositoryformatversion = 0\n",
   );
-  const git = runner(c.paths, c.home, { GIT_DIR: own, GIT_WORK_TREE: path });
+  const git = runner(c.paths, c.home, { GIT_DIR: own, GIT_WORK_TREE: path }, lfsPins(c.paths, c.clone));
   if (opts.again !== undefined) {
     const seed = await git(path, ["read-tree", opts.again]);
     if (seed.code !== 0) return seed.err;
@@ -654,6 +812,24 @@ async function fill(
   return undefined;
 }
 
+/**
+ * The alternates of `fill`'s git folder: the node cache's object stores that the clone borrows from,
+ * first, then the clone's objects. git reads alternates of alternates, but git-lfs reads only the
+ * first level, beside each one (`<objects>/../lfs/objects`): so the cache's large files are found by
+ * a cache line here, and jr2-lfs's transfer agent takes the first line as the node cache (ADR-0053).
+ * A line that names no folder is passed over by git and git-lfs alike.
+ */
+async function alternatesOf(clone: string): Promise<string> {
+  const objects = `${clone}/.git/objects`;
+  const text = await readFile(`${objects}/info/alternates`, "utf8").catch(() => "");
+  const borrowed = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && !l.startsWith("#"))
+    .map((l) => (l.startsWith('"') || isAbsolute(l) ? l : join(objects, l)));
+  return `${[...borrowed, objects].join("\n")}\n`;
+}
+
 /** A path a cut made. The record says what it is, and a re-cut agrees with it or is refused. */
 async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf): Promise<CutAnswer> {
   if (rec.branch !== undefined && req.branch !== rec.branch) {
@@ -674,6 +850,8 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
   if (req.detach !== undefined) {
     const sha = await commitOf(c, req.detach);
     if (sha === undefined) return refused(`no commit "${req.detach}" in this clone`);
+    const lfs = await c.largeFiles(sha);
+    if (lfs !== undefined) return refused(lfs);
     const next = { id: req.id, detach: req.detach, found: "commit" as const };
     if (await exists(req.path)) {
       const fault = await fill(c, req.path, sha, { detach: true, again: rec.sha ?? sha });
@@ -690,6 +868,8 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
   if (head === undefined) return refused(`the branch ${branch} of ${req.path} is gone`);
   if (!(await exists(req.path))) {
     // An Agent removed the folder. The branch keeps the commits, and only they come back.
+    const lfs = await c.largeFiles(head);
+    if (lfs !== undefined) return refused(lfs);
     const fault = await addAgain(c, rec, [branch], head, { id: req.id, found: "local" });
     if (fault !== undefined) return refused(fault);
     return ready(branch, head, "local");
@@ -709,6 +889,8 @@ async function firstDetach(req: CutRequest, c: Clone, paths: CutPaths, ready: Re
   if (sha === undefined) {
     return refused(`no commit "${req.detach}" in this clone${stale ? `, and the fetch said: ${stale}` : ""}`);
   }
+  const lfs = await c.largeFiles(sha);
+  if (lfs !== undefined) return refused(lfs);
   const rec: CutRecord = {
     state: "cutting",
     id: req.id,
@@ -753,6 +935,8 @@ async function firstBranch(req: CutRequest, c: Clone, paths: CutPaths, ready: Re
   const start =
     local ?? remote ?? (named !== undefined ? await commitOf(c, named) : await refOf(c, "refs/remotes/origin/HEAD"));
   if (start === undefined) return refused(`no commit "${named ?? "origin/HEAD"}" in this clone`);
+  const lfs = await c.largeFiles(start);
+  if (lfs !== undefined) return refused(lfs);
 
   const rec: CutRecord = {
     state: "cutting",
@@ -812,6 +996,8 @@ if (
     ...POD_CUT_PATHS,
     ...(process.env.JR2_CUT_LOCK ? { lock: JSON.parse(process.env.JR2_CUT_LOCK) as string[] } : {}),
     ...(process.env.JR2_CUT_WORK ? { workRoot: process.env.JR2_CUT_WORK } : {}),
+    ...(process.env.JR2_CUT_GIT_LFS ? { gitLfs: process.env.JR2_CUT_GIT_LFS } : {}),
+    ...(process.env.JR2_CUT_JR2_LFS ? { jr2Lfs: process.env.JR2_CUT_JR2_LFS } : {}),
     ...(process.env.JR2_CUT_STALE_MS ? { staleWindowMs: Number(process.env.JR2_CUT_STALE_MS) } : {}),
   });
 }

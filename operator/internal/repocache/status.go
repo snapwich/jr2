@@ -22,6 +22,10 @@ import (
 // array on the wire, so the write is read-replace-patch under an optimistic
 // lock, retried on conflict; a Repo that vanished in the meantime has nothing
 // to report on.
+//
+// The entry's LFS items are not this write's: they are the record of the LFS
+// asks the agent served (ADR-0053), which only reportLFS changes. So this
+// write keeps the items that the entry holds.
 func (a *Agent) report(ctx context.Context, repo *corev1alpha1.Repo, entry corev1alpha1.RepoNodeStatus) error {
 	entry.Node = a.Node
 	key := client.ObjectKeyFromObject(repo)
@@ -34,6 +38,7 @@ func (a *Agent) report(ctx context.Context, repo *corev1alpha1.Repo, entry corev
 		replaced := false
 		for i := range current.Status.Nodes {
 			if current.Status.Nodes[i].Node == a.Node {
+				entry.LFS = current.Status.Nodes[i].LFS
 				current.Status.Nodes[i] = entry
 				replaced = true
 			}

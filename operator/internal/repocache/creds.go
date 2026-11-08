@@ -84,7 +84,7 @@ func (a *Agent) credentials(ctx context.Context, repo *corev1alpha1.Repo) ([]str
 // helper, which git matches against each url it asks a credential for.
 func httpsOrigin(raw string) (string, error) {
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+	if err != nil || (u.Scheme != schemeHTTPS && u.Scheme != schemeHTTP) || u.Host == "" {
 		return "", fmt.Errorf("the Repo's url %q is not an http(s) url", raw)
 	}
 	return u.Scheme + "://" + u.Host, nil

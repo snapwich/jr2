@@ -193,6 +193,44 @@ spec:
                         instant a Sandbox's Ready compares against its own creation (ADR-0051).
                       format: date-time
                       type: string
+                    lfs:
+                      description: |-
+                        LFS holds, for each pod on this node that asked this cache for Git LFS
+                        objects, the last LFS ask the agent served (ADR-0053). It is the agent's
+                        record of what it served, so an agent that restarts does not serve an ask
+                        again. The agent removes the item of a pod that no longer mounts the
+                        cache.
+                      items:
+                        description: RepoLFSAnswer is the cache agent's answer to
+                          one pod's LFS ask (ADR-0053).
+                        properties:
+                          asked:
+                            description: |-
+                              Asked is the `at` of the ask that the agent served, copied as is from
+                              the pod's `jr2.dev/lfs-<key>` annotation. The Orchestrator compares it
+                              with its own `at` as an instant.
+                            type: string
+                          attempted:
+                            description: Attempted is when the agent started to get
+                              the objects for this ask.
+                            format: date-time
+                            type: string
+                          error:
+                            description: |-
+                              Error is git-lfs's own words when an asked object is still not in the
+                              cache after the attempt; empty when the cache holds every asked object.
+                            type: string
+                          pod:
+                            description: Pod is the name of the pod that asked.
+                            type: string
+                        required:
+                        - asked
+                        - pod
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - pod
+                      x-kubernetes-list-type: map
                     node:
                       description: Node is the node this entry describes.
                       type: string

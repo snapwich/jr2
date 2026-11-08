@@ -187,6 +187,23 @@ These settle as `refused`, and nothing changes. Route them to your last arm:
 A name that git or the push refuses also settles `refused`. The `reason` says why, for example
 `"<name>" is not a branch name`.
 
+A cut gets the Git LFS files of its commit before it changes git. When the Repo cache cannot get one, the cut settles
+`refused`, and nothing changes. `<commit>` is the commit of the cut, and `<files>` is `the large file` or
+`<n> large files`: `the node cache cannot get <files> of <commit>: <list>`. `<list>` names at most five files, as
+`<path> (<oid>): <why>`, with `; ` between them. `<oid>` is the first 12 hex digits of the oid. When more files are
+missing, `<list>` ends `; and <n> more`. The ask for the files gets what is left of the `timeout` of the Effect, less
+one minute. A file that does not come in that time also makes the cut `refused`, with this text.
+
+The cut also settles `refused`, and nothing changes, for each of these:
+
+- no time is left for the ask, so no ask goes. `<list>` names the files as `<path> (<oid>)`:
+  `the Effect's timeout left no time to ask the node cache for <files> of <commit>: <list>`
+- jr2 cannot ask for the files: `cannot ask for the large files of <commit>: <why>`
+- jr2 cannot read the result of the ask: `jr2-lfs printed no result for the large files of <commit>: <output>`
+
+A cut checks out no submodule. The folder of a submodule stays empty. To work in the code of a submodule, bind its Repo
+as a Repo Slot of its own ([Workspaces](../concepts/workspaces.md#large-files-and-submodules)).
+
 These are not `refused`, because no word of a run can cause them:
 
 - `createMachine` refuses an Effect's `onDone` with a guard on its last arm:

@@ -2221,6 +2221,36 @@ test("provision ENSURES every Repo's resource — per key, identity and boundnes
   assert.equal(ensuredBeforeSecret, true, "ensured before any write — the Secret and the CR come after");
 });
 
+test("the CR records the Binding's base of each Repo whose Binding names one, the first slot's, for the LFS ask (ADR-0051)", async () => {
+  // The LFS ask names this base, never one that the pod sends: the pod cannot write its own CR.
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    ...exec,
+    credentials: [{ match: "*" }],
+  });
+  await port.provision({
+    name: "sb-base",
+    runId: "r",
+    workflow: "w",
+    route: [],
+    path: "ws",
+    repos: [
+      { slot: "app", url: "git@github.com:acme/app.git", ref: "release/2.x", perRun: false },
+      { slot: "same", url: "https://github.com/acme/app", ref: "main", perRun: true },
+      { slot: "ticket", url: "https://gitlab.com/x/y.git", perRun: true },
+    ],
+  });
+  const applied = crOf(calls);
+  assert.equal(applied.metadata.annotations[`jr2.dev/base-${repoKey("git@github.com:acme/app.git")}`], "release/2.x");
+  assert.equal(
+    Object.keys(applied.metadata.annotations).filter((k: string) => k.startsWith("jr2.dev/base-")).length,
+    1,
+    "a Binding with no base records none: the cache's HEAD is the default branch",
+  );
+});
+
 test("a port with NO Repo-resource port refuses to provision, naming what would otherwise happen", async () => {
   // Without it the CR names keys no resource backs, and the operator parks the Sandbox on
   // `RepoMissing` for the whole Ready budget — a hang with a cause nobody printed.
@@ -2469,6 +2499,47 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
   await assert.rejects(
     () => never.attach({ name: "sb-r", repos: [{ slot: "app", url: APP_URL }] }),
     /never reached its Harness at http:\/\/sb-1\.default\.svc:8080/,
+  );
+});
+
+test("an attach that the Harness answers 202 is asked again with the same body until it ends; a later fault says the Harness was lost (ADR-0063)", async () => {
+  // A cold attach downloads its large files (ADR-0053) for longer than undici's 300 s for headers,
+  // so the Harness answers 202 while it runs, and no request waits that long.
+  const c = readySandbox("sb-p");
+  const bodies: string[] = [];
+  let pending = 2;
+  const polled = (async (input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(String(init?.body));
+    if (pending-- > 0) return Response.json({ attaching: true }, { status: 202 });
+    return c.exec.harnessFetch(input, init);
+  }) as typeof fetch;
+  const port = kubeSandbox({ ...provisionable, ...c.exec, harnessFetch: polled });
+  const out = await port.attach({ name: "sb-p", repos: [{ slot: "app", url: APP_URL }] });
+  assert.deepEqual(out.repos, { app: "/work/app" });
+  assert.equal(bodies.length, 3);
+  assert.equal(new Set(bodies).size, 1, "the same body each time");
+
+  // The Harness answered, then went: the words do not say that the attach never reached it.
+  let answered = false;
+  const lost = kubeSandbox({
+    ...provisionable,
+    ...c.exec,
+    attachWindowMs: 0,
+    harnessFetch: (async () => {
+      if (!answered) {
+        answered = true;
+        return Response.json({ attaching: true }, { status: 202 });
+      }
+      throw new TypeError("fetch failed");
+    }) as typeof fetch,
+  });
+  await assert.rejects(
+    () => lost.attach({ name: "sb-p", repos: [{ slot: "app", url: APP_URL }] }),
+    (err: Error) => {
+      assert.match(err.message, /the attach lost its Harness at/);
+      assert.doesNotMatch(err.message, /never reached/);
+      return true;
+    },
   );
 });
 

@@ -186,23 +186,24 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   `push` does: a path alone does not name the target of a credential. With none it settles `exited` 127, and nothing
   runs. It runs against one commit: the tip of that row's branch when it starts, or — with `pin` — the commit the
   Effect's input names (`{ sha }`, one a Gate approved). That commit is checked out into a fresh scratch of the Effect's
-  own by the push's import procedure (below), so the Agent's uncommitted edits are never seen; the answer carries
-  `dirty: true` beside the output when the Worktree held some (a status in jr2's clean repository over a copy of the
-  Worktree's index, against the Worktree's own HEAD — never the pin, so the commits the Agent made after an approved one
-  are not edits — read as data; when it cannot tell, it says dirty). The child's env is what the author named — a
-  secret's value, or its file's path — plus `PATH`, `HOME` and `TMPDIR`, and nothing else; `PATH` is the Effector
-  container's own, as its image set it (the tools are the author's), and `argv[0]` is looked up there; `HOME` and
-  `TMPDIR` are the scratch's, and the scratch is removed once the outcome is read. Its output is scrubbed as it streams,
-  before it is cut to its tail (ADR-0068). The Agent's files are the author's choice to run — a tool's plugins, a
-  `local-exec`, a `credential_process` — so "no program the Agent's files name runs" is not claimed for it. Its claims
-  are three: the Agent never reads or spends the secret (a container it cannot exec in, and a child confined from the
-  files of every other secret and of the Effector's key), the tool sees a pinned commit and not the live Worktree, and
-  the output is scrubbed. Landlock governs files, not `connect()`, and a GPG-signed push holds the signing key on a
-  `gpg-agent` socket while it signs; so the Sandbox Effector never runs the two at once: one lock over two classes,
-  `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068). A Workspace may hold both. A
-  Workspace with no Repo Slot has no commit to run it against, so there it is refused — by `jr2 up` and at invoke, with
-  the fix: declare a slot, or name no secret, and it runs in `/work` beside the Agent (ADR-0051). A run of the live
-  files under a credential is the claim this kind exists not to make.
+  own by the push's import procedure (below), so the Agent's uncommitted edits are never seen. That checkout runs no LFS
+  filter, so each Git LFS file in it is its pointer (ADR-0053): a credentialed command that must read a large file's
+  contents is not served; the answer carries `dirty: true` beside the output when the Worktree held uncommitted edits (a
+  status in jr2's clean repository over a copy of the Worktree's index, against the Worktree's own HEAD — never the pin,
+  so the commits the Agent made after an approved one are not edits — read as data; when it cannot tell, it says dirty).
+  The child's env is what the author named — a secret's value, or its file's path — plus `PATH`, `HOME` and `TMPDIR`,
+  and nothing else; `PATH` is the Effector container's own, as its image set it (the tools are the author's), and
+  `argv[0]` is looked up there; `HOME` and `TMPDIR` are the scratch's, and the scratch is removed once the outcome is
+  read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the
+  author's choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files
+  name runs" is not claimed for it. Its claims are three: the Agent never reads or spends the secret (a container it
+  cannot exec in, and a child confined from the files of every other secret and of the Effector's key), the tool sees a
+  pinned commit and not the live Worktree, and the output is scrubbed. Landlock governs files, not `connect()`, and a
+  GPG-signed push holds the signing key on a `gpg-agent` socket while it signs; so the Sandbox Effector never runs the
+  two at once: one lock over two classes, `gpg` and `command`, and a waiter that settles timed out past its own timeout
+  (ADR-0068). A Workspace may hold both. A Workspace with no Repo Slot has no commit to run it against, so there it is
+  refused — by `jr2 up` and at invoke, with the fix: declare a slot, or name no secret, and it runs in `/work` beside
+  the Agent (ADR-0051). A run of the live files under a credential is the claim this kind exists not to make.
 - **A `push` pushes a Worktree's branch to its Repo Slot's Binding**, from the Sandbox Effector:
   `push({ pin?, sign?, squash?, force?, slot?, timeout? })`, with `worktree` in its input and no `to` and no `branch`.
   `slot` stays static: a Machine with one slot leaves it out, and a Machine with two names it. The Orchestrator finds
@@ -238,6 +239,32 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   `committer`, or a signed push and its `sign` field), and the provision refuses it the same way for a slot the run or a
   `customize()` binds. `force` replaces what the remote holds. A Workspace with no Repo Slot has no branch to push, so a
   `push` there is refused, by `jr2 up` and at invoke (ADR-0051).
+- **A push uploads its large files first.** When the commits that a push publishes hold Git LFS pointers, the Effector
+  uploads their objects before it updates the branch. It asks the server's batch API first, with a download batch: an
+  object that the answer gives a download action and no error, the server holds already, so it is not uploaded and needs
+  no local copy. The question is a download batch because the batch API requires that answer of a server. That a server
+  gives no upload action for an object it holds is only a recommendation, and a server that gives one anyway must not
+  make a good push `rejected`. An object that the answer leaves out is `rejected` at once. The Effector reads each
+  object that the server lacks as data from the Agent's `.git/lfs/objects`, else from the node cache's `lfs/objects`,
+  checks it against its oid, and runs its own git-lfs in its own scratch repository. An object that the server lacks and
+  that neither store holds is `rejected`, naming its file and the cause: no file, bytes that do not match the oid, a
+  file the opener refuses, or a read error. After git-lfs exits 0, the Effector asks the same download batch again, and
+  the server must hold each object that went up: git-lfs's exit code does not say so, because a PUT or a verify that
+  answers 422 makes it exit 0. The server is the first of `lfs.pushurl`, `lfs.url`, `remote.origin.lfspushurl` and
+  `remote.origin.lfsurl` of `.lfsconfig` at the Binding's base, as git-lfs chooses for an upload, else the one that
+  git-lfs derives from the push url. A push url is honored because a repository that names one can read from a server
+  that takes no upload, a mirror; the same scheme and host rule applies to it. The upload spends the push credential and
+  follows ADR-0051's LFS rule: an ssh server only on the push url's host; the token, after a 401, only to the push url's
+  own origin (scheme, host and port), the batch API and an upload href there included; and an href on any other origin
+  gets only the headers of the batch answer. When a url on another origin asks for a credential, the refusal says that
+  jr2 sends the token only to the push url's origin. An ssh server is asked as git-lfs asks it with
+  `lfs.sshtransfer=negotiate`, git-lfs's default, which the Effector and the cache agent set: over the pure SSH protocol
+  (`git-lfs-transfer`) when the server speaks it, else through `git-lfs-authenticate`. The Effector's own batch
+  questions go in the same order, through the push's ssh command, so a server that speaks only one of the two takes the
+  push. A pointer is each blob that git-lfs reads as one, so a pointer that is not in the canonical form also gets its
+  object uploaded. An upload that fails is `rejected`, and nothing is pushed: the branch does not move, though an object
+  that went up stays on the server. Its output shows no query of a url, because an upload href can carry its credential
+  there. A signed or squashed copy keeps the pointers, so it uploads the same objects.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The

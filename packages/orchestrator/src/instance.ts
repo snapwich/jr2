@@ -65,7 +65,7 @@ import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
 import { createEchoPush, createLiveSetPush } from "./harness-client.ts";
 import { createApp } from "./http.ts";
-import type { FetchAnswer } from "./repo-fetch.ts";
+import type { FetchAnswer, LfsAnswer, LfsAsk } from "./repo-fetch.ts";
 import type { RepoStatus } from "./repos.ts";
 import { RunHost } from "./run-host.ts";
 import type { RunRecord, WorkflowDef } from "./run-host.ts";
@@ -147,8 +147,8 @@ export type InstanceOptions = {
    * caller built. Absent = no data plane, which reports no Repos. */
   repos?: () => Promise<RepoStatus[]>;
   /** The ask a pod makes when something inside it fetches (ADR-0053), off the port the caller
-   * built. Absent = no data plane, so no Sandbox to ask for. */
-  fetchRepo?: (sandbox: string, identity: string) => Promise<FetchAnswer>;
+   * built. Absent = no data plane, so no Sandbox to ask for. With `lfs`, an LFS ask. */
+  fetchRepo?: (sandbox: string, identity: string, lfs?: LfsAsk) => Promise<FetchAnswer | LfsAnswer>;
   /** The Instance Harness base URL (ADR-0031) — where a `workspace: "none"` Turn is admitted.
    * The entrypoint derives it from the pod's namespace (deterministic Service DNS); absent,
    * such a Turn without an explicit `endpoint` faults pointedly. */

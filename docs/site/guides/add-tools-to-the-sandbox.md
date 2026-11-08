@@ -86,6 +86,8 @@ runtime at `/opt/jr2`, and starts the [Harness](../reference/glossary.md#harness
 - The `ENTRYPOINT` and the `CMD` of the image do not run. To run a process all the time, use a User Container (see
   [Run a service beside the Agent](#run-a-service-beside-the-agent)).
 - jr2 adds `/opt/jr2/bin` at the end of `PATH`. Thus a tool of the same name in your image comes first.
+- The image needs no git-lfs. jr2's runtime has its own, and each clone of a [Repo](../reference/glossary.md#repo) uses
+  it by its full path.
 - The `USER` and the `HOME` of the image stay as you set them. When an image that `jr2 up` built sets no `USER`, the pod
   runs as uid 1000, with `HOME=/home/jr2`.
 
@@ -113,8 +115,7 @@ Instance, such as `my-instance`. [Look inside a Sandbox](look-inside-a-sandbox.m
 ## Give one Workflow its own image
 
 Put a docker context in a folder beside the workflow module. Name the folder in the `image` option of `workspace()`. In
-this example, `workflows/pytest.ts` runs the tests of a Python [Repo](../reference/glossary.md#repo), with the image in
-`workflows/python/`:
+this example, `workflows/pytest.ts` runs the tests of a Python Repo, with the image in `workflows/python/`:
 
 <<< @/examples/guides/add-tools-to-the-sandbox/workflows/python/Dockerfile{dockerfile}
 

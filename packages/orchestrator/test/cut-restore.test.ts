@@ -78,7 +78,7 @@ const restored = async (store: Awaited<ReturnType<typeof mkStore>>, fake: FakeHa
 };
 const cutRequest = (req: { argv: string[] }) => JSON.parse(req.argv[req.argv.length - 1]!) as Record<string, unknown>;
 
-test("the cut's argument: the input, the Effect's id, and the base the Orchestrator holds", async () => {
+test("the cut's argument: the input, the Effect's id, the base the Orchestrator holds, and the Effect's timeout", async () => {
   const fake = new FakeHarnessExec();
   const host = new RunHost({ store: await mkStore() });
   host.register(defOf(fake.factory));
@@ -90,7 +90,10 @@ test("the cut's argument: the input, the Effect's id, and the base the Orchestra
     path: "/work/app/run",
     branch: "fix/one",
     base: "main",
+    // The cut's ask for its large files ends inside it, so the cut can still answer `refused`.
+    timeoutMs: 600_000,
   });
+  assert.equal(start.req.timeoutMs, 600_000);
   assert.equal(start.req.argv[0], "/opt/jr2/bin/node");
   assert.equal(start.req.root, undefined);
 });

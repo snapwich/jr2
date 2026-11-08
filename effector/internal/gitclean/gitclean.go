@@ -241,6 +241,17 @@ func Exec(ctx context.Context, r *Repo, stdin io.Reader, argv ...string) ([]byte
 	return out.Bytes(), nil
 }
 
+// Command is one of jr2's own programs, found by Look, set to run in this repository's call
+// directory with its cleared environment. It is not started: the caller sets its pipes, starts it
+// with reaper.Start and waits for it.
+func Command(ctx context.Context, r *Repo, argv ...string) *exec.Cmd {
+	cmd := command(ctx, argv[0], argv[1:]...)
+	cmd.Env = r.Env()
+	cmd.Dir = r.Work
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
 // Daemon starts one of jr2's own programs, found by Look, in this repository's call directory with
 // its cleared environment, and does not wait: the caller owns the process and waits for it. Its
 // stdout and stderr are discarded.

@@ -85,7 +85,16 @@ async function world(t: TestContext) {
   git(clone, "remote", "set-url", "origin", `ext::${uploadPack()} %S example.test/app ${c.url}`);
   git(clone, "config", "protocol.ext.allow", "user");
   let ids = 0;
-  const paths = { workRoot, lock: LOCK, env: { PATH: process.env.PATH } };
+  // No file of this Repo is an LFS file: jr2-lfs says that nothing is missing, and git-lfs never runs.
+  const noLfs = join(dir, "jr2-lfs");
+  writeFileSync(noLfs, `#!/bin/sh\necho '{"pointers":0,"asked":0,"missing":[]}'\n`, { mode: 0o755 });
+  const paths = {
+    workRoot,
+    lock: LOCK,
+    gitLfs: "/nonexistent/git-lfs",
+    jr2Lfs: noLfs,
+    env: { PATH: process.env.PATH },
+  };
   const go = (req: Omit<CutRequest, "id">, staleWindowMs?: number) =>
     cut(
       { id: `e${++ids}`, base: "main", ...req },

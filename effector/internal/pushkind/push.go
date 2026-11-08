@@ -11,9 +11,9 @@
 //
 // Outcomes, every one output: `pushed` (the published commit, its source — the Agent's commit —
 // what the remote held before, and how many new commits it sent), `rejected` (a stage — fetch,
-// import, sign, push — and git's words), `diverged` (signing: the published commit is not in the
-// Agent's history, and no fallback pairs it; nothing was pushed), `unknown` (the push may have
-// reached the remote, and no answer came).
+// import, sign, upload, push — and git's or git-lfs's words), `diverged` (signing: the published
+// commit is not in the Agent's history, and no fallback pairs it; nothing was pushed), `unknown`
+// (the push may have reached the remote, and no answer came).
 //
 // Signed: the new commits are found by ancestry — the published tip must be an ancestor of the
 // Agent's tip, which the sync step makes true after each push that publishes a commit not the
@@ -67,6 +67,9 @@ type Runner struct {
 	WorkRoot, ReposRoot, GitRoot, Scratch string
 	// Helper is this binary's path: git's credential helper for a token.
 	Helper string
+	// GitLFS is jr2's own git-lfs, which uploads a push's LFS objects (ADR-0067). Default
+	// DefaultGitLFS, on the runtime volume.
+	GitLFS string
 	// CAFile is the instance's caBundle (ADR-0020), when one is mounted.
 	CAFile   string
 	Scrubber *scrub.Scrubber
@@ -124,6 +127,9 @@ type call struct {
 	// sshLog is where ssh's own stderr goes, beside git's (ADR-0068): the line ssh ends on — "No
 	// user exists for uid", a refused connection, a host key — is what a reason names.
 	sshLog string
+	// sshCommand is the call's ssh command, as core.sshCommand holds it: the LFS batch's
+	// git-lfs-authenticate runs it too.
+	sshCommand string
 	// agentGroup is the process group of the gpg-agent this call started: the call stops it and
 	// waits for it to end before the push settles and releases the Lock's `gpg` class (ADR-0068).
 	agentGroup int
@@ -241,6 +247,11 @@ func (c *call) run(ctx context.Context) wire.Output {
 		res.Unchanged = true
 		return wire.Output{Outcome: wire.OutcomePushed, Push: &res}
 	}
+	// The large files go first (ADR-0067): a branch whose LFS objects the server lacks is never
+	// published. A signed or squashed copy keeps the pointers, so it uploads the same objects.
+	if out := c.uploadLFS(ctx, res.Published, have); out != nil {
+		return *out
+	}
 	return c.push(ctx, res)
 }
 
@@ -352,6 +363,7 @@ func (c *call) configure(ctx context.Context) error {
 		if _, err := repo.Git(ctx, nil, "config", "core.sshCommand", cmd); err != nil {
 			return err
 		}
+		c.sshCommand = cmd
 	}
 	return nil
 }
@@ -377,6 +389,11 @@ func nonEmpty(s string) []string {
 // push sends res.Published to the Binding's ref, and reads git's porcelain answer; pushed, res is
 // the output.
 func (c *call) push(ctx context.Context, res wire.PushResult) wire.Output {
+	// ssh's lines of the LFS sessions, and the stderr of a git-lfs-transfer server, are not this
+	// push's: a push that fails names only its own ssh line (ADR-0068).
+	if c.sshLog != "" {
+		_ = os.Remove(c.sshLog)
+	}
 	refspec := res.Published + ":refs/heads/" + c.spec.Branch
 	if c.spec.Force {
 		refspec = "+" + refspec
@@ -441,6 +458,9 @@ func (c *call) failure(stderr string, ctx context.Context) (string, string) {
 		strings.TrimSpace(tail(stderr) + "\nssh:\n" + tail(ssh))
 }
 
+// refusedCredential is classify's reason for a credential that the remote refused.
+const refusedCredential = "the remote refused the credential"
+
 // classify says why a connection failed, from git's stderr: each is an answer of the outside
 // world.
 func classify(stderr string, ctx context.Context) string {
@@ -455,7 +475,7 @@ func classify(stderr string, ctx context.Context) string {
 	case strings.Contains(s, "authentication failed"), strings.Contains(s, "permission denied"),
 		strings.Contains(s, "could not read username"), strings.Contains(s, "access denied"),
 		strings.Contains(s, " 401"), strings.Contains(s, " 403"), strings.Contains(s, "not authorized"):
-		return "the remote refused the credential"
+		return refusedCredential
 	case strings.Contains(s, "repository not found"), strings.Contains(s, "does not appear to be a git repository"),
 		strings.Contains(s, "not found"):
 		return "the remote has no such repository"

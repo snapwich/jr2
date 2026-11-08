@@ -131,6 +131,7 @@ import {
   ANNOTATION_HOLD,
   ANNOTATION_KEEPALIVE,
   ANNOTATION_WORKSPACE_PATH,
+  baseAnnotation,
   HOLD_HELD,
   HOLD_RELEASED,
   LABEL_SANDBOX_RUN,
@@ -861,7 +862,13 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           [LABEL_SANDBOX_WORKFLOW]: req.workflow,
           ...(req.path ? { [LABEL_SANDBOX_WORKSPACE]: workspaceLabel(req.path) } : {}),
         },
-        annotations: { ...(req.path ? { [ANNOTATION_WORKSPACE_PATH]: req.path } : {}), [ANNOTATION_HOLD]: HOLD_HELD },
+        // The Binding's base of each Repo that has one (ADR-0051): the LFS ask names it, so an Agent
+        // cannot choose the `.lfsconfig` that picks the LFS server. The pod cannot write this CR.
+        annotations: {
+          ...(req.path ? { [ANNOTATION_WORKSPACE_PATH]: req.path } : {}),
+          [ANNOTATION_HOLD]: HOLD_HELD,
+          ...Object.fromEntries(repos.flatMap((r) => (r.base !== undefined ? [[baseAnnotation(r.key), r.base]] : []))),
+        },
       },
       spec: {
         // The Sandbox Image, unmodified (ADR-0037) — the user's tools, its own USER and HOME, and
@@ -1163,7 +1170,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    * per-run url is the run's input; one no `git.credentials` entry admits is refused here, before
    * anything is read or applied, naming the list. A bound url is admitted without a match: it is
    * code the instance typechecked and deployed. Two slots spelling one repository collapse to one
-   * CR entry (first spelling wins) — one cache, however many slots borrow from it — and the
+   * CR entry (first spelling, and its base, wins) — one cache, however many slots borrow from it — and the
    * resource is BOUND when any of those slots is the Machine's: a per-run slot alone leaves it on
    * `jr2 gc`'s clock.
    */
@@ -1180,8 +1187,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         );
       }
       const seen = byKey.get(key);
-      if (seen === undefined) byKey.set(key, { key, url: repo.url, identity, bound: !repo.perRun });
-      else seen.bound ||= !repo.perRun;
+      if (seen === undefined) {
+        byKey.set(key, { key, url: repo.url, identity, bound: !repo.perRun, ...(repo.ref ? { base: repo.ref } : {}) });
+      } else seen.bound ||= !repo.perRun;
     }
     return [...byKey.values()];
   };
@@ -1238,8 +1246,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   /** The Harness's `POST /attach` (ADR-0063), re-sent while it demonstrably never reached the
    * Harness. Idempotent on the Harness's side (every step guarded, calls serialized), so a re-send
    * after a request that DID land is harmless too — but only a transport failure is retried: an
-   * answer is an answer. Each try's connect is bounded (`dialFetch`), and a retry that cost
-   * something says so in one routability line (ADR-0042). */
+   * answer is an answer. A 202 is the Harness's word that the attach still runs (a cold attach
+   * gets its large files, ADR-0053), and the same body is sent again to wait on it. Each try's
+   * connect is bounded (`dialFetch`), and a retry that cost something says so in one routability
+   * line (ADR-0042). */
   const postAttach = async (
     name: string,
     endpoint: string,
@@ -1253,7 +1263,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       authorization: `Bearer ${harnessToken(opts.signingKey, name)}`,
     };
     const startedAt = Date.now();
-    const until = startedAt + attachWindowMs;
+    // The window for a Harness that does not answer, counted again after each answer.
+    let until = startedAt + attachWindowMs;
+    let reached = false;
     let backoff = 250;
     let attempts = 0;
     let lastCode = "?";
@@ -1271,22 +1283,29 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // The caller gave up (the Sandbox was lost under the attach): its reason, never a retry.
         if (signal?.aborted) throw err;
         // Ready is not routable (ADR-0042): the EndpointSlice behind the Service is programmed after
-        // the pod passes its probe, and the attach is now the first thing that dials it.
+        // the pod passes its probe, and the attach is now the first thing that dials it. After an
+        // answer, a fault is a Harness that restarted: the next request attaches again.
         lastCode = transportCode(err);
         if (Date.now() >= until) {
-          // Say which: a request that provably never connected, or one that may have reached the
-          // Harness and then heard nothing (the idle bound, ADR-0042) or lost its connection.
+          // Say which: a Harness that answered before and is now lost, a request that provably
+          // never connected, or one that may have reached the Harness and then heard nothing (the
+          // idle bound, ADR-0042) or lost its connection.
           throw new Error(
-            neverDelivered(err)
-              ? `Sandbox "${name}": the attach never reached its Harness at ${endpoint}: ${transportDetail(err)}`
-              : `Sandbox "${name}": the attach got no answer from its Harness at ${endpoint}: ${transportDetail(err)}`,
+            reached
+              ? `Sandbox "${name}": the attach lost its Harness at ${endpoint}: ${transportDetail(err)}`
+              : neverDelivered(err)
+                ? `Sandbox "${name}": the attach never reached its Harness at ${endpoint}: ${transportDetail(err)}`
+                : `Sandbox "${name}": the attach got no answer from its Harness at ${endpoint}: ${transportDetail(err)}`,
           );
         }
         await sleep(backoff, signal);
         backoff = Math.min(backoff * 2, 5_000);
         continue;
       }
-      if (attempts > 1) log(routabilityLine("attach", url, attempts, Date.now() - startedAt, lastCode));
+      if (!reached && attempts > 1) log(routabilityLine("attach", url, attempts, Date.now() - startedAt, lastCode));
+      reached = true;
+      until = Date.now() + attachWindowMs;
+      backoff = 250;
       let text: string;
       try {
         text = await res.text();
@@ -1296,6 +1315,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           `Sandbox "${name}": the attach reached its Harness at ${endpoint} and its answer broke off: ${transportDetail(err)}`,
         );
       }
+      // 202: the attach still runs, past one poll's wait (a cold attach gets its large files,
+      // ADR-0053). The same body again waits on it, so no request waits as long as the idle bound.
+      if (res.status === 202) continue;
       if (res.ok) return JSON.parse(text) as AttachResponse;
       // The Harness's own words: the slot, the step, and git's stderr.
       let error = text;
@@ -1433,7 +1455,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // `repoCloneError` names reaches the cache at the next run. After the image resolution, so
       // a refused image still costs nothing; before the CR and its token Secret, so neither exists
       // for a Sandbox whose Repo could not be recorded.
-      for (const repo of repos) await opts.repos.ensure(repo).catch(noOperator(req.name, "Repo"));
+      for (const { base: _base, ...repo } of repos) {
+        await opts.repos.ensure(repo).catch(noOperator(req.name, "Repo"));
+      }
 
       // The watch is started before the write (on first use), and it is level-based: whatever it
       // holds when the wait below subscribes is the first thing judged, so no event about this
@@ -1717,9 +1741,12 @@ export function memoryFaultOf(sandbox: SandboxObject | undefined, since: Date): 
 export const repoVolumeName = (key: string): string => `repo-${key}`;
 export const repoMountPath = (key: string): string => `${REPOS_MOUNT}/${key}`;
 
-/** One Repo as the provision names it: the CR entry, plus what its resource records — the
- * identity, and whether a Machine's slot (not only the run's) binds it. */
-type FencedRepo = { key: string; url: string; identity: string; bound: boolean };
+/** One Repo of a Sandbox as the provision names it, by cache key: the CR entry, plus what its
+ * resource records — the identity, and whether a Machine's slot (not only the run's) binds it.
+ * `base` is the Binding's base of the first slot that binds it, absent for the Repo's default
+ * branch: the Orchestrator's own record of where the node cache reads the Repo's `.lfsconfig`
+ * (ADR-0051), never a pod's word. */
+type FencedRepo = { key: string; url: string; identity: string; bound: boolean; base?: string };
 
 /** The operator's Ready reason when the cache agent could not clone onto the pod's node
  * (sandbox_controller.go) — the one Ready verdict a provision cannot wait out. */

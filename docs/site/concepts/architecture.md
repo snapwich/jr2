@@ -217,6 +217,40 @@ objects from that cache. A `git fetch origin` in the Sandbox asks the Repo cache
 fetches from the host of the Repo, with the clone credential of the cluster. Thus the Harness container needs no git
 credential to fetch.
 
+### Large files in the Repo cache
+
+The Repo cache also keeps the Git LFS objects of each Repo, beside its bare clone. It gets only the objects that a pod
+asks for, never the full history. A `git checkout` in the Sandbox asks for its large files on the path of a fetch: the
+Custodian, the Orchestrator, then the Repo cache. The Repo cache then gets them from the LFS server, with the clone
+credential. A large file in the cache goes when the cache of its Repo goes.
+
+The `.lfsconfig` file at the base of the [Binding](../reference/glossary.md#binding) names the LFS server. The
+Orchestrator gives that base from the run's Binding. The pod sends no base, and the Orchestrator reads no base in an ask
+from a pod. When two [Repo Slots](../reference/glossary.md#repo-slot) bind one Repo on two bases, the first slot's base
+names the server for the Repo cache. A push reads `.lfsconfig` at the Binding's base of its own slot. The Repo cache
+accepts only these servers:
+
+- an `https://` or `http://` server,
+- an ssh server on the host of an ssh Repo url, so that the ssh key never goes to a different host,
+- a `file://` server for a `file://` Repo.
+
+An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or give the url of an http(s) LFS
+server through `git-lfs-authenticate`. The Repo cache tries `git-lfs-transfer` first, as git-lfs does by default. When
+the server does not speak it, the Repo cache uses `git-lfs-authenticate`.
+
+The token goes only to the origin of the Repo: its scheme, its host and its port. Thus:
+
+- An LFS server on the origin of the Repo gets the token.
+- An LFS server on a different origin gets no token, also after a redirect. A public server works. A private server
+  fails with the error of git-lfs.
+- The batch answer of the LFS server gives a URL for each object. A URL on the origin of the Repo can get the token,
+  after a 401, as git-lfs gives it. A URL on a different origin, such as the object store of GitHub, gets only the
+  headers that the batch answer gives.
+
+The LFS server cannot change what a file holds, because git-lfs checks each object against its oid. A `push` uploads its
+large files with the push credential, by the same rules
+([Push and sign a branch](../guides/push-and-sign-a-branch.md#push-large-files)).
+
 ## Rules
 
 - An Instance has exactly one Orchestrator, and the Orchestrator always runs in the cluster.

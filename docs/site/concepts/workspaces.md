@@ -137,6 +137,37 @@ an Agent that moves `HEAD` does not change what is pushed.
 jr2 has no Effect that removes a Worktree. To remove one, run `git worktree remove` in a `command`.
 [Cut a Worktree](../guides/cut-a-worktree.md) gives the procedure.
 
+## Large files and submodules
+
+A Repo that keeps its large files with Git LFS needs nothing from your Machine or your image. The commit's
+`.gitattributes` tells git which files are large. jr2's runtime has its own git-lfs, and the clone uses it. In the clone
+and in each Worktree, a large file has its contents, not its pointer:
+
+- The attach gets the large files of the base before it puts `default/` on the base. When the Repo cache cannot get one,
+  the attach fails, and the run faults. The Sandbox stays, so that you can look inside it.
+- A cut gets the large files of its commit before it changes git. When the Repo cache cannot get one, the cut is
+  `refused`, and the reason names the file.
+- Each other `git checkout` in `/work`, such as one by an Agent, asks the Repo cache for the large files that it needs.
+- A `push` uploads the large files of its commits to the LFS server before it updates the branch (see
+  [Push and sign a branch](../guides/push-and-sign-a-branch.md#push-large-files)).
+
+The `.lfsconfig` file at the base of the Binding names the LFS server. Without it, the server is the one that git-lfs
+gets from the Repo's url. The [Orchestrator](../reference/glossary.md#orchestrator) names that base from the run's
+Binding. The pod sends no base, and the Orchestrator reads no base in an ask from a pod. Thus an Agent cannot send the
+Repo cache or the push to an LFS server of its choice. [Architecture](architecture.md#large-files-in-the-repo-cache)
+tells which server gets the credential.
+
+A large file uses the disk of `/work` more than one time. The clone keeps one copy of it in its own LFS store.
+`default/` and each Worktree that holds the file keep one more copy each.
+
+A `command` that names an [Effect secret](../reference/glossary.md#effect-secret) does not get the large files. It runs
+in the [Sandbox Effector](../reference/glossary.md#sandbox-effector), on its own copy of one commit, and in that copy
+each large file is its pointer. Thus such a `command` cannot read the contents of a large file. A `command` with no
+Effect secret, an Agent, and an `http` Effect with a file body read the Worktree, so they get the contents.
+
+The clone and each cut check out no submodule. The folder of a submodule stays empty. A Workspace that works in the code
+of a submodule binds that Repo as a Repo Slot of its own. The example binds `handbook` beside `app` in this way.
+
 ## A Workspace with no Repo
 
 Some work has no Repo: get data, write a report from it, edit the report, and send it. For this work, leave `repos` out.
@@ -178,12 +209,12 @@ Lost Sandbox has lost all of its work, because no commit was pushed.
 
 A Sandbox pod has two containers, and two more when the Machine needs them:
 
-| Container                                                         | What runs in it                                                                                                                                  |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The [Harness](../reference/glossary.md#harness) container         | The Harness, the Agent's Working tools, and a `command` that names no [Effect secret](../reference/glossary.md#effect-secret)                    |
-| The [Custodian](../reference/glossary.md#custodian)               | jr2's own container. It holds the pod's Held secrets, and the Harness's calls out of the pod go through it (see [Architecture](architecture.md)) |
-| The [User Container](../reference/glossary.md#user-container)     | Your own image, with its own entrypoint. Only when `user` names one.                                                                             |
-| The [Sandbox Effector](../reference/glossary.md#sandbox-effector) | A `push`, an `http` Effect with a Worktree file, and a `command` that names an Effect secret. Only when an Effect needs it.                      |
+| Container                                                     | What runs in it                                                                                                                                  |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The [Harness](../reference/glossary.md#harness) container     | The Harness, the Agent's Working tools, and a `command` that names no Effect secret                                                              |
+| The [Custodian](../reference/glossary.md#custodian)           | jr2's own container. It holds the pod's Held secrets, and the Harness's calls out of the pod go through it (see [Architecture](architecture.md)) |
+| The [User Container](../reference/glossary.md#user-container) | Your own image, with its own entrypoint. Only when `user` names one.                                                                             |
+| The Sandbox Effector                                          | A `push`, an `http` Effect with a Worktree file, and a `command` that names an Effect secret. Only when an Effect needs it.                      |
 
 ### The Sandbox Image
 
@@ -252,7 +283,8 @@ A Workspace goes through these states:
 
 1. `placing`: jr2 writes the Sandbox, and waits for a node.
 2. `provisioning`: the pod starts.
-3. `attaching`: the Harness clones each Repo Slot. With no Repo Slot, this state has nothing to do.
+3. `attaching`: the Harness clones each Repo Slot, and gets the large files of its base. With no Repo Slot, this state
+   has nothing to do.
 4. `running`: the body runs.
 5. `teardown`: the body is in a final state, and jr2 deletes the Sandbox.
 6. `failing`: the body invoked [`fail`](../reference/authoring-surface/fail.md), and jr2 deletes the Sandbox. Then the
@@ -285,10 +317,10 @@ the Workspaces of the run, unless you send it with `--keep` (see [`jr2 send`](..
 
 ## Lease and Continuity
 
-Nothing in the cluster stands for a run. Thus the [Orchestrator](../reference/glossary.md#orchestrator) must say that it
-still wants each Sandbox. The [Lease](../reference/glossary.md#lease) does this: about every 5 minutes, the Workspace
-writes an annotation on its Sandbox. It does this from the write of the Sandbox to its teardown, `placing` included.
-When the Lease stops for 30 minutes, the operator removes the Sandbox. Thus a Sandbox that nobody wants does not stay.
+Nothing in the cluster stands for a run. Thus the Orchestrator must say that it still wants each Sandbox. The
+[Lease](../reference/glossary.md#lease) does this: about every 5 minutes, the Workspace writes an annotation on its
+Sandbox. It does this from the write of the Sandbox to its teardown, `placing` included. When the Lease stops for 30
+minutes, the operator removes the Sandbox. Thus a Sandbox that nobody wants does not stay.
 
 [Continuity](../reference/glossary.md#continuity) asks a different question: is the Sandbox still the one that the body
 attached to? A Sandbox has one pod for its life. The work in `/work` is only in that pod. When a person or the cluster
@@ -311,6 +343,12 @@ the Harness container does not lose the Workspace: the pod and `/work` stay.
   it chooses.
 - `jr2 up` refuses a Repo Slot name that starts with `.`, because `/work/.jr2/` is reserved for jr2.
 - A cut of the branch that `default/` holds is `refused`, and the reason names `/work/<slot>/default`.
+- An attach whose base has a large file that the Repo cache cannot get fails. The run faults, and the Sandbox stays.
+  [Give the cluster git credentials](../guides/give-the-cluster-git-credentials.md#rules) gives the text of the fault.
+- A cut whose large files the Repo cache cannot get, or cannot get in the time that the cut has, is `refused`. The
+  reason names the files. [Cut a Worktree](../guides/cut-a-worktree.md#rules) gives the text and the form of `<list>`.
+- A `command` that names an Effect secret gets the pointer of each large file, not its contents.
+- A `push` whose large files the LFS server does not hold after the upload is `rejected`, and nothing is pushed.
 - With no Repo Slot, `jr2 up` refuses a `worktree()`, a `push`, and a `command` that names an Effect secret.
 - A Size has only `limits.memory` and `limits.cpu`. jr2 refuses `requests` and each other key.
 - `jr2 up` refuses a Size that leaves the Harness container less than 256Mi of memory, or no cpu.
@@ -342,6 +380,8 @@ The guides and the Reference give the refusal text of each rule.
   Worktree, and the Workspace only clones
 - [ADR-0051](../reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md): a Repo is a slot
   on the `workspace()` and a cache on the node
+- [ADR-0053](../reference/decisions/0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md): a
+  fetch inside the pod, and a large file, ask the node cache
 - [ADR-0060](../reference/decisions/0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md): a Workspace states
   its Size, and jr2 reserves all of it
 - [ADR-0064](../reference/decisions/0064-a-workspace-waits-for-capacity.md): a Workspace waits for capacity

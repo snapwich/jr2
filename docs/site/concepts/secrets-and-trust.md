@@ -203,7 +203,8 @@ encodings. It does not find a changed form of an Effect secret, such as a hash o
 The [`git.credentials`](../reference/config.md#git-credentials) entries give the cluster its git credentials. The
 Orchestrator matches a Repo to an entry, and names the Secret of that entry. It never reads a git credential:
 
-- The clone credential goes into a Secret that only the Repo cache reads.
+- The clone credential goes into a Secret that only the Repo cache reads. The Repo cache also gets the Git LFS files
+  with it, and sends it only to the origin of the Repo ([Architecture](architecture.md#large-files-in-the-repo-cache)).
 - The push credential and the signing key go to the [Sandbox Effector](../reference/glossary.md#sandbox-effector) of the
   Sandbox whose `push` Effect uses them.
 
@@ -220,7 +221,7 @@ jr2 makes its own tokens. `jr2 up` makes the Instance token and the signing key 
 | Instance token     | You and the CLI, through the Kubernetes API                                                     | Everything: start a run, read its full state, answer a Gate, cancel a run, and the routes that no scope opens. |
 | Named Caller token | A [Caller](../reference/glossary.md#caller) that has no access to the cluster, such as a CI job | The scopes that `callers.tokens` gives its name, for the Workflows that each scope names.                      |
 | Control token      | The Custodian of one Sandbox, as a file                                                         | Read the Menu and send the picks of the Agents in that Sandbox, for the Agent that the Harness names.          |
-| Fetch token        | The Custodian of one Sandbox, as a file                                                         | Ask for a fetch of a Repo that the Sandbox mounts.                                                             |
+| Fetch token        | The Custodian of one Sandbox, as a file                                                         | Ask for a fetch, or for the large files, of a Repo that the Sandbox mounts.                                    |
 | Harness bearer     | The Orchestrator. The Harness holds only its SHA-256 digest.                                    | Call the Harness in one pod: start a Turn, read it, stop it, set up a Worktree, and run a `command` Effect.    |
 | Effector key       | The Orchestrator, and the Effector of one placement                                             | Sign a request to that Effector, and sign its answer.                                                          |
 

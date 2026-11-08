@@ -101,6 +101,38 @@ type RepoNodeStatus struct {
 	// LastError is git's own words for the last failure; empty when Synced.
 	// +optional
 	LastError string `json:"lastError,omitempty"`
+
+	// LFS holds, for each pod on this node that asked this cache for Git LFS
+	// objects, the last LFS ask the agent served (ADR-0053). It is the agent's
+	// record of what it served, so an agent that restarts does not serve an ask
+	// again. The agent removes the item of a pod that no longer mounts the
+	// cache.
+	// +listType=map
+	// +listMapKey=pod
+	// +optional
+	LFS []RepoLFSAnswer `json:"lfs,omitempty"`
+}
+
+// RepoLFSAnswer is the cache agent's answer to one pod's LFS ask (ADR-0053).
+type RepoLFSAnswer struct {
+	// Pod is the name of the pod that asked.
+	// +required
+	Pod string `json:"pod"`
+
+	// Asked is the `at` of the ask that the agent served, copied as is from
+	// the pod's `jr2.dev/lfs-<key>` annotation. The Orchestrator compares it
+	// with its own `at` as an instant.
+	// +required
+	Asked string `json:"asked"`
+
+	// Attempted is when the agent started to get the objects for this ask.
+	// +optional
+	Attempted *metav1.Time `json:"attempted,omitempty"`
+
+	// Error is git-lfs's own words when an asked object is still not in the
+	// cache after the attempt; empty when the cache holds every asked object.
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // RepoStatus is the observed state of a Repo: per node, what the cache agent

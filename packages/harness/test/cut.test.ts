@@ -52,11 +52,38 @@ function world(t: TestContext) {
   const clone = join(workRoot, "app", "default");
   mkdirSync(join(workRoot, "app"), { recursive: true });
   execFileSync("git", ["clone", "-q", "--shared", remote, clone]);
-  const paths = { workRoot, lock: LOCK };
+  const lfs = lfsStub(dir);
+  const paths = { workRoot, lock: LOCK, gitLfs: lfs.gitLfs, jr2Lfs: lfs.jr2Lfs };
   const path = (name: string) => join(workRoot, "app", name);
   let ids = 0;
   const go = (req: Omit<CutRequest, "id"> & { id?: string }) => cut({ id: `e${++ids}`, base: "main", ...req }, paths);
-  return { dir, workRoot, clone, remote, seed, paths, path, go };
+  return { dir, workRoot, clone, remote, seed, paths, path, go, lfs };
+}
+
+/**
+ * The two LFS programs, as stubs: no file of these Repos is an LFS file, so git never starts git-lfs,
+ * and `jr2-lfs fetch` prints that nothing is missing. Each call of jr2-lfs is a line in `calls`, and
+ * `answer` sets what it prints. The real programs are in cut-lfs.test.ts.
+ */
+function lfsStub(dir: string) {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const calls = join(dir, "jr2-lfs.calls");
+  const answerFile = join(dir, "jr2-lfs.answer");
+  writeFileSync(answerFile, `${JSON.stringify({ pointers: 0, asked: 0, missing: [] })}\n`);
+  const jr2Lfs = join(bin, "jr2-lfs");
+  writeFileSync(jr2Lfs, `#!/bin/sh\necho "$*" >> '${calls}'\ncat '${answerFile}'\n`);
+  chmodSync(jr2Lfs, 0o755);
+  const gitLfs = join(bin, "git-lfs");
+  writeFileSync(gitLfs, "#!/bin/sh\necho 'the stub git-lfs ran' >&2\nexit 9\n");
+  chmodSync(gitLfs, 0o755);
+  return {
+    jr2Lfs,
+    gitLfs,
+    calls: (): string[] => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n") : []),
+    answer: (text: string) => writeFileSync(answerFile, text),
+    env: { JR2_CUT_JR2_LFS: jr2Lfs, JR2_CUT_GIT_LFS: gitLfs },
+  };
 }
 
 const ready = (a: CutAnswer) => {
@@ -369,7 +396,7 @@ test("real kills, at random steps: the retry is always `none`, and the Worktree 
   for (let i = 0; i < 12; i++) {
     const req = JSON.stringify({ id: `k${i}`, path: w.path(`k${i}`), branch: `k${i}`, base: "main" });
     const p = spawn(process.execPath, [cutProgram, req], {
-      env: { ...process.env, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK) },
+      env: { ...process.env, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK), ...w.lfs.env },
       stdio: "ignore",
     });
     const closed = new Promise((r) => p.on("close", r));
@@ -735,7 +762,7 @@ test("real kills during the add of a removed Worktree: each next cut gives a who
     ready(await w.go(req));
     rmSync(req.path, { recursive: true });
     const p = spawn(process.execPath, [cutProgram, JSON.stringify({ id: `k${i}`, base: "main", ...req })], {
-      env: { ...process.env, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK) },
+      env: { ...process.env, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK), ...w.lfs.env },
       stdio: "ignore",
     });
     const closed = new Promise((r) => p.on("close", r));
@@ -760,7 +787,13 @@ test("a killed cut's folder in TMPDIR goes at the next cut of its clone, and a f
     const before = new Set(readdirSync(tmp));
     for (let i = 0; i < 40; i++) {
       const p = spawn(process.execPath, [cutProgram, JSON.stringify({ id: `k${i}`, path, detach: "main" })], {
-        env: { ...process.env, TMPDIR: tmp, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK) },
+        env: {
+          ...process.env,
+          TMPDIR: tmp,
+          JR2_CUT_WORK: w.workRoot,
+          JR2_CUT_LOCK: JSON.stringify(LOCK),
+          ...w.lfs.env,
+        },
         stdio: "ignore",
       });
       const closed = new Promise((r) => p.on("close", r));
@@ -1075,7 +1108,7 @@ test("eight cuts at once, as eight processes: serialized, and all whole", async 
     new Promise<CutAnswer>((resolve) => {
       const req = JSON.stringify({ id: `p${i}`, path: w.path(`p${i}`), branch: `crew/${i}`, base: "main" });
       const p = spawn(process.execPath, [cutProgram, req], {
-        env: { ...process.env, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK) },
+        env: { ...process.env, JR2_CUT_WORK: w.workRoot, JR2_CUT_LOCK: JSON.stringify(LOCK), ...w.lfs.env },
         stdio: ["ignore", "pipe", "inherit"],
       });
       let out = "";
@@ -1118,4 +1151,103 @@ test("the lock program's flock frees when the cut dies", () => {
   const r = spawnSync("sh", ["-c", `flock -x 0 < ${file}; flock -n -x 0 < ${file}; echo $?`], { encoding: "utf8" });
   assert.equal(r.stdout.trim(), "0");
   rmSync(dir, { recursive: true, force: true });
+});
+
+// --- Git LFS (ADR-0075) --------------------------------------------------------------------------------
+
+test("a cut asks jr2-lfs for its commit's large files from the clone, and sends no base: the Orchestrator names it", async (t) => {
+  const w = world(t);
+  const a = ready(await w.go({ path: w.path("run"), branch: "feature/auth" }));
+  assert.deepEqual(w.lfs.calls(), [`fetch -- ${a.head}`]);
+  const d = ready(await w.go({ path: w.path("d"), detach: a.head }));
+  assert.equal(w.lfs.calls().length, 2);
+  assert.equal(w.lfs.calls()[1], `fetch -- ${d.head}`);
+});
+
+test("a large file that cannot be had: `refused`, naming each file, and the cut changes nothing", async (t) => {
+  const w = world(t);
+  const missing = Array.from({ length: 7 }, (_, i) => ({
+    path: `assets/f${i}.bin`,
+    oid: `${i}`.repeat(64),
+    reason: "batch response: Object does not exist on the server",
+  }));
+  w.lfs.answer(`${JSON.stringify({ pointers: 7, asked: 7, missing })}\n`);
+  const same = unchanged(w.clone);
+  const reason = refusal(await w.go({ path: w.path("run"), branch: "feature/auth" }));
+  assert.match(
+    reason,
+    /^the node cache cannot get 7 large files of [0-9a-f]{40}: assets\/f0\.bin \(000000000000\): batch/,
+  );
+  assert.match(reason, /assets\/f4\.bin/);
+  assert.doesNotMatch(reason, /assets\/f5\.bin/, "a bounded list");
+  assert.match(reason, /and 2 more$/);
+  same();
+  assert.equal(existsSync(w.path("run")), false);
+  assert.equal(existsSync(join(w.clone, ".git", "jr2-cuts", "run.json")), false, "no record");
+  // jr2-lfs fails: `refused`, with its words.
+  w.lfs.answer("");
+  assert.match(refusal(await w.go({ path: w.path("run"), branch: "feature/auth" })), /jr2-lfs printed no result/);
+  same();
+});
+
+test("a re-cut that checks out again asks again: a detached re-cut, and a folder an Agent removed", async (t) => {
+  const w = world(t);
+  const a = ready(await w.go({ path: w.path("run"), branch: "feature/auth" }));
+  const sha = run(w.clone, "rev-parse", "main");
+  ready(await w.go({ path: w.path("d"), detach: sha }));
+  const before = w.lfs.calls().length;
+  ready(await w.go({ path: w.path("d"), detach: sha }));
+  assert.equal(w.lfs.calls().length, before + 1, "a detached re-cut forces a checkout");
+  rmSync(a.path, { recursive: true, force: true });
+  w.lfs.answer(
+    `${JSON.stringify({ pointers: 1, asked: 1, missing: [{ path: "x.bin", oid: "a".repeat(64), reason: "gone" }] })}\n`,
+  );
+  assert.match(refusal(await w.go({ path: w.path("run"), branch: "feature/auth" })), /x\.bin \(aaaaaaaaaaaa\): gone/);
+  assert.equal(existsSync(a.path), false);
+});
+
+test("a filter that the clone's config includes is off too", async (t) => {
+  const w = world(t);
+  const marker = join(w.dir, "ran");
+  const evil = join(w.dir, "evil.sh");
+  writeFileSync(evil, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`, { mode: 0o755 });
+  const included = join(w.dir, "included");
+  writeFileSync(included, `[filter "evil"]\n\tsmudge = ${evil}\n`);
+  run(w.clone, "config", "include.path", included);
+  writeFileSync(join(w.clone, ".git", "info", "attributes"), "* filter=evil\n");
+  ready(await w.go({ path: w.path("run"), branch: "feature/auth" }));
+  assert.equal(existsSync(marker), false);
+});
+
+test("a filter in an include whose condition is not true in default/ is off too: onbranch, and nested", async (t) => {
+  const w = world(t);
+  const marker = join(w.dir, "ran");
+  const evil = join(w.dir, "evil.sh");
+  writeFileSync(evil, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`, { mode: 0o755 });
+  // Relative to the file that includes it, as git reads it: `.git/onbranch.inc`, then `.git/nested.inc`.
+  writeFileSync(
+    join(w.clone, ".git", "onbranch.inc"),
+    `[filter "evilob"]\n\tsmudge = true\n[include]\n\tpath = nested.inc\n`,
+  );
+  writeFileSync(join(w.clone, ".git", "nested.inc"), `[filter "evilob"]\n\tsmudge = ${evil}\n\trequired = true\n`);
+  run(w.clone, "config", "includeIf.onbranch:feature/run.path", "onbranch.inc");
+  writeFileSync(join(w.clone, ".git", "info", "attributes"), "* filter=evilob\n");
+  ready(await w.go({ path: w.path("run"), branch: "feature/run", from: "feature/auth" }));
+  assert.equal(existsSync(marker), false, "the onbranch include's filter did not run");
+});
+
+test("a filter in a linked Worktree's own config.worktree is off in a detached re-cut", async (t) => {
+  const w = world(t);
+  const first = ready(await w.go({ path: w.path("review"), detach: run(w.seed, "rev-parse", "main") }));
+  const marker = join(w.dir, "ran");
+  const evil = join(w.dir, "evil.sh");
+  writeFileSync(evil, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`, { mode: 0o755 });
+  run(w.clone, "config", "extensions.worktreeConfig", "true");
+  const admin = run(first.path, "rev-parse", "--absolute-git-dir");
+  writeFileSync(join(admin, "config.worktree"), `[filter "evilwt"]\n\tsmudge = ${evil}\n`);
+  writeFileSync(join(w.clone, ".git", "info", "attributes"), "*.txt filter=evilwt\n");
+  const r2 = run(w.seed, "rev-parse", "feature/auth");
+  assert.equal(ready(await w.go({ path: w.path("review"), detach: r2 })).head, r2);
+  assert.equal(existsSync(marker), false, "the Worktree's own filter did not run");
+  assert.equal(readFileSync(join(first.path, "auth.txt"), "utf8"), "auth\n");
 });

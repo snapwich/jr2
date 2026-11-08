@@ -1071,7 +1071,8 @@ function cutFaultOf(input: unknown, ambient: AmbientHandles): string | undefined
 }
 
 /** The cut's one argument: its input, its id (a re-send answers the first `found`), its static
- * `expect`, and the base, sent each time, so that no checkout of an Agent's can move it. */
+ * `expect`, the base, sent each time, so that no checkout of an Agent's can move it, and the
+ * Effect's timeout, so that the cut's ask for its large files ends in time to answer `refused`. */
 function cutRequestOf(id: string, input: unknown, parts: CommandParts, ambient: AmbientHandles): string {
   const given = (input ?? {}) as { path: string; branch?: string; detach?: string; from?: string };
   const slot = given.path.split("/")[2]!;
@@ -1084,6 +1085,7 @@ function cutRequestOf(id: string, input: unknown, parts: CommandParts, ambient: 
     ...(given.from !== undefined ? { from: given.from } : {}),
     ...(given.branch !== undefined && parts.cut?.expect ? { expect: parts.cut.expect } : {}),
     ...(base !== undefined ? { base } : {}),
+    timeoutMs: parts.timeoutMs,
   });
 }
 

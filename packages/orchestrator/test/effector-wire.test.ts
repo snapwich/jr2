@@ -127,6 +127,13 @@ test("every request fixture is what a definition encodes", () => {
       "jr2/run-1",
       { sha: "1".repeat(40), message: "Add the report" },
     ),
+    // The Binding's base rides the push: the Effector reads the LFS server at it (ADR-0051, ADR-0067).
+    "request.push-base.json": pushStartOf(
+      pushParts({}),
+      { ...repo("https://github.com/ourorg/app.git"), base: "release/2.x" },
+      "jr2/run-1",
+      {},
+    ),
     "request.command-env.json": commandStartOf(
       commandParts(["terraform", "apply", "-auto-approve"], {
         AWS_SECRET: secret("aws"),

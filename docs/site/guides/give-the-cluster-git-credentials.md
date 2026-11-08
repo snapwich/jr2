@@ -165,6 +165,20 @@ rules.
 `jr2 up` tells you to give the key that it makes read access, and its Secret has no `known_hosts`. A push over ssh needs
 write access and `known_hosts`. Thus, to push over ssh, make the Secret yourself.
 
+## Large files
+
+A Repo that keeps its large files with Git LFS needs no other entry. The Repo cache gets the large files with the clone
+credential, and a `push` uploads them with the push credential. The `.lfsconfig` at the base of the
+[Binding](../reference/glossary.md#binding) names the LFS server.
+
+The token goes only to the origin of the Repo url: its scheme, its host and its port. An LFS server on a different
+origin gets no token. A public server works, and a private server fails. An ssh key goes only to the host of the Repo
+url. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the full rule.
+
+An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or give the url of an http(s) LFS
+server through `git-lfs-authenticate`. The Repo cache and a `push` try `git-lfs-transfer` first, as git-lfs does by
+default. When the server does not speak it, they use `git-lfs-authenticate`.
+
 ## Rules
 
 `jr2 up` prints each refusal after `error: `.
@@ -190,6 +204,10 @@ write access and `known_hosts`. Thus, to push over ssh, make the Secret yourself
   `Workspace of workflow "<workflow>": the push of Repo Slot "<slot>" (<url>): git.credentials entry "<match>" cannot push — its token's variable <NAME> is not set — set it in .env (ADR-0051)`.
   For a Workspace inside a different Machine, `Workspace of workflow "<workflow>"` continues with its route, such as
   ` → "<state>"`.
+- An attach whose base has a large file that the Repo cache cannot get fails. The run faults, and the Sandbox stays, so
+  that you can look inside it. `<files>` is `the large file` or `<n> large files`, and `<list>` has the form that
+  [Cut a Worktree](cut-a-worktree.md#rules) gives:
+  `Sandbox "<name>": the attach failed (500): the attach of slot "<slot>" failed at get the base's large files: the node cache cannot get <files> of <base>: <list>`.
 
 ## Read next
 

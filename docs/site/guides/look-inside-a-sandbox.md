@@ -168,6 +168,9 @@ git push origin <branch>
 Repo. When the Repo url starts with `https://`, `git push` asks for a user name and a password. Give your user name.
 Give a token that can push to the Repo as the password.
 
+When the Repo keeps its large files with Git LFS, `git push` also uploads the large files of the branch to the LFS
+server. The upload uses your credential, not a credential of jr2. git-lfs can ask for your user name and token again.
+
 A [Machine](../reference/glossary.md#machine) can also push the branch with an
 [Effect](../reference/glossary.md#effect). See [Push and sign a branch](push-and-sign-a-branch.md).
 

@@ -55,10 +55,11 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 - **Freshness degrades, absence does not, and the caller is told.** A remote fetch that fails or outruns the on-demand
   budget lets the program fall through to the objects the cache holds — ADR-0051's stance for attach — and writes one
   line to stderr, which git passes through verbatim:
-  `warning: jr2: remote fetch failed (<git's error>); serving the cache as of <lastFetched>`. The budget is the cache
-  agent's one on-demand number; the program's wait is that plus watch slack, and nothing else owns a timeout. A cut
-  reads that line too: its output carries the line in `stale`, and the cut uses what the clone holds. A branch name that
-  the clone does not hold is then `refused`, because the remote cannot confirm that it is new
+  `warning: jr2: remote fetch failed (<git's error>); serving the cache as of <lastFetched>`. A fetch's budget is the
+  cache agent's on-demand number for a fetch; the program's wait is that plus watch slack, and the program owns no
+  timeout of its own. An LFS ask has its own budget of ten minutes in the cache agent, and the Orchestrator waits that
+  plus watch slack. A cut reads that line too: its output carries the line in `stale`, and the cut uses what the clone
+  holds. A branch name that the clone does not hold is then `refused`, because the remote cannot confirm that it is new
   ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)).
 - **One fetch at a time in a clone.** All Worktrees of a clone share `refs/remotes/origin/*`, and git updates a ref only
   if it still holds the value that the fetch read. So two fetches that overlap on a moved remote can fail with
@@ -74,6 +75,23 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   env; the program is a static binary, the `work-acl` rule (ADR-0037), because it executes on a libc jr2 does not
   control. A human in the User Container gets the same `git fetch` as the Agent, with no credential of their own; the
   human `exec`'d into the Harness container already had it.
+- **A large file is fetched as a commit is.** A Repo that stores files with Git LFS needs nothing from the Machine or
+  the image. The attach writes git-lfs's filter into the clone's config by absolute path, to a static git-lfs on the
+  runtime volume, with no `git lfs install`. It also writes git-lfs's four hooks (`post-checkout`, `post-commit`,
+  `post-merge`, `pre-push`), each calling that git-lfs by absolute path, where the clone has no such hook: git-lfs
+  writes a missing hook itself, and its hook calls `git lfs` on PATH, which fails in a seat with no git-lfs on PATH. A
+  hook that is there stays, so a user's own hook is kept. A smudge reads the cache's `lfs/objects` through the clone's
+  alternate. A miss goes to jr2's standalone transfer agent, beside git-lfs on the volume. The agent asks for those
+  objects by oid on the path that a fetch's ask takes (the Custodian, then the Orchestrator, then the cache agent),
+  waits for the landing, and gives git-lfs a copy of each one. The cache agent downloads them with the Repo CR's
+  `secretRef` (ADR-0051). So any checkout in the pod's `/work` works, of any commit, as it does in a clone with no LFS.
+  A credentialed `command` is the exception: it runs on the Sandbox Effector's own scratch checkout, where each large
+  file is its pointer (ADR-0067). One ask names 1 to 256 objects. An attach asks for the objects of the Binding's base
+  before it checks out `default/`, and a cut asks for its commit's. The cut's ask gets what is left of its Effect's
+  `timeout` ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). An object that the remote
+  cannot give and the cache does not hold fails git-lfs's checkout, with jr2's line on stderr. A cold attach can
+  download for longer than one HTTP request may wait, so `POST /attach` answers 202 while the attach runs, and the
+  Orchestrator asks again with the same body until it ends.
 - **Names.** `fetch` is what an Agent, a human, and a cache do; `refresh` is what the interval does and stays on
   `refreshInterval`; an _ask_ is the mark, the word the agent and the operator already use. The url carries the Repo's
   identity, never the cache key — a key is a derived directory name, never chosen by a human (ADR-0004), and not the
@@ -112,9 +130,15 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   now "asks the node cache", the User Container mounts `/opt/jr2` read-only beside `/repos`, and "nothing injected"
   narrows to the seat's process — no env, no command, no probe. ADR-0004's refresh section gains the in-pod ask.
 - The runtime volume carries a second static binary, and so a jr2 program is present in every seat of every Workspace
-  pod, User Container included. It is the natural home for in-pod jr2 functionality that does not yet exist.
+  pod, User Container included. It also carries git-lfs and the LFS transfer agent.
+- git-lfs copies each object that it smudges into the clone's own `.git/lfs/objects`, and the cache is on another mount,
+  so a pod's disk holds each checked-out large file two times. That disk is `/work`'s, which is not part of the Size
+  that the Workspace states ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
 - A fetch inside a pod is a remote round trip through the node agent, seconds rather than milliseconds. Every git
   command that fetches pays it; none that does not.
+- The cache agent serves a Repo's git asks and its LFS asks one at a time, and it works on at most four Repos at once.
+  While it downloads large files for one pod, a fetch that another pod on that node asks for the same Repo can run out
+  of its budget and land `stale`. Four such downloads at once hold the agent, so a fetch of any Repo on that node waits.
 - The Sandbox status grows a standing per-key Repo entry; the Custodian carries one loopback route for it; the
   Orchestrator gains a Sandbox-token route. No new credential, no new watch in the cache agent, no git knowledge in the
   operator beyond the timestamp comparison it already makes.
