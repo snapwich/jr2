@@ -19,8 +19,9 @@
 //   - No hook runs: a cleared environment and sync.ts's config. The files of a Worktree come through
 //     a git folder of the cut's own (`fill`), which takes only the clone's objects: no config, no
 //     index and no ignore or attributes rule of the clone, of a config file or of the cut's HOME
-//     changes what is checked out. A re-cut first removes each `.gitignore` and `.gitattributes`
-//     file that the last commit it wrote does not have, so that only the commit's own rules apply.
+//     changes what is checked out. A re-cut first removes each `.gitattributes` file that the last
+//     commit it wrote does not have, so that only the commit's own attributes apply. It keeps each
+//     `.gitignore` and each file that one ignores (ADR-0075).
 //   - The lock is a flock on a descriptor no child inherits, so nothing that outlives this process
 //     can hold it. Node has no flock: a small program takes it on our descriptor, then exits.
 //   - The fetch lock (jr2-upload-pack, ADR-0075) is a second lock with one rule: a fetch waits only
@@ -542,9 +543,10 @@ const HALF_DONE = [
   "sequencer",
 ];
 
-/** The files whose rules change what a checkout writes and what a clean keeps. A re-cut removes each
- * one that is not in the commit that it last wrote, before the checkout (ADR-0075). */
-const RULE_PATHSPECS = [":(glob)**/.gitignore", ":(glob)**/.gitattributes"];
+/** The files whose rules change the bytes that a checkout writes. A re-cut removes each one that is
+ * not in the commit that it last wrote, before the checkout (ADR-0075). A `.gitignore` stays: a
+ * folder that ignores itself (`.venv`, `.pytest_cache`) is the reviewer's tools. */
+const ATTRIBUTES_PATHSPECS = [":(glob)**/.gitattributes"];
 
 /**
  * The files that pi-coding-agent reads into an Agent's system prompt from a folder of a Worktree
@@ -573,20 +575,19 @@ const samePath = (a: string, b: string): boolean => {
  * out: not a filter or `core.worktree` in any config file or include, not `info/attributes`, not an
  * ignore or attributes file in the cut's HOME, not an index whose stat data an Agent matched to a
  * changed file, not a skip-worktree or assume-unchanged bit, not a sparse checkout, and (below) not a
- * `.gitattributes` or `.gitignore` in the work tree that the commit does not have. Then the index is
- * copied into the Worktree's admin folder, and a
- * detached Worktree's HEAD is set to `sha`.
+ * `.gitattributes` in the work tree that the commit does not have. Then the index is copied into the
+ * Worktree's admin folder, and a detached Worktree's HEAD is set to `sha`.
  *
  * `again`: the folder holds the files of the commit that the cut last wrote there, `again`, and an
  * Agent's changes. The index is seeded from that commit (the record's, never a HEAD that an Agent
- * set), so a file that the new commit removed goes. Then each `.gitignore` and `.gitattributes`
- * that is not in that commit goes, before the checkout: a `.gitattributes` in the work tree changes
- * the bytes that a checkout writes (`eol`, `working-tree-encoding`, `ident`), and a `.gitignore`
- * keeps what it ignores. After the checkout, `clean -ffd` removes what is not in the commit. Ignored
- * files stay, by the new commit's own `.gitignore` files alone, because a reviewer runs the tests
- * (ADR-0028); an ignore rule of the clone's `info/exclude`, of an Agent's config or of a file that an
- * Agent wrote keeps nothing. The context files and skills that pi reads go also when the commit
- * ignores them.
+ * set), so a file that the new commit removed goes. Then each `.gitattributes` that is not in that
+ * commit goes, before the checkout, because it changes the bytes that a checkout writes (`eol`,
+ * `working-tree-encoding`, `ident`). After the checkout, `clean -ffd` removes what is not in the
+ * commit. Ignored files stay, by each `.gitignore` in the work tree, because a reviewer runs the
+ * tests and a folder that ignores itself (`.venv`) is the reviewer's tools (ADR-0028). So a
+ * `.gitignore` that an Agent wrote also keeps what it ignores: a known limit, which a domain for each
+ * Agent closes (ADR-0075). An ignore rule of the clone's `info/exclude` or of a config keeps nothing.
+ * The context files and skills that pi reads go also when they are ignored.
  *
  * It refuses a Worktree whose `.git` names another admin folder, and one whose own git would work
  * in another folder (a `core.worktree` in its config): each later git of an Agent there would read
@@ -623,8 +624,8 @@ async function fill(
   if (opts.again !== undefined) {
     const seed = await git(path, ["read-tree", opts.again]);
     if (seed.code !== 0) return seed.err;
-    const rules = await git(path, ["clean", "-ffdxq", "--", ...RULE_PATHSPECS]);
-    if (rules.code !== 0) return rules.err;
+    const attributes = await git(path, ["clean", "-ffdxq", "--", ...ATTRIBUTES_PATHSPECS]);
+    if (attributes.code !== 0) return attributes.err;
   }
   const co = await git(path, ["checkout", "-q", "-f", "--detach", sha]);
   if (co.code !== 0) return co.err;

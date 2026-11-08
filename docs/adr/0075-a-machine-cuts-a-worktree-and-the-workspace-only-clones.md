@@ -75,16 +75,16 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
   folder (a `core.worktree`): each later git of an Agent there would read that other folder.
 - **A detached cut is forced from its own record** and cleaned with `-ffd`, from the same git folder. Its index starts
   at the commit that the cut last wrote there, which the record keeps, and not at the Worktree's HEAD, which an Agent
-  sets. So a file that the new commit removed goes. Before the checkout, each `.gitignore` and `.gitattributes` that is
-  not in that commit goes (`clean -ffdx` with those pathspecs): a `.gitattributes` in the work tree changes the bytes
-  that the checkout writes (`eol`, `working-tree-encoding`, `ident`), and a `.gitignore` that an Agent wrote keeps what
-  it ignores. Ignored files stay only when the new commit's own `.gitignore` files ignore them, because a reviewer runs
-  the tests (ADR-0028). A rule in the clone's `info/exclude`, in an Agent's config or in a file that an Agent wrote
-  keeps nothing. So a folder that ignores itself with its own `.gitignore` (a Python `.venv`, a `.pytest_cache`) goes at
-  each re-cut unless the commit's `.gitignore` ignores it. Each context file and skill that pi reads
-  (`AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`, and what is in a `.pi/skills` folder) in
-  any folder of the Worktree goes also when the commit ignores it (`clean -ffdx` with those pathspecs), because an
-  ignored context file is in no diff. A tracked file stays. git does not go into a nested repo that is ignored.
+  sets. So a file that the new commit removed goes. Before the checkout, each `.gitattributes` that is not in that
+  commit goes (`clean -ffdx` with that pathspec), because a `.gitattributes` in the work tree changes the bytes that the
+  checkout writes (`eol`, `working-tree-encoding`, `ident`). Ignored files stay, by each `.gitignore` in the Worktree,
+  also one that the commit does not have, because a reviewer runs the tests (ADR-0028): a folder that ignores itself
+  with its own `.gitignore` (a Python `.venv`, a `.pytest_cache`, a `.mypy_cache`) is the reviewer's tools, and stays
+  from round to round. So a `.gitignore` that an Agent wrote keeps what it ignores too (a limit, below). A rule in the
+  clone's `info/exclude` or in a config keeps nothing. Each context file and skill that pi reads (`AGENTS.override.md`,
+  `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`, and what is in a `.pi/skills` folder) in any folder of the
+  Worktree goes also when it is ignored (`clean -ffdx` with those pathspecs), because an ignored context file is in no
+  diff. A tracked file stays. git does not go into a nested repo that is ignored.
 
   Only a detached cut is forced and cleaned: a branch Worktree that a cut made is given back as it is (`held`), with the
   work in it.
@@ -304,6 +304,10 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   in a Worktree's own config, in an include or in a conditional include for a branch is not in that list, and a config
   that an Agent changes between the list and the checkout is not either. The list does not stop a `core.worktree`, a
   skip-worktree bit or an index whose stat data matches a changed file. The cut's own git folder reads none of these.
+- **A re-cut removes each `.gitignore` that the commit does not have**, so that only the commit's own rules keep an
+  ignored file. Rejected. It also removed each folder that ignores itself with its own `.gitignore` (a Python `.venv`, a
+  `.pytest_cache`, a `.mypy_cache`), so the reviewer installed its tools again at each round. The cut cannot tell such a
+  folder from one that an Agent hid, and the isolation of the Agents of one Workspace is best effort (ADR-0028).
 
 ## Consequences
 
@@ -321,6 +325,14 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   Agent's process that runs during a cut can write that folder: a race with one cut, not a file put there before it. A
   domain for each Agent ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md))
   closes it.
+- A `.gitignore` that an Agent writes in another Agent's review Worktree keeps the files that it ignores through a
+  re-cut, and no `git status` there shows them. The cut cannot tell such a file from a `.venv`'s own `.gitignore`. This
+  is one of the limits of the isolation between the Agents of one Workspace (ADR-0028), which is best effort. Such a
+  file does not reach a system prompt: the cut removes an ignored context file or skill, and the project context leaves
+  out an ignored one ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). A Landlock domain for
+  each Agent, in which the Agent writes only its own Worktree, closes it. That is the next step after this decision: it
+  extends the domain for each Agent of
+  [ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md).
 - Each re-cut of a detached Worktree writes each file of the commit again, because the cut does not trust the stat data
   of the Worktree's index.
 - The cut trusts the clone's objects. Each Agent of the Workspace can write the clone's object folder, and git does not

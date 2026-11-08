@@ -622,7 +622,7 @@ test("a changed tracked file whose stat data matches the index, or that is assum
   assert.doesNotMatch(run(review.path, "ls-files", "-v"), /^[a-zS] /m);
 });
 
-test("a re-cut keeps only what the commit's own .gitignore ignores: info/exclude keeps nothing, and a file the commit removed goes (ADR-0075)", async (t) => {
+test("a re-cut keeps what a .gitignore ignores, but info/exclude keeps nothing, and a file the commit removed goes (ADR-0075)", async (t) => {
   const { w, coder, review, common } = await reviewed(t);
   writeFileSync(join(common, "info", "exclude"), "hidden.sh\n");
   writeFileSync(join(review.path, "hidden.sh"), "rm -rf /\n");
@@ -638,18 +638,31 @@ test("a re-cut keeps only what the commit's own .gitignore ignores: info/exclude
   assert.equal(run(review.path, "status", "--porcelain"), "");
 });
 
-test("a .gitignore that an Agent wrote keeps nothing at a re-cut: only the commit's own rules ignore (ADR-0075)", async (t) => {
+test("a re-cut keeps each file that a .gitignore in the Worktree ignores, also one that the commit does not have: a self-ignoring .venv stays (ADR-0075)", async (t) => {
   const { w, sha, review } = await reviewed(t);
-  // A folder whose own new .gitignore ignores all of it, the file too: no `git status` shows it.
+  // A tool folder that ignores itself, as `python -m venv` and pytest make them.
+  mkdirSync(join(review.path, ".venv", "bin"), { recursive: true });
+  writeFileSync(join(review.path, ".venv", ".gitignore"), "*\n");
+  writeFileSync(join(review.path, ".venv", "bin", "python"), "tool\n");
+  mkdirSync(join(review.path, ".pytest_cache"));
+  writeFileSync(join(review.path, ".pytest_cache", ".gitignore"), "*\n");
+  writeFileSync(join(review.path, ".pytest_cache", "CACHEDIR.TAG"), "tag\n");
+  // The known limit: a folder whose own new .gitignore ignores all of it stays too (ADR-0075).
   mkdirSync(join(review.path, "src", "evil"), { recursive: true });
   writeFileSync(join(review.path, "src", "evil", ".gitignore"), "*\n");
   writeFileSync(join(review.path, "src", "evil", "run.sh"), "approve\n");
   mkdirSync(join(review.path, "node_modules", "pkg"), { recursive: true });
   writeFileSync(join(review.path, "node_modules", "pkg", "x.js"), "x\n");
-  assert.equal(run(review.path, "status", "--porcelain"), "", "nothing shows in the Worktree");
+  writeFileSync(join(review.path, "loose.txt"), "not ignored\n");
+  assert.equal(run(review.path, "status", "--porcelain"), "?? loose.txt");
   ready(await w.go({ path: w.path("review"), detach: sha }));
-  assert.ok(!existsSync(join(review.path, "src", "evil")));
+  assert.equal(readFileSync(join(review.path, ".venv", "bin", "python"), "utf8"), "tool\n");
+  assert.ok(existsSync(join(review.path, ".venv", ".gitignore")));
+  assert.ok(existsSync(join(review.path, ".pytest_cache", "CACHEDIR.TAG")));
+  assert.ok(existsSync(join(review.path, "src", "evil", "run.sh")));
   assert.ok(existsSync(join(review.path, "node_modules", "pkg", "x.js")), "the commit ignores node_modules");
+  assert.ok(!existsSync(join(review.path, "loose.txt")), "a file that no rule ignores goes");
+  assert.equal(run(review.path, "status", "--porcelain"), "");
 });
 
 test("a .gitattributes that an Agent wrote in the Worktree changes no byte that a re-cut writes (ADR-0075)", async (t) => {

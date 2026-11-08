@@ -96,12 +96,12 @@ refuses a bad name at the [Menu](../reference/glossary.md#menu) or at the door, 
 ## Read a commit with no branch
 
 Invoke the Effect with `{ path, detach }` to hold one commit, with no branch. The example gives this Worktree to a
-reviewer. Each cut forces the folder to the commit, and cleans it. Files that the commit's own `.gitignore` ignores
-stay, so that a reviewer can run the tests. A `.gitignore` or `.gitattributes` that an Agent wrote goes first, so it
-keeps nothing and changes no byte. A folder that ignores itself (a Python `.venv`) goes too, unless the commit's
-`.gitignore` ignores it. An ignored `AGENTS.md`, `CLAUDE.md` or skill goes, so that the reviewer's system prompt has
-only what the commit has. A git config, an ignore rule or an index that an Agent wrote does not change the files that
-the cut writes:
+reviewer. Each cut forces the folder to the commit, and cleans it. Files that a `.gitignore` ignores stay, so that a
+reviewer can run the tests. A folder that ignores itself (a Python `.venv`) stays too, so the reviewer does not install
+its tools again at each round. Thus a `.gitignore` that another Agent wrote also keeps its files, and `git status` does
+not show them. A `.gitattributes` that an Agent wrote goes first, so it changes no byte. An ignored `AGENTS.md`,
+`CLAUDE.md` or skill goes, so that the reviewer's system prompt has only what the commit has. A git config, an
+`info/exclude` rule or an index that an Agent wrote does not change the files that the cut writes:
 
 <<< @/examples/guides/cut-a-worktree/anthropic/fix-a-bug.ts#detaching
 
