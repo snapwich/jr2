@@ -336,9 +336,12 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
 - Each re-cut of a detached Worktree writes each file of the commit again, because the cut does not trust the stat data
   of the Worktree's index.
 - The cut trusts the clone's objects. Each Agent of the Workspace can write the clone's object folder, and git does not
-  check an object's content against its id when it reads it. So an Agent that rewrites an object changes what each later
-  cut writes and what each Worktree's git reads. This is one of the limits of the isolation between the Agents of one
-  Workspace (ADR-0028): a Workflow that needs more gives the review a Workspace of its own.
+  check an object's content against its id when it reads it. So an Agent that rewrites an object, or a pack index
+  (`.idx`) that points an id at another object, changes what each later cut writes and what each Worktree's git reads.
+  The cut and the sync read no commit-graph and no multi-pack-index (`core.commitGraph=false`,
+  `core.multiPackIndex=false`): an Agent can write either one with no object rewritten, and git 2.56 then checks out
+  another tree for a commit. This is one of the limits of the isolation between the Agents of one Workspace (ADR-0028):
+  a Workflow that needs more gives the review a Workspace of its own.
 - When the Git LFS work merges, its `-c` filter pins, `lfs.storage=<clone>/.git/lfs` among them, go also on the git of
   the cut's fill (the `runner` in `fill`), which reads no config file of the clone.
 - Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a

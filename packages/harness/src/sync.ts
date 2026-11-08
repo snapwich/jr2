@@ -39,8 +39,17 @@ import type { FileOps } from "./spawner.ts";
 import { isAbsolute, join, resolve } from "node:path";
 import type { SyncAnswer, SyncRequest } from "./wire.ts";
 
-/** The config every sync git call gets: nothing the Agent's repository names runs. */
+/** The config every sync git call gets: nothing the Agent's repository names runs, and no index of
+ * commits or objects that an Agent can write changes what git reads. A commit-graph gives each
+ * commit its tree, its parents and its generation, and a multi-pack-index gives each object its
+ * place in a pack; git 2.56 reads both without a check of the object's hash, so a forged file in
+ * `objects/info` or `objects/pack` gives a commit another tree. With them off, git reads each commit
+ * from its object. */
 const CLEAN = [
+  "-c",
+  "core.commitGraph=false",
+  "-c",
+  "core.multiPackIndex=false",
   "-c",
   "core.hooksPath=/dev/null",
   "-c",

@@ -303,14 +303,15 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   copies, or one squashed commit, signed or not; the decision keys on `published` ≠ `source`, never on `sign` — in the
   Harness container (`POST /sync`, behind the Harness bearer, ADR-0058), from the bundle the Effector wrote, which the
   Orchestrator relays — never a shared volume: the Worktree stays read-only on the credentialed side. Under a cleared
-  environment and a config that names no hook, no fsmonitor, no alternate-refs command and no maintenance — and with its
-  git confined, as every process it starts in `/work` (ADR-0076), because a filter or a textconv in the shared
-  `.git/config` runs in git's process — the Harness verifies and unbundles the bundle (objects only), checks that the
-  published tip is a commit with the source's tree (it reads no signature), answers `busy` when a rebase of the branch,
-  or a merge, cherry-pick, revert or sequence in a worktree whose HEAD is the branch, is in progress, and otherwise
-  copies each commit the Agent made after the source as its raw object with only its parents changed, then moves the
-  branch with one `git update-ref <new> <old>` — a compare-and-swap, tried again from the new tip at most 3 times — so
-  files, index, HEAD and stash do not change. Its answer is a field of the push's output beside the outcome:
+  environment and a config that names no hook, no fsmonitor, no alternate-refs command and no maintenance, and reads no
+  commit-graph and no multi-pack-index, which an Agent can forge (ADR-0075) — and with its git confined, as every
+  process it starts in `/work` (ADR-0076), because a filter or a textconv in the shared `.git/config` runs in git's
+  process — the Harness verifies and unbundles the bundle (objects only), checks that the published tip is a commit with
+  the source's tree (it reads no signature), answers `busy` when a rebase of the branch, or a merge, cherry-pick, revert
+  or sequence in a worktree whose HEAD is the branch, is in progress, and otherwise copies each commit the Agent made
+  after the source as its raw object with only its parents changed, then moves the branch with one
+  `git update-ref <new> <old>` — a compare-and-swap, tried again from the new tip at most 3 times — so files, index,
+  HEAD and stash do not change. Its answer is a field of the push's output beside the outcome:
   `sync: synced | already | skipped | busy | not-synced`, with `syncReason` when it moved nothing (a push that published
   the Agent's own commit is `skipped`, with no call and no bundle; every other push is synced, one that published
   nothing new included, so a plain push of the slot after a squash is a fast-forward of the squashed commit). A Harness

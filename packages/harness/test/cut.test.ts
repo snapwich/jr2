@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { BRANCH_NAME, cut, pathFault, type CutAnswer, type CutRequest } from "../src/cut.ts";
 
 const LOCK = ["flock", "-x", "0"];
@@ -824,6 +825,108 @@ test("no hook and no smudge filter runs; a background hook holds no lock", async
   ready(await w.go({ path: w.path("h2"), branch: "h2" }));
   assert.ok(Date.now() - at < 4000, "a hook held nothing");
   assert.ok(!existsSync(seen), `ran: ${existsSync(seen) ? readFileSync(seen, "utf8") : ""}`);
+});
+
+/**
+ * Give commit `oid` the root tree `tree` in the commit-graph file at `graph`, and fix its checksum:
+ * what an Agent can write in the clone's `objects/info`. The commit-graph format: a header, a chunk
+ * table, OIDF (fan-out), OIDL (the sorted commit ids) and CDAT (per commit: its root tree, first).
+ */
+function forgeGraph(graph: string, oid: string, tree: string): void {
+  const b = readFileSync(graph);
+  assert.equal(b.subarray(0, 4).toString("latin1"), "CGPH");
+  const chunks = new Map<string, number>();
+  for (let i = 0; i <= b[6]!; i++) {
+    const at = 8 + 12 * i;
+    chunks.set(b.subarray(at, at + 4).toString("latin1"), Number(b.readBigUInt64BE(at + 4)));
+  }
+  const n = b.readUInt32BE(chunks.get("OIDF")! + 255 * 4);
+  const oidl = chunks.get("OIDL")!;
+  const want = Buffer.from(oid, "hex");
+  const idx = [...Array(n).keys()].find((i) => b.subarray(oidl + 20 * i, oidl + 20 * i + 20).equals(want));
+  assert.ok(idx !== undefined, `${oid} is in the graph`);
+  Buffer.from(tree, "hex").copy(b, chunks.get("CDAT")! + 36 * idx);
+  createHash("sha1")
+    .update(b.subarray(0, b.length - 20))
+    .digest()
+    .copy(b, b.length - 20);
+  // git writes the file read-only; an Agent replaces it.
+  rmSync(graph);
+  writeFileSync(graph, b);
+}
+
+test("a commit-graph that an Agent forged in the clone changes no file that a cut writes", async (t) => {
+  const w = world(t);
+  const base = run(w.clone, "rev-parse", "origin/main");
+  // The Agent's tree: the base's files and a planted AGENTS.md, in the clone's own objects.
+  const blob = execFileSync("git", ["-C", w.clone, "hash-object", "-w", "--stdin"], { input: "planted\n" })
+    .toString()
+    .trim();
+  const listing = `${run(w.clone, "ls-tree", base)}\n100644 blob ${blob}\tAGENTS.md\n`;
+  const planted = execFileSync("git", ["-C", w.clone, "mktree"], { input: listing }).toString().trim();
+  run(w.clone, "commit-graph", "write", "--reachable");
+  forgeGraph(join(w.clone, ".git", "objects", "info", "commit-graph"), base, planted);
+  // The forgery bites a git that reads the graph: its tree of the base is the planted one. A
+  // checkout takes that tree on git 2.56; git 2.43's checkout reads the commit object, so on 2.43
+  // this test passes with no pin too.
+  assert.equal(run(w.clone, "log", "-1", "--format=%T", base), planted);
+
+  const fresh = ready(await w.go({ path: w.path("fresh"), branch: "fresh" }));
+  const detached = ready(await w.go({ path: w.path("pinned"), detach: base }));
+  for (const a of [fresh, detached]) {
+    assert.equal(a.head, base);
+    assert.ok(!existsSync(join(a.path, "AGENTS.md")), `${a.path} has the planted AGENTS.md`);
+    assert.deepEqual(readdirSync(a.path).sort(), [".git", ".gitignore", "a.txt"]);
+  }
+});
+
+/** Point the multi-pack-index entry of `oid` at the place of `other` in its pack, and fix the
+ * checksum. The format: a header, a chunk table, OIDF, OIDL, and OOFF (per object: pack, offset). */
+function forgeMidx(midx: string, oid: string, other: string): void {
+  const b = readFileSync(midx);
+  assert.equal(b.subarray(0, 4).toString("latin1"), "MIDX");
+  const chunks = new Map<string, number>();
+  for (let i = 0; i <= b[6]!; i++) {
+    const at = 12 + 12 * i;
+    chunks.set(b.subarray(at, at + 4).toString("latin1"), Number(b.readBigUInt64BE(at + 4)));
+  }
+  const n = b.readUInt32BE(chunks.get("OIDF")! + 255 * 4);
+  const oidl = chunks.get("OIDL")!;
+  const index = (id: string) => {
+    const want = Buffer.from(id, "hex");
+    const i = [...Array(n).keys()].find((k) => b.subarray(oidl + 20 * k, oidl + 20 * k + 20).equals(want));
+    assert.ok(i !== undefined, `${id} is in the multi-pack-index`);
+    return i;
+  };
+  const ooff = chunks.get("OOFF")!;
+  b.copy(b, ooff + 8 * index(oid), ooff + 8 * index(other), ooff + 8 * index(other) + 8);
+  createHash("sha1")
+    .update(b.subarray(0, b.length - 20))
+    .digest()
+    .copy(b, b.length - 20);
+  rmSync(midx);
+  writeFileSync(midx, b);
+}
+
+test("a multi-pack-index that an Agent forged in the clone changes no file that a cut writes", async (t) => {
+  const w = world(t);
+  const base = run(w.clone, "rev-parse", "origin/main");
+  // The Agent's commit: the base's message on a tree with a planted AGENTS.md, packed with the base.
+  const blob = execFileSync("git", ["-C", w.clone, "hash-object", "-w", "--stdin"], { input: "planted\n" })
+    .toString()
+    .trim();
+  const listing = `${run(w.clone, "ls-tree", base)}\n100644 blob ${blob}\tAGENTS.md\n`;
+  const planted = execFileSync("git", ["-C", w.clone, "mktree"], { input: listing }).toString().trim();
+  const evil = run(w.clone, "commit-tree", planted, "-m", "first");
+  run(w.clone, "update-ref", "refs/evil", evil);
+  run(w.clone, "repack", "-adq");
+  run(w.clone, "multi-pack-index", "write");
+  forgeMidx(join(w.clone, ".git", "objects", "pack", "multi-pack-index"), base, evil);
+  // Without the pin, git 2.56 checks the base out with the planted file, and git 2.43 refuses it
+  // on a hash mismatch.
+  const fresh = ready(await w.go({ path: w.path("fresh"), branch: "fresh" }));
+  assert.equal(fresh.head, base);
+  assert.deepEqual(readdirSync(fresh.path).sort(), [".git", ".gitignore", "a.txt"]);
 });
 
 // --- `stale`, through a real ext:: program ---------------------------------------------------------------

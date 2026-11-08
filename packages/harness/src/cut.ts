@@ -16,12 +16,14 @@
 //     answers the first answer's `found`, so a cut that a restart sent twice never reads as resumed work.
 //   - The Orchestrator sends the base on each cut: an Agent's checkout in `default/` cannot move it. A
 //     name resolves by refs/remotes/origin first (the local `main` is frozen at the clone), then a tag.
-//   - No hook runs: a cleared environment and sync.ts's config. The files of a Worktree come through
-//     a git folder of the cut's own (`fill`), which takes only the clone's objects: no config, no
-//     index and no ignore or attributes rule of the clone, of a config file or of the cut's HOME
-//     changes what is checked out. A re-cut first removes each `.gitattributes` file that the last
-//     commit it wrote does not have, so that only the commit's own attributes apply. It keeps each
-//     `.gitignore` and each file that one ignores (ADR-0075).
+//   - No hook runs: a cleared environment and sync.ts's config. No commit-graph and no
+//     multi-pack-index is read: an Agent can forge either in the clone, and git 2.56 then checks out
+//     another tree for a commit. The files of a Worktree come through a git folder of the cut's own
+//     (`fill`), which takes only the clone's objects: no config, no index and no ignore or
+//     attributes rule of the clone, of a config file or of the cut's HOME changes what is checked
+//     out. A re-cut first removes each `.gitattributes` file that the last commit it wrote does not
+//     have, so that only the commit's own attributes apply. It keeps each `.gitignore` and each file
+//     that one ignores (ADR-0075).
 //   - The lock is a flock on a descriptor no child inherits, so nothing that outlives this process
 //     can hold it. Node has no flock: a small program takes it on our descriptor, then exits.
 //   - The fetch lock (jr2-upload-pack, ADR-0075) is a second lock with one rule: a fetch waits only
@@ -116,6 +118,10 @@ export function pathFault(path: unknown, workRoot: string): string | undefined {
  * (or the same files under `XDG_CONFIG_HOME`) when no config names another file, also with
  * `GIT_CONFIG_GLOBAL=/dev/null`. The cut's HOME is a folder in TMPDIR, which the Agents write. */
 const CLEAN = [
+  "-c",
+  "core.commitGraph=false",
+  "-c",
+  "core.multiPackIndex=false",
   "-c",
   "core.excludesFile=/dev/null",
   "-c",
@@ -574,9 +580,12 @@ const samePath = (a: string, b: string): boolean => {
  * `alternates`. So nothing that an Agent wrote in the clone or the Worktree changes what is checked
  * out: not a filter or `core.worktree` in any config file or include, not `info/attributes`, not an
  * ignore or attributes file in the cut's HOME, not an index whose stat data an Agent matched to a
- * changed file, not a skip-worktree or assume-unchanged bit, not a sparse checkout, and (below) not a
- * `.gitattributes` in the work tree that the commit does not have. Then the index is copied into the
- * Worktree's admin folder, and a detached Worktree's HEAD is set to `sha`.
+ * changed file, not a skip-worktree or assume-unchanged bit, not a sparse checkout, not a commit-graph
+ * or a multi-pack-index that an Agent forged (CLEAN), and (below) not a `.gitattributes` in the work
+ * tree that the commit does not have. Then the index is copied into the Worktree's admin folder, and
+ * a detached Worktree's HEAD is set to `sha`. A known limit: a pack index (`.idx`) that an Agent
+ * forged in the clone can give a commit the bytes of another object, because git 2.56 reads a pack
+ * without a check of the object's hash and no config turns a pack index off.
  *
  * `again`: the folder holds the files of the commit that the cut last wrote there, `again`, and an
  * Agent's changes. The index is seeded from that commit (the record's, never a HEAD that an Agent
