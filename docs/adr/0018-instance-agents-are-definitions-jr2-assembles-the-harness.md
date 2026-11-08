@@ -76,10 +76,10 @@ at admission: the Turn runs, and the printed conversation names the level that t
 
 The line that keeps this from becoming "re-specify the definition at the call site": **identity vs. dial.** Identity —
 `instructions`, `access` — is definition-only: a call site that rewrote it would make the Agent's name a lie, and
-`access` carries [ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)'s containment claim
-that a read-only reviewer _cannot_ write, which per-invocation escalation would void. **ADR-0028 is therefore untouched
-by the dials.** Dials say only how hard to run: it is still the coder, it is the coder running hot. What the Turn is
-about and where it works — `prompt`, `cwd` — is neither identity nor a dial but the Turn's **Frame**
+`access` states [ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)'s intent that a
+read-only reviewer does not write, which per-invocation escalation would void. **ADR-0028 is therefore untouched by the
+dials.** Dials say only how hard to run: it is still the coder, it is the coder running hot. What the Turn is about and
+where it works — `prompt`, `cwd` — is neither identity nor a dial but the Turn's **Frame**
 ([ADR-0057](0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md)): per Turn by nature, since a worktree path
 exists only once a run does, and no more a property of the persona than the prompt is.
 

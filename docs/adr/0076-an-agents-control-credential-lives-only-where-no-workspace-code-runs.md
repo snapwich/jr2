@@ -3,10 +3,10 @@
 [ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) scoped an Agent's control
 credential to its Sandbox. That stops a coder in one Sandbox from delivering a pick to a reviewer in another Sandbox.
 [ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md) made several Agents in one Sandbox normal:
-concurrent coders in one clone, or a coder beside an independent reviewer. In one Sandbox the Sandbox scope is not
-sufficient. Every Agent's `bash` is a child of the one Harness process, at the one uid, and it inherits the env of that
-process. So a coder's `bash`, driven by a prompt injection, can read the Stand-in of the control credential, send
-`POST /agents/<reviewer-iid>/events` through the Custodian, and approve its own review. The reviewer did nothing.
+concurrent coders in one clone, or a coder beside a reviewer in a quick loop (ADR-0028). In one Sandbox the Sandbox
+scope is not sufficient. Every Agent's `bash` is a child of the one Harness process, at the one uid, and it inherits the
+env of that process. So a coder's `bash`, driven by a prompt injection, can read the Stand-in of the control credential,
+send `POST /agents/<reviewer-iid>/events` through the Custodian, and approve its own review. The reviewer did nothing.
 
 The attack does not need the coder's own `bash`. The Agents of one Workspace share a writable `/work`. Code that one
 Agent writes there — a test file, a git hook, `core.fsmonitor`, a smudge filter — runs when another process runs on
@@ -131,11 +131,13 @@ another, whatever it writes.
   that the container started with: the image's `ENV`, `harness.env` and `envFrom`, the proxy and CA variables. jr2's own
   `JR2_*` names are removed, except `JR2_CUSTODIAN_URL`. It also gets `HOME`, `TMPDIR`, and the Stand-ins of the secrets
   that the `workspace()` grants (its `secrets` list), each under its own name, and `safe.bareRepository=explicit` for
-  git, through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0` and `GIT_CONFIG_VALUE_0`, because a commit can hold a bare
-  repository whose config runs a program on a plain `git status` (ADR-0080). These names take the place of the image's
-  own, so `jr2 up` warns when a Sandbox Image sets `GIT_CONFIG_COUNT`. It never gets what the Harness process added to
-  its own env after the start, and so it never gets the control Stand-in, or the Stand-in of a model key that the
-  `secrets` list does not name. A toolchain and a bring-your-own image work as they work outside jr2.
+  git, because a commit can hold a bare repository whose config runs a program on a plain `git status` (ADR-0080). The
+  entry goes after the start env's own `GIT_CONFIG_KEY_<n>` entries: with a start env that sets `GIT_CONFIG_COUNT=n`,
+  jr2 sets `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, and `GIT_CONFIG_COUNT=n+1`. So an image's own entries stay,
+  and jr2 needs to read no image. A start-env `GIT_CONFIG_COUNT` that is not a count is replaced, and the Harness logs
+  one line. It never gets what the Harness process added to its own env after the start, and so it never gets the
+  control Stand-in, or the Stand-in of a model key that the `secrets` list does not name. A toolchain and a
+  bring-your-own image work as they work outside jr2.
 - **The Harness process runs with jr2's env alone.** node, glibc and OpenSSL read names from the env that load code or
   configuration from a path: `NODE_OPTIONS=--require /app/x.js`, `LD_PRELOAD`, `OPENSSL_CONF`. The image's `ENV` can
   name a file that the domain writes. So the Harness starts as `effector nocore --harness-env -- node …`. The effector
@@ -238,6 +240,9 @@ another, whatever it writes.
     as a constant. It is valid only on `POST /sandboxes/<sandbox>/fetch`
     ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). The Custodian
     accepts the public Stand-in on the fetch route only.
+  - No route gives a Sandbox a Handoff. The Orchestrator sends the bundle to the child's Harness with the cut that asks
+    for it, and asks the source Harness for it on the Harness's own wire
+    ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)), so neither token reaches one.
   - The Orchestrator accepts each token only on its own routes. A Gate accepts neither, and no other principal of an
     Agent: an Agent never reaches a Gate (ADR-0013).
 - **An engine runs its loop in the Harness process.** pi does: its loop is in the Harness process, and only its tools

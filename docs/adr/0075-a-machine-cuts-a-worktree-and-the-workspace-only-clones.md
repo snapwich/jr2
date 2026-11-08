@@ -46,8 +46,8 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
 - **The path is the reference, and the Machine knows it before the cut.** It is exactly `/work/<slot>/<name>`, with one
   segment that is not `default` and starts with neither `.` nor `-`. So a door word or a planner's word does not become
   a folder tree, and a `run` branch and a `run/a` branch never need nested folders.
-- **`branch` is required unless `detach` is given.** The branch is read from the cut's record, never from the folder or
-  from HEAD. A Machine can use one word for both. The rule can relax after v1, and the reverse is a break.
+- **`branch` is required unless `detach` or `handoff` is given.** The branch is read from the cut's record, never from
+  the folder or from HEAD. A Machine can use one word for both. The rule can relax after v1, and the reverse is a break.
 - **A cut resolves a branch in one order, after a fetch:** a local branch, then `origin/<branch>` with tracking, then a
   new branch from `from` or the Binding's base with no upstream. `found` says which: `local`, `remote` or `none`. A path
   that a cut already made needs no fetch, and `found` is `held`. A detached cut says `commit`. A cut at a Handoff says
