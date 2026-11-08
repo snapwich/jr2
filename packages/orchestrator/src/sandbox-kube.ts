@@ -91,6 +91,7 @@ import {
   CUSTODIAN_SCRIPT_KEY,
   type CustodianComposition,
 } from "./custodian.ts";
+import { dialFetch, neverDelivered, routabilityLine, transportCode, transportDetail } from "./dial.ts";
 import { heldStandIn, readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
 import { markHarnessEnv } from "./harness-env.ts";
 import {
@@ -513,10 +514,14 @@ export type KubeSandboxOptions = {
    * use, over `client`, in `namespace`. */
   watch?: SandboxWatch;
   /** The transport the attach dials the Harness with (ADR-0063). Injectable for tests. Default:
-   * global `fetch`. */
+   * `dialFetch()`, whose connect is bounded (ADR-0042), so a dropped first SYN costs the bound and
+   * a retry, not the global `fetch`'s 10 s. */
   harnessFetch?: typeof fetch;
   /** How long an attach re-sends a request that never reached the Harness. Default 90s. */
   attachWindowMs?: number;
+  /** Where the routability line goes when an attach had to retry (ADR-0042). Default
+   * `console.warn`. */
+  log?: (line: string) => void;
   /**
    * The config-derived options, read on every use instead of the static ones above (ADR-0069). The
    * config that applies is always the current Assembly's, and a publish swaps it without a new
@@ -546,8 +551,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const repoTimeoutMs = opts.repoTimeoutMs ?? 25 * 60_000;
   const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
-  const harnessFetch = opts.harnessFetch ?? fetch;
+  const harnessFetch = opts.harnessFetch ?? dialFetch();
   const attachWindowMs = opts.attachWindowMs ?? ATTACH_WINDOW_MS;
+  const log = opts.log ?? ((line: string) => console.warn(line));
 
   // Built on first use, never at construction: a boot that builds this port has not yet reached
   // the cluster, and must not need to (ADR-0048's stance for the Repos, held for the Sandboxes).
@@ -1184,43 +1190,77 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   /** The Harness's `POST /attach` (ADR-0063), re-sent while it demonstrably never reached the
    * Harness. Idempotent on the Harness's side (every step guarded, calls serialized), so a re-send
    * after a request that DID land is harmless too — but only a transport failure is retried: an
-   * answer is an answer. */
-  const postAttach = async (name: string, endpoint: string, body: AttachRequest): Promise<AttachResponse> => {
+   * answer is an answer. A 202 is the Harness's word that the attach still runs (a cold attach
+   * gets its large files, ADR-0053), and the same body is sent again to wait on it. Each try's
+   * connect is bounded (`dialFetch`), and a retry that cost something says so in one routability
+   * line (ADR-0042). */
+  const postAttach = async (
+    name: string,
+    endpoint: string,
+    body: AttachRequest,
+    signal?: AbortSignal,
+  ): Promise<AttachResponse> => {
     if (!opts.signingKey) throw new Error("kubeSandbox: the attach needs a signingKey for the Harness bearer");
     const url = new URL("/attach", endpoint).toString();
     const headers = {
       "content-type": "application/json",
       authorization: `Bearer ${harnessToken(opts.signingKey, name)}`,
     };
+    const startedAt = Date.now();
     // The window for a Harness that does not answer, counted again after each answer.
-    let until = Date.now() + attachWindowMs;
+    let until = startedAt + attachWindowMs;
     let reached = false;
     let backoff = 250;
+    let attempts = 0;
+    let lastCode = "?";
     for (;;) {
+      attempts += 1;
       let res: Response;
-      let text: string;
       try {
-        res = await harnessFetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-        text = await res.text();
+        res = await harnessFetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          ...(signal ? { signal } : {}),
+        });
       } catch (err) {
+        // The caller gave up (the Sandbox was lost under the attach): its reason, never a retry.
+        if (signal?.aborted) throw err;
         // Ready is not routable (ADR-0042): the EndpointSlice behind the Service is programmed after
         // the pod passes its probe, and the attach is now the first thing that dials it. After an
         // answer, a fault is a Harness that restarted: the next request attaches again.
+        lastCode = transportCode(err);
         if (Date.now() >= until) {
+          // Say which: a Harness that answered before and is now lost, a request that provably
+          // never connected, or one that may have reached the Harness and then heard nothing (the
+          // idle bound, ADR-0042) or lost its connection.
           throw new Error(
-            `Sandbox "${name}": the attach ${reached ? "lost" : "never reached"} its Harness at ${endpoint}: ` +
-              (err as Error).message,
+            reached
+              ? `Sandbox "${name}": the attach lost its Harness at ${endpoint}: ${transportDetail(err)}`
+              : neverDelivered(err)
+                ? `Sandbox "${name}": the attach never reached its Harness at ${endpoint}: ${transportDetail(err)}`
+                : `Sandbox "${name}": the attach got no answer from its Harness at ${endpoint}: ${transportDetail(err)}`,
           );
         }
-        await sleep(backoff);
+        await sleep(backoff, signal);
         backoff = Math.min(backoff * 2, 5_000);
         continue;
       }
+      if (!reached && attempts > 1) log(routabilityLine("attach", url, attempts, Date.now() - startedAt, lastCode));
       reached = true;
       until = Date.now() + attachWindowMs;
       backoff = 250;
+      let text: string;
+      try {
+        text = await res.text();
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new Error(
+          `Sandbox "${name}": the attach reached its Harness at ${endpoint} and its answer broke off: ${transportDetail(err)}`,
+        );
+      }
       // 202: the attach still runs, past one poll's wait (a cold attach gets its large files,
-      // ADR-0053). The same body again waits on it, so no request waits as long as undici's 300 s.
+      // ADR-0053). The same body again waits on it, so no request waits as long as the idle bound.
       if (res.status === 202) continue;
       if (res.ok) return JSON.parse(text) as AttachResponse;
       // The Harness's own words: the slot, the step, and git's stderr.
@@ -1467,7 +1507,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       );
     },
 
-    async attach(req) {
+    async attach(req, opts) {
       // The Harness's own route (ADR-0063): the same bearer as every Harness call (ADR-0058), and
       // the Repo's identity and cache key resolved HERE, so the cache the Harness clones from is
       // the one the operator mounted, by construction (ADR-0051). The address is the Sandbox's
@@ -1487,7 +1527,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           return { slot: r.slot, url: r.url, identity, key, ...(r.ref !== undefined ? { ref: r.ref } : {}) };
         }),
       };
-      const { repos, bases } = await postAttach(req.name, endpoint, body);
+      const { repos, bases } = await postAttach(req.name, endpoint, body, opts?.signal);
       const stale = staleSlots(req.repos, staleByName.get(req.name));
       return { repos, bases, ...(stale ? { stale } : {}) };
     },
@@ -1819,7 +1859,20 @@ function staleSlots(
   return Object.keys(stale).length ? stale : undefined;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A pause that `signal` ends early, rejecting with its reason. */
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 /**
  * The refusal of a provision on a cluster with no operator (ADR-0069). The data plane is always

@@ -7,6 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import net from "node:net";
+import { dialFetch } from "../src/dial.ts";
+import { answers, neverOpens } from "./_fake-connection.ts";
 import {
   ConversationNotKept,
   SettlementFault,
@@ -245,6 +248,36 @@ test("a retry that SUCCEEDED still says what it cost — an absorbed fault must 
     lines[0]!,
     /^jr2\.routability seat=admission attempts=2 ms=\d+ last=ECONNREFUSED url=http:\/\/h\.test\/agents\/coder\/inst-1$/,
   );
+});
+
+test("with no fetch given, the admission dials through dialFetch: its connect is bounded (ADR-0042)", async (t) => {
+  const dialed: Array<{ host: unknown; port: unknown }> = [];
+  t.mock.method(net, "createConnection", (args: { host?: string; port?: number }) => {
+    dialed.push({ host: args.host, port: args.port });
+    return answers(JSON.stringify(admission));
+  });
+  const client = createHarnessClient({ baseUrl: "http://h.test:8080", log: () => {} });
+  const out = await client.send("coder", "inst-1", { message: "do the thing", definition: coder });
+  assert.equal(out.submissionId, admission.submissionId);
+  assert.deepEqual(dialed, [{ host: "h.test", port: 8080 }], "the default transport made the connection");
+});
+
+test("an admission through dialFetch whose first connection does not open is sent again on a new one", async () => {
+  let made = 0;
+  const lines: string[] = [];
+  const client = createHarnessClient({
+    baseUrl: "http://h.test:8080",
+    fetch: dialFetch({
+      connectTimeoutMs: 50,
+      connect: () => (++made === 1 ? neverOpens() : answers(JSON.stringify(admission))),
+    }),
+    backoffInitialMs: 1,
+    backoffMaxMs: 2,
+    log: (line) => lines.push(line),
+  });
+  await client.send("coder", "inst-1", { message: "do the thing", definition: coder });
+  assert.equal(made, 2);
+  assert.match(lines[0]!, /^jr2\.routability seat=admission attempts=2 ms=\d+ last=ETIMEDOUT /);
 });
 
 test("an admission that connects first time is silent — a line existing at all is the signal", async () => {

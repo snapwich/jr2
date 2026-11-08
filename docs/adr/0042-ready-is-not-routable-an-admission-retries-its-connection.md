@@ -40,6 +40,31 @@ windows more often. That is why the flake was degree-independent and serial runs
 - **A never-delivered admission is re-sent.** `send` re-POSTs while the request demonstrably never left the host,
   backing off on the same capped ladder `wait` uses. This is `wait`'s own rule applied one step earlier and for the same
   reason: a request that could not connect is not a Harness that refused the prompt.
+- **Each attempt's TCP connect is bounded at 2 seconds, and the next attempt dials a new connection.** Measured on kind
+  (2026-11-07): an attach that dialed 8 ms after its Sandbox's EndpointSlice became ready sent a SYN that was not
+  answered, nor were the kernel's re-sends of it on the same connection, so the global `fetch` waited its 10 s connect
+  timeout. The next attempt, on a new connection, connected and answered in 172 ms. A longer wait on the same connection
+  buys nothing, so the bound makes a DROP cost about 2 s, not about 10.5 s. `dialFetch`
+  (`packages/orchestrator/src/dial.ts`) holds it for the two calls that can be first to reach a Service just come into
+  service: the attach ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)) to a Sandbox's, and the admission to a
+  Sandbox's (a Workspace with no Repo Slot skips the attach) or to the Instance Harness's after it restarts.
+  - **The bound starts when the name lookup has answered.** Node cannot cancel a `getaddrinfo`, so a bound that cut the
+    lookup would leave it holding one of libuv's pool threads (4 by default), and in a DNS outage the retries of
+    concurrent attaches would fill the pool and stall every other lookup and file read in the process. The drop measured
+    above is a TCP one, so bounding the handshake alone removes it; a slow lookup ends on the resolver's own timeouts,
+    and the caller's signal ends the wait for it.
+  - **A connected request has an idle bound of 300 seconds**: no byte from the Harness for that long ends it. It is the
+    global `fetch`'s own limit (undici's `headersTimeout` and `bodyTimeout`), so an attach or admission that took up to
+    300 s before takes up to 300 s now, and a Harness whose node vanished mid-request cannot hold one for ever. The
+    attach's fault then says that it got no answer from its Harness, not that it never reached it. TCP keepalive is not
+    used: Node sets only its first delay, and the kernel's default probes take about 11 minutes to give up.
+  - **An attach that loses the race to a Sandbox's loss is ended.** The Workspace wrapper fails the attach by name when
+    the Sandbox is Lost or gone ([ADR-0021](0021-workspace-continuity-is-a-lease-that-answers-back.md)), and aborts the
+    attach's signal, which closes its request to the Harness.
+  - **jr2's own `fetch` over `node:http`, not undici's dispatcher.** The global `fetch` cannot shorten its connect
+    timeout without an undici `Agent`, and Node does not export one (there is no `node:undici`). That would be one more
+    dependency, and a second `fetch` implementation beside the global one, for one timeout. `dialFetch` is narrower than
+    `fetch` and refuses what it does not take: a `Request` input or a body that is not a string.
 - **Only never-delivered.** Admission is accept-and-queue
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)): a POST the Harness received but
   could not answer has already queued a Submission, so re-sending it would run the turn **twice** — a worse failure than
@@ -112,12 +137,12 @@ runtime ends the run `error`, with a `fault` that names the event, the state and
   difference is load-bearing.** Absorption alone would leave the tier benefiting from a window it cannot see: if
   routability got twice as slow tomorrow, all 88 scenarios would still pass, a little slower, in silence, until the day
   the window finally closed and the suite went red as a fresh mystery. Being unseeable is precisely how this class
-  survived three sessions, so each seat emits ONE line when a retry actually cost something —
-  `jr2.routability seat=… attempts=… ms=… last=… url=…` — and the `@kind` tier holds a budget against it, judged once
-  per worker in `AfterAll`. A log line, not a run-feed event: the authoring surface is untouched, so nothing above
-  contradicts itself. What the tier now asserts is not that the retry worked — the scenarios already assert that — but
-  **how much of the window is being spent**, which is what turns 90s from a number read off two GitHub issues into a
-  measurement of the cluster in front of us.
+  survived three sessions, so each seat (the admission, the surface read, the attach) emits ONE line when a retry
+  actually cost something — `jr2.routability seat=… attempts=… ms=… last=… url=…` — and the `@kind` tier holds a budget
+  against it, judged once per worker in `AfterAll`. A log line, not a run-feed event: the authoring surface is
+  untouched, so nothing above contradicts itself. What the tier now asserts is not that the retry worked — the scenarios
+  already assert that — but **how much of the window is being spent**, which is what turns 90s from a number read off
+  two GitHub issues into a measurement of the cluster in front of us.
 - **The first live reading immediately corrected this ADR, which is the argument for having taken it.** The budget was
   going to be attempts alone. The tier's first measurement was **2 attempts costing 10667ms** — one dropped SYN sitting
   on undici's 10s connect timeout, not a ladder being climbed. So the refusal that dominates the cost here is a DROP,
@@ -127,9 +152,9 @@ runtime ends the run `error`, with a `fault` that names the event, the state and
   — **3 attempts, 502ms, `ECONNREFUSED`** — which settled the shape: neither meter sees the other's failure, so the
   budget is **30s or 8 attempts**, whichever trips first, and the line carries the final errno so nobody has to infer
   the mode from the arithmetic. The two are calibrated to trip at comparable severity, which is what stops them being
-  one meter written twice: against the jittered 250ms→5s ladder, 8 attempts is ~9–18s of refusal, and 30s is three
-  connect timeouts. The first draft budgeted 4 attempts against an observed 3 — which is not a budget, it is a flake —
-  and only the second reading showed it.
+  one meter written twice: against the jittered 250ms→5s ladder, 8 attempts is ~9–18s of refusal, and 30s is a third of
+  the window. The first draft budgeted 4 attempts against an observed 3 — which is not a budget, it is a flake — and
+  only the second reading showed it.
 - **This is the ecosystem's answer, not a jr2 workaround**, which is worth recording because "retry" reads as a patch.
   [kind#2280](https://github.com/kubernetes-sigs/kind/issues/2280) is this defect exactly — EndpointSlices populated,
   connection still refused, up to 77s — and it establishes that waiting for the EndpointSlice is NOT sufficient, which
