@@ -79,7 +79,7 @@ import {
   DEFAULT_LEASE_INTERVAL_MS,
   WORKSPACE_WAIT_KEY,
   leaseDelay,
-  workspaceName,
+  sandboxNameOf,
   type SandboxPort,
   type WorkspaceWait,
 } from "./workspace.ts";
@@ -356,9 +356,8 @@ function runWaiting(snapshot: unknown, logic?: unknown, path: string[] = []): Ru
 
 /**
  * The Sandbox of every live Workspace under `actor`, at any depth, by CR name — what a cancel
- * destroys (ADR-0025). Read off the run's own live actor tree: each Workspace holds its `wsId` (its
- * actor path, `workspaceId`) in context, and the name is a function of the run and that id, the
- * same one its `teardown` deletes.
+ * destroys (ADR-0025). Read off the run's own live actor tree: each Workspace holds its Sandbox's
+ * name in context (`sandboxNameOf`), the same one its `teardown` deletes.
  * Correct after a restart by construction: `restore()` rebuilds this tree from the persisted
  * snapshot, so a restored run names its Sandboxes before its watch has listed. The Sandbox watch's
  * set, filtered by the run's label, is not: before the watch has listed it holds nothing, and
@@ -380,7 +379,7 @@ function runSandboxes(actor: AnyActorRef, runId: string, opts: { placing?: boole
     | {
         status?: string;
         value?: unknown;
-        context?: { wsId?: unknown };
+        context?: { wsId?: unknown; sandbox?: string };
         children?: Record<string, AnyActorRef>;
       }
     | undefined;
@@ -393,7 +392,7 @@ function runSandboxes(actor: AnyActorRef, runId: string, opts: { placing?: boole
     (opts.placing === true || snap.value !== "placing") &&
     typeof snap.context?.wsId === "string"
   ) {
-    out.push(workspaceName(runId, snap.context.wsId));
+    out.push(sandboxNameOf(runId, { ...snap.context, wsId: snap.context.wsId }));
   }
   for (const child of Object.values(snap.children ?? {})) out.push(...runSandboxes(child, runId, opts));
   return out;
@@ -3651,9 +3650,9 @@ export class RunHost {
     if (run.ending !== undefined || run.fault !== undefined || run.failure !== undefined) return;
     const logic = (ref as AnyActorRef & { logic?: unknown }).logic;
     if (ref._parent === undefined || logic == null || !composesSandbox(logic as AnyStateMachine)) return;
-    const snap = ref.getSnapshot() as { value?: unknown; context?: { wsId?: unknown } };
+    const snap = ref.getSnapshot() as { value?: unknown; context?: { wsId?: unknown; sandbox?: string } };
     if (snap.value === "placing" || typeof snap.context?.wsId !== "string") return;
-    this.deleteStopped(runId, workspaceName(runId, snap.context.wsId), { binding });
+    this.deleteStopped(runId, sandboxNameOf(runId, { ...snap.context, wsId: snap.context.wsId }), { binding });
   }
 
   /**

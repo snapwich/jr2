@@ -31,6 +31,7 @@
 // and any unpushed commits are gone, so it delivers `workspace.lost` INTO the restored body (same
 // channel as `agent.fault`) and the body's policy decides. Never silently re-provision.
 
+import { createHash } from "node:crypto";
 import {
   assign,
   fromCallback,
@@ -446,37 +447,76 @@ export function sandboxOf(system: AnyActorSystem): SandboxPort {
   return port;
 }
 
+const nameSlug = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
 /**
- * The Sandbox CR name for one workspace invocation: DNS-1123, at most 63 characters, deterministic
- * from the run and the wrapper's {@link workspaceId}, and collision-proofed by a hash of both. The
- * id is in the wrapper's persisted context, so a restore names the SAME CR, and the lease and a
- * re-run provision find it. A parent that invokes the same Machine again from the same state gives
- * the new wrapper the same path, and so the same name (ADR-0064, ADR-0073).
+ * The Sandbox CR name for one workspace invocation: DNS-1123, at most 63 characters. It is `ws-`,
+ * the start of the run id and a slug of the wrapper's {@link workspaceId}, cut to fit, then 12 hex
+ * digits of a sha256 of the run id and the id. The slug and the cut can make two ids read alike;
+ * the hash tells them apart. The wrapper computes it once, when it starts, and keeps it in its
+ * context (`sandbox`), so a restore names the SAME CR, and the lease and a re-run provision find
+ * it. A parent that invokes the same Machine again from the same state gives the new wrapper the
+ * same path, and so the same name (ADR-0064, ADR-0073).
  */
 export function workspaceName(runId: string, wsId: string): string {
-  const slug = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
+  const hash = createHash("sha256").update(`${runId}\0${wsId}`).digest("hex").slice(0, 12);
+  const base = `ws-${nameSlug(runId).slice(0, 8)}-${nameSlug(wsId)}`
+    .replace(/-+/g, "-")
+    .slice(0, 50)
+    .replace(/-+$/, "");
+  return `${base}-${hash}`;
+}
+
+/**
+ * The name of a Workspace saved before its context kept one: a 32-bit hash of the run id and its
+ * `wsId`. A restore of such a run names its Sandbox with this, so the run keeps the CR it placed.
+ * New Workspaces use {@link workspaceName}.
+ */
+export function legacyWorkspaceName(runId: string, wsId: string): string {
   let h = 0;
   for (const ch of `${runId}/${wsId}`) h = (h * 31 + ch.charCodeAt(0)) | 0;
-  const base = `ws-${slug(runId).slice(0, 8)}-${slug(wsId)}`.replace(/-+/g, "-").replace(/-+$/, "").slice(0, 55);
+  const base = `ws-${nameSlug(runId).slice(0, 8)}-${nameSlug(wsId)}`
+    .replace(/-+/g, "-")
+    .replace(/-+$/, "")
+    .slice(0, 55);
   return `${base}-${(h >>> 0).toString(36)}`;
 }
 
 /**
+ * The Sandbox name of a Workspace, off what its context holds: the name it kept, or for a context
+ * saved before it kept one, {@link legacyWorkspaceName} of its saved `wsId`.
+ */
+export function sandboxNameOf(runId: string, ctx: { wsId: string; sandbox?: string }): string {
+  return ctx.sandbox ?? legacyWorkspaceName(runId, ctx.wsId);
+}
+
+/**
  * A Workspace's stable identity in its run (ADR-0012): the wrapper's actor path below the run's
- * root, actor ids joined by `/` — the value of the `jr2.dev/workspace-path` annotation. A Workspace
- * that is the run's root has no path, and its id is its own actor id. The path, and not the
- * wrapper's own id, because an invoke id is local to the Machine that invokes it: a `workspace()`
- * invoked inside each worker of a Pool has the same invoke id in every worker, and only the
- * worker's id (its item's id) above it tells the two apart. Read once, when the wrapper starts, and
- * kept in its context.
+ * root, each actor id with `%` written `%25` and `/` written `%2F`, then joined by `/`. So two
+ * paths never have one spelling, an actor id that holds a `/` (a Pool item's id can) included. A
+ * Workspace that is the run's root has no path, and its id is its own actor id. The path, and not
+ * the wrapper's own id, because an invoke id is local to the Machine that invokes it: a
+ * `workspace()` invoked inside each worker of a Pool has the same invoke id in every worker, and
+ * only the worker's id (its item's id) above it tells the two apart. Read once, when the wrapper
+ * starts, and kept in its context. The `jr2.dev/workspace-path` annotation holds the path as it
+ * is, joined by `/` with no escape: a person reads it.
  */
 export function workspaceId(wrapper: AnyActorRef): string {
-  return actorPath(wrapper).join("/") || wrapper.id;
+  const path = actorPath(wrapper).map((id) => id.replaceAll("%", "%25").replaceAll("/", "%2F"));
+  return path.join("/") || wrapper.id;
 }
+
+/** What names a Workspace's Sandbox, as each of its actors takes it as input. */
+type WsKey = { wsId: string; sandbox?: string };
+const wsKeyOf = (ctx: WsContext): WsKey => ({
+  wsId: ctx.wsId,
+  ...(ctx.sandbox !== undefined ? { sandbox: ctx.sandbox } : {}),
+});
+const nameIn = (system: AnyActorSystem, key: WsKey): string => sandboxNameOf(runBindingOf(system).runId, key);
 
 /** The full mechanism-facing handles: what the registrar publishes for ambient resolution
  * (ambient.ts). The body sees only the {@link WorkspaceHandles} subset. */
@@ -502,9 +542,11 @@ type WsContext = {
   /** The wrapper's input, which the body gets (plus `workspace`). Under a parent, `place` replaces
    * it with the door's parsed value. */
   runInput: Record<string, unknown>;
-  /** This invocation's stable identity in the run ({@link workspaceId}): what its Sandbox's name is
-   * derived from. */
+  /** This invocation's stable identity in the run ({@link workspaceId}). */
   wsId: string;
+  /** Its Sandbox's name ({@link workspaceName}), computed once when the wrapper starts. Absent in a
+   * context saved before the field: {@link sandboxNameOf} names that one. */
+  sandbox?: string;
   /** Every slot's resolved Binding, by slot, in declaration order — assigned at provision. */
   bindings?: Record<string, ResolvedBinding>;
   endpoint?: string;
@@ -1378,7 +1420,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
    */
   const place = fromPromise<
     { bindings: Record<string, ResolvedBinding>; runInput: Record<string, unknown> },
-    { wsId: string; runInput: Record<string, unknown> }
+    WsKey & { runInput: Record<string, unknown> }
   >(async ({ input, self, system, signal }) => {
     const binding = runBindingOf(system);
     // The images and the slots come off the WRAPPER, at invoke time, not out of context and not
@@ -1402,7 +1444,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
     const route = actorRoute(self._parent);
     const bindings = resolveBindings({ workflow: binding.workflow, path }, parts.repos, runInput);
     const port = sandboxOf(system);
-    const name = workspaceName(binding.runId, input.wsId);
+    const name = sandboxNameOf(binding.runId, input);
     const child = wrapper ? actorPath(wrapper).join("/") : "";
     // A wait opened before a restart is the same wait: its start is in the wrapper's persisted
     // context, never in this actor's input, which a restore replays as it was first invoked.
@@ -1487,19 +1529,19 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
   });
 
   /** `provisioning`: the placed pod's Ready, under the port's budget, which starts here (ADR-0064). */
-  const provision = fromPromise<{ endpoint: string }, { wsId: string }>(async ({ input, system }) =>
-    sandboxOf(system).provision(workspaceName(runBindingOf(system).runId, input.wsId)),
+  const provision = fromPromise<{ endpoint: string }, WsKey>(async ({ input, system }) =>
+    sandboxOf(system).provision(nameIn(system, input)),
   );
 
   const attach = fromPromise<
     { repos: Record<string, string>; bases?: Record<string, string>; stale?: Record<string, string> },
-    { wsId: string; bindings: Record<string, ResolvedBinding> }
+    WsKey & { bindings: Record<string, ResolvedBinding> }
   >(async ({ input, system, signal }) => {
     // No Repo Slot, nothing to clone (ADR-0051): the Harness's attach would refuse an empty list,
     // and `/work` needs nothing from it — the pod's `fsGroup` already makes it the work group's.
     if (Object.keys(input.bindings).length === 0) return { repos: {} };
     const port = sandboxOf(system);
-    const name = workspaceName(runBindingOf(system).runId, input.wsId);
+    const name = nameIn(system, input);
     // The attach is loss-aware (ADR-0021): a Sandbox gone or Lost under it fails the attach at
     // once and by name, as it fails the placing and the provisioning — never a transport error
     // one attach window later. Only the cluster's word: a dropped watch says nothing.
@@ -1586,89 +1628,87 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
    * share no call: loss arrives within seconds of the cluster saying so; the renewal is a merge
    * patch every interval ±20%, whose only job is to keep the Sandbox from being reaped.
    */
-  const lease = fromCallback<{ type: string }, { wsId: string; judging: boolean }>(
-    ({ input, self, system, sendBack }) => {
-      const port = sandboxOf(system);
-      const name = workspaceName(runBindingOf(system).runId, input.wsId);
-      let stopped = false;
-      let lost = false;
+  const lease = fromCallback<{ type: string }, WsKey & { judging: boolean }>(({ input, self, system, sendBack }) => {
+    const port = sandboxOf(system);
+    const name = nameIn(system, input);
+    let stopped = false;
+    let lost = false;
 
-      const unsubscribe = input.judging
-        ? port.continuity(name, (seen) => {
-            if (stopped || lost) return;
-            // Two ways to lose a workspace, one event. Gone: reaped, deleted, namespace cleared. Lost:
-            // the CR survived but its one pod did not — evicted, its node lost or shut down — so
-            // every name still resolves over an empty `work` volume, and the operator never gives it
-            // a second pod. Re-provisioning either silently would resume into an inconsistent world
-            // — the body decides (ADR-0012).
-            const loss: SandboxLoss | undefined = !seen.present ? GONE : seen.lost;
-            if (loss !== undefined) {
-              lost = true; // once: the body has been told, and the workspace does not come back
-              sendBack({ type: "workspace.lost", reason: loss.reason, message: loss.message });
-            }
-          })
-        : () => {};
-
-      // The assertion, jittered from the first renewal on (see `leaseDelay`).
-      const interval = port.leaseIntervalMs ?? DEFAULT_LEASE_INTERVAL_MS;
-      let timer: ReturnType<typeof setTimeout>;
-      const schedule = (ms: number) => {
-        timer = setTimeout(() => {
-          if (stopped) return;
-          // A Workspace that ended in error stopped processing without stopping its children (xstate
-          // does not), and a parent that handled the error only stops what still processes: so this
-          // lease is never stopped, and its cleanup below never runs. The lease asks, asserts nothing
-          // for a Workspace that is over, and releases the hold mark here, once: no run holds the
-          // Sandbox now (ADR-0021). A host that stops writes nothing, as below.
-          if (self._parent?.getSnapshot().status !== "active") {
-            if (runBindingOf(system).hostStopping) return;
-            stopped = true;
-            unsubscribe();
-            // A parent that caught the defect can invoke the same Machine again: the new Workspace
-            // has the same actor path, so the same Sandbox name, and its own Lease holds it now.
-            if (runBindingOf(system).heldSandboxes?.().has(name)) return;
-            port.releaseHold(name).catch(() => {});
-            return;
+    const unsubscribe = input.judging
+      ? port.continuity(name, (seen) => {
+          if (stopped || lost) return;
+          // Two ways to lose a workspace, one event. Gone: reaped, deleted, namespace cleared. Lost:
+          // the CR survived but its one pod did not — evicted, its node lost or shut down — so
+          // every name still resolves over an empty `work` volume, and the operator never gives it
+          // a second pod. Re-provisioning either silently would resume into an inconsistent world
+          // — the body decides (ADR-0012).
+          const loss: SandboxLoss | undefined = !seen.present ? GONE : seen.lost;
+          if (loss !== undefined) {
+            lost = true; // once: the body has been told, and the workspace does not come back
+            sendBack({ type: "workspace.lost", reason: loss.reason, message: loss.message });
           }
-          // A failed renewal is unknown, never lost: the next one is an interval away, well inside
-          // the idle timeout, and loss is the watch's to report. Before the CR's write lands it is a
-          // 404, and the same shrug.
-          port.renew(name).catch(() => {});
-          schedule(leaseDelay(interval, "next", Math.random()));
-        }, ms);
-        timer.unref?.(); // a lease never holds the process open; it matters only while the run runs
-      };
-      schedule(leaseDelay(interval, "first", Math.random()));
-      return () => {
-        stopped = true;
-        clearTimeout(timer);
-        unsubscribe();
-        // The hold mark (ADR-0021). A park writes nothing, so the CR stays `held` and the restored
-        // run's Lease renews it. Else the stop is a step of the wrapper or its end: read the wrapper
-        // once its stop or its transition is over. Still active, it is in a next state with a Lease
-        // of its own, or deletes the Sandbox; over (a cancel, a fault, a parent that left it), no
-        // run holds the Sandbox now.
-        if (runBindingOf(system).hostStopping) return;
-        queueMicrotask(() => {
+        })
+      : () => {};
+
+    // The assertion, jittered from the first renewal on (see `leaseDelay`).
+    const interval = port.leaseIntervalMs ?? DEFAULT_LEASE_INTERVAL_MS;
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = (ms: number) => {
+      timer = setTimeout(() => {
+        if (stopped) return;
+        // A Workspace that ended in error stopped processing without stopping its children (xstate
+        // does not), and a parent that handled the error only stops what still processes: so this
+        // lease is never stopped, and its cleanup below never runs. The lease asks, asserts nothing
+        // for a Workspace that is over, and releases the hold mark here, once: no run holds the
+        // Sandbox now (ADR-0021). A host that stops writes nothing, as below.
+        if (self._parent?.getSnapshot().status !== "active") {
           if (runBindingOf(system).hostStopping) return;
-          if (self._parent?.getSnapshot().status === "active") return;
-          // A live Workspace of the same name (a re-invoke after a caught defect) holds it now.
+          stopped = true;
+          unsubscribe();
+          // A parent that caught the defect can invoke the same Machine again: the new Workspace
+          // has the same actor path, so the same Sandbox name, and its own Lease holds it now.
           if (runBindingOf(system).heldSandboxes?.().has(name)) return;
           port.releaseHold(name).catch(() => {});
-        });
-      };
-    },
-  );
+          return;
+        }
+        // A failed renewal is unknown, never lost: the next one is an interval away, well inside
+        // the idle timeout, and loss is the watch's to report. Before the CR's write lands it is a
+        // 404, and the same shrug.
+        port.renew(name).catch(() => {});
+        schedule(leaseDelay(interval, "next", Math.random()));
+      }, ms);
+      timer.unref?.(); // a lease never holds the process open; it matters only while the run runs
+    };
+    schedule(leaseDelay(interval, "first", Math.random()));
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      unsubscribe();
+      // The hold mark (ADR-0021). A park writes nothing, so the CR stays `held` and the restored
+      // run's Lease renews it. Else the stop is a step of the wrapper or its end: read the wrapper
+      // once its stop or its transition is over. Still active, it is in a next state with a Lease
+      // of its own, or deletes the Sandbox; over (a cancel, a fault, a parent that left it), no
+      // run holds the Sandbox now.
+      if (runBindingOf(system).hostStopping) return;
+      queueMicrotask(() => {
+        if (runBindingOf(system).hostStopping) return;
+        if (self._parent?.getSnapshot().status === "active") return;
+        // A live Workspace of the same name (a re-invoke after a caught defect) holds it now.
+        if (runBindingOf(system).heldSandboxes?.().has(name)) return;
+        port.releaseHold(name).catch(() => {});
+      });
+    };
+  });
 
-  const destroy = fromPromise<void, { wsId: string }>(async ({ input, system }) =>
-    sandboxOf(system).destroy(workspaceName(runBindingOf(system).runId, input.wsId)),
+  const destroy = fromPromise<void, WsKey>(async ({ input, system }) =>
+    sandboxOf(system).destroy(nameIn(system, input)),
   );
 
   /** The lease beside a state's own work — renewing everywhere, judging in `running` alone. */
   const leaseInvoke = (judging: boolean) => ({
     id: "lease",
     src: "lease" as const,
-    input: ({ context }: { context: unknown }) => ({ wsId: (context as WsContext).wsId, judging }),
+    input: ({ context }: { context: unknown }) => ({ ...wsKeyOf(context as WsContext), judging }),
   });
 
   // Every actor this wrapper runs is a NAMED SLOT (ADR-0049), the body first among them: a Machine
@@ -1681,10 +1721,14 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
     actors: { body, place, provision, attach, registrar, lease, destroy, fail: failLogic },
   }).createMachine({
     id: "workspace",
-    context: ({ input, self }: { input: unknown; self: AnyActorRef }): WsContext => ({
-      runInput: (input ?? {}) as Record<string, unknown>,
-      wsId: workspaceId(self),
-    }),
+    context: ({ input, self }: { input: unknown; self: AnyActorRef }): WsContext => {
+      const wsId = workspaceId(self);
+      return {
+        runInput: (input ?? {}) as Record<string, unknown>,
+        wsId,
+        sandbox: workspaceName(runBindingOf(self.system).runId, wsId),
+      };
+    },
     initial: "placing",
     states: {
       placing: {
@@ -1693,7 +1737,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
             id: "place",
             src: "place",
             input: ({ context }) => ({
-              wsId: (context as unknown as WsContext).wsId,
+              ...wsKeyOf(context as unknown as WsContext),
               runInput: (context as unknown as WsContext).runInput,
             }),
             onDone: {
@@ -1722,7 +1766,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
           {
             id: "provision",
             src: "provision",
-            input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId }),
+            input: ({ context }) => wsKeyOf(context as unknown as WsContext),
             onDone: {
               target: "attaching",
               actions: assign({
@@ -1739,7 +1783,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
             id: "attach",
             src: "attach",
             input: ({ context }) => ({
-              wsId: (context as unknown as WsContext).wsId,
+              ...wsKeyOf(context as unknown as WsContext),
               bindings: (context as unknown as WsContext).bindings!,
             }),
             onDone: {
@@ -1758,7 +1802,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
                     // with, so the Sandbox the registrar publishes — and the Agent actor records on its
                     // registration — is the one the Custodian's token is scoped to, by construction
                     // (ADR-0013).
-                    sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),
+                    sandbox: nameIn(system as AnyActorSystem, wsKeyOf(ctx)),
                     repos: out.repos,
                     // Each slot's Binding url: where a push goes, and the Repo cache its import
                     // borrows from (ADR-0051, ADR-0067).
@@ -1818,7 +1862,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
       teardown: {
         invoke: {
           src: "destroy",
-          input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId }),
+          input: ({ context }) => wsKeyOf(context as unknown as WsContext),
           onDone: "done",
           // A failed delete is the operator GC's problem (ADR-0012 backstop), not the run's.
           onError: "done",
@@ -1833,7 +1877,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
           destroying: {
             invoke: {
               src: "destroy",
-              input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId }),
+              input: ({ context }) => wsKeyOf(context as unknown as WsContext),
               onDone: "raising",
               // A failed delete is the operator GC's problem, and the run host's (ADR-0012 backstop).
               onError: "raising",

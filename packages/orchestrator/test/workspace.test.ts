@@ -18,6 +18,8 @@ import { fail, isFailure } from "../src/fail.ts";
 import { workspaceHeldPod } from "../src/held-secrets.ts";
 import {
   leaseDelay,
+  legacyWorkspaceName,
+  sandboxNameOf,
   workspace,
   workspaceName,
   type Continuity,
@@ -2578,4 +2580,54 @@ test("a Workspace stopped in `placing` is deleted by the host: recorded, and a p
   host.sendToGate(runId, "again", { type: "approve" });
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(placesOf(sandbox), 1, "the place of the name waits for the delete");
+});
+
+test("a Sandbox name is one to one with its run and path, and a context saved before the name kept the old one (ADR-0012)", () => {
+  // The old 32-bit hash put "Aa" and "BB" on one name; sha256 does not.
+  assert.equal(legacyWorkspaceName("r", "Aa").split("-").at(-1), legacyWorkspaceName("r", "BB").split("-").at(-1));
+  assert.notEqual(workspaceName("r", "Aa"), workspaceName("r", "BB"));
+  // Long paths that the cut makes read alike are told apart by the hash.
+  const long = "a".repeat(80);
+  assert.notEqual(workspaceName("run", `${long}/x`), workspaceName("run", `${long}/y`));
+  for (const name of [workspaceName("run", `${long}/x`), workspaceName("x".repeat(80), "Y".repeat(80))]) {
+    assert.match(name, /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, name);
+    assert.ok(name.length <= 63, name);
+  }
+  // A context that kept its name uses it; one saved before the field names it the old way.
+  assert.equal(sandboxNameOf("r", { wsId: "F-1", sandbox: "ws-kept" }), "ws-kept");
+  assert.equal(sandboxNameOf("r", { wsId: "F-1" }), legacyWorkspaceName("r", "F-1"));
+});
+
+test("a Pool item id that holds `/` does not meet another Workspace's path (ADR-0012)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const review = workspace(parkedBody, {});
+  const workerBody = jr2Setup({ types: {} as { input: Workspaced<{}, never> }, actors: { review } }).createMachine({
+    id: "worker-body",
+    on: { "workspace.lost": ".lost" },
+    initial: "reviewing",
+    states: { reviewing: { invoke: { id: "review", src: "review" } }, lost: { type: "final" } },
+  });
+  // Item "a/body/review" spells, with `/` joins and no escape, the path of item "a"'s nested
+  // Workspace.
+  const items = ["a", "a/body/review"];
+  const machine = pool(workspace(workerBody, {}), {
+    id: "slashes",
+    source: source<{ id: string }>({
+      next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
+        const id = items.find((i) => !input.active.includes(i) && !input.settled.includes(i));
+        return id === undefined ? null : { id };
+      }),
+    }),
+    itemId: (item: { id: string }) => item.id,
+    cap: 2,
+    itemInput: () => ({}),
+  });
+  host.register({ name: "slashes", machine, provide: () => ({}) });
+  const { runId } = await host.start("slashes");
+  await waitFor(() => sandbox.calls.filter((c) => c.startsWith("provision:")).length === 4);
+  assert.equal(new Set(sandbox.provisioned.keys()).size, 4, "four Workspaces, four Sandboxes");
+  assert.ok([...sandbox.provisioned.keys()].includes(workspaceName(runId, "a/body/review")));
+  assert.ok([...sandbox.provisioned.keys()].includes(workspaceName(runId, "a%2Fbody%2Freview")));
+  await host.cancel(runId);
 });
