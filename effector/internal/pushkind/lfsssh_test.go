@@ -191,9 +191,11 @@ func (s *transferServer) verify(oid string) {
 
 // sshServer is what the test's ssh serves on the LFS host: git-lfs-transfer from store with
 // modes ("" serves none: `command not found`), and git-lfs-authenticate with href ("" serves
-// none).
+// none). noise is a line that each git-lfs-transfer session writes to stderr; refuseReceive makes
+// git-receive-pack exit 1 with no word.
 type sshServer struct {
-	store, modes, href string
+	store, modes, href, noise string
+	refuseReceive             bool
 }
 
 // sshServerTools is sshTools with a git-lfs-transfer server: a program folder with git and sh from
@@ -223,6 +225,13 @@ func sshServerTools(t *testing.T, srv sshServer) (logFile string) {
 	if srv.store != "" {
 		transfer = fmt.Sprintf(`exec %q lfs-transfer %q %q "${cmd##* }"`, self, srv.store, srv.modes+",")
 	}
+	if srv.noise != "" {
+		transfer = fmt.Sprintf(`echo %q >&2; %s`, srv.noise, transfer)
+	}
+	receive := `exec sh -c "$cmd"`
+	if srv.refuseReceive {
+		receive = `case "$cmd" in git-receive-pack*) exit 1;; esac; exec sh -c "$cmd"`
+	}
 	authenticate := `echo "git-lfs-authenticate: command not found" >&2; exit 127`
 	if srv.href != "" {
 		authenticate = fmt.Sprintf(`printf '{"href":"%s","header":{"%s":"from-authenticate"}}\n'; exit 0`, srv.href,
@@ -243,11 +252,11 @@ cmd="$*"
 case "$cmd" in
   git-lfs-transfer*) %s;;
   git-lfs-authenticate*) %s;;
-  git-receive-pack*|git-upload-pack*) exec sh -c "$cmd";;
+  git-receive-pack*|git-upload-pack*) %s;;
 esac
 echo "unknown command" >&2
 exit 1
-`, bash, logFile, transfer, authenticate)
+`, bash, logFile, transfer, authenticate, receive)
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -313,6 +322,10 @@ func TestAPureSSHServerTakesThePush(t *testing.T) {
 	for l := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
 		if strings.Contains(l, "git-lfs-authenticate") {
 			t.Errorf("git-lfs-authenticate ran though the server speaks git-lfs-transfer: %s", l)
+		}
+		// A multiplexed session leaves a sock-* folder that git-lfs never removes.
+		if strings.Contains(l, "ControlMaster") {
+			t.Errorf("git-lfs multiplexed its ssh sessions: %s", l)
 		}
 		if !strings.Contains(l, "/push-key ") || !strings.Contains(l, "StrictHostKeyChecking=yes") ||
 			!strings.Contains(l, "BatchMode=yes") || !strings.Contains(l, "git@lfs-host.test") {
@@ -441,6 +454,53 @@ func TestAnSSHServerWithOnlyGitLFSAuthenticateStillTakesThePush(t *testing.T) {
 	}
 }
 
+// A push whose LFS sessions wrote ssh lines, and whose `git push` then fails with no ssh line of
+// its own, names no line of the LFS sessions.
+func TestAFailedPushAfterTheLFSCheckNamesNoLineOfTheLFSSessions(t *testing.T) {
+	f := lfsFixture(t, "")
+	store := t.TempDir()
+	sshServerTools(t, sshServer{store: store, noise: "a line of the LFS session", refuseReceive: true})
+	before := remoteRef(f)
+	_, oid := largeFile(t, f, "big.bin", "uploaded, then the push fails\n", true)
+	req := sshPush(t, f)
+
+	out := f.runner.Run(t.Context(), req)
+	if _, err := os.Stat(filepath.Join(store, oid)); err != nil {
+		t.Fatalf("the LFS check did not run: %+v %+v", out, out.Push)
+	}
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "push" ||
+		strings.Contains(out.Reason+out.Push.Detail, "a line of the LFS session") {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != before {
+		t.Fatal("the branch moved")
+	}
+}
+
+// An ssh push whose LFS server refuses the header that git-lfs-authenticate gave (a batch 401)
+// holds no token, so the origin rule is not why: the reason says that the server refused the
+// credential, and no ref moves.
+func TestAnSSHPushWhoseAuthenticateHeaderIsRefusedSaysTheServerRefusedIt(t *testing.T) {
+	f := lfsFixture(t, "")
+	lfs := newLFSServer(t, f)
+	lfs.want = "Basic bm90OmdpdmVu"
+	srv := httptestServer(t, lfs)
+	sshServerTools(t, sshServer{href: srv + "/lfs"})
+	before := remoteRef(f)
+	largeFile(t, f, "big.bin", "a refused header\n", true)
+	req := sshPush(t, f)
+
+	out := f.runner.Run(t.Context(), req)
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "upload" ||
+		!strings.Contains(out.Reason, "answered the batch request 401: the server refused the credential") ||
+		strings.Contains(out.Reason, originRule) {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != before {
+		t.Fatal("the branch moved")
+	}
+}
+
 // The client of the pure SSH protocol reads what a server may send: arguments after the status,
 // an oid listed once per action, an oid that was not asked, and a status with a message.
 func TestTheTransferClientReadsABatchAnswer(t *testing.T) {
@@ -472,6 +532,61 @@ func TestTheTransferClientReadsABatchAnswer(t *testing.T) {
 				t.Fatalf("got %+v, %v", got, err)
 			}
 		})
+	}
+}
+
+// endless is a server that sends head, then packet again and again, and never a flush.
+type endless struct {
+	head, packet string
+	sent         int
+}
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.sent < len(e.head) {
+		n := copy(p, e.head[e.sent:])
+		e.sent += n
+		return n, nil
+	}
+	return copy(p, e.packet), nil
+}
+
+// A server that keeps sending packets, short or long, is refused at the bounds of a message, as
+// an https answer is bounded at lfsAnswerMax: in a batch answer and in a capability list.
+func TestTheTransferClientRefusesAnAnswerThatDoesNotEnd(t *testing.T) {
+	a := strings.Repeat("a", 64)
+	pkt := func(s string) string { return fmt.Sprintf("%04x%s\n", len(s)+5, s) }
+	short, long := pkt(a+" 3 noop"), pkt(strings.Repeat("x", pktMax-5))
+	for _, tc := range []struct {
+		name, head, packet, err string
+		caps                    bool
+	}{
+		{"short packets", pkt("status 200") + "0001", short, "more than 4096 packets", false},
+		{"long packets", pkt("status 200") + "0001", long, "more than 16777216 bytes", false},
+		{"a capability list", "", short, "more than 4096 packets", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &lfsTransfer{w: nopWriteCloser{io.Discard}, r: bufio.NewReader(&endless{head: tc.head, packet: tc.packet})}
+			var err error
+			if tc.caps {
+				_, err = s.readList()
+			} else {
+				_, err = s.batch([]lfsObject{{oid: a, size: 3}})
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("got %v, want an error with %q", err, tc.err)
+			}
+		})
+	}
+	// The bounds are of one message: a long session of short answers is read.
+	var b strings.Builder
+	for range transferPacketsMax {
+		b.WriteString(pkt("status 200") + "0001" + short + "0000")
+	}
+	s := &lfsTransfer{w: nopWriteCloser{io.Discard}, r: bufio.NewReader(strings.NewReader(b.String()))}
+	for range transferPacketsMax {
+		if _, err := s.batch([]lfsObject{{oid: a, size: 3}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

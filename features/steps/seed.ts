@@ -32,7 +32,6 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -877,22 +876,24 @@ async function lfsTransferBinary(): Promise<string> {
   const dir = fileURLToPath(new URL("../.tmp/bin/", import.meta.url));
   const bin = join(dir, `git-lfs-transfer-v0.1.0-${arch}`);
   if (existsSync(bin)) return bin;
-  // Workers can build at the same time: each builds in its own folder and renames at the end.
-  const own = await mkdtemp(join(tmpdir(), "jr2-e2e-glt-"));
+  // Workers can build at the same time: each builds in its own folder and renames at the end. The
+  // folder is inside dir, so the rename stays on one filesystem (a tmpfs /tmp gives EXDEV).
+  await mkdir(dir, { recursive: true });
+  const own = await mkdtemp(join(dir, ".build-"));
   await exec("go", ["install", "-trimpath", "-ldflags=-s -w", LFS_TRANSFER_MODULE], {
     env: { ...process.env, CGO_ENABLED: "0", GOOS: "linux", GOARCH: arch, GOBIN: own },
     timeout: 600_000,
-  }).catch((err: unknown) => {
+  }).catch(async (err: unknown) => {
+    await rm(own, { recursive: true, force: true });
     throw new Error(`go install ${LFS_TRANSFER_MODULE} failed (the @kind tier needs go): ${String(err)}`);
   });
-  await mkdir(dir, { recursive: true });
   // With GOOS and GOARCH not the host's, go install writes to GOBIN/<os>_<arch>.
   const made = [join(own, "git-lfs-transfer"), join(own, `linux_${arch}`, "git-lfs-transfer")].find((f) =>
     existsSync(f),
   );
-  assert.ok(made, `go install wrote no git-lfs-transfer in ${own}`);
-  await rename(made, bin);
+  if (made) await rename(made, bin);
   await rm(own, { recursive: true, force: true });
+  assert.ok(made, `go install wrote no git-lfs-transfer in ${own}`);
   return bin;
 }
 

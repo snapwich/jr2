@@ -55,6 +55,9 @@ const lfsAnswerMax = 16 << 20
 type lfsAPI struct {
 	href   string
 	header map[string]string
+	// authenticated: git-lfs-authenticate gave href and header, so the push is ssh and holds no
+	// token, and a refusal is of that header.
+	authenticated bool
 }
 
 // lfsState is what a download batch answer says of one object.
@@ -196,7 +199,7 @@ func (c *call) lfsAuthenticate(ctx context.Context, t sshTarget) (*lfsAPI, error
 	if s, _, ok := lfsURLParts(answer.Href); !ok || (s != gitclean.SchemeHTTPS && s != gitclean.SchemeHTTP) {
 		return nil, errors.New("git-lfs-authenticate on the LFS server gave an href that is not http(s)")
 	}
-	return &lfsAPI{href: strings.TrimSuffix(answer.Href, "/"), header: answer.Header}, nil
+	return &lfsAPI{href: strings.TrimSuffix(answer.Href, "/"), header: answer.Header, authenticated: true}, nil
 }
 
 func isDigits(s string) bool {
@@ -298,7 +301,9 @@ func (c *call) lfsBatch(ctx context.Context, client *http.Client, api *lfsAPI, o
 		if res.StatusCode != http.StatusOK {
 			why := fmt.Sprintf("the LFS server answered the batch request %d", res.StatusCode)
 			switch {
-			case res.StatusCode == http.StatusUnauthorized && *auth == "" && !c.onPushOrigin(target):
+			// The origin rule is why only when the push holds a token that the rule withheld.
+			case res.StatusCode == http.StatusUnauthorized && *auth == "" && !api.authenticated && c.holdsToken() &&
+				!c.onPushOrigin(target):
 				why += ": " + originRule + ", and the LFS server is on another origin"
 			case res.StatusCode == http.StatusUnauthorized, res.StatusCode == http.StatusForbidden:
 				why += ": the server refused the credential"
@@ -374,6 +379,12 @@ func lfsParse(raw []byte) (map[string]lfsState, error) {
 
 // originRule is why jr2 gave no token for a url on another origin (ADR-0051).
 const originRule = "jr2 sends the push token only to the push url's origin (scheme, host, port)"
+
+// holdsToken reports that the push holds a token: its url is https (ADR-0051).
+func (c *call) holdsToken() bool {
+	scheme, _, _ := lfsURLParts(strings.TrimSpace(c.spec.URL))
+	return scheme == gitclean.SchemeHTTPS
+}
 
 // onPushOrigin reports that raw has the push url's origin: its scheme and its host with its port,
 // as the credential helper matches them.

@@ -929,8 +929,6 @@ func TestAnHrefOnAnotherOriginThatAsksForACredentialGetsNone(t *testing.T) {
 	}
 }
 
-// A private LFS server that `.lfsconfig` names on another host gets no token: the upload fails
-// with git-lfs's words, and nothing is pushed.
 // An href on the push url's own origin (scheme, host, port) gets the token after a 401, as
 // git-lfs asks the helper for it; the helper answers that origin alone (ADR-0051).
 func TestAnHrefOnTheBindingsOriginGetsTheTokenAfterA401(t *testing.T) {
@@ -955,6 +953,9 @@ func TestAnHrefOnTheBindingsOriginGetsTheTokenAfterA401(t *testing.T) {
 	}
 }
 
+// A private LFS server that `.lfsconfig` names on another host gets no token: the batch that
+// the check sends before the upload answers 401, the reason names the origin rule, and nothing
+// is pushed.
 func TestAnLFSServerOnAnotherHostGetsNoToken(t *testing.T) {
 	f := lfsFixture(t, "")
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte(HelperUser+":"+token))

@@ -183,6 +183,11 @@ exit 127
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", tools+":"+os.Getenv("PATH"))
+	// git-lfs makes its ssh multiplexing folders (sock-*) in XDG_RUNTIME_DIR, else in TMPDIR: the
+	// test reads that none stays.
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv("XDG_RUNTIME_DIR", tmp)
 
 	r := repo(1, corev1alpha1.RepoNodeStatus{
 		Node: node, Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch,
@@ -231,5 +236,12 @@ exit 127
 		if slices.Contains(c, "lfs") && !slices.Contains(c, "lfs.sshtransfer=negotiate") {
 			t.Errorf("git-lfs ran with no pinned lfs.sshtransfer: %v", c)
 		}
+	}
+	// The agent lives as long as its node: an ssh LFS fetch leaves no folder in TMPDIR.
+	if left, _ := filepath.Glob(filepath.Join(tmp, "sock-*")); len(left) != 0 {
+		t.Errorf("the ssh LFS fetch left %v", left)
+	}
+	if strings.Contains(string(raw), "ControlMaster") {
+		t.Errorf("git-lfs multiplexed its ssh sessions:\n%s", raw)
 	}
 }

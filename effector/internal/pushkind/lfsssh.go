@@ -31,6 +31,12 @@ import (
 // pktMax is the largest packet that pkt-line allows, its four length digits included.
 const pktMax = 65520
 
+// transferPacketsMax bounds the packets of one message that are read: a batch names at most
+// lfsBatchSize objects, and an answer lists each at most once for each action. lfsAnswerMax
+// bounds its bytes, as it bounds an https answer. A server that keeps sending is refused, so the
+// Effector's memory does not grow until the Effect's timeout.
+const transferPacketsMax = 4096
+
 // The kinds of packet that a read gives.
 const (
 	pktData = iota
@@ -45,7 +51,12 @@ type lfsTransfer struct {
 	r    *bufio.Reader
 	stop func() bool
 	once sync.Once
+	// packets and bytes are what the message that is read has left of its bounds.
+	packets, bytes int
 }
+
+// begin starts the bounds of a new message.
+func (s *lfsTransfer) begin() { s.packets, s.bytes = transferPacketsMax, lfsAnswerMax }
 
 // openTransfer starts `git-lfs-transfer <path> <operation>` on t's host over the call's ssh command
 // and does git-lfs's version step: the server must advertise `version=1` and accept `version 1`.
@@ -218,6 +229,12 @@ func (s *lfsTransfer) read() (int, string, error) {
 	case n < 4 || n > pktMax:
 		return 0, "", fmt.Errorf("the LFS server sent a packet of length %d", n)
 	}
+	if s.packets--; s.packets < 0 {
+		return 0, "", fmt.Errorf("the LFS server sent a message of more than %d packets", transferPacketsMax)
+	}
+	if s.bytes -= int(n); s.bytes < 0 {
+		return 0, "", fmt.Errorf("the LFS server sent a message of more than %d bytes", lfsAnswerMax)
+	}
 	body := make([]byte, n-4)
 	if _, err := io.ReadFull(s.r, body); err != nil {
 		return 0, "", errors.New("the LFS server ended the session in a packet")
@@ -225,8 +242,9 @@ func (s *lfsTransfer) read() (int, string, error) {
 	return pktData, strings.TrimSuffix(string(body), "\n"), nil
 }
 
-// readList reads text packets up to a flush.
+// readList reads text packets up to a flush, within the bounds of a message.
 func (s *lfsTransfer) readList() ([]string, error) {
+	s.begin()
 	var list []string
 	for {
 		kind, text, err := s.read()
@@ -244,8 +262,9 @@ func (s *lfsTransfer) readList() ([]string, error) {
 }
 
 // readStatus reads `status <code>`, its arguments, and, after a delimiter, its lines, up to a
-// flush.
+// flush, within the bounds of a message.
 func (s *lfsTransfer) readStatus() (status int, args, lines []string, err error) {
+	s.begin()
 	kind, text, err := s.read()
 	if err != nil {
 		return 0, nil, nil, err

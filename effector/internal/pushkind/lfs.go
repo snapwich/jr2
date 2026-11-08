@@ -495,9 +495,13 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 		{"lfs.locksverify", "false"},
 		// git-lfs's own default, set so that nothing else chooses it: an ssh server is asked over
 		// the pure SSH protocol (git-lfs-transfer) when it speaks it, else through
-		// git-lfs-authenticate. The check (lfsHeldSSH) negotiates in the same order, so the upload
-		// and the check use the same protocol, and a server that speaks only one of them works.
+		// git-lfs-authenticate. The check (lfsHeldSSH) negotiates in the same order as the upload,
+		// so a server that speaks only one of them works.
 		{"lfs.sshtransfer", "negotiate"},
+		// git-lfs multiplexes its ssh sessions by default, through a sock-* folder that it makes in
+		// XDG_RUNTIME_DIR or TMPDIR and never removes: each ssh push would leave one. The cache
+		// agent sets the same.
+		{"lfs.ssh.automultiplex", "false"},
 	}
 	if endpoint != "" {
 		settings = append(settings, [2]string{"lfs.url", endpoint})
@@ -553,7 +557,7 @@ func (c *call) runLFS(ctx context.Context, endpoint string, objects []lfsObject)
 // words name an http(s) url whose origin is not the push url's: the credential helper answers no
 // such url.
 func (c *call) namesOtherOrigin(words string) bool {
-	if scheme, _, _ := lfsURLParts(strings.TrimSpace(c.spec.URL)); scheme != gitclean.SchemeHTTPS {
+	if !c.holdsToken() {
 		return false
 	}
 	for _, u := range httpURL.FindAllString(words, -1) {

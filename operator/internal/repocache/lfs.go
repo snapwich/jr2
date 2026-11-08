@@ -469,6 +469,10 @@ func (a *Agent) fetchLFS(ctx context.Context, dir string, env []string, endpoint
 		// over the pure SSH protocol (git-lfs-transfer) when it speaks it, else through
 		// git-lfs-authenticate, as the Effector's push asks it (ADR-0067).
 		"-c", "lfs.sshtransfer=negotiate",
+		// git-lfs multiplexes its ssh sessions by default, through a sock-* folder that it makes in
+		// XDG_RUNTIME_DIR or TMPDIR and never removes. The agent lives as long as its node, so each
+		// ssh LFS fetch would leave one folder in /tmp. One fetch gains little from it.
+		"-c", "lfs.ssh.automultiplex=false",
 		"-c", "lfs.fetchinclude=",
 		"-c", "lfs.fetchexclude=",
 		"lfs", "fetch", "origin", commit)

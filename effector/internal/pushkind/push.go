@@ -389,6 +389,11 @@ func nonEmpty(s string) []string {
 // push sends res.Published to the Binding's ref, and reads git's porcelain answer; pushed, res is
 // the output.
 func (c *call) push(ctx context.Context, res wire.PushResult) wire.Output {
+	// ssh's lines of the LFS sessions, and the stderr of a git-lfs-transfer server, are not this
+	// push's: a push that fails names only its own ssh line (ADR-0068).
+	if c.sshLog != "" {
+		_ = os.Remove(c.sshLog)
+	}
 	refspec := res.Published + ":refs/heads/" + c.spec.Branch
 	if c.spec.Force {
 		refspec = "+" + refspec
