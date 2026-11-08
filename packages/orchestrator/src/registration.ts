@@ -772,11 +772,18 @@ export type RunBinding = {
   heldSandboxes?: () => ReadonlySet<string>;
   /**
    * The host's delete of this Sandbox name that is not done, if any (ADR-0012): the delete of a
-   * Workspace that a Machine of the run stopped. A Workspace that places the same name waits for it
-   * first, so the delete does not remove the Sandbox that the Workspace writes. Absent outside a
-   * RunHost: no delete is in flight.
+   * Workspace that a Machine of the run stopped, or one that a restore redoes. A Workspace that
+   * places the same name waits for it first, so the delete does not remove the Sandbox that the
+   * Workspace writes. It never rejects. Absent outside a RunHost: no delete is in flight.
    */
   sandboxDeleting?: (name: string) => Promise<void> | undefined;
+  /**
+   * Delete the Sandbox of a Workspace that was stopped in `placing` (ADR-0064), after `after` (the
+   * write in flight) settles, as the host deletes every stopped Workspace's Sandbox: recorded, so a
+   * restore redoes it, and `sandboxDeleting` names it, so a Workspace that places the name waits.
+   * Absent outside a RunHost: the Workspace deletes it itself.
+   */
+  deleteSandbox?: (name: string, after: Promise<unknown>) => void;
   /**
    * Every reply since the pick that `machine`'s Agent has outstanding, or is delivering now, oldest
    * first (ADR-0024) — what an `answer` action reads as its `chain` (ADR-0067). `seat` is the place

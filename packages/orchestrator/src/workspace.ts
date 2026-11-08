@@ -1457,6 +1457,9 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
       "abort",
       () => {
         if (binding.hostStopping) return;
+        // The host's delete, after the write in flight: recorded, so a restore redoes it, and a
+        // Workspace that places the name again waits for it (ADR-0012).
+        if (binding.deleteSandbox) return binding.deleteSandbox(name, placed);
         void placed
           .catch(() => {})
           .then(() => (binding.heldSandboxes?.().has(name) ? undefined : port.destroy(name)))

@@ -271,9 +271,13 @@ When the parent leaves the state that invokes the Workspace before the body ends
 event, the Workspace stops. jr2 then deletes its Sandbox, with each commit in it. A restart of the Orchestrator does not
 stop a Workspace, and keeps its Sandbox.
 
-A parent that invokes the same Machine again, with the same invoke id, gives the new Workspace the same Sandbox. That
-happens on a retry after it catches a Failure, or when it enters the state again. jr2 does not delete that Sandbox. The
-new Workspace takes it over, with the Worktree and each commit of the attempt before it, as a restore does.
+A parent that invokes the same Machine again from the same state gives the new Workspace the same Sandbox name. When the
+parent does this in the same transition that stops the old Workspace, jr2 does not delete the Sandbox. That happens on a
+retry after the parent catches a Failure, or when it enters the state again at once. The new Workspace takes the Sandbox
+over, with the Worktree and each commit of the attempt before it, as a restore does.
+
+When the parent leaves the state, and enters it again later, jr2 deletes the old Sandbox when the parent leaves. The new
+Workspace waits until that delete is done. Then it gets a new Sandbox with the same name, and an empty `/work`.
 
 When a run faults after its Sandbox was placed, the Sandbox stays, so that you can look inside it. jr2's operator
 removes it after an idle timeout of 30 minutes. jr2 immediately deletes a Sandbox that it never placed. `CANCEL` deletes

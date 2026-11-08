@@ -113,8 +113,24 @@ export interface SnapshotStore {
   /** The Machine that {@link keepMachine} kept for an ended run, with the run's Workflow name (one
    * copy can serve runs of two names: a Chart wrapper and its named Chart), or undefined. */
   keptMachine(runId: string): { workflow: string; doc: unknown } | undefined;
+  /**
+   * Record a delete of a stopped Workspace's Sandbox (ADR-0012), before it leaves: `sent` false
+   * when the Workspace has just stopped and the host has not yet asked whether a live Workspace of
+   * the run took the name over, true once the host has decided to delete. A row that is already
+   * `sent` stays `sent`. Synchronous, so the row is on disk before the delete leaves. Its own table,
+   * not the run's blob: a restore redoes the delete whatever the run's status, an ended run's too.
+   */
+  recordSandboxDelete(runId: string, name: string, sent: boolean): void;
+  /** Every Sandbox delete that {@link recordSandboxDelete} wrote and no {@link dropSandboxDelete}
+   * removed: what a restore redoes. */
+  sandboxDeletes(): SandboxDelete[];
+  /** Remove a Sandbox delete that is done, or that a live Workspace of the run took over. */
+  dropSandboxDelete(runId: string, name: string): void;
   close(): Promise<void>;
 }
+
+/** A Sandbox delete that a restore redoes (ADR-0012). */
+export type SandboxDelete = { runId: string; name: string; sent: boolean };
 
 /**
  * The head of a standing Workflow (ADR-0017): `run` is its newest run, `since` when that run
@@ -380,6 +396,11 @@ export class SqliteSnapshotStore implements SnapshotStore {
     // The Machine each ended run ran on (ADR-0069): one row for each distinct doc, and the run's
     // row names it. The run sweep deletes a doc that no kept row names.
     this.db.exec(`CREATE TABLE IF NOT EXISTS run_machines (key TEXT PRIMARY KEY, doc TEXT NOT NULL)`);
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS sandbox_deletes (
+         run_id TEXT NOT NULL, name TEXT NOT NULL, sent INTEGER NOT NULL, PRIMARY KEY (run_id, name)
+       )`,
+    );
     const now = this.db.prepare(`PRAGMA table_info(machine_snapshots)`).all() as Array<{ name: string }>;
     if (!now.some((c) => c.name === "machine_key")) {
       this.db.exec(`ALTER TABLE machine_snapshots ADD COLUMN machine_key TEXT`);
@@ -664,6 +685,28 @@ export class SqliteSnapshotStore implements SnapshotStore {
       )
       .get(runId) as { workflow: string | null; doc: string } | undefined;
     return row?.workflow ? { workflow: row.workflow, doc: JSON.parse(row.doc) } : undefined;
+  }
+
+  recordSandboxDelete(runId: string, name: string, sent: boolean): void {
+    this.db
+      .prepare(
+        `INSERT INTO sandbox_deletes (run_id, name, sent) VALUES (?, ?, ?)
+           ON CONFLICT (run_id, name) DO UPDATE SET sent = MAX(sent, excluded.sent)`,
+      )
+      .run(runId, name, sent ? 1 : 0);
+  }
+
+  sandboxDeletes(): SandboxDelete[] {
+    const rows = this.db.prepare(`SELECT run_id, name, sent FROM sandbox_deletes ORDER BY rowid`).all() as Array<{
+      run_id: string;
+      name: string;
+      sent: number;
+    }>;
+    return rows.map((r) => ({ runId: r.run_id, name: r.name, sent: r.sent === 1 }));
+  }
+
+  dropSandboxDelete(runId: string, name: string): void {
+    this.db.prepare(`DELETE FROM sandbox_deletes WHERE run_id = ? AND name = ?`).run(runId, name);
   }
 
   claimHookDelivery(hook: string, delivery: string, digest: string): number | undefined {

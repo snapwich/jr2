@@ -95,7 +95,7 @@ import {
   type MachineDoc,
   type MachineStateDoc,
 } from "./machine-doc.ts";
-import type { EndedRow, SnapshotStore, StandingHead } from "./snapshot-store.ts";
+import type { EndedRow, SandboxDelete, SnapshotStore, StandingHead } from "./snapshot-store.ts";
 import {
   encodeCursor,
   isAfter,
@@ -377,7 +377,12 @@ function runWaiting(snapshot: unknown, logic?: unknown, path: string[] = []): Ru
 function runSandboxes(actor: AnyActorRef, runId: string, opts: { placing?: boolean } = {}): string[] {
   const out: string[] = [];
   const snap = actor.getSnapshot() as
-    | { status?: string; value?: unknown; context?: { wsId?: unknown }; children?: Record<string, AnyActorRef> }
+    | {
+        status?: string;
+        value?: unknown;
+        context?: { wsId?: unknown };
+        children?: Record<string, AnyActorRef>;
+      }
     | undefined;
   if (snap?.status !== "active" && snap?.status !== "error") return out;
   const logic = (actor as AnyActorRef & { logic?: unknown }).logic;
@@ -462,6 +467,9 @@ export class GateRefused extends Error {
  * stopped processing — its own stop is a no-op — so its children are reached through its snapshot
  * rather than asked to stop through it.
  */
+/** The key of one Sandbox delete in `RunHost.deletes`: the run and the name. */
+const deleteKey = (runId: string, name: string): string => `${runId}\0${name}`;
+
 function stopTree(actor: AnyActorRef): void {
   const children = (actor.getSnapshot() as { children?: Record<string, AnyActorRef> } | undefined)?.children ?? {};
   for (const child of Object.values(children)) {
@@ -1299,10 +1307,6 @@ type RunBlob = {
   /** The Failure that ended the run `failed` (ADR-0073), as plain data: the run's output. xstate
    * keeps the error of an errored snapshot, and serializes it to `{}`, so it is kept here. */
   failure?: FailureInput;
-  /** The Sandboxes of stopped Workspaces that the host deletes (ADR-0012): in the same save as the
-   * snapshot that no longer holds their Workspaces, so a restore deletes again what a crash cut
-   * short. */
-  deleting?: string[];
 };
 
 type LiveRun = {
@@ -1329,9 +1333,6 @@ type LiveRun = {
   fault?: string;
   /** The Failure that ended the run, if it failed (ADR-0073): persisted as `RunBlob.failure`. */
   failure?: FailureInput;
-  /** The deletes of stopped Workspaces' Sandboxes that are not done, by Sandbox name
-   * ({@link RunHost.workspaceStopped}): persisted as `RunBlob.deleting`, started again on restore. */
-  deleting: Map<string, Promise<void>>;
   /** The bound Machine as it was while the run last bound a Chart (ADR-0069, ADR-0070), and the
    * hashes of those Charts: the terminal write keeps this doc, because the terminal snapshot binds
    * no Chart. Not persisted: a restored run takes it again at its next save. */
@@ -1414,6 +1415,9 @@ export class RunHost {
   private liveSetFailing = false;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
   private readonly runs = new Map<string, LiveRun>();
+  /** The Sandbox deletes of stopped Workspaces that are not done, by run and name
+   * (`deleteStopped`, ADR-0012). Host-wide, not per run: a run that ended still has its deletes. */
+  private readonly deletes = new Map<string, Promise<void>>();
   /**
    * The admission ledgers of the runs restore could not host this boot (a `reconcile` that threw).
    * Their rows stay `live` for the next boot to retry, so their conversations on the Instance
@@ -1914,8 +1918,16 @@ export class RunHost {
     const lost: string[] = [];
     const drifted: string[] = [];
     const failed: string[] = [];
+    // The Sandbox deletes a crash cut short (ADR-0012), by run: a run restored below starts its own
+    // before its tree starts; the rest are redone after the loop.
+    const pending = new Map<string, SandboxDelete[]>();
+    for (const d of this.store.sandboxDeletes()) {
+      if (this.deletes.has(deleteKey(d.runId, d.name))) continue; // this process runs it now
+      pending.set(d.runId, [...(pending.get(d.runId) ?? []), d]);
+    }
 
-    for (const stored of await this.store.live()) {
+    const liveRows = await this.store.live();
+    for (const stored of liveRows) {
       // A run this process hosts already is not restored a second time. A deferred restore
       // (ADR-0069) that throws as a whole stays pending, and the next publish tries it again; a run
       // started under the current Assembly between those two publishes has a live row and a live
@@ -2040,12 +2052,16 @@ export class RunHost {
         // …and when each of its open Gates opened (ADR-0011), before the actor starts and the
         // Gates register again.
         if (restored) restored.gatesOpenedAt = new Map(Object.entries(blob.gatesOpenedAt ?? {}));
+        // …and the deletes of stopped Workspaces' Sandboxes that a crash cut short (ADR-0012),
+        // BEFORE the start: a restored Workspace in `placing` that places a name being deleted asks
+        // `sandboxDeleting` as it starts, and must find the delete there.
+        for (const d of pending.get(stored.runId) ?? []) {
+          this.deleteStopped(stored.runId, d.name, { binding: restored?.binding, sent: d.sent });
+        }
+        pending.delete(stored.runId);
         // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
         // records them again.
         startAndRearm(actor, blob.timers ?? [], this.now());
-        // …and the deletes of stopped Workspaces' Sandboxes that a crash cut short (ADR-0012), after
-        // the start, so a Workspace of the restored tree that holds the name keeps it.
-        if (restored) for (const name of blob.deleting ?? []) this.deleteStopped(restored, name);
         // A run an earlier restore left live to retry is hosted now.
         this.unhosted.delete(stored.runId);
         reattached.push(stored.runId);
@@ -2063,6 +2079,18 @@ export class RunHost {
     // runs about to be re-attached.
     this.stateLiveSet();
     this.scheduleLiveSet();
+
+    // The other Sandbox deletes: a hosted run's, and one of a run that ended — `done`, `failed`,
+    // `cancelled`, `error`, or `drifted` or `lost` just now — whose Workspace no tree holds again. A
+    // run left live, whose restore a later boot or publish tries again, keeps its deletes for that
+    // restore, which asks its own tree.
+    const stillLive = new Set(liveRows.map((r) => r.runId).filter((id) => !lost.includes(id) && !drifted.includes(id)));
+    for (const [runId, ds] of pending) {
+      const run = this.runs.get(runId);
+      if (!run && stillLive.has(runId)) continue;
+      for (const d of ds)
+        this.deleteStopped(runId, d.name, run ? { binding: run.binding, sent: d.sent } : { sent: true });
+    }
 
     this.#restorePending = false;
     return { reattached, lost, drifted, failed };
@@ -3625,32 +3653,66 @@ export class RunHost {
     if (ref._parent === undefined || logic == null || !composesSandbox(logic as AnyStateMachine)) return;
     const snap = ref.getSnapshot() as { value?: unknown; context?: { wsId?: unknown } };
     if (snap.value === "placing" || typeof snap.context?.wsId !== "string") return;
-    this.deleteStopped(run, workspaceName(runId, snap.context.wsId));
+    this.deleteStopped(runId, workspaceName(runId, snap.context.wsId), { binding });
   }
 
   /**
-   * Delete the Sandbox of a stopped Workspace, and keep the name in `run.deleting` until the delete
-   * is done: each save in between carries it, so a restore deletes it again. After the step that
-   * stopped the Workspace: a name that a live Workspace of the run holds then is not deleted,
-   * because a parent that enters the state again, or invokes the same Machine again, gives its new
-   * Workspace the same path, and so the same name, and that Workspace takes the Sandbox over
-   * (ADR-0064, ADR-0073). A Workspace that places the name while the delete runs waits for it
-   * (`sandboxDeleting`). A delete that fails is the idle GC's.
+   * Delete the Sandbox of a stopped Workspace (ADR-0012), with a record in the store from before
+   * the delete leaves to after it is done, so a restore redoes one that a crash cut short, whatever
+   * the run's status. The record is written at once, unsent. After the step that stopped the
+   * Workspace — and after `after`, the write in flight of a Workspace stopped in `placing` — a name
+   * that a live Workspace of the run (`binding`) holds then is not deleted: a parent that enters the
+   * state again, or invokes the same Machine again, gives its new Workspace the same path, and so
+   * the same name, and that Workspace takes the Sandbox over (ADR-0064, ADR-0073). Otherwise the
+   * record is marked sent, and the delete leaves.
+   *
+   * `sent`: a restore redoes a delete that was sent, with no held check. A Workspace that placed
+   * the name after it was sent is in `placing`, waiting for it, so it holds the name and must not
+   * stop the delete. Each delete is in `deletes` until it is done, and a Workspace that places the
+   * name waits for it (`sandboxDeleting`). One of the same name that is not done goes first. A
+   * delete that fails is the idle GC's. The promise never rejects.
    */
-  private deleteStopped(run: LiveRun, name: string): void {
-    const runId = run.record.runId;
-    // After a delete of the same name that is not done: the Workspace of that name stopped again.
-    const before = run.deleting.get(name) ?? Promise.resolve();
-    const done = before.then(async () => {
-      await new Promise<void>((r) => queueMicrotask(r));
-      if (run.binding.heldSandboxes?.().has(name)) return;
-      await this.destroySandboxes(runId, [name], "the stop of its Workspace");
-    });
-    run.deleting.set(name, done);
-    void done.finally(() => {
-      if (run.deleting.get(name) === done) run.deleting.delete(name);
-      if (this.runs.get(runId) === run) void this.persist(run);
-    });
+  private deleteStopped(
+    runId: string,
+    name: string,
+    opts: { binding?: RunBinding; after?: Promise<unknown>; sent?: boolean } = {},
+  ): void {
+    const key = deleteKey(runId, name);
+    this.recordDelete(runId, name, opts.sent === true);
+    const before = this.deletes.get(key) ?? Promise.resolve();
+    const done = before
+      .then(async () => {
+        await opts.after?.catch(() => {});
+        await new Promise<void>((r) => queueMicrotask(r));
+        if (opts.sent !== true && opts.binding?.heldSandboxes?.().has(name)) return;
+        this.recordDelete(runId, name, true);
+        await this.destroySandboxes(runId, [name], "the stop of its Workspace");
+      })
+      .catch((err: unknown) => {
+        console.error(
+          `run ${runId}: Sandbox ${name} was not deleted at the stop of its Workspace: ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      })
+      .finally(() => {
+        if (this.deletes.get(key) !== done) return; // a later delete of the name keeps the record
+        this.deletes.delete(key);
+        try {
+          this.store.dropSandboxDelete(runId, name);
+        } catch (err) {
+          console.error(`run ${runId}: the record of the delete of ${name} was not removed: ${String(err)}`);
+        }
+      });
+    this.deletes.set(key, done);
+  }
+
+  /** Write the store's record of a Sandbox delete; a failed write costs the redo, never the run. */
+  private recordDelete(runId: string, name: string, sent: boolean): void {
+    try {
+      this.store.recordSandboxDelete(runId, name, sent);
+    } catch (err) {
+      console.error(`run ${runId}: the delete of ${name} was not recorded: ${String(err)}`);
+    }
   }
 
   /** Feed a run's final word to both granularities: where it ended, then that it is gone. */
@@ -4139,7 +4201,8 @@ export class RunHost {
         const run = this.runs.get(record.runId);
         return new Set(run ? runSandboxes(run.actor, record.runId, { placing: true }) : []);
       },
-      sandboxDeleting: (name) => this.runs.get(record.runId)?.deleting.get(name),
+      sandboxDeleting: (name) => this.deletes.get(deleteKey(record.runId, name)),
+      deleteSandbox: (name, after) => this.deleteStopped(record.runId, name, { binding, after }),
       instanceHarness: this.instanceHarness,
       ...(this.harnessBearer ? { harnessBearer: this.harnessBearer } : {}),
       ...(this.effector ? { effector: this.effector } : {}),
@@ -4558,7 +4621,6 @@ export class RunHost {
       binding,
       answers: [],
       gatesOpenedAt: new Map(),
-      deleting: new Map(),
       listeners: new Set(),
       feedSoFar: [],
     };
@@ -4676,7 +4738,6 @@ export class RunHost {
       childAgents: liveChildAgents(run.childAgents, run.actor),
       fault: run.fault,
       ...(run.failure !== undefined ? { failure: run.failure } : {}),
-      ...(run.deleting.size ? { deleting: [...run.deleting.keys()] } : {}),
     };
     // A save that fails is this run's fault, never the process's: an unhandled rejection would end
     // the Orchestrator and every run on it. The run keeps its last saved snapshot.
