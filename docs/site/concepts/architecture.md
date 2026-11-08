@@ -234,9 +234,9 @@ accepts only these servers:
 - an ssh server on the host of an ssh Repo url, so that the ssh key never goes to a different host,
 - a `file://` server for a `file://` Repo.
 
-An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or give an https server through
-`git-lfs-authenticate`. The Repo cache tries `git-lfs-transfer` first, as git-lfs does by default. When the server does
-not speak it, the Repo cache uses `git-lfs-authenticate`.
+An ssh LFS server can speak the pure SSH protocol of Git LFS (`git-lfs-transfer`), or give the url of an http(s) LFS
+server through `git-lfs-authenticate`. The Repo cache tries `git-lfs-transfer` first, as git-lfs does by default. When
+the server does not speak it, the Repo cache uses `git-lfs-authenticate`.
 
 The token goes only to the origin of the Repo: its scheme, its host and its port. Thus:
 

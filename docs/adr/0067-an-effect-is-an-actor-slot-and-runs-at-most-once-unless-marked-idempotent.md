@@ -261,11 +261,10 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   `lfs.sshtransfer=negotiate`, git-lfs's default, which the Effector and the cache agent set: over the pure SSH protocol
   (`git-lfs-transfer`) when the server speaks it, else through `git-lfs-authenticate`. The Effector's own batch
   questions go in the same order, through the push's ssh command, so a server that speaks only one of the two takes the
-  push, and the check negotiates in the same order as the upload. A pointer is each blob that git-lfs reads as one, so a
-  pointer that is not in the canonical form also gets its object uploaded. An upload that fails is `rejected`, and
-  nothing is pushed: the branch does not move, though an object that went up stays on the server. Its output shows no
-  query of a url, because an upload href can carry its credential there. A signed or squashed copy keeps the pointers,
-  so it uploads the same objects.
+  push. A pointer is each blob that git-lfs reads as one, so a pointer that is not in the canonical form also gets its
+  object uploaded. An upload that fails is `rejected`, and nothing is pushed: the branch does not move, though an object
+  that went up stays on the server. Its output shows no query of a url, because an upload href can carry its credential
+  there. A signed or squashed copy keeps the pointers, so it uploads the same objects.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The
