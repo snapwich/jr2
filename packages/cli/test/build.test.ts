@@ -40,7 +40,7 @@ import {
   type RunCommand,
   firstTarEntry,
   foldersTo,
-  gitConfigCountWarning,
+  gitConfigWarnings,
   imageHome,
   manifestListEnv,
   userContextFolders,
@@ -1035,15 +1035,29 @@ test("firstTarEntry: the type of the first entry of docker cp's tar, past a pax 
   assert.equal(firstTarEntry(Buffer.alloc(100)), undefined);
 });
 
-test("gitConfigCountWarning: an image's GIT_CONFIG_COUNT is said, with what an Agent's git then gets (ADR-0080)", () => {
-  assert.equal(gitConfigCountWarning("default", ["PATH=/usr/bin", "GIT_CONFIG_PARAMETERS=x"]), undefined);
+test("gitConfigWarnings: an image's GIT_CONFIG_COUNT is said, with what an Agent's git then gets (ADR-0080)", () => {
+  assert.deepEqual(gitConfigWarnings("default", ["PATH=/usr/bin", "GIT_CONFIG_PARAMETERS='user.name'='x'"]), []);
+  const [counted] = gitConfigWarnings("default", ["GIT_CONFIG_COUNT=1"]);
   assert.match(
-    gitConfigCountWarning("default", ["GIT_CONFIG_COUNT=1"])!,
+    counted!,
     /^sandbox image "default" sets GIT_CONFIG_COUNT=1 in its ENV: an Agent's git gets the image's entries 0 to 0 and then jr2's safe\.bareRepository=explicit as entry 1/,
   );
+  const [notCount] = gitConfigWarnings("default", ["GIT_CONFIG_COUNT=lots"]);
   assert.match(
-    gitConfigCountWarning("default", ["GIT_CONFIG_COUNT=lots"])!,
+    notCount!,
     /GIT_CONFIG_COUNT=lots in its ENV, which is not a count: the Harness replaces it, so an Agent's git gets none of the image's/,
+  );
+});
+
+test("gitConfigWarnings: an image's GIT_CONFIG_PARAMETERS that names safe.bareRepository is said, because git reads it after jr2's entry (ADR-0080)", () => {
+  const [warning] = gitConfigWarnings("default", ["GIT_CONFIG_PARAMETERS='Safe.BareRepository'='all'"]);
+  assert.match(
+    warning!,
+    /^sandbox image "default" sets safe\.bareRepository in GIT_CONFIG_PARAMETERS in its ENV: git reads it after jr2's entry/,
+  );
+  assert.equal(
+    gitConfigWarnings("default", ["GIT_CONFIG_COUNT=1", "GIT_CONFIG_PARAMETERS='safe.bareRepository'='all'"]).length,
+    2,
   );
 });
 

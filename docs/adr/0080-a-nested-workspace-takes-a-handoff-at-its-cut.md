@@ -267,8 +267,13 @@ With it, a push, a clone or a fetch by path and `--git-dir` work, and `git -C ba
 names the setting. The git of the cut, the sync and the bundle step runs with jr2's cleared env and its own config. The
 attach runs its git with the domain's env, and so with this entry: a clone and an `upload-pack` by path work under it,
 and the attach reads the node cache, a bare repository, by `--git-dir`. jr2's entry goes after the image's own entries,
-so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and the Harness needs to read no image. `jr2 up` warns, and
-does not refuse, when the `ENV` of a Sandbox Image that it builds sets `GIT_CONFIG_COUNT` (ADR-0076).
+so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and the Harness needs to read no image. git reads
+`GIT_CONFIG_PARAMETERS` after the counted entries, so a `safe.bareRepository` there is used in place of jr2's. `jr2 up`
+warns, and does not refuse, when the `ENV` of a Sandbox Image that it builds sets `GIT_CONFIG_COUNT`, or names
+`safe.bareRepository` in `GIT_CONFIG_PARAMETERS` (ADR-0076). The image's git must be 2.38 or later to read the setting;
+an older git ignores it, and the Harness logs one warning at start. git before 2.45 also refuses git that runs inside a
+`.git` folder or `.git/worktrees/<name>`, so a hook or a tool that runs git there needs git 2.45 or `--git-dir`. The git
+of the default image (`node:24-slim`) is 2.39.
 
 ## Example
 

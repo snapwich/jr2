@@ -14,6 +14,7 @@ import {
   FALLBACK_HOME,
   imageSystemGitConfig,
   imageSystemGitConfigBy,
+  oldGitWarningBy,
   NO_SYSTEM_FILE,
   prepareProcess,
   RUNTIME_BIN,
@@ -254,4 +255,15 @@ test("git identity: the domain's answer, by imageSystemGitConfigBy, reads as ima
   assert.equal(await by({ code: 129, stdout: "" }, { code: 0, stdout: "/usr/lib/git-core\n" }), "/etc/gitconfig");
   assert.equal(await by({ code: 129, stdout: "" }, { code: 0, stdout: "/opt/conda/libexec/git-core" }), undefined);
   assert.equal(await by({ code: null, stdout: "" }, { code: 0, stdout: "/usr/lib/git-core" }), undefined, "no git");
+});
+
+test("old git: a git older than 2.38, which ignores safe.bareRepository, is said in one line (ADR-0080)", async () => {
+  const by = (code: number | null, stdout: string) => oldGitWarningBy(async () => ({ code, stdout }));
+  assert.match((await by(0, "git version 2.34.1\n"))!, /git is 2\.34, older than 2\.38.*safe\.bareRepository/);
+  assert.match((await by(0, "git version 1.9.0\n"))!, /older than 2\.38/);
+  assert.equal(await by(0, "git version 2.38.0\n"), undefined);
+  assert.equal(await by(0, "git version 2.39.5\n"), undefined);
+  assert.equal(await by(0, "git version 3.0.0\n"), undefined);
+  assert.equal(await by(null, ""), undefined, "no git: the preflight says so");
+  assert.equal(await by(0, "not git\n"), undefined);
 });

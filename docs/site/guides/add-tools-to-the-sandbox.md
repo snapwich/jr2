@@ -95,9 +95,15 @@ runtime at `/opt/jr2`, and starts the [Harness](../reference/glossary.md#harness
   by the folder that it runs in. A push, a clone and a fetch by path work. To work in a bare repository, give its path
   with `--git-dir`, for example `git --git-dir=build.git log`. `git -C build.git log` stops with a message that names
   the setting.
+- git 2.38 or later reads this setting. An older git ignores it, and the Harness then logs one warning when it starts.
+  git before 2.45 also stops when it runs inside a `.git` folder, for example `cd .git && git rev-parse --git-dir`. The
+  git of `node:24-slim` is 2.39. Thus a hook or a tool that runs git in the `.git` folder needs git 2.45 or later, or
+  `--git-dir`.
 - jr2 sets this entry with the variables `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`. When the
   image sets `GIT_CONFIG_COUNT` in its `ENV`, its entries stay, and jr2 adds its entry after them. Thus jr2's entry is
-  used in place of an entry of the image for `safe.bareRepository`. `jr2 up` warns about this when it builds the image.
+  used in place of a `GIT_CONFIG_KEY_<n>` entry of the image for `safe.bareRepository`. But git reads
+  `GIT_CONFIG_PARAMETERS` after these entries. Thus a value of `safe.bareRepository` in `GIT_CONFIG_PARAMETERS` is used
+  in place of jr2's entry. `jr2 up` warns about each of the two when it builds the image.
 
 The image must have these, or the Sandbox does not start:
 
@@ -258,6 +264,9 @@ Agent runs nothing there.
   `warning: sandbox image "<image>" sets GIT_CONFIG_COUNT=<n> in its ENV: an Agent's git gets the image's entries 0 to <n-1> and then jr2's safe.bareRepository=explicit as entry <n>, which wins over an image entry of that key (ADR-0080)`.
   When the value is not a number, the Harness replaces it, and the warning ends
   `which is not a count: the Harness replaces it, so an Agent's git gets none of the image's GIT_CONFIG_KEY_<n> entries, only jr2's safe.bareRepository=explicit (ADR-0080)`.
+- `jr2 up` warns, and continues, when the `GIT_CONFIG_PARAMETERS` in the `ENV` of an image that it builds names
+  `safe.bareRepository`:
+  `warning: sandbox image "<image>" sets safe.bareRepository in GIT_CONFIG_PARAMETERS in its ENV: git reads it after jr2's entry, so an Agent's git uses the image's value in place of jr2's safe.bareRepository=explicit (ADR-0080)`.
 - The [Orchestrator](../reference/glossary.md#orchestrator) refuses a `file:` image that the last `jr2 up` did not
   build. Run `jr2 up` again:
   ``no Sandbox Image for <url> (context digest <digest>) — this instance's last converge built <n> image(s), none of them this one. Re-run `jr2 up`: it walks the registered Machines and builds every `file:` context they carry (ADR-0037/0049).``

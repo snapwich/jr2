@@ -152,9 +152,12 @@ program can connect to each address that the pod can reach.
 The environment of a confined program is the environment with which the container started: the `ENV` of the image,
 `harness.env`, `harness.envFrom`, and the proxy and trust variables. jr2 removes its own `JR2_` names from it, except
 `JR2_CUSTODIAN_URL`. jr2 adds `HOME`, `TMPDIR` and the Stand-in of each Held secret that the `workspace()` lists, under
-the name of that secret. The environment holds no control Stand-in. It holds the Stand-in of a model key only when the
-`workspace()` lists that key. Thus code in `/work` cannot call the model with your key unless you allow it. jr2 records
-the use of each Turn, and a call that you did not allow cannot go around that record.
+the name of that secret. jr2 also adds `safe.bareRepository=explicit` for git, in `GIT_CONFIG_COUNT`,
+`GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, after the image's own entries (see
+[What the image must have](../guides/add-tools-to-the-sandbox.md#what-the-image-must-have)). The environment holds no
+control Stand-in. It holds the Stand-in of a model key only when the `workspace()` lists that key. Thus code in `/work`
+cannot call the model with your key unless you allow it. jr2 records the use of each Turn, and a call that you did not
+allow cannot go around that record.
 
 The read, write and edit tools reach the same paths as the shell. A path in `/run/jr2`, or a link to one, gives the
 error of a file that the user cannot read. In a path, `~` is the `HOME` of the confined programs.

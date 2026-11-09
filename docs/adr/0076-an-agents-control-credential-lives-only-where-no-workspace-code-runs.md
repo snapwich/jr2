@@ -141,9 +141,12 @@ another, whatever it writes.
   image's own entries stay, and the Harness needs to read no image. A start-env `GIT_CONFIG_COUNT` that is not a count
   is replaced, and the Harness logs one line. `jr2 up` warns, and does not refuse, when the `ENV` of a Sandbox Image
   that it builds sets `GIT_CONFIG_COUNT`: the warning says which entries an Agent's git then gets, so that the image's
-  author sees that jr2's entry comes last and wins over an image entry of the same key. The domain never gets what the
-  Harness process added to its own env after the start, and so it never gets the control Stand-in, or the Stand-in of a
-  model key that the `secrets` list does not name. A toolchain and a bring-your-own image work as they work outside jr2.
+  author sees that jr2's entry comes last and wins over an image entry of the same key. It warns too when the image's
+  `GIT_CONFIG_PARAMETERS` names `safe.bareRepository`, because git reads that variable after the counted entries. The
+  domain never gets what the Harness process added to its own env after the start, and so it never gets the control
+  Stand-in, or the Stand-in of a model key that the `secrets` list does not name. A toolchain and a bring-your-own image
+  work as they work outside jr2, except that git does not find a bare repository by its folder, and git before 2.45
+  stops inside a `.git` folder (ADR-0080).
 - **The Harness process runs with jr2's env alone.** node, glibc and OpenSSL read names from the env that load code or
   configuration from a path: `NODE_OPTIONS=--require /app/x.js`, `LD_PRELOAD`, `OPENSSL_CONF`. The image's `ENV` can
   name a file that the domain writes. So the Harness starts as `effector nocore --harness-env -- node …`. The effector

@@ -125,7 +125,7 @@ import {
   buildSandboxImage,
   choosePlatforms,
   detectKitCheckout,
-  gitConfigCountWarning,
+  gitConfigWarnings,
   isMissingHostImage,
   kitImageBuild,
   kitImageRefs,
@@ -772,8 +772,8 @@ export async function up(args: string[], io: Io): Promise<number> {
         // An image's own git config entries (ADR-0080): the Harness adds jr2's after them. A warning,
         // never a refusal: the image keeps its entries, and the Harness replaces a value that is
         // not a count.
-        const gitWarning = gitConfigCountWarning(image.name, await onHost(ref, () => build.imageEnv(ref, platforms)));
-        if (gitWarning !== undefined) activity(io, `warning: ${gitWarning}`);
+        const imageEnv = await onHost(ref, () => build.imageEnv(ref, platforms));
+        for (const warning of gitConfigWarnings(image.name, imageEnv)) activity(io, `warning: ${warning}`);
         // The image user's context folder (ADR-0062): the pod mounts that folder of the image again,
         // read-only, so no Agent writes what each Agent reads. Recorded here because a provision
         // cannot look in an image, and a mount of a path that the image lacks stops the container.

@@ -51,6 +51,7 @@ import {
   conditionPathAndHome,
   defaultGitIdentity,
   imageSystemGitConfigBy,
+  oldGitWarningBy,
   NO_SYSTEM_FILE,
   prepareProcess,
   RUNTIME_GITCONFIG,
@@ -222,16 +223,19 @@ else clearShm();
 // which system file it reads. Its answer sets only the domain's env.
 if (children) {
   const domain = children;
-  const systemFile = await imageSystemGitConfigBy(async (args) => {
+  const domainGit = async (args: string[]) => {
     const r = await runIn(domain, ["git", ...args], { cwd: "/", timeoutMs: 10_000 });
     return { code: r.code, stdout: r.stdout };
-  });
+  };
+  const systemFile = await imageSystemGitConfigBy(domainGit);
   const env: Record<string, string | undefined> = { ...domain.env };
   defaultGitIdentity(env, RUNTIME_GITCONFIG, () => systemFile);
   const gitConfigSystem = env.GIT_CONFIG_SYSTEM;
   if (gitConfigSystem !== undefined && domain.env.GIT_CONFIG_SYSTEM === undefined) {
     children = { ...domain, env: { ...domain.env, GIT_CONFIG_SYSTEM: gitConfigSystem } };
   }
+  const oldGit = await oldGitWarningBy(domainGit);
+  if (oldGit !== undefined) console.error(`jr2 harness: warning: ${oldGit}`);
 }
 
 // The wire's gate (ADR-0058): the Orchestrator bears a token derived for THIS placement, and the

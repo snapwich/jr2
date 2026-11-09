@@ -84,7 +84,7 @@ export type BuildPort = {
   imageUser(image: string, platforms: readonly string[]): Promise<string>;
   /** The image's own `ENV`, as `NAME=value` lines. A multi-platform build is read for each
    * platform, from the registry, and the lines of all of them are given, as {@link imageUser} reads
-   * the USER. The converge reads it for {@link gitConfigCountWarning}. */
+   * the USER. The converge reads it for {@link gitConfigWarnings}. */
   imageEnv(image: string, platforms: readonly string[]): Promise<string[]>;
   /** What a Sandbox Effector's image holds for a push (ADR-0068): which of `paths` it has,
    * links followed, and its `/etc/passwd` (`""` when it has none). Read off a container created and
@@ -1529,28 +1529,45 @@ export function manifestListEnv(json: string): string[] {
 }
 
 /**
- * The warning of the converge when a Sandbox Image's `ENV` sets `GIT_CONFIG_COUNT` (ADR-0080), or
- * undefined. The Harness gives each Agent process `safe.bareRepository=explicit` as one more git
- * config entry after the image's own (ADR-0076). The warning says what an Agent's git then gets:
- * the image's entries and jr2's, or jr2's alone when the value is not a count, which the Harness
- * replaces.
+ * The warnings of the converge about a Sandbox Image's own git config in its `ENV` (ADR-0080). The
+ * Harness gives each Agent process `safe.bareRepository=explicit` as one more git config entry
+ * after the image's own (ADR-0076). One warning when the image sets `GIT_CONFIG_COUNT`: it says what
+ * an Agent's git then gets, the image's entries and jr2's, or jr2's alone when the value is not a
+ * count, which the Harness replaces. One more when the image's `GIT_CONFIG_PARAMETERS` names
+ * `safe.bareRepository`: git reads that variable after the counted entries, so its value is used
+ * in place of jr2's.
  */
-export function gitConfigCountWarning(image: string, env: readonly string[]): string | undefined {
-  const line = [...env].reverse().find((l) => l.startsWith("GIT_CONFIG_COUNT="));
-  if (line === undefined) return undefined;
-  const value = line.slice("GIT_CONFIG_COUNT=".length);
-  const head = `sandbox image "${image}" sets GIT_CONFIG_COUNT=${value} in its ENV`;
-  if (!/^\d{1,6}$/.test(value.trim())) {
-    return (
-      `${head}, which is not a count: the Harness replaces it, so an Agent's git gets none of the image's ` +
-      "GIT_CONFIG_KEY_<n> entries, only jr2's safe.bareRepository=explicit (ADR-0080)"
+export function gitConfigWarnings(image: string, env: readonly string[]): string[] {
+  const last = (name: string) =>
+    [...env]
+      .reverse()
+      .find((l) => l.startsWith(`${name}=`))
+      ?.slice(name.length + 1);
+  const warnings: string[] = [];
+  const count = last("GIT_CONFIG_COUNT");
+  if (count !== undefined) {
+    const head = `sandbox image "${image}" sets GIT_CONFIG_COUNT=${count} in its ENV`;
+    if (!/^\d{1,6}$/.test(count.trim())) {
+      warnings.push(
+        `${head}, which is not a count: the Harness replaces it, so an Agent's git gets none of the image's ` +
+          "GIT_CONFIG_KEY_<n> entries, only jr2's safe.bareRepository=explicit (ADR-0080)",
+      );
+    } else {
+      const n = Number(count.trim());
+      warnings.push(
+        `${head}: an Agent's git gets the image's entries 0 to ${n - 1} and then jr2's ` +
+          `safe.bareRepository=explicit as entry ${n}, which wins over an image entry of that key (ADR-0080)`,
+      );
+    }
+  }
+  const parameters = last("GIT_CONFIG_PARAMETERS");
+  if (parameters !== undefined && /safe\.barerepository/i.test(parameters)) {
+    warnings.push(
+      `sandbox image "${image}" sets safe.bareRepository in GIT_CONFIG_PARAMETERS in its ENV: git reads it after ` +
+        "jr2's entry, so an Agent's git uses the image's value in place of jr2's safe.bareRepository=explicit (ADR-0080)",
     );
   }
-  const n = Number(value.trim());
-  return (
-    `${head}: an Agent's git gets the image's entries 0 to ${n - 1} and then jr2's ` +
-    `safe.bareRepository=explicit as entry ${n}, which wins over an image entry of that key (ADR-0080)`
-  );
+  return warnings;
 }
 
 /** One row of `crictl images -o json`. `repoDigests` matters as much as `repoTags` here: a

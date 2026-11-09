@@ -95,6 +95,24 @@ export async function imageSystemGitConfigBy(git: GitRun): Promise<string | unde
   return undefined;
 }
 
+/**
+ * The line the Harness logs when the image's git is older than 2.38, or undefined. Each Agent
+ * process gets `safe.bareRepository=explicit` (ADR-0080), and git before 2.38 ignores the setting
+ * with no word, so a bare repository that a commit holds can run its config again. The Harness
+ * starts all the same: the image is the operator's.
+ */
+export async function oldGitWarningBy(git: GitRun): Promise<string | undefined> {
+  const r = await git(["--version"]);
+  const m = r.code === 0 ? /git version (\d+)\.(\d+)/.exec(r.stdout) : null;
+  if (m === null) return undefined;
+  const [major, minor] = [Number(m[1]), Number(m[2])];
+  if (major > 2 || (major === 2 && minor >= 38)) return undefined;
+  return (
+    `the image's git is ${major}.${minor}, older than 2.38, which ignores safe.bareRepository=explicit: ` +
+    "git in the folder of a bare repository that a commit holds can run that repository's config (ADR-0080)"
+  );
+}
+
 /** A `systemFile` that runs nothing and answers "cannot be told": `defaultGitIdentity` then adds nothing. */
 export const NO_SYSTEM_FILE = (): undefined => undefined;
 
