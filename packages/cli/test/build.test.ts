@@ -40,7 +40,9 @@ import {
   type RunCommand,
   firstTarEntry,
   foldersTo,
+  gitConfigCountWarning,
   imageHome,
+  manifestListEnv,
   userContextFolders,
   userContextPath,
 } from "../src/build.ts";
@@ -53,6 +55,7 @@ function nullPort(): BuildPort {
     bundle: async () => {},
     build: async () => {},
     imageUser: async () => "",
+    imageEnv: async () => [],
     imageFiles: async () => ({ present: [], passwd: "" }),
     imageUserContext: async () => ({ none: "the image has no /home/u/.pi/agent" }),
     push: async () => {},
@@ -1030,4 +1033,30 @@ test("firstTarEntry: the type of the first entry of docker cp's tar, past a pax 
   assert.equal(firstTarEntry(pax), "dir");
   assert.equal(firstTarEntry(pax.subarray(0, 1200)), undefined);
   assert.equal(firstTarEntry(Buffer.alloc(100)), undefined);
+});
+
+test("gitConfigCountWarning: an image's GIT_CONFIG_COUNT is said, with what an Agent's git then gets (ADR-0080)", () => {
+  assert.equal(gitConfigCountWarning("default", ["PATH=/usr/bin", "GIT_CONFIG_PARAMETERS=x"]), undefined);
+  assert.match(
+    gitConfigCountWarning("default", ["GIT_CONFIG_COUNT=1"])!,
+    /^sandbox image "default" sets GIT_CONFIG_COUNT=1 in its ENV: an Agent's git gets the image's entries 0 to 0 and then jr2's safe\.bareRepository=explicit as entry 1/,
+  );
+  assert.match(
+    gitConfigCountWarning("default", ["GIT_CONFIG_COUNT=lots"])!,
+    /GIT_CONFIG_COUNT=lots in its ENV, which is not a count: the Harness replaces it, so an Agent's git gets none of the image's/,
+  );
+});
+
+test("manifestListEnv: the ENV lines of each platform of a manifest list, each once", () => {
+  assert.deepEqual(manifestListEnv(JSON.stringify({ config: { Env: ["A=1"] } })), ["A=1"]);
+  assert.deepEqual(
+    manifestListEnv(
+      JSON.stringify({
+        "linux/amd64": { config: { Env: ["A=1", "GIT_CONFIG_COUNT=1"] } },
+        "linux/arm64": { config: { Env: ["A=1"] } },
+      }),
+    ),
+    ["A=1", "GIT_CONFIG_COUNT=1"],
+  );
+  assert.deepEqual(manifestListEnv(JSON.stringify({ config: { Env: null } })), []);
 });

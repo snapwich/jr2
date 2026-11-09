@@ -265,9 +265,10 @@ a commit holds ran that repository's `core.fsmonitor`. So jr2 sets `safe.bareRep
 process, through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` in the domain's env (ADR-0076).
 With it, a push, a clone or a fetch by path and `--git-dir` work, and `git -C bare.git` is refused with a message that
 names the setting. The git of the cut, the sync and the bundle step runs with jr2's cleared env and its own config. The
-attach runs its git with the domain's env, and so with this entry: a clone and an `upload-pack` by path work under it.
-jr2's entry goes after the image's own entries, so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and jr2
-needs to read no image.
+attach runs its git with the domain's env, and so with this entry: a clone and an `upload-pack` by path work under it,
+and the attach reads the node cache, a bare repository, by `--git-dir`. jr2's entry goes after the image's own entries,
+so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and the Harness needs to read no image. `jr2 up` warns, and
+does not refuse, when the `ENV` of a Sandbox Image that it builds sets `GIT_CONFIG_COUNT` (ADR-0076).
 
 ## Example
 

@@ -82,6 +82,10 @@ export type BuildPort = {
    * is on the host daemon (`docker inspect`), while a multi-platform one went straight to the
    * registry as a manifest list the daemon never held (`docker buildx imagetools inspect`). */
   imageUser(image: string, platforms: readonly string[]): Promise<string>;
+  /** The image's own `ENV`, as `NAME=value` lines. A multi-platform build is read for each
+   * platform, from the registry, and the lines of all of them are given, as {@link imageUser} reads
+   * the USER. The converge reads it for {@link gitConfigCountWarning}. */
+  imageEnv(image: string, platforms: readonly string[]): Promise<string[]>;
   /** What a Sandbox Effector's image holds for a push (ADR-0068): which of `paths` it has,
    * links followed, and its `/etc/passwd` (`""` when it has none). Read off a container created and
    * never started, so nothing of the image runs. A multi-platform build is read for its first
@@ -1322,6 +1326,19 @@ export const pnpmDockerBuild: BuildPort = {
     return stdout.trim();
   },
 
+  async imageEnv(image, platforms) {
+    if (platforms.length > 1) {
+      const { stdout } = await exec(
+        "docker",
+        ["buildx", "imagetools", "inspect", image, "--format", "{{json .Image}}"],
+        BIG,
+      );
+      return manifestListEnv(stdout);
+    }
+    const { stdout } = await exec("docker", ["image", "inspect", "--format", "{{json .Config.Env}}", image], BIG);
+    return (JSON.parse(stdout) as string[] | null) ?? [];
+  },
+
   async buildablePlatforms() {
     // `docker buildx inspect` prints one `Platforms:` line per builder node, listing the host's own
     // platform and every foreign one binfmt registered. A `*` marks the preferred entry.
@@ -1500,6 +1517,40 @@ export function manifestListUser(image: string, json: string): string {
     );
   }
   return users[0]?.[1] ?? "";
+}
+
+/** The `ENV` lines of each platform of `docker buildx imagetools inspect --format '{{json .Image}}'`
+ * (one config, or a map by platform), each line once. */
+export function manifestListEnv(json: string): string[] {
+  type Config = { config?: { Env?: string[] | null } };
+  const parsed = JSON.parse(json) as Record<string, unknown>;
+  const byPlatform = "config" in parsed ? { "": parsed } : (parsed as Record<string, Config>);
+  return [...new Set(Object.values(byPlatform).flatMap((entry) => (entry as Config)?.config?.Env ?? []))];
+}
+
+/**
+ * The warning of the converge when a Sandbox Image's `ENV` sets `GIT_CONFIG_COUNT` (ADR-0080), or
+ * undefined. The Harness gives each Agent process `safe.bareRepository=explicit` as one more git
+ * config entry after the image's own (ADR-0076). The warning says what an Agent's git then gets:
+ * the image's entries and jr2's, or jr2's alone when the value is not a count, which the Harness
+ * replaces.
+ */
+export function gitConfigCountWarning(image: string, env: readonly string[]): string | undefined {
+  const line = [...env].reverse().find((l) => l.startsWith("GIT_CONFIG_COUNT="));
+  if (line === undefined) return undefined;
+  const value = line.slice("GIT_CONFIG_COUNT=".length);
+  const head = `sandbox image "${image}" sets GIT_CONFIG_COUNT=${value} in its ENV`;
+  if (!/^\d{1,6}$/.test(value.trim())) {
+    return (
+      `${head}, which is not a count: the Harness replaces it, so an Agent's git gets none of the image's ` +
+      "GIT_CONFIG_KEY_<n> entries, only jr2's safe.bareRepository=explicit (ADR-0080)"
+    );
+  }
+  const n = Number(value.trim());
+  return (
+    `${head}: an Agent's git gets the image's entries 0 to ${n - 1} and then jr2's ` +
+    `safe.bareRepository=explicit as entry ${n}, which wins over an image entry of that key (ADR-0080)`
+  );
 }
 
 /** One row of `crictl images -o json`. `repoDigests` matters as much as `repoTags` here: a

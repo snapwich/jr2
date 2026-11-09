@@ -90,6 +90,14 @@ runtime at `/opt/jr2`, and starts the [Harness](../reference/glossary.md#harness
   it by its full path.
 - The `USER` and the `HOME` of the image stay as you set them. When an image that `jr2 up` built sets no `USER`, the pod
   runs as uid 1000, with `HOME=/home/jr2`.
+- The git of each process that an Agent starts has `safe.bareRepository=explicit`. A commit can hold a bare repository,
+  and its config can start a program when git runs in its folder. With this setting, git does not find a bare repository
+  by the folder that it runs in. A push, a clone and a fetch by path work. To work in a bare repository, give its path
+  with `--git-dir`, for example `git --git-dir=build.git log`. `git -C build.git log` stops with a message that names
+  the setting.
+- jr2 sets this entry with the variables `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`. When the
+  image sets `GIT_CONFIG_COUNT` in its `ENV`, its entries stay, and jr2 adds its entry after them. Thus jr2's entry is
+  used in place of an entry of the image for `safe.bareRepository`. `jr2 up` warns about this when it builds the image.
 
 The image must have these, or the Sandbox does not start:
 
@@ -246,6 +254,10 @@ Agent runs nothing there.
   `jr2: this Sandbox Image does not meet the floor (ADR-0037): a glibc base no older than jr2's node (musl is out entirely), git on the system PATH, a writable HOME for the image's USER, and /opt/jr2 + /work + :8080 unclaimed. jr2 vendors the rest.`
   The run faults with a text that starts with
   ``Sandbox "<sandbox>" never reached Ready (last phase: <phase>) — if its Sandbox Image is new, check the preflight: `kubectl logs <sandbox> -c preflight` ``.
+- `jr2 up` warns, and continues, when the `ENV` of an image that it builds sets `GIT_CONFIG_COUNT`. `<n>` is the value:
+  `warning: sandbox image "<image>" sets GIT_CONFIG_COUNT=<n> in its ENV: an Agent's git gets the image's entries 0 to <n-1> and then jr2's safe.bareRepository=explicit as entry <n>, which wins over an image entry of that key (ADR-0080)`.
+  When the value is not a number, the Harness replaces it, and the warning ends
+  `which is not a count: the Harness replaces it, so an Agent's git gets none of the image's GIT_CONFIG_KEY_<n> entries, only jr2's safe.bareRepository=explicit (ADR-0080)`.
 - The [Orchestrator](../reference/glossary.md#orchestrator) refuses a `file:` image that the last `jr2 up` did not
   build. Run `jr2 up` again:
   ``no Sandbox Image for <url> (context digest <digest>) — this instance's last converge built <n> image(s), none of them this one. Re-run `jr2 up`: it walks the registered Machines and builds every `file:` context they carry (ADR-0037/0049).``

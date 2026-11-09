@@ -336,6 +336,8 @@ function fakeBuild(
     imageFiles?: (image: string, paths: readonly string[]) => { present: string[]; passwd: string };
     /** The image user's context folder that a Sandbox Image has (ADR-0062). Default: none. */
     userContext?: string;
+    /** A Sandbox Image's own `ENV` lines (ADR-0080). Default: none. */
+    imageEnv?: string[];
     /** What the two stores hold when the post-converge sweep looks (ADR-0039). Empty by default,
      * so a test that is not about the sweep sees one narrated line and no removals. */
     hostImages?: ObservedImage[];
@@ -386,6 +388,7 @@ function fakeBuild(
       record.push(`${platforms.length > 1 ? "imagetools" : "inspect-user"} ${image}`);
       return opts.imageUser ?? "";
     },
+    imageEnv: async () => opts.imageEnv ?? [],
     imageUserContext: async (image, _platforms, user) => {
       record.push(`inspect-user-context ${image} ${JSON.stringify(user)}`);
       return opts.userContext !== undefined ? { dir: opts.userContext } : { none: "the image has no ~/.pi/agent" };
@@ -669,6 +672,7 @@ function mkWorld(
     imageUser?: string;
     imageFiles?: (image: string, paths: readonly string[]) => { present: string[]; passwd: string };
     userContext?: string;
+    imageEnv?: string[];
     /** What the Instance typecheck says (ADR-0050). Default: it passes. */
     typecheck?: Io["typecheck"];
     hostImages?: ObservedImage[];
@@ -698,6 +702,7 @@ function mkWorld(
       imageUser: over.imageUser,
       imageFiles: over.imageFiles,
       userContext: over.userContext,
+      imageEnv: over.imageEnv,
       hostImages: over.hostImages,
       nodeImages: over.nodeImages,
       sweepFails: over.sweepFails,
@@ -1553,6 +1558,16 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
   assert.equal(await up(["--yes", "--force"], withContext.io), 0);
   assert.deepEqual(imagesOf(withContext).sandboxUserContext, { default: "/home/app/.pi/agent" });
   assert.match(withContext.err.join("\n"), /user context: \/home\/app\/\.pi\/agent, mounted read-only from the image/);
+
+  // An image's own GIT_CONFIG_COUNT is a warning, never a refusal (ADR-0080): the Harness adds
+  // jr2's safe.bareRepository=explicit after the image's entries.
+  assert.doesNotMatch(w.err.join("\n"), /GIT_CONFIG_COUNT/, "an image with no GIT_CONFIG_COUNT gets no warning");
+  const gitConfig = mkWorld(root, { kitDir: kit, imageEnv: ["PATH=/usr/bin", "GIT_CONFIG_COUNT=2"] });
+  assert.equal(await up(["--yes", "--force"], gitConfig.io), 0);
+  assert.match(
+    gitConfig.err.join("\n"),
+    /warning: sandbox image "default" sets GIT_CONFIG_COUNT=2 in its ENV: an Agent's git gets the image's entries 0 to 1 and then jr2's safe\.bareRepository=explicit as entry 2/,
+  );
 
   // No Machine composing a Sandbox, no Sandbox Image build — said out loud, not skipped silently
   // (ADR-0051: the switch is the walk, not a config key).

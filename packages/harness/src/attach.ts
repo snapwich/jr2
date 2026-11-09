@@ -309,12 +309,13 @@ async function placedOrCheckedOut(dflt: string, env: Env): Promise<boolean> {
  * only the locks that a killed git left go, because each later step would fail on a lock.
  */
 async function mendKilled(dflt: string, cache: string, slot: string, env: Env): Promise<void> {
-  const resolves = async (dir: string, rev: string) =>
-    (await exec("git", ["-C", dir, "rev-parse", "--verify", "-q", rev], env)).code === 0;
-  const cacheHead = await resolves(cache, "HEAD^{commit}");
+  const resolves = async (where: string[], rev: string) =>
+    (await exec("git", [...where, "rev-parse", "--verify", "-q", rev], env)).code === 0;
+  // The cache is a bare repository, which the domain's git finds only by `--git-dir` (ADR-0080).
+  const cacheHead = await resolves(["--git-dir", cache], "HEAD^{commit}");
   const originHead =
     (await exec("git", ["-C", dflt, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"], env)).code === 0;
-  if (cacheHead && (!originHead || !(await resolves(dflt, "HEAD^{commit}")))) {
+  if (cacheHead && (!originHead || !(await resolves(["-C", dflt], "HEAD^{commit}")))) {
     await run("remove a clone that a kill cut short", slot, "rm", ["-rf", "--", dflt], env);
     return;
   }

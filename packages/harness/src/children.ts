@@ -18,8 +18,9 @@
 //
 // The domain's env is the env that the container STARTED with — the image's `ENV`, `harness.env`,
 // `envFrom`, the proxy and CA variables — with startup.ts's PATH, HOME and git identity, without
-// jr2's own `JR2_*` names (except `JR2_CUSTODIAN_URL`), and with HOME, TMPDIR and the Stand-ins of
-// the secrets that the `workspace()` grants (`JR2_GRANTED_SECRETS`). It never holds what the Harness
+// jr2's own `JR2_*` names (except `JR2_CUSTODIAN_URL`), and with HOME, TMPDIR, the Stand-ins of
+// the secrets that the `workspace()` grants (`JR2_GRANTED_SECRETS`), and `safe.bareRepository=explicit`
+// for git after the start env's own `GIT_CONFIG_*` entries (ADR-0080). It never holds what the Harness
 // put in its own env after the start: the control Stand-in, a model key's Stand-in that no grant
 // names.
 //
@@ -232,12 +233,46 @@ export function grantedOf(value: string | undefined): string[] {
     .filter((n) => n !== "");
 }
 
+/** The git config that each Agent process gets (ADR-0080): a commit can hold a bare repository, and
+ * without it a `git status` in that folder runs the bare repository's `core.fsmonitor`. */
+export const AGENT_GIT_CONFIG: readonly (readonly [string, string])[] = [["safe.bareRepository", "explicit"]];
+
+/**
+ * `env` with `pins` after its own `GIT_CONFIG_KEY_<n>` entries (ADR-0076, ADR-0080): with a
+ * `GIT_CONFIG_COUNT` of n, each pin goes at n, n+1, …, and the count grows to match, so an image's
+ * own entries stay and a later entry of a key wins. A `GIT_CONFIG_COUNT` that is not a count is
+ * replaced, and `log` says so: git refuses each command with it.
+ */
+export function withGitConfig(
+  env: Record<string, string>,
+  pins: readonly (readonly [string, string])[],
+  log: (line: string) => void,
+): void {
+  const raw = env.GIT_CONFIG_COUNT;
+  let n = 0;
+  if (raw !== undefined) {
+    if (/^\d{1,6}$/.test(raw.trim())) n = Number(raw.trim());
+    else
+      log(
+        `the start env's GIT_CONFIG_COUNT ${JSON.stringify(raw)} is not a count, so an Agent's git gets jr2's ` +
+          "entries alone, from GIT_CONFIG_KEY_0 (ADR-0076, ADR-0080)",
+      );
+  }
+  for (const [key, value] of pins) {
+    env[`GIT_CONFIG_KEY_${n}`] = key;
+    env[`GIT_CONFIG_VALUE_${n}`] = value;
+    n++;
+  }
+  env.GIT_CONFIG_COUNT = String(n);
+}
+
 /**
  * The domain's env (ADR-0076): `start` — the container's env at the start, with startup.ts's PATH,
  * HOME and git identity — without `JR2_*` but `JR2_CUSTODIAN_URL`; then HOME and TMPDIR; then the
- * Stand-in of each granted secret under its own name. A granted name with no Stand-in is a fault of
- * the pod's maker, said loudly. A value equal to the control Stand-in, or to the Stand-in of a held
- * secret that no grant names, is never put in, whatever its name.
+ * Stand-in of each granted secret under its own name; then {@link AGENT_GIT_CONFIG} after the start
+ * env's own git config entries. A granted name with no Stand-in is a fault of the pod's maker, said
+ * loudly. A value equal to the control Stand-in, or to the Stand-in of a held secret that no grant
+ * names, is never put in, whatever its name.
  */
 export function childEnv(
   start: Readonly<Record<string, string | undefined>>,
@@ -245,6 +280,7 @@ export function childEnv(
   granted: readonly string[],
   control: string | undefined,
   dirs: { home: string; tmp: string },
+  log: (line: string) => void = (line) => console.error(line),
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(start)) {
@@ -268,6 +304,7 @@ export function childEnv(
     out[name] = value;
   }
   for (const [name, value] of Object.entries(out)) if (withheld.has(value)) delete out[name];
+  withGitConfig(out, AGENT_GIT_CONFIG, log);
   return out;
 }
 
@@ -349,10 +386,14 @@ export function childPolicy(inputs: PolicyInputs): ChildPolicy {
       );
     }
   }
-  const env = childEnv(inputs.env, inputs.standIns, grantedOf(inputs.env.JR2_GRANTED_SECRETS), inputs.control, {
-    home,
-    tmp,
-  });
+  const env = childEnv(
+    inputs.env,
+    inputs.standIns,
+    grantedOf(inputs.env.JR2_GRANTED_SECRETS),
+    inputs.control,
+    { home, tmp },
+    inputs.log,
+  );
   const rules = harnessRules(confiner, deny, (inputs.read ?? [OUTPUT_DIR]).map(real));
   const spawner = new Spawner({
     argv: [confiner, "confine", ...rules, "--", confiner, "effector", "spawner"],

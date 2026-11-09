@@ -116,6 +116,9 @@ The final reviewer does not need to know jr2. In the nested Sandbox, git looks o
 - `git log` shows the commits of the parent's Agents, with their authors and their messages.
 - Only the commit and its ancestors enter the clone. The other branches, files and caches of the parent's Sandbox stay
   there.
+- The git of the final reviewer has `safe.bareRepository=explicit`, as each Agent's git has. Thus a bare repository that
+  the commit holds starts no program of its config when the reviewer runs git in its folder (see
+  [What the image must have](add-tools-to-the-sandbox.md#what-the-image-must-have)).
 
 The final reviewer can run the tests of the commit in its own Sandbox.
 

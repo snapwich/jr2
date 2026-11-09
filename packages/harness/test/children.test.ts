@@ -88,6 +88,10 @@ test("childEnv: the container's start env, HOME, TMPDIR and the granted Stand-in
     HOME: "/home/jr2",
     TMPDIR: "/tmp",
     JIRA_TOKEN: "jr2-held-JIRA_TOKEN.granted",
+    // An Agent's git (ADR-0080; agent-git.test.ts).
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.bareRepository",
+    GIT_CONFIG_VALUE_0: "explicit",
   });
   assert.throws(
     () => childEnv({}, new Map(), ["JIRA_TOKEN"], undefined, { home: "/h", tmp: "/t" }),
