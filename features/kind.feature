@@ -824,11 +824,12 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the Harness reports the Agent's turn settled by the Orchestrator's abort
       And the run's Sandbox is still there
 
-  Rule: a write from the review worktree cannot reach the branch or the coder's worktree
+  Rule: a stray write from the review worktree does not reach the branch or the coder's worktree
     ADR-0028. The tool layer (`workspace: "read"`) states intent and stops the honest path; the
-    detached review Worktree is the containment. It sits beside the branch Worktree at the sha
-    under review with a DETACHED HEAD, so a rogue write cannot move the branch and a rogue commit
-    lands on a detached HEAD — it evaporates with the checkout.
+    detached review Worktree keeps a stray write off the branch. It sits beside the branch Worktree
+    at the sha under review with a DETACHED HEAD, so a stray write does not move the branch and a
+    stray commit lands on a detached HEAD — it goes with the checkout. This is not a permission
+    boundary: the reviewer's bash still reaches all of /work, and the Sandbox is the boundary.
 
     Scenario: a write probe and a commit from the review worktree leave the branch untouched
       Given the kind instance is serving
@@ -836,7 +837,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
       # The git steps of a detached cut (ADR-0028, ADR-0075), played in the pod. What this scenario
-      # pins is the containment property those lines buy.
+      # pins is the property those lines buy for the honest path.
       When a detached review worktree is attached for repo "app" at the head of branch "feat-e2e"
       And the review worktree gets a write probe and a commit
       Then the branch ref of repo "app" branch "feat-e2e" is unmoved

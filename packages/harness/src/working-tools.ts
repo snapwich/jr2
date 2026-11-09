@@ -7,8 +7,8 @@
 // into the image at /opt/jr2/bin and reached off PATH, never by absolute path, so a user's own rg
 // in a Sandbox Image wins (ADR-0037). Each tool closes over the Frame's `cwd` (ADR-0057). The
 // definition's `workspace` filters the set: `"read"` withholds write and edit (ADR-0028) — bash
-// stays, because the tool layer states intent and stops the honest path; the worktree layer is the
-// containment. `"none"` withholds the whole set — the Menu-only Agent has no data plane at all.
+// stays, because the tool layer states intent and stops the honest path; the worktree layer keeps a
+// stray write off the branch. Neither is a boundary between Agents: the Sandbox is. `"none"` withholds the whole set — the Menu-only Agent has no data plane at all.
 //
 // Every process a tool starts, and every file op, runs in the domain, started by the spawner with
 // the domain's env (`children.ts`, `spawner.ts`, ADR-0076): the kernel applies the domain's rules to

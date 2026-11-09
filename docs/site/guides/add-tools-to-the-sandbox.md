@@ -94,7 +94,15 @@ runtime at `/opt/jr2`, and starts the [Harness](../reference/glossary.md#harness
   and its config can start a program when git runs in its folder. With this setting, git does not find a bare repository
   by the folder that it runs in. A push, a clone and a fetch by path work. To work in a bare repository, give its path
   with `--git-dir`, for example `git --git-dir=build.git log`. `git -C build.git log` stops with a message that names
-  the setting.
+  the setting. `git config` in that folder does not name it: a write stops with `fatal: not in a git directory`, and a
+  read gives nothing. Other commands, such as `git remote update` in a mirror or `git worktree add` in a bare
+  repository, also stop.
+- Thus a test suite or a tool that runs git in a bare repository by its folder fails in a jr2 Sandbox, also when it
+  passes in CI. A usual test helper does `git init --bare remote.git`, then runs git with `remote.git` as its folder.
+  Fix the tool: give `--git-dir`, or set `GIT_DIR`. Or turn the setting off for each Agent of the Sandbox:
+  `GIT_CONFIG_PARAMETERS="'safe.bareRepository'='all'"` in the `ENV` of the image, or in `harness.env`. git reads that
+  variable after jr2's entry. `jr2 up` warns when an image that it builds sets it, because a bare repository in a commit
+  can then start a program when git runs in its folder.
 - git 2.38 or later reads this setting. An older git ignores it, and the Harness then logs one warning when it starts.
   git before 2.45 also stops when it runs inside a `.git` folder, for example `cd .git && git rev-parse --git-dir`. The
   git of `node:24-slim` is 2.39. Thus a hook or a tool that runs git in the `.git` folder needs git 2.45 or later, or

@@ -41,13 +41,13 @@ ADR-0018 and GLOSSARY.md said `cwd` is identity, never per Turn. The decided thi
   any Machine does: "the first slot is the one the coder edits" is its convention, and a convention is stated, not
   defaulted.
 
-- **`continue: true` is the whole continuation surface.** Absent, every invocation is a fresh conversation — jr's lossy
-  handoff, ADR-0016's default, unchanged. Present, the Turn lands on **this Agent's one conversation in this Machine
-  instance**, whichever state of the Machine invokes it. The Instance ID is structural —
-  `<runId>/<machine actor path>/<agent>` — so the author writes a boolean, not a key: in a state machine the identity is
-  already on the page (the run, the Machine instance, the Agent slot), and a caller-chosen string would only restate it,
-  or contradict it. Every surveyed orchestration framework makes the caller hold a key (LangGraph `thread_id`, Temporal
-  Workflow Id, Mastra `threadId`) because nothing else can; here something else can.
+- **`continue: true` is the whole continuation surface.** Absent, every invocation is a fresh conversation — ADR-0016's
+  default, unchanged. Present, the Turn lands on **this Agent's one conversation in this Machine instance**, whichever
+  state of the Machine invokes it. The Instance ID is structural — `<runId>/<machine actor path>/<agent>` — so the
+  author writes a boolean, not a key: in a state machine the identity is already on the page (the run, the Machine
+  instance, the Agent slot), and a caller-chosen string would only restate it, or contradict it. Every surveyed
+  orchestration framework makes the caller hold a key (LangGraph `thread_id`, Temporal Workflow Id, Mastra `threadId`)
+  because nothing else can; here something else can.
 
   - **Fan-out is safe by construction.** A Pool spawns each worker with the item id as its actor id (pool.ts), so three
     `task` children each mint their own `…/backlog.worker.<item>/coder`. The packaged Machine never learns it is under a

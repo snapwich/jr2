@@ -55,7 +55,7 @@ collapses into repetition.
   ended a Turn that nothing had ended.
 - **`agentRun` retries once, as a fresh conversation, with the identical prompt.** The degenerate context is poisoned —
   a model that just emitted a hundred identical calls conditions on them, so a nudge into the same conversation rerolls
-  loaded dice; the fresh session is ADR-0016's lossy handoff applied as recovery. The prompt carries no annotation:
+  loaded dice; the fresh session is ADR-0016's fresh conversation applied as recovery. The prompt carries no annotation:
   mechanism must not bleed into the one thing the workflow authored, and the failure being stochastic means the fix is
   the reroll, not different instructions. Budget 1 (a defaulted knob): a runaway retry costs an entire turn, and two
   independent rolls both running away is evidence the task itself is pathological — that belongs with the workflow's

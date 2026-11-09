@@ -12,9 +12,9 @@
 //
 // Plus one env var (ADR-0056): the copy that forwards names itself in
 // `JR2_HANDOFF_FROM`, because "is my global out of date" is the one fact the local copy cannot
-// learn on its own, and `jr2 version` answers it from here. Nothing else reads it. The name keeps
-// the word that the Forward had before: every published global sets it, and a global cannot be
-// updated once it ships, so the name is a contract between versions and does not change.
+// learn on its own, and `jr2 version` answers it from here. Nothing else reads it. The name does
+// not change: each global from v0.1.4 sets it, and a global cannot be updated once it ships, so the
+// name is a contract between versions.
 //
 // Builtins only, like everything the launcher runs before it knows which `jr2` will run.
 

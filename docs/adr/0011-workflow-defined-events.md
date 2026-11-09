@@ -370,8 +370,8 @@ Tests mock by `machine.provide()` at the layer under test.
 ## Consequences
 
 - Addresses are computed by jr2, never by the workflow — iids always (ADR-0016): fresh per invocation by default (the
-  lossy handoff), or `<run>/<machine actor path>/<agent>` plus its epoch under `continue: true` (ADR-0057); gate ids
-  derived from the gate's actor path by default, authored only to give external callers a meaningful name. Durable
+  fresh conversation), or `<run>/<machine actor path>/<agent>` plus its epoch under `continue: true` (ADR-0057); gate
+  ids derived from the gate's actor path by default, authored only to give external callers a meaningful name. Durable
   handles live in the host ledger (ADR-0016), not in machine contexts.
 - **Test stubbing happens at the wire, not in the actor.** The e2e tier (ADR-0010) hosts a wire-compatible stub Harness
   beside its orchestrator fixture (admits the agent, holds the stream open, never acts). An endpoint is just a URL, so

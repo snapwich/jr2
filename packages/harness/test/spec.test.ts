@@ -110,7 +110,7 @@ test("resolveDefinition: this Submission's dials win over the definition (ADR-00
   assert.equal(resolveDefinition(definition, { thinkingLevel: "xhigh" }).model, "anthropic/claude-x");
   assert.equal(resolveDefinition(definition, { model: "vllm/big" }).thinkingLevel, "low");
   // Dials are the ONLY overridable fields — identity is definition-only (ADR-0028's `workspace`
-  // above all: per-invocation escalation would void its containment claim).
+  // above all: a per-invocation change would void the intent that it states).
   assert.equal(resolveDefinition(definition, { model: "vllm/big" }).instructions, "code");
 });
 

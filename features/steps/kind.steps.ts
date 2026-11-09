@@ -1254,7 +1254,7 @@ Then(
 /**
  * A detached Worktree (ADR-0028), made with the same git steps as a detached cut (ADR-0075), exec'd
  * in the Harness container. Played from here rather than through a workflow because what this tier
- * pins is the containment property of the Worktree itself, on a real pod with the real shared clone.
+ * pins is what the Worktree itself does for the honest path, on a real pod with the real shared clone.
  */
 When(
   "a detached review worktree is attached for repo {string} at the head of branch {string}",

@@ -104,7 +104,7 @@ test("outside any Instance the launcher runs itself", async () => {
   }
 });
 
-test("a global of any published version names itself to this copy: the variable is JR2_HANDOFF_FROM", () => {
+test("a global from v0.1.4 names itself to this copy: the variable is JR2_HANDOFF_FROM", () => {
   // v0.1.4 to v0.7.0 set this name, and a global cannot be updated once it ships (ADR-0056). A
   // new name would drop the `global` line for every user who upgrades the Instance and keeps the
   // global, and a newer global that forwards into an older Instance would drop it too.

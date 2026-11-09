@@ -118,7 +118,9 @@ The final reviewer does not need to know jr2. In the nested Sandbox, git looks o
   there.
 - The git of the final reviewer has `safe.bareRepository=explicit`, as each Agent's git has. Thus a bare repository that
   the commit holds starts no program of its config when the reviewer runs git in its folder (see
-  [What the image must have](add-tools-to-the-sandbox.md#what-the-image-must-have)).
+  [What the image must have](add-tools-to-the-sandbox.md#what-the-image-must-have)). A test suite that runs git in a
+  bare repository by its folder fails for the same reason: give `--git-dir` there, or see that page for how to turn the
+  setting off.
 
 The final reviewer can run the tests of the commit in its own Sandbox.
 

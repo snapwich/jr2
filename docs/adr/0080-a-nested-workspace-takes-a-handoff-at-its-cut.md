@@ -279,10 +279,15 @@ A commit can hold a bare repository in its tree. In the spike, `git status` insi
 a commit holds ran that repository's `core.fsmonitor`. So jr2 sets `safe.bareRepository=explicit` for each Agent
 process, through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` in the domain's env (ADR-0076).
 With it, a push, a clone or a fetch by path and `--git-dir` work, and `git -C bare.git` is refused with a message that
-names the setting. The git of the cut, the sync and the bundle step runs with jr2's cleared env and its own config. The
-attach runs its git with the domain's env, and so with this entry: a clone and an `upload-pack` by path work under it,
-and the attach reads the node cache, a bare repository, by `--git-dir`. jr2's entry goes after the image's own entries,
-so an image that sets `GIT_CONFIG_COUNT` keeps its entries, and the Harness needs to read no image. git reads
+names the setting. Other commands in such a folder fail with no word of the setting: `git config` says
+`not in a git directory` or reads no repository config. So a project's test suite or tool that runs git in a bare
+repository by its folder fails in a jr2 Sandbox, and the final reviewer that runs the tests sees it fail. The fix is
+`--git-dir` or `GIT_DIR` in the tool, or `GIT_CONFIG_PARAMETERS="'safe.bareRepository'='all'"` in the image or
+`harness.env`, which turns the setting off for the Sandbox. `jr2 up` warns about it in the `ENV` of an image that it
+builds. The git of the cut, the sync and the bundle step runs with jr2's cleared env and its own config. The attach runs
+its git with the domain's env, and so with this entry: a clone and an `upload-pack` by path work under it, and the
+attach reads the node cache, a bare repository, by `--git-dir`. jr2's entry goes after the image's own entries, so an
+image that sets `GIT_CONFIG_COUNT` keeps its entries, and the Harness needs to read no image. git reads
 `GIT_CONFIG_PARAMETERS` after the counted entries, so a `safe.bareRepository` there is used in place of jr2's. `jr2 up`
 warns, and does not refuse, when the `ENV` of a Sandbox Image that it builds sets `GIT_CONFIG_COUNT`, or names
 `safe.bareRepository` in `GIT_CONFIG_PARAMETERS` (ADR-0076). The image's git must be 2.38 or later to read the setting;

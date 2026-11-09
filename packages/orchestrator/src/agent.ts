@@ -158,7 +158,7 @@ export type AgentDefinition = {
   thinkingLevel?: ThinkingLevel;
   // The persona in one word (ADR-0028), deliberately not `tools` (that names the control-plane
   // Menu, what it may SAY). `"read"` states intent and stops the honest path: bash stays, and a
-  // detached Worktree is the containment. `"none"` frames no directory — only Working tools
+  // detached Worktree keeps a stray write off the branch. Neither is a boundary: the Sandbox is. `"none"` frames no directory — only Working tools
   // consume one — and places the Turn on the Instance Harness (ADR-0031).
   /** What the Agent may do to the Workspace. Default: `"write"`.
    * - `"write"`: all the Working tools (read, write, edit, bash, grep, find).

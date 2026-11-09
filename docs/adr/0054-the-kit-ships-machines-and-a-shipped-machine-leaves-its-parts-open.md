@@ -101,8 +101,8 @@ the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
   (meta: summary, branch, worktree), as does a terminal `agent.fault` (meta: reason). `approve` reaches the final state
   and tears the Workspace down; `request_changes { notes }` **continues the same conversation** (`continue: true`,
   ADR-0057) — one human steering one Agent wants the Agent to remember what it did, unlike ADR-0049's coder⇄reviewer
-  handoff, which is lossy on purpose. No round cap: the human is the cap. Rejected: a per-run Repo on the door — a
-  packaged door cannot enumerate the Instance's repos, and "a Workflow is a name" reads best when the name means "a
+  rounds, each a fresh conversation on purpose. No round cap: the human is the cap. Rejected: a per-run Repo on the door
+  — a packaged door cannot enumerate the Instance's repos, and "a Workflow is a name" reads best when the name means "a
   prompt against THIS repo". Rejected: a named `target: open` slot — the body reads the first checkout the handles
   carry, never `repos.target`, so the name claimed a shape the body did not have and shut out the one thing a task
   commonly wants beside its repository: another checkout to read.

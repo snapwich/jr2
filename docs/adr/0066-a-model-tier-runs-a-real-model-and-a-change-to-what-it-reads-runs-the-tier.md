@@ -10,7 +10,7 @@ model _does_ with what jr2 shows it. The evidence that such changes are large si
 home-lab vLLM model — 0/10 obeyed ahead of the prompt, 10/10 after it — and nothing re-runs that measurement when
 `briefing.ts`, the Menu's rendering, the Working tools' descriptions, Compaction, or the pi pin changes.
 `briefing.test.ts` pins the _order_ of the text; it cannot tell whether a model still obeys it. And the paths a real
-Agent takes through the kit as a whole — read a Repo, edit in a Worktree, run the tests, commit, hand off, be refused,
+Agent takes through the kit as a whole — read a Repo, edit in a Worktree, run the tests, commit, pick, be refused,
 recover, finish — are exercised only one scripted tool call at a time.
 
 ## Decision
@@ -108,7 +108,7 @@ recover, finish — are exercised only one scripted tool call at a time.
   an Agent its MCP tools and their results, the check of a tool call's arguments, the project context (which files load,
   their bound, and their frame; `project-context.ts`), Compaction's summary, the admit body's notices, the pi pin, a
   provider adapter, or an authoring surface that changes a Frame. An agent reviewing a feature or refactor that touched
-  one of these runs the tier and reports the scorecard's floors and drift, or the skip, in its handoff. CLAUDE.md states
+  one of these runs the tier and reports the scorecard's floors and drift, or the skip, in its report. CLAUDE.md states
   the rule. One scenario runs alone by its title, which is the scenario filter:
   `cucumber-js --profile model --name "a Gate's answer during a command is followed"`.
 - **A third pi canary.** Conformance and `@kind` drive the turn loop against a script; this tier drives it against a

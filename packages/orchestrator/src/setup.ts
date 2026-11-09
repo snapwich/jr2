@@ -1238,7 +1238,7 @@ function wrapGateInput(orig: unknown, derived: string[]) {
  * share the conversation, ADR-0057), so two Pool children — whose ids are their items' — can
  * never meet.
  *
- * - Default (FRESH, jr's lossy handoff): a new conversation per invocation — that id plus a
+ * - Default (FRESH, ADR-0016's fresh conversation): a new conversation per invocation — that id plus a
  *   random suffix.
  * - `continue: true`: that id exactly, at epoch 0 — the author writes a boolean, because in a
  *   state machine the identity (the run, the Machine instance, the Agent slot) is already on the

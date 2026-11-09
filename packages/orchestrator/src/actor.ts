@@ -175,8 +175,8 @@ export type AgentTurnInput = {
    * effort.
    *
    * IDENTITY is deliberately absent — no `instructions` or `workspace` here. A call site that
-   * rewrote those would make the Agent's name a lie, and `workspace` in particular carries
-   * ADR-0028's containment claim, which per-invocation escalation would void.
+   * rewrote those would make the Agent's name a lie, and `workspace` in particular states
+   * ADR-0028's intent for the Agent, which a per-invocation change would void.
    */
   model?: string;
   /** Omitted → the definition's, else `off`. A model with no `off` runs at the level its provider
@@ -184,8 +184,8 @@ export type AgentTurnInput = {
   thinkingLevel?: ThinkingLevel;
   /**
    * Continue this Agent's ONE conversation in this Machine instance (ADR-0016, ADR-0057) — the
-   * whole continuation surface. Absent, every invocation is a FRESH conversation (jr's lossy
-   * handoff — revision agents read notes + code, never the prior conversation). Present, the
+   * whole continuation surface. Absent, every invocation is a FRESH conversation (ADR-0016:
+   * revision agents read notes + code, never the prior conversation). Present, the
    * prompt lands as the next user turn of that conversation, whichever state of the Machine
    * invokes it: states differ by Menu (a coder in `implement` offers `finish`; the same coder in
    * `fix` offers `finish` and `dispute`) and the conversation is wanted across them.
@@ -582,9 +582,9 @@ const READMIT_PROMPT =
  * name, and the kit gives no slot a meaning: an absent `cwd` is REFUSED, because a wrong guess is
  * the silent failure ADR-0057 was written for (ADR-0075).
  *
- * `workspace: "read"` withholds `write`/`edit` and keeps `bash`: the tool layer's hint, not
- * containment (ADR-0028). The containment is a detached Worktree that the state cuts and names as
- * its `cwd`.
+ * `workspace: "read"` withholds `write`/`edit` and keeps `bash`: the tool layer states the intent
+ * (ADR-0028). A detached Worktree that the state cuts and names as its `cwd` keeps the honest path
+ * off the branch. Neither is a permission boundary: the Sandbox is.
  *
  * The refusal throws at invoke, like the Open-model fence: loudly, at the first Turn, before a
  * surface is registered or a pod is spent.

@@ -177,7 +177,7 @@ export class E2EWorld {
     found: string[];
   };
   /** @kind: the branch head sha captured when the review worktree was attached — the ref the
-   * ADR-0028 containment scenario asserts unmoved after the rogue commit. */
+   * ADR-0028 review Worktree scenario asserts unmoved after the stray commit. */
   branchHeadBefore?: string;
   /** @kind: the detached review worktree's in-pod path (ADR-0028), carried between steps. */
   reviewDir?: string;

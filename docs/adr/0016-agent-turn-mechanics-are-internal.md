@@ -97,9 +97,9 @@ unchanged).
 
 ## Sessions are fresh by default; continuation is opt-in
 
-jr's most deliberate design decision is the **lossy handoff** — every relaunch is a fresh session; revision coders read
-the notes and the code, never the prior agent's conversation. That is the default: each `agentRun` invocation is a new
-conversation. `continue: true` opts into continuation
+jr's most deliberate design decision is the **fresh conversation** — every relaunch is a fresh session; revision coders
+read the notes and the code, never the prior agent's conversation. That is the default: each `agentRun` invocation is a
+new conversation. `continue: true` opts into continuation
 ([ADR-0057](0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md)): the Turn lands on this Agent's one
 conversation in this Machine instance, iid `<run>/<machine actor path>/<agent>` plus the epoch jr2 bumps on a terminal
 fault; the per-invocation prompt lands as the next user turn; the tool menu still re-derives from the invoking state
