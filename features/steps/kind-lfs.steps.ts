@@ -339,8 +339,8 @@ const askSeconds = (asks: AskSeen[]): number[] =>
 
 /**
  * The clone's git in the pod, as text that two reads compare: HEAD, each ref but the remote-tracking
- * ones (a cut's fetch can move those), each Worktree, default/'s changes, the cut records, and
- * whether the cut's folder is there.
+ * ones (a cut's fetch can move those), each Worktree, default/'s changes, the clone's own config,
+ * the files of its LFS store's `tmp` folder, the cut records, and whether the cut's folder is there.
  */
 async function cloneState(world: E2EWorld): Promise<string> {
   const git = "git -c safe.directory='*' -C /work/app/default";
@@ -351,6 +351,8 @@ async function cloneState(world: E2EWorld): Promise<string> {
       `${git} for-each-ref --format='%(refname) %(objectname)' | grep -v '^refs/remotes/'`,
       `${git} worktree list --porcelain`,
       `${git} status --porcelain`,
+      `${git} config --local --list | sed 's/^/config /'`,
+      `ls -A /work/app/default/.git/lfs/tmp 2>/dev/null | sed 's/^/lfs-tmp /'`,
       `echo "records $(ls /work/app/default/.git/jr2-cuts 2>/dev/null | wc -l)"`,
       `echo "folder $(test -e /work/app/lfs && echo yes || echo no)"`,
     ].join("; "),
@@ -569,7 +571,7 @@ Then("the cut is refused, and its reason names the file", function (this: E2EWor
   assert.equal(
     s.clone.after,
     s.clone.before,
-    "the refused cut left HEAD, the refs, the Worktrees and default/ as they were",
+    "the refused cut left HEAD, the refs, the Worktrees, default/, the config and the LFS tmp folder as they were",
   );
   assert.match(s.clone.after, /^folder no$/m, "the refused cut made no folder");
   assert.match(s.clone.after, /^records 0$/m, "the refused cut left no record");
