@@ -138,9 +138,10 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   LFS object by its oid) with its size, `data` frames that hold the part's bytes, and one terminal frame: the end,
   "nothing to carry", `refused` with a reason, or `unknown`. The source Harness writes each frame in its own words from
   what the step wrote, and it ends the stream `refused` at the first header that is out of this form. An Agent can trace
-  the step and change its output, so the Harness reads that output as the domain's data. A terminal frame can come
-  between any two frames, so a refusal in the middle of a part still reaches the reader, and the parts before it are
-  void.
+  the step and change its output, so the Harness reads that output as the domain's data. The step's chunks are therefore
+  the Agents' to choose: the Harness puts a part's bytes in `data` frames of up to 64 KiB, at the end of the part, or
+  after one second, never one frame for each chunk. A terminal frame can come between any two frames, so a refusal in
+  the middle of a part still reaches the reader, and the parts before it are void.
 - **An empty range carries nothing.** When a remote-tracking ref of `origin` in the parent clone already reaches `head`,
   git writes no bundle (`Refusing to create empty bundle`). This occurs when the parent pushed the branch before the
   final review, or when the branch has no commit of its own. The bundle step finds this before it writes a bundle, and
@@ -167,11 +168,12 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
 
   The two legs are one pipe: the Orchestrator reads a chunk of the source only when the child's leg took the last one,
   so it holds no whole part, and a slow child holds the source's step paused. The Orchestrator checks the source's
-  stream as it reads it: each header is a JSON line of a bounded length, in the order of the form, and the bytes of each
-  part are counted against its header. It writes each frame of the child's body itself, from the values that passed
-  these checks, so the child gets only the parts and their end. A body that ends before its end frame is a carry that
-  the Orchestrator ended, and the child keeps nothing of it. The child answers `{ landed: true }` when it holds the
-  files. A second body for one Effect id replaces the files of the first.
+  stream as it reads it: each header is a JSON line of a bounded length, in the order of the form, the bytes of each
+  part are counted against its header, and a part has at most 16 `data` frames and one more for each KiB of its size. It
+  writes each frame of the child's body itself, from the values that passed these checks, so the child gets only the
+  parts and their end. A body that ends before its end frame is a carry that the Orchestrator ended, and the child keeps
+  nothing of it. The child answers `{ landed: true }` when it holds the files. A second body for one Effect id replaces
+  the files of the first.
 
   The Orchestrator asks the Harness of the source Workspace where it runs now, and only while that Workspace still
   encloses the child: a Workspace that no longer runs gives no Handoff, and the cut is then `unknown`.

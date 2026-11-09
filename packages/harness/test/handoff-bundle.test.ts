@@ -24,6 +24,7 @@ import { bundleHandoff, handoffRequestFault, type BundleOptions } from "../src/h
 import { pointerOf, rangeOf } from "../src/handoff-bundle-main.ts";
 import { harnessApp } from "../src/app.ts";
 import { HANDOFF_CONTENT_TYPE, type HandoffFrame } from "../src/wire.ts";
+import type { Spawned } from "../src/spawner.ts";
 import { testChildren } from "./support/children.ts";
 
 const git = (cwd: string, ...args: string[]): string =>
@@ -65,7 +66,7 @@ function world(t: TestContext) {
   return { dir, remote, work, clone, coder, base, c1, head, children, take };
 }
 
-type Taken = { frames: HandoffFrame[]; parts: Map<string, Buffer>; ms: number };
+type Taken = { frames: HandoffFrame[]; parts: Map<string, Buffer>; ms: number; data: number };
 
 /** Read the stream to its end: each frame but `data`, and each part's bytes by `bundle` or its oid.
  * A part's `data` frames must hold exactly its size before the next header. */
@@ -76,6 +77,7 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<Taken> {
   const all = Buffer.concat(chunks);
   const frames: HandoffFrame[] = [];
   const parts = new Map<string, Buffer>();
+  let data = 0;
   let part: { key: string; size: number; got: Buffer[] } | undefined;
   const close = () => {
     if (part === undefined) return;
@@ -91,6 +93,7 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<Taken> {
     const f = JSON.parse(all.subarray(at, nl).toString()) as HandoffFrame;
     at = nl + 1;
     if ("data" in f) {
+      data += 1;
       assert.ok(part !== undefined, "data comes in a part");
       part.got.push(all.subarray(at, at + f.data));
       at += f.data;
@@ -102,7 +105,7 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<Taken> {
     if ("bundle" in f) part = { key: "bundle", size: f.bundle, got: [] };
     if ("lfs" in f) part = { key: f.lfs, size: f.size, got: [] };
   }
-  return { frames, parts, ms: Date.now() - started };
+  return { frames, parts, ms: Date.now() - started, data };
 }
 
 const last = (t: Taken): HandoffFrame => t.frames.at(-1)!;
@@ -643,16 +646,133 @@ test("a deadline that is not whole seconds is said as it is", async (t) => {
   assert.deepEqual(got.frames, [{ refused: "the bundle step passed its deadline of 1.5 s" }]);
 });
 
+/** testChildren whose spawner counts each spawn's pause and resume. */
+function watched(t: TestContext) {
+  const children = testChildren();
+  t.after(() => children.spawner.close());
+  const spawned: { proc: Spawned; pauses: number }[] = [];
+  const real = children.spawner.spawn.bind(children.spawner);
+  (children.spawner as { spawn: typeof real }).spawn = ((...args: Parameters<typeof real>) => {
+    const proc = real(...args);
+    const rec = { proc, pauses: 0 };
+    const pause = proc.pause.bind(proc);
+    (proc as { pause: () => void }).pause = () => {
+      rec.pauses++;
+      pause();
+    };
+    spawned.push(rec);
+    return proc;
+  }) as typeof real;
+  return { children, spawned };
+}
+
+const within = <T>(p: Promise<T>, ms: number, what: string): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`${what}: not within ${ms} ms`)), ms).unref()),
+  ]);
+
 test("a reader behind the step pauses it, and the stream still carries each byte", async (t) => {
+  // Without the pause, the Harness queues the whole output of the step (up to the bound) in memory.
   const size = 3 << 20;
-  const got = await takeFake(
+  const { children, spawned } = watched(t);
+  const entry = fakeStep(
     t,
     `const n = ${size}; process.stdout.write('{"bundle":' + n + '}\\n'); process.stdout.write(Buffer.alloc(n, 7)); process.stdout.write('{"end":true}\\n')`,
-    { highWaterMark: 64 << 10, maxBytes: size },
+  );
+  const stream = bundleHandoff(
+    children,
+    { path: "/work/app/coder", head: COMMIT },
+    { entry, highWaterMark: 64 << 10, maxBytes: size },
+  );
+  const reader = stream.getReader();
+  const first = await reader.read();
+  await new Promise((r) => setTimeout(r, 1_500));
+  assert.ok(spawned[0]!.pauses > 0, "the step was paused while the reader was behind");
+  const got = await collect(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        if (!first.done) c.enqueue(first.value);
+      },
+      async pull(c) {
+        const next = await reader.read();
+        if (next.done) c.close();
+        else c.enqueue(next.value);
+      },
+    }),
   );
   assert.deepEqual(last(got), { end: true });
   assert.equal(got.parts.get("bundle")!.length, size);
   assert.ok(got.parts.get("bundle")!.every((b) => b === 7));
+});
+
+test("a reader that cancels kills the step, and a step that the reader holds paused ends too", async (t) => {
+  // Not paused: the cancel's kill ends it. Paused: the kill comes with a resume, or the spawn's exit
+  // never settles.
+  for (const paused of [false, true]) {
+    const { children, spawned } = watched(t);
+    const size = 8 << 20;
+    const entry = fakeStep(
+      t,
+      paused
+        ? `const n = ${size}; process.stdout.write('{"bundle":' + n + '}\\n'); process.stdout.write(Buffer.alloc(n, 7)); setInterval(() => {}, 1000);`
+        : `process.stdout.write('{"bundle":100}\\nabc'); setInterval(() => {}, 1000);`,
+    );
+    const stream = bundleHandoff(
+      children,
+      { path: "/work/app/coder", head: COMMIT },
+      { entry, highWaterMark: 64 << 10, maxBytes: size, deadlineMs: 60_000 },
+    );
+    const reader = stream.getReader();
+    await reader.read();
+    if (paused) {
+      await new Promise((r) => setTimeout(r, 1_000));
+      assert.ok(spawned[0]!.pauses > 0, "paused before the cancel");
+    }
+    await reader.cancel();
+    const exit = await within(spawned[0]!.proc.exited, 5_000, `the step's exit (paused: ${paused})`);
+    assert.equal(exit.signal, "SIGKILL");
+  }
+});
+
+test("the deadline's clock runs again when the reader catches up: a step that then hangs is refused at the deadline", async (t) => {
+  const children = testChildren();
+  t.after(() => children.spawner.close());
+  const entry = fakeStep(
+    t,
+    `process.stdout.write('{"bundle":${8 << 20}}\\n'); process.stdout.write(Buffer.alloc(${4 << 20}, 7)); setInterval(() => {}, 1000);`,
+  );
+  const stream = bundleHandoff(
+    children,
+    { path: "/work/app/coder", head: COMMIT },
+    { entry, highWaterMark: 64 << 10, maxBytes: 8 << 20, deadlineMs: 1_500 },
+  );
+  const reader = stream.getReader();
+  await reader.read();
+  await new Promise((r) => setTimeout(r, 2_500));
+  const chunks: Buffer[] = [];
+  const all = (async () => {
+    for (;;) {
+      const n = await reader.read();
+      if (n.done) return Buffer.concat(chunks).toString("latin1");
+      chunks.push(Buffer.from(n.value));
+    }
+  })();
+  const text = await within(all, 15_000, "the stream's end");
+  assert.match(text.slice(-200), /\{"refused":"the bundle step passed its deadline of 1\.5 s"\}\n$/);
+});
+
+test("a step that writes its part one byte at a time gives a few data frames, not one for each byte", async (t) => {
+  // An Agent can trace the step and choose its chunks: each frame is work for the Orchestrator.
+  const n = 3000;
+  const got = await takeFake(
+    t,
+    `process.stdout.write('{"bundle":${n}}\\n'); let i = 0; const one = () => { if (i++ < ${n}) process.stdout.write("x", () => setImmediate(one)); else process.stdout.write('{"end":true}\\n'); }; one();`,
+    { maxBytes: n },
+  );
+  assert.deepEqual(last(got), { end: true });
+  assert.equal(got.parts.get("bundle")!.length, n);
+  assert.ok(got.data <= 5, `${got.data} data frames for ${n} bytes`);
 });
 
 // ---- the route --------------------------------------------------------------------------------------

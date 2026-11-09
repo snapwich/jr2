@@ -279,6 +279,11 @@ test("a stream out of its form is `unknown`: the source Harness writes each fram
     ["an end in a part's bytes", wire({ bundle: 4 }, { data: 4 }, "ab"), /ended in a part/],
     ["no frame at all", Buffer.alloc(0), /ended before its last frame/],
     ["a header past its length", Buffer.alloc(70 * 1024, 0x61), /a header longer than its form/],
+    [
+      "more data frames than a part's size takes",
+      wire({ bundle: 40 }, ...Array.from({ length: 40 }, () => [{ data: 1 }, "x"]).flat(), { end: true }),
+      /more data frames than its form/,
+    ],
   ];
   for (const [name, stream, re] of cases) {
     const src = body(stream, { chunk: 4096 });
@@ -289,6 +294,37 @@ test("a stream out of its form is `unknown`: the source Harness writes each fram
     assert.match(out.reason, re, name);
     for (const put of r.landed) assert.ok(!put.bytes.toString().includes('"end"'), `${name}: the child got no end`);
   }
+});
+
+test("a header line past its length that comes whole, with its newline, in one chunk is `unknown`: a long reason does not reach the cut", async () => {
+  const line = wire({ refused: "x".repeat(70 * 1024) });
+  const src = body(line, { chunk: line.length });
+  const r = rig({ source: () => handoffAnswer(src.stream) });
+  const out = (await handoffCarrier({ fetch: r.fetch })(argsOf())) as { outcome: string; reason: string };
+  assert.equal(out.outcome, "unknown", JSON.stringify(out).slice(0, 200));
+  assert.match(out.reason, /a header longer than its form/);
+});
+
+test("the two legs are one pipe: while the child takes nothing, the carry reads little of the source", async () => {
+  // Without it, the Orchestrator, which each run shares, holds up to the bound for each carry.
+  const size = 4 << 20;
+  const chunk = 16 << 10;
+  const src = body(wire({ bundle: size }, { data: size }, Buffer.alloc(size, 7), { end: true }), { chunk });
+  let readAhead = -1;
+  const fetch = (async (_url: string, init: RequestInit = {}) => {
+    if (init.method === "POST") return handoffAnswer(src.stream);
+    const reader = (init.body as ReadableStream<Uint8Array>).getReader();
+    await reader.read(); // one chunk, then a stall
+    await new Promise((r) => setTimeout(r, 300));
+    readAhead = src.state.read;
+    for (;;) if ((await reader.read()).done) break;
+    return Response.json({ landed: true });
+  }) as typeof globalThis.fetch;
+  assert.deepEqual(await handoffCarrier({ fetch })(argsOf()), { outcome: "carried" });
+  assert.ok(
+    readAhead >= 0 && readAhead <= 4 * chunk,
+    `the carry read ${readAhead} bytes while the child took one chunk`,
+  );
 });
 
 /** A source of one 1-byte bundle and then `n` Git LFS objects, each a header and nothing more: a

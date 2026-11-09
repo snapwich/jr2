@@ -44,6 +44,10 @@ export const HANDOFF_BUNDLE_ENTRY = fileURLToPath(new URL("./handoff-bundle-main
 
 /** The longest header line that the step may write. */
 const MAX_HEADER = 1024;
+/** The most bytes of one `data` frame, and how long bytes that fill no frame wait for more. The
+ * Orchestrator bounds the frames of a part by its size (handoff-carry.ts). */
+const DATA_FRAME = 64 * 1024;
+const DATA_WAIT_MS = 1000;
 
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const OID = /^[0-9a-f]{64}$/;
@@ -116,13 +120,27 @@ export function bundleHandoff(
   let parts = 0;
   const oids = new Set<string>();
   let stderr = "";
+  // A part's bytes that the step wrote and no `data` frame holds yet.
+  let pending: Buffer[] = [];
+  let pendingLen = 0;
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Kill the step's group. A paused step is resumed too, so that its end is read. */
+  const kill = (): void => {
+    proc?.signal("SIGKILL");
+    if (paused) {
+      paused = false;
+      proc?.resume();
+    }
+  };
 
   const finish = (f: HandoffFrame): void => {
     if (done) return;
     done = true;
     if (timer) clearTimeout(timer);
+    if (flushTimer) clearTimeout(flushTimer);
     // Nothing of the step outlives its answer: the group goes, git and whatever it started.
-    proc?.signal("SIGKILL");
+    kill();
     try {
       ctrl.enqueue(line(f));
       ctrl.close();
@@ -201,15 +219,32 @@ export function bundleHandoff(
     refuse("the bundle step wrote a header out of its form");
   };
 
+  /** One `data` frame for the bytes that wait. */
+  const flush = (): void => {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = undefined;
+    if (done || pendingLen === 0) return;
+    const bytes = Buffer.concat(pending, pendingLen);
+    pending = [];
+    pendingLen = 0;
+    push(line({ data: bytes.length }));
+    push(new Uint8Array(bytes));
+  };
+
   const onStdout = (chunk: Buffer): void => {
     let rest = chunk;
     while (!done && rest.length > 0) {
       if (body > 0) {
+        // The step's chunks are the Agents' to choose (they can trace the step): a part's bytes go
+        // in `data` frames of up to 64 KiB, at the end of the part, or after a second, never one
+        // frame for each chunk.
         const take = rest.subarray(0, Math.min(body, rest.length));
         body -= take.length;
         rest = rest.subarray(take.length);
-        push(line({ data: take.length }));
-        push(new Uint8Array(take));
+        pending.push(take);
+        pendingLen += take.length;
+        if (body === 0 || pendingLen >= DATA_FRAME) flush();
+        else flushTimer ??= setTimeout(flush, DATA_WAIT_MS);
         continue;
       }
       const nl = rest.indexOf(0x0a);
@@ -268,7 +303,8 @@ export function bundleHandoff(
       cancel() {
         done = true;
         if (timer) clearTimeout(timer);
-        proc?.signal("SIGKILL");
+        if (flushTimer) clearTimeout(flushTimer);
+        kill();
       },
     },
     { highWaterMark: opts.highWaterMark ?? 1 << 20, size: (c) => c.byteLength },

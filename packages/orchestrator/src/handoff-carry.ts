@@ -235,6 +235,9 @@ async function carryOnce(
   }
 }
 
+/** The most `data` frames of a part of `size` bytes: one for each KiB, and a few more. */
+export const framesFor = (size: number): number => 16 + Math.ceil(size / 1024);
+
 /** The bounds of one carry: the bytes of the parts together, and the number of Git LFS objects. */
 type Bounds = { maxBytes: number; maxObjects: number };
 
@@ -266,6 +269,11 @@ async function* forward(
   };
   yield out({ bundle });
   let part = bundle;
+  // The source relays a part's bytes in frames of up to 64 KiB, or what came in a second: a part
+  // of `size` bytes needs few. More is out of the form, so the parsing work that the parent's step
+  // can cause stays bounded by its bytes.
+  let partFrames = 0;
+  let maxFrames = framesFor(bundle);
   for (;;) {
     const got = await frames.header();
     if ("fault" in got) return onEnd({ stop: "unknown", reason: got.fault });
@@ -275,6 +283,9 @@ async function* forward(
     if ("data" in frame) {
       if (frame.data > part) {
         return onEnd({ stop: "unknown", reason: "the source Harness's answer has more bytes than a part's header" });
+      }
+      if (++partFrames > maxFrames) {
+        return onEnd({ stop: "unknown", reason: "the source Harness's answer has more data frames than its form" });
       }
       yield out({ data: frame.data });
       for await (const chunk of frames.bytes(frame.data)) yield chunk;
@@ -304,6 +315,8 @@ async function* forward(
       if (!counted(frame.size)) return;
       yield out({ lfs: frame.lfs, size: frame.size });
       part = frame.size;
+      partFrames = 0;
+      maxFrames = framesFor(frame.size);
       continue;
     }
     return onEnd({ stop: "unknown", reason: `the source Harness's answer has ${Object.keys(frame)[0]} in a stream` });

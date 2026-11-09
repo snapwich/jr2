@@ -240,6 +240,9 @@ export async function bundleStep(input: BundleStepInput): Promise<{ end: true } 
 
     const bundle = await openRegular(file);
     if (bundle === undefined) throw new Refused("the bundle is not a regular file");
+    // The step's folder goes now, while the bundle is open: a step that a reader's cancel kills
+    // leaves no bundle in the domain's TMPDIR.
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
     try {
       if (lfs.length > input.maxObjects) {
         throw new Refused(
