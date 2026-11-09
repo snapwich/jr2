@@ -397,6 +397,7 @@ the push Secret of the entry, `jr2-git-push-<hash>`, as `jr2 up` shows it. It is
 - [Give the cluster git credentials](give-the-cluster-git-credentials.md): the entries of `git.credentials`.
 - [Add tools to the Sandbox](add-tools-to-the-sandbox.md): the Sandbox Image.
 - [Cut a Worktree](cut-a-worktree.md): the Worktree that a `push` publishes.
+- [Review in a nested Workspace](review-in-a-nested-workspace.md): publish the commit that a final reviewer approved.
 - Reference: [`push`](../reference/authoring-surface/push.md),
   [`PushOptions`](../reference/authoring-surface/type-pushoptions.md),
   [`PushOutput`](../reference/authoring-surface/type-pushoutput.md) and

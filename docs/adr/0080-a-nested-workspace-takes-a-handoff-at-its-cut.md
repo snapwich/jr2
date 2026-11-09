@@ -365,6 +365,9 @@ publishing: {
 - The commit messages and the files of the commit are the parent Agents' words, and they reach the final reviewer
   unchanged. They can try to persuade it. That is the review's job to see; the final reviewer runs the code in its own
   Sandbox, and the author decides what that Sandbox holds.
+- The `@kind` tier runs the loop in real pods (`features/handoff.feature`): two rounds that the parent publishes, a
+  nested Workspace that publishes, a forged head and a forged branch, and a large file that only the parent's clone
+  holds.
 - A Handoff goes only down. A commit that the final reviewer makes stays in the child, and it is published only when the
   child pushes it.
 - Each slot needs its own Handoff, door field and cut. A Handoff given to the cut of a slot that holds another Repo is

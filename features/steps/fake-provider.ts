@@ -77,7 +77,7 @@ export type FakeProvider = {
    * finish. `tool` is the bare name (`finish`, or a Working tool like `bash`); the Menu's
    * `mcp__jr2__` prefix is matched and emitted for you. Waits for such a request to arrive.
    */
-  release(tool: string, args: Record<string, unknown>): Promise<void>;
+  release(tool: string, args: Record<string, unknown>, opts?: ReleaseOpts): Promise<void>;
   /** Wait until a turn request that was offered `tool` is parked here, and leave it parked: the
    * model is still writing its answer. `tool` is named as in `release`. */
   holding(tool: string): Promise<void>;
@@ -85,6 +85,16 @@ export type FakeProvider = {
    * it, which is what an ADR-0024 abort does to the request it ends. */
   cut(tool: string): Promise<void>;
   close(): Promise<void>;
+};
+
+/** Which parked request a `release` answers, beyond the offered tool. */
+export type ReleaseOpts = {
+  /** Text that the request's body holds: an Agent's instructions name the Agent when several Agents
+   * share one Menu, as a coder and a reviewer of one Machine do. */
+  saying?: string;
+  /** How long to wait for such a request, in ms: 90 s by default. A nested Workspace's first Turn
+   * comes after its Sandbox is up. */
+  ms?: number;
 };
 
 /** One turn request, parked with its SSE stream already open (see `release`). */
@@ -226,10 +236,16 @@ export async function startFakeProvider(opts: {
     unauthorized,
     probes,
     echo: { port: echoPort, seen: echoSeen },
-    release: async (tool, args) => {
+    release: async (tool, args, opts = {}) => {
       const wanted = [`mcp__jr2__${tool}`, tool];
       const entry = await until(
-        () => held.find((h) => !h.done && h.call.tools.some((t) => wanted.includes(t))),
+        () =>
+          held.find(
+            (h) =>
+              !h.done &&
+              h.call.tools.some((t) => wanted.includes(t)) &&
+              (opts.saying === undefined || h.call.raw.includes(opts.saying)),
+          ),
         // Lazily rendered: what makes a miss debuggable is the menus seen by the TIME IT GAVE UP,
         // not the (usually empty) set at the moment the step started polling. The total request
         // count is in the message because it splits the two failure classes an empty menu list
@@ -238,7 +254,9 @@ export async function startFakeProvider(opts: {
         // only, or a stream that closed early — look at the turn admission).
         () =>
           `a parked turn request offering "${tool}" (menus seen: ${JSON.stringify(held.map((h) => h.call.tools))}; ` +
-          `${calls.length} request(s) ever received, ${calls.filter((c) => c.stream).length} streaming)`,
+          `${calls.length} request(s) ever received, ${calls.filter((c) => c.stream).length} streaming)` +
+          (opts.saying === undefined ? "" : `, that holds "${opts.saying}"`),
+        opts.ms,
       );
       const name = wanted.find((w) => entry.call.tools.includes(w))!;
       entry.released = true;
