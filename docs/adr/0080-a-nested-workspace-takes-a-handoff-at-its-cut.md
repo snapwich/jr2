@@ -230,9 +230,9 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   - the bundle file is not a regular file;
   - the stream passes the byte bound or the object bound;
   - the bundle has a ref that is not at `head`, or more than one ref, or is not a bundle, or fsck refuses an object;
-  - the child's clone does not hold a prerequisite of the bundle (for example, the remote was force-pushed after the
-    parent fetched, or the cut's fetch got no answer). The reason names the missing commit, and what the fetch said when
-    it got no answer;
+  - the child's clone does not hold a prerequisite of the bundle (for example, the remote was force-pushed or the branch
+    was deleted after the parent fetched, or the cut's fetch got no answer). The reason names the missing commit, and
+    what the fetch said when it got no answer;
   - the range is empty, and the child's clone does not hold `head` after its fetch. The reason names the commit.
 
   A Git LFS object that is not a regular file in the parent clone, or whose size is not its pointer's, is left out of

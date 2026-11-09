@@ -170,8 +170,8 @@ These settle as `refused`, and nothing changes. `<handoff>` is `the Handoff of <
 - git in the parent's clone fails, for example:
   `<handoff>: the parent's clone's remote-tracking refs could not be read: <git's words>`
 - the nested Workspace's clone does not hold a commit that the bundle builds on, for example because the remote was
-  force-pushed after the parent fetched:
-  `this clone does not hold the commit <sha>, which the Handoff's bundle builds on: the remote may have lost it (a force push) after the parent fetched`.
+  force-pushed, or the branch was deleted, after the parent fetched:
+  `this clone does not hold the commit <sha>, which the Handoff's bundle builds on: the remote may have lost it after the parent fetched (a force push, or a branch deleted)`.
   When the remote did not answer the cut's fetch:
   `this clone does not hold the commit <sha>, which the Handoff's bundle builds on, and the remote did not answer, so it may hold it: <git's words>`
 - git's fsck refuses an object of the handed-off commits:

@@ -99,7 +99,7 @@ export async function takeHandoff(t: Take): Promise<string | undefined> {
       // A fetch that did not answer may have missed what the remote holds: no force push is told.
       return t.stale !== undefined
         ? `${lacked}, and the remote did not answer, so it may hold ${it}: ${t.stale}`
-        : `${lacked}: the remote may have lost ${it} (a force push) after the parent fetched`;
+        : `${lacked}: the remote may have lost ${it} after the parent fetched (a force push, or a branch deleted)`;
     }
     return `git refused the Handoff's bundle: ${lastLine(verify)}`;
   }

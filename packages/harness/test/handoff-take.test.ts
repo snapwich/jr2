@@ -194,7 +194,7 @@ test("a bundle whose prerequisite the clone does not hold is refused, and the re
     reason,
     new RegExp(`^this clone does not hold the commit ${lost}, which the Handoff's bundle builds on`),
   );
-  assert.match(reason, /force push/);
+  assert.match(reason, /\(a force push, or a branch deleted\)$/);
   assert.equal(has(w.clone, head), false);
 });
 
