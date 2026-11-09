@@ -32,9 +32,12 @@ on real files (Considered options), and a probe tested the bundle range.
   The child's Workspace clones the real Repo, as each Workspace does, and its attach knows nothing of the Handoff. The
   cut makes a branch Worktree at `handoff.head`. The branch is `branch ?? handoff.branch`, so by default it has the
   parent's name. It tracks `origin/<branch>` when the clone holds that branch. `found` is `"handoff"`. A re-cut of the
-  path with the same Handoff is `held`, and a re-cut with another Handoff is `refused`. The child's Harness decides
-  these from its own record of the path, as for each re-cut (ADR-0075): two rounds' nested Workspaces can share one
-  Sandbox name ([ADR-0064](0064-a-workspace-waits-for-capacity.md)), so the run's ledger cannot tell their cuts apart.
+  path with the same Handoff is `held`, and a re-cut with another Handoff is `refused`. Each cut at a Handoff, a `held`
+  one too, first carries the Handoff's files from the parent Sandbox, so it needs the source: a carry that is `refused`
+  or `unknown` settles the cut with that outcome before the child's Harness answers. The child's Harness decides `held`
+  and `refused` from its own record of the path, as for each re-cut (ADR-0075): two rounds' nested Workspaces can share
+  one Sandbox name ([ADR-0064](0064-a-workspace-waits-for-capacity.md)), so the run's ledger cannot tell their cuts
+  apart.
 
 - **The slot's `expect` applies to the child's branch**, as at a branch cut (ADR-0075). The Handoff's head sets what the
   branch holds, and `expect` says whether the name can exist. A push in the child publishes to the child's branch, and a
@@ -184,7 +187,10 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   The child makes no request for a Handoff, so no credential of the child's domain reaches one: the Orchestrator sends a
   bundle only for the source that the cut's own intent row records, never for a cut that the Machine did not ask for.
   Only the child's Harness knows that a re-cut is `held`, so the Orchestrator carries the files for each cut at a
-  Handoff, and a `held` re-cut does not read them.
+  Handoff, and a `held` re-cut does not read them. So a `held` re-cut also settles `refused` or `unknown` when its carry
+  does: the parent's Agents removed the commit, or the parent's Harness does not answer. A cut that goes again after the
+  child's Harness restarted (ADR-0067) carries again first, and that carry's outcome settles it too, although the
+  child's record holds the first answer.
 
 - **One bound covers the bundle and its Git LFS objects together, and a second bound covers the number of objects.** A
   Handoff is the parent Agents' files, and the Orchestrator serves each run of the Instance, so an Agent's file must not

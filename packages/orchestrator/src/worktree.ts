@@ -163,10 +163,14 @@ export type WorktreeReady<S extends string = string> = {
 
 /** No Worktree, and nothing changed. The cause is a bad path, a name git or the push refuses, a
  * re-cut that does not agree with the first, a branch that another Worktree holds, an `expect` that does not hold, a
- * name that the remote cannot confirm, or a Handoff that the run's ledger does not hold. */
+ * name that the remote cannot confirm, a Handoff that the run's ledger does not hold, or a Handoff whose files the
+ * parent's clone, the bound, the deadline of the bundle step or the child's check (fsck, a missing prerequisite, a
+ * file that is not a bundle) refuses (ADR-0080). */
 export type WorktreeRefused = { outcome: "refused"; reason: string };
 
-/** The output of a `worktree()`. `unknown`: its state exited while it ran, or the cut did not end. */
+/** The output of a `worktree()`. `unknown`: its state exited while it ran, the cut did not end, its answer did not
+ * agree with its request, or the files of a Handoff were not carried (a Harness did not answer, or the carry passed
+ * its time, ADR-0080). */
 export type WorktreeOutput<S extends string = string> = WorktreeReady<S> | WorktreeRefused | Unknown | LaterOutcome;
 
 /** Is it `ready`? For a guard. A Chart's form is the guard `jr2.ready`. */
@@ -223,7 +227,9 @@ export function worktreeWith(
  * {@link Handoff}'s commit: the `ready` output of a cut of an enclosing Workspace, which came in
  * through the door (ADR-0080). The branch is `branch`, or the Handoff's branch, and it tracks
  * `origin/<branch>` when the clone holds that branch. `found` is `"handoff"`. A re-cut of the path
- * with the same Handoff is `held`; with another Handoff, it is `refused`. jr2 trusts no field of a
+ * with the same Handoff is `held`; with another Handoff, it is `refused`. Each cut at a Handoff, a
+ * `held` one too, first carries the files from the parent Sandbox: a carry that is `refused` or
+ * `unknown` settles the cut so. jr2 trusts no field of a
  * Handoff: the cut finds it in the run's ledger, and refuses it when a fact does not agree. The
  * commit must be the head of a `ready` cut of that path in an enclosing Workspace of this run (an
  * earlier `ready` cut of the path is good too), on the Handoff's branch, in the same Repo. A

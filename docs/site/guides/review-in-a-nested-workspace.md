@@ -199,6 +199,10 @@ These settle as `unknown`, and the Machine can cut again. The reason is
 - the carry passed its own time (the bound at 1 MiB/s, and one idle wait of 360 s; the cut's `timeout` does not include
   the carry): `the carry passed its time of 1384 s`
 
+Each cut at a Handoff carries the files first, also a re-cut with the same Handoff, which gives the held Worktree. So
+such a re-cut settles `refused` or `unknown` too when its carry does, for example when the parent's Harness does not
+answer.
+
 A Chart gives a Handoff as a reference, such as `"{{context.handoff}}"`. The door refuses a literal Handoff. A reference
 that resolves to a value that is not a Handoff is the error of that invoke. A cut that you lend to a Chart must state
 `expect`, as for each cut, and the door refuses `expect: "existing"` beside a lent force push.
