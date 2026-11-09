@@ -192,12 +192,10 @@ When the quota refuses the pod of a Sandbox, the Workspace waits in Placing. It 
 sets no time limit on this wait. `jr2 run` shows the reason, in the words of the quota. In this output, the quota
 `team-quota` permits 512Mi of memory limits, and the Size asks for 1Gi:
 
-<!-- output: not run -->
-
 ```text
 …
   → active "placing"
-  placing: waits for quota — pods "ws-5e817334-x-0-152ceb19645b" is forbidden: exceeded quota: team-quota, requested: limits.memory=1Gi, used: limits.memory=2Gi, limited: limits.memory=512Mi
+  placing: waits for quota — pods "ws-94af9d4b-x-0-1033891ffd2a" is forbidden: exceeded quota: team-quota, requested: limits.memory=1Gi, used: limits.memory=2Gi, limited: limits.memory=512Mi
 ```
 
 For a Workspace that is not the root of the Workflow, the line adds the path of the child after `placing`.
@@ -216,8 +214,6 @@ it continues. In CI, add `--yes`.
 jr2 up --context <context>
 ```
 
-<!-- output: not run -->
-
 ```text
 → .env: JR2_REGISTRY, …
 jr2 up — instance "my-instance" → context <context> / namespace my-instance
@@ -230,21 +226,21 @@ sandbox nodes: jr2-control-plane
 images: installed kit — the published v<version> Harness, operator and Orchestrator, pulled from ghcr.io/snapwich
 …
 priority: the Instance's own — control "platform-critical", sandbox "batch-low"
-sandbox image "default": building <registry>/jr2-sandbox-my-instance-default:6389bdf72d50-amd64
+sandbox image "default": building <registry>/jr2-sandbox-my-instance-default:5e601a543032-amd64
   no USER declared — the pod's uid-1000 fallback applies
   user context: none (no USER, so the home is jr2's emptyDir)
   push → <registry>
 …
-assembly: publishing 6355c2bb032a (no current Assembly)
-assembly: 6355c2bb032a is current — workflows: hold, ping
+assembly: publishing 42e515b3343d (no current Assembly)
+assembly: 42e515b3343d is current — workflows: hold, ping
 …
 converged — `jr2 run <workflow>` when ready
 ```
 
 In this output, the cluster runs Kubernetes v1.36.1 and has one node, `jr2-control-plane`, with the label
 `pool: agents`. The Workflows are `ping` and `hold`, a Workflow with a Workspace. `<version>` is the
-[Kit version](../reference/glossary.md#kit-version) of the Instance. `6389bdf72d50` changes when the inputs of the image
-change. `6355c2bb032a` is the hash of the [Assembly](../reference/glossary.md#assembly) of the Instance. Your version of
+[Kit version](../reference/glossary.md#kit-version) of the Instance. `5e601a543032` changes when the inputs of the image
+change. `42e515b3343d` is the hash of the [Assembly](../reference/glossary.md#assembly) of the Instance. Your version of
 Kubernetes, your nodes and your hashes are different.
 
 The other commands take the same `--context`, such as `jr2 run ping --context <context>`.

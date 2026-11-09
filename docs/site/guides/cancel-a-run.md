@@ -50,7 +50,7 @@ jr2 send <run id> --event CANCEL --keep
 
 ```text
 → context <context> / namespace <namespace>
-sent CANCEL to 442d95df-0ff4-4231-b371-2940ef8ecead; its Workspaces are kept
+sent CANCEL to 4fed0b50-ef62-45e1-8a31-7db6a0ef9fd8; its Workspaces are kept
 ```
 
 The run ends as before, but the Orchestrator does not delete its Sandboxes. To open a shell in one, see
@@ -74,11 +74,9 @@ the `WORKSPACE` column to [`jr2 workspace rm`](../reference/cli.md#workspace-rm)
 jr2 workspace rm <workspace>
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-removed Workspace 442d95df/x:47 (ws-442d95df-x-47-db6ea104d687)
+removed Workspace 4fed0b50/x:16 (ws-4fed0b50-x-16-70285a90bcd3)
 ```
 
 Your handle and your Sandbox name are different. `jr2 workspace rm` refuses the Sandbox of a run that is live.
