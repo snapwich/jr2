@@ -64,6 +64,10 @@ type LfsState = {
   marks?: Array<{ base?: string; objects?: string[] }>;
   /** What the Agent's checkout of the evil branch said. */
   said?: string;
+  /** What the Custodian answered the Agent's own ask, which named the evil branch as its base. */
+  asked?: string;
+  /** The LFS server's request lines that came after the evil branch's step began. */
+  logAfter?: string[];
 };
 
 const states = new WeakMap<E2EWorld, LfsState>();
@@ -454,7 +458,7 @@ async function lfsMarks(world: E2EWorld): Promise<Array<{ base?: string; objects
 }
 
 When(
-  "the Agent names that branch as its base and checks it out in its Worktree",
+  "the Agent names that branch as the base of its own ask to the Custodian, and checks the branch out in its Worktree",
   { timeout: 600_000 },
   async function (this: E2EWorld): Promise<void> {
     const s = lfsOf(this);
@@ -465,11 +469,26 @@ When(
       command: `git checkout -q --detach HEAD~1 && echo "older-$(sha256sum big.bin | cut -c1-64)"`,
     });
     s.read = { cut: (await toolResultWith(this, "older-")).match(/older-([0-9a-f]{64})/)?.[1] };
-    // The clone's jr2.base is what the attach recorded. The Agent can write it, and its branch's
-    // .lfsconfig names a server of the Agent's choice.
+    // From here on, each request line that the LFS server logs came after the evil branch's step began.
+    const logBefore = (await lfsServerLog()).split("\n").length - 1;
+    // The Agent's own ask to the Custodian, as jr2's transfer agent sends one (ADR-0053), with a
+    // `base` of the Agent's choice: the evil branch, whose .lfsconfig names a server that holds the
+    // object. The Orchestrator must not read it.
+    const ask = JSON.stringify({ lfs: { base: evil.branch, objects: [evil.object] } });
     await this.provider!.release("bash", {
       command: [
-        `git config jr2.base ${evil.branch}`,
+        `id=$(git config --get remote.origin.url | sed -n 's/.* %S \\([^ ]*\\).*/\\1/p')`,
+        `node -e 'const [url, id, ask] = process.argv.slice(1); fetch(url + "/fetch", { method: "POST", ` +
+          `headers: { "content-type": "application/json", authorization: "Bearer jr2-held-JR2_SANDBOX_TOKEN" }, ` +
+          `body: JSON.stringify({ identity: id, ...JSON.parse(ask) }) }).then(async (r) => ` +
+          `console.log("asked-" + r.status + " " + (await r.text())), (e) => console.log("asked-fault " + e))' ` +
+          `"\${JR2_CUSTODIAN_URL:-http://127.0.0.1:8081}" "$id" '${ask}'`,
+      ].join("; "),
+    });
+    s.asked = await toolResultWith(this, "asked-");
+    // Then a checkout of the branch, whose .lfsconfig names that server.
+    await this.provider!.release("bash", {
+      command: [
         `git fetch -q origin`,
         `out=$(git checkout -q --detach origin/${evil.branch} 2>&1); rc=$?`,
         `echo "evil-rc$rc"`,
@@ -478,6 +497,7 @@ When(
     });
     s.said = await toolResultWith(this, "evil-rc");
     s.marks = await lfsMarks(this);
+    s.logAfter = (await lfsServerLog()).split("\n").slice(logBefore);
     await this.provider!.release("finished", {});
     const settled = await settledWithin(this, 300_000);
     assert.equal(settled.status, "done", JSON.stringify(settled));
@@ -589,7 +609,7 @@ Then("the cold attach and the cut's ask are reported", async function (this: E2E
 });
 
 Then(
-  "the cache agent asked the Binding's base's LFS server, and the other LFS server got no request",
+  "the cache agent asked the Binding's base's LFS server for the branch's object, and the other LFS server got no request",
   async function (this: E2EWorld): Promise<void> {
     const s = lfsOf(this);
     const evil = s.evil!;
@@ -597,13 +617,21 @@ Then(
     const asked = (s.marks ?? []).find((m) => m.objects?.some((o) => o.startsWith(evil.object.oid)));
     assert.ok(asked, `an ask named the evil branch's object: ${JSON.stringify(s.marks)}`);
     assert.equal(asked.base, "main", `the ask names the Binding's base, not the Agent's: ${JSON.stringify(asked)}`);
+    // The Agent's own ask with its own base reached the Orchestrator, which answered it: the
+    // Binding's base's server does not hold the object.
+    const answer = /^asked-200 (\{.*\})$/m.exec(s.asked ?? "")?.[1];
+    assert.ok(answer, `the Custodian relayed the Orchestrator's 200 to the Agent's ask: ${s.asked}`);
+    const { lfs } = JSON.parse(answer) as { lfs?: { answered?: string; error?: string } };
+    assert.ok(lfs?.answered && lfs.error, `the cache agent answered the Agent's ask, and lacks the object: ${answer}`);
     assert.match(s.said ?? "", /evil-rc[1-9]/, `the checkout of the evil branch failed: ${s.said}`);
     assert.match(s.said ?? "", new RegExp(evil.path.replace(".", "\\.")), `git named the file: ${s.said}`);
-    const log = (await lfsServerLog()).split("\n");
+    // The attach's ask and the older commit's came before the evil branch's step: only a batch
+    // after it shows that the cache agent asked the Binding's base's server for the evil object.
     assert.ok(
-      log.some((l) => l.startsWith(`POST /${s.name}/info/lfs/objects/batch`)),
-      "the cache agent asked the Binding's base's LFS server",
+      (s.logAfter ?? []).some((l) => l.startsWith(`POST /${s.name}/info/lfs/objects/batch `)),
+      `after the evil branch's step began, the cache agent asked the Binding's base's LFS server: ${JSON.stringify(s.logAfter)}`,
     );
+    const log = (await lfsServerLog()).split("\n");
     assert.deepEqual(
       log.filter((l) => l.includes(`/${evil.store}/`)),
       [],

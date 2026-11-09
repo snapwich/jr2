@@ -3,11 +3,11 @@ Feature: Git LFS in a real pod
 
   A Repo that stores files with Git LFS, in a real Sandbox with the stock Harness: the node cache gets
   the objects that a pod asks for, by oid, from the LFS server that `.lfsconfig` names at the
-  Binding's base, never from what a pod names (ADR-0051, ADR-0053). The attach and a cut get their commit's large files before they
-  check out (ADR-0075), an Agent's own checkout asks through jr2's transfer agent, and a push uploads
-  its large files before it moves the branch (ADR-0067). The seed serves an LFS server of its own, and
-  its ssh seat speaks the pure SSH protocol (`steps/seed.ts`). Each scenario makes its own LFS
-  repository on the seed. Only the model is scripted.
+  Binding's base, never from what a pod names (ADR-0051, ADR-0053). The attach and a cut get their
+  commit's large files before they check out (ADR-0075), an Agent's own checkout asks through jr2's
+  transfer agent, and a push uploads its large files before it moves the branch (ADR-0067). The seed
+  serves an LFS server of its own, and its ssh seat speaks the pure SSH protocol (`steps/seed.ts`).
+  Each scenario makes its own LFS repository on the seed. Only the model is scripted.
 
   Rule: a cut gets its commit's large files, and is refused, naming the file, when one cannot be had
 
@@ -35,11 +35,18 @@ Feature: Git LFS in a real pod
       When the Agent checks out the older commit in its Worktree
       Then the Agent's Worktree holds the older large file's bytes
 
-    Scenario: an Agent that names another base and checks out a branch whose .lfsconfig names another server gets nothing from that server
+  Rule: the LFS server of an ask is the one that `.lfsconfig` names at the Binding's base, never one that the pod names
+
+    The Orchestrator puts the Binding's base in each mark, and ignores a base that the pod sends. So
+    an Agent that sends its own base in an ask, or checks out a branch whose `.lfsconfig` names
+    another LFS server, cannot point the cache agent at that server: the cache agent asks the
+    Binding's base's server, which does not hold the object, and the checkout fails.
+
+    Scenario: an Agent that names another base in its own ask and checks out a branch whose .lfsconfig names another server gets nothing from that server
       Given the kind instance is serving
       And an LFS repository with two commits on main, and a branch whose .lfsconfig names another LFS server that holds its large file
-      When the Agent names that branch as its base and checks it out in its Worktree
-      Then the cache agent asked the Binding's base's LFS server, and the other LFS server got no request
+      When the Agent names that branch as the base of its own ask to the Custodian, and checks the branch out in its Worktree
+      Then the cache agent asked the Binding's base's LFS server for the branch's object, and the other LFS server got no request
 
   Rule: a push uploads its large files before it moves the branch
 

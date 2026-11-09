@@ -657,6 +657,24 @@ export function ensureLfsServer(): Promise<void> {
     await ensureSeed();
     await kubectl(["apply", "-f", "-"], LFS_MANIFEST, /AlreadyExists/);
     await kubectl(["--namespace", NAMESPACE, "rollout", "status", "deployment/lfs", "--timeout=300s"]);
+    // A changed manifest rolls the pod, and `logs deployment/lfs` may read the old pod while it
+    // stops: so a scenario starts only when the new pod is the one pod. Its log is then the one
+    // that each scenario reads before and after a step.
+    for (const deadline = Date.now() + 180_000; ; await new Promise((r) => setTimeout(r, 1000))) {
+      const { stdout } = await exec("kubectl", [
+        "--namespace",
+        NAMESPACE,
+        "get",
+        "pods",
+        "-l",
+        "app=lfs",
+        "-o",
+        "name",
+      ]);
+      const pods = stdout.trim().split("\n").filter(Boolean);
+      if (pods.length === 1) break;
+      assert.ok(Date.now() < deadline, `the LFS server's old pod did not stop: ${pods.join(", ")}`);
+    }
   })().catch((err: unknown) => {
     lfsServed = undefined;
     throw err;
