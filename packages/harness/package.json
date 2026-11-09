@@ -13,7 +13,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-global-setup=../../scripts/test-tmpdir.ts"
+    "test": "node --test --test-timeout=120000 --test-global-setup=../../scripts/test-tmpdir.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.5.0",
