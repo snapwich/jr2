@@ -65,6 +65,7 @@ import {
   type SyncRequest,
   type HandoffRequest,
   type HandoffLanded,
+  type HandoffStarted,
   HANDOFF_CONTENT_TYPE,
   type AttachResponse,
   type ExecRequest,
@@ -649,7 +650,15 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
       return c.json({ error: `the body of a Handoff is ${HANDOFF_CONTENT_TYPE}` }, 415);
     }
     const landed = await deps.land(c.req.param("id"), c.req.raw.body);
-    return "landed" in landed ? c.json<HandoffLanded>({ landed: true }) : c.json({ error: landed.fault }, 500);
+    if ("landed" in landed) return c.json<HandoffLanded>({ landed: true });
+    // The exec of the id started here: nothing lands, and the Orchestrator reads the exec.
+    if ("started" in landed) {
+      return c.json<HandoffStarted & { error: string }>(
+        { started: true, error: "the exec of this id started in this Harness, so its files land no more" },
+        409,
+      );
+    }
+    return c.json({ error: landed.fault }, 500);
   });
 
   // The exec (ADR-0067): a Machine's `command` Effect, run here as a child of this process — the

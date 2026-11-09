@@ -1453,6 +1453,9 @@ async function drive<I, O>(
       settled({ outcome: carried.outcome, reason: carried.reason });
       return false;
     }
+    if (carried.outcome === "started") {
+      mark({ stage: "started", text: "the child's Harness holds this cut's exec already: no files were carried" });
+    }
     return true;
   };
   run.started = true;

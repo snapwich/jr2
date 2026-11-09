@@ -71,6 +71,7 @@ const handoffRequest: Mutual<client.HandoffRequest, harness.HandoffRequest> = ag
 const handoffFrame: Mutual<client.HandoffFrame, harness.HandoffFrame> = agree;
 const handoffLandFrame: Mutual<client.HandoffLandFrame, harness.HandoffLandFrame> = agree;
 const handoffLanded: Mutual<client.HandoffLanded, harness.HandoffLanded> = agree;
+const handoffStarted: Mutual<client.HandoffStarted, harness.HandoffStarted> = agree;
 // The Settlement types the Agent actor switches on are literals, so they are held the same way: a
 // renamed type on either side would otherwise read as an unknown failure, not a restart.
 const runawayType: Mutual<typeof client.SUBMISSION_RUNAWAY, typeof harness.SUBMISSION_RUNAWAY> = agree;

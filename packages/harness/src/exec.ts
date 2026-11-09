@@ -200,6 +200,11 @@ export class Execs {
     return true;
   }
 
+  /** Whether this process holds `id`: it started it, or a kill came before its start. */
+  knows(id: string): boolean {
+    return this.execs.has(id);
+  }
+
   /** Drop a settled exec — its reader has its output. A running one is kept: false. */
   forget(id: string): boolean {
     const exec = this.execs.get(id);

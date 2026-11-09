@@ -261,7 +261,11 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   child's Harness restarts and the Orchestrator sends the cut's start again, it carries the files again first, so a
   restart is never a `refused` for a commit that the clone does not hold. The landed files are on the Sandbox's volume,
   so a restart of the Harness container between the land and the start also keeps them. A restored run carries them
-  again under the same id, from the source that the intent row keeps.
+  again under the same id, from the source that the intent row keeps. When the child's Harness holds the exec of that id
+  already (the Orchestrator restarted after the start reached it, or a kill came first), it lands nothing and answers
+  409 `{ started: true }`: the start then runs nothing, so no later settle of the id would remove the files, and a cut
+  that runs would see its files replaced. The carry is then `started`, and the cut goes on to its start and reads the
+  exec.
 
 - **No server.** No process serves git between Sandboxes, no alternates point at another Sandbox, and no git protocol
   version is chosen. On the parent side, the only git folder that jr2 makes is the bundle step's, which holds one ref

@@ -515,6 +515,21 @@ test("a source that went quiet is `unknown` at once: the request may have reache
   assert.ok(HANDOFF_IDLE_MS > HANDOFF_DEADLINE_MS, "the carry waits longer than the step's deadline");
 });
 
+test("a child that holds the exec of the id already answers 409 started at once: the carry is `started`, and nothing lands", async () => {
+  const src = body(whole, { hang: true });
+  let r = rig({
+    source: () => handoffAnswer(src.stream),
+    early: Response.json({ started: true, error: "the exec of this id started" }, { status: 409 }),
+  });
+  assert.deepEqual(await handoffCarrier({ fetch: r.fetch })(argsOf()), { outcome: "started" });
+  // A 409 that does not say `started` is a fault of the carry.
+  r = rig({
+    source: () => handoffAnswer(body(whole).stream),
+    child: () => Response.json({ error: "x" }, { status: 409 }),
+  });
+  assert.equal(((await handoffCarrier({ fetch: r.fetch })(argsOf())) as { outcome: string }).outcome, "unknown");
+});
+
 test("a child that does not take the files is `unknown`: an error, an answer that is not `landed`, an answer before the end", async () => {
   let r = rig({
     source: () => handoffAnswer(body(whole).stream),

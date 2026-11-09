@@ -49,10 +49,14 @@ export type LandOptions = {
   maxObjects?: number;
   /** The longest time of the land. Default {@link HANDOFF_LAND_MS}. */
   timeMs?: number;
+  /** Whether the exec of an id started in this process (`Execs.knows`). A land for such an id is
+   * refused: no later settle of the id would remove its files. */
+  started?: (id: string) => boolean;
 };
 
-/** What a `PUT /handoffs/<id>` lands: `landed`, or why not. */
-export type Landing = { landed: true } | { fault: string };
+/** What a `PUT /handoffs/<id>` lands: `landed`, `started` (the exec of the id started in this
+ * process, so nothing lands), or why not. */
+export type Landing = { landed: true } | { started: true } | { fault: string };
 
 /** What `PUT /handoffs/<id>` refuses before anything runs. */
 export function landIdFault(id: string): string | undefined {
@@ -135,6 +139,15 @@ export async function landHandoff(
     if (lane.stopped !== undefined) {
       await body.cancel().catch(() => {});
       return { fault: lane.stopped };
+    }
+    // The Orchestrator carries the files before each send of the cut's start, also after its own
+    // restart, when this process may hold the exec of the id already, settled or running. The start
+    // then runs nothing, and the exec settles no more, so files landed now would stay for the
+    // Sandbox's life, and a running cut would see its files replaced. So nothing lands, and the
+    // Orchestrator reads the exec.
+    if (opts.started?.(id) === true) {
+      await body.cancel().catch(() => {});
+      return { started: true };
     }
     const landing = await landOnce(children, id, body, workRoot, lane, opts);
     if (!("landed" in landing)) await removeLanded(children, id, workRoot);
@@ -293,8 +306,26 @@ export async function dropLandedOf(children: ChildPolicy, id: string, workRoot =
   await inLane(children, id, "its exec settled", () => removeLanded(children, id, workRoot));
 }
 
+/**
+ * The exec and the land of a Harness with a domain, as `main.ts` serves them: the files landed for
+ * an id go when its exec settles, and a land for an id whose exec started here is refused
+ * (`started`), because no later settle would remove its files (ADR-0080).
+ */
+export function landingOf(
+  children: ChildPolicy,
+  workRoot = "/work",
+): {
+  execs: Execs;
+  land: (id: string, body: ReadableStream<Uint8Array> | null, opts?: LandOptions) => Promise<Landing>;
+} {
+  const execs = landingExecs(children, workRoot);
+  const land = (id: string, body: ReadableStream<Uint8Array> | null, opts: LandOptions = {}) =>
+    landHandoff(children, id, body, { workRoot, ...opts, started: (id) => execs.knows(id) });
+  return { execs, land };
+}
+
 /** The exec of a Harness with a domain (ADR-0067): when an exec settles, the files landed for its
- * id go ({@link dropLandedOf}). What `main.ts` serves. */
+ * id go ({@link dropLandedOf}). */
 export function landingExecs(children: ChildPolicy, workRoot = "/work"): Execs {
   return new Execs({ children, onSettled: (id) => void dropLandedOf(children, id, workRoot) });
 }

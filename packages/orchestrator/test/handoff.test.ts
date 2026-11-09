@@ -500,7 +500,7 @@ test("a Handoff of the child's own cut is refused", async () => {
   await host.stop(runId);
 });
 
-test("the carrier's seam: `refused` and `unknown` settle the cut with no exec, and kill its id in the child; `nothing` and `carried` start it", async () => {
+test("the carrier's seam: `refused` and `unknown` settle the cut with no exec, and kill its id in the child; `nothing`, `carried` and `started` start it", async () => {
   for (const answer of [
     { outcome: "refused", reason: "the source answered that the commit is not there" },
     { outcome: "unknown", reason: "the source Harness did not answer" },
@@ -519,7 +519,8 @@ test("the carrier's seam: `refused` and `unknown` settle the cut with no exec, a
     // The intent row was written before the carrier ran: the source is on it.
     await r.host.stop(r.runId);
   }
-  for (const outcome of ["nothing", "carried"] as const) {
+  // `started`: the child holds the exec of the id (the Orchestrator restarted after the start).
+  for (const outcome of ["nothing", "carried", "started"] as const) {
     let effect = "";
     const r = await rig({}, { carrier: async (args) => ((effect = args.effect), { outcome }) });
     await waitFor(() => r.exec.starts.length === 2);

@@ -11,7 +11,7 @@ import { test, type TestContext } from "node:test";
 import { harnessApp } from "../src/app.ts";
 import { cut } from "../src/cut.ts";
 import { bundleHandoff } from "../src/handoff-bundle.ts";
-import { HANDOFF_LAND_MS, landHandoff, landingExecs, type LandOptions } from "../src/handoff-land.ts";
+import { HANDOFF_LAND_MS, landHandoff, landingExecs, landingOf, type LandOptions } from "../src/handoff-land.ts";
 import { landedFolder } from "../src/handoff-land-main.ts";
 import { HANDOFF_CARRY_MS, HANDOFF_CONTENT_TYPE } from "../src/wire.ts";
 import type { ChildPolicy } from "../src/children.ts";
@@ -347,12 +347,13 @@ test("a land process that does not run, or says something out of its form, is a 
   assert.deepEqual(await w.land(body({ end: true }), {}, "../escape"), { fault: '"../escape" is no Effect id' });
 });
 
-test("PUT /handoffs/<id>: landed is 200, a fault 500, a bad id 400, another body type 415, the Instance Harness 403, none 501", async () => {
+test("PUT /handoffs/<id>: landed is 200, started 409, a fault 500, a bad id 400, another body type 415, the Instance Harness 403, none 501", async () => {
   const seen: string[] = [];
   const deps = { checkBearer: () => true, runSubmissionFor: () => () => new Promise<void>(() => {}) };
   const land = async (id: string, b: ReadableStream<Uint8Array> | null) => {
     seen.push(id);
     const text = b === null ? "" : await new Response(b).text();
+    if (text === "started") return { started: true } as const;
     return text === "good" ? ({ landed: true } as const) : { fault: "out of its form" };
   };
   const app = harnessApp({ ...deps, land });
@@ -364,11 +365,14 @@ test("PUT /handoffs/<id>: landed is 200, a fault 500, a bad id 400, another body
   const bad = await put(app, ID, "bad");
   assert.equal(bad.status, 500);
   assert.deepEqual(await bad.json(), { error: "out of its form" });
+  const started = await put(app, ID, "started");
+  assert.equal(started.status, 409);
+  assert.equal(((await started.json()) as { started?: boolean }).started, true);
   assert.equal((await put(app, "a.b", "good")).status, 400);
   assert.equal((await put(app, ID, "good", "application/json")).status, 415);
   assert.equal((await put(harnessApp({ ...deps, menuOnly: true, land }), ID, "good")).status, 403);
   assert.equal((await put(harnessApp(deps), ID, "good")).status, 501);
-  assert.deepEqual(seen, [ID, ID]);
+  assert.deepEqual(seen, [ID, ID, ID]);
 });
 
 // ---- the whole path ----------------------------------------------------------------------------------
@@ -455,6 +459,26 @@ test("the files landed for a cut go when its exec settles, also when the Effect'
   const folder = plant(early);
   execs.kill(early);
   await until(() => !existsSync(folder) && !existsSync(`${folder}.part`), "the files of the killed id are gone");
+});
+
+test("a land for an id whose exec started in this Harness lands nothing and answers started: no later settle would remove its files", async (t) => {
+  const w = world(t);
+  // What `main.ts` serves: the Execs and the land of one domain.
+  const { execs, land } = landingOf(w.children, w.work);
+  const whole = () => streamOf(body({ bundle: 3 }, Buffer.from("one"), { end: true }));
+  // The cut of the id ran and settled; the Orchestrator restarted and carries its files again.
+  execs.start(ID, { argv: ["true"], cwd: w.work, timeoutMs: 10_000, tail: 100 });
+  for (let i = 0; i < 100 && (await execs.read(ID))?.state !== "settled"; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.deepEqual(await land(ID, whole()), { started: true });
+  // A kill that came before the start: the id is held as settled too.
+  const early = "1d2e3c4b-0b7c-4c55-9a51-6f1d2e3c4b5a";
+  execs.kill(early);
+  assert.deepEqual(await land(early, whole()), { started: true });
+  assert.deepEqual(w.left(), [], "nothing landed");
+  // An id that this Harness does not hold (it restarted) lands as before.
+  assert.deepEqual(await land("2e3c4b5a-0b7c-4c55-9a51-6f1d2e3c4b5a", whole()), { landed: true });
 });
 
 test(

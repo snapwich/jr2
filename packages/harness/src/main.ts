@@ -40,7 +40,7 @@ import {
 } from "./children.ts";
 import { syncer } from "./sync.ts";
 import { bundleHandoff } from "./handoff-bundle.ts";
-import { landHandoff, landingExecs } from "./handoff-land.ts";
+import { landingOf } from "./handoff-land.ts";
 import { seatFacts, standingBriefing } from "./briefing.ts";
 import { clearShm, clearShmInDomain, podMemoryGuard } from "./memory-guard.ts";
 import { admissionFault, modelsFor } from "./provider.ts";
@@ -285,6 +285,9 @@ const projectContext = {
 const mcpHost = new McpHost({ servers: harness.mcp ?? {}, standIns, ...(children ? { children } : {}) });
 const conversationKey = (agentName: string, instanceId: string) =>
   `${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
+// The exec of a Machine's `command` Effects, in the domain (ADR-0067), and the files of a Handoff,
+// which go when the exec of their id settles (ADR-0080).
+const landing = children ? landingOf(children) : undefined;
 const harnessWire = harnessServer({
   runSubmissionFor: (seat) =>
     runSubmissionFor({
@@ -309,7 +312,7 @@ const harnessWire = harnessServer({
   // The attach (ADR-0063), the sync (ADR-0067) and the exec of a Machine's `command` Effects
   // (ADR-0067), each in the domain (ADR-0076). The Instance Harness has none: it refuses them all
   // (`menuOnly`).
-  ...(children
+  ...(children && landing
     ? {
         // The Workspace's Repos into `/work`, on the Orchestrator's call.
         attach: attacher({ children }),
@@ -317,10 +320,10 @@ const harnessWire = harnessServer({
         sync: syncer({ children }),
         // The files of a Handoff, for the cut of a nested Workspace (ADR-0080).
         handoff: (req) => bundleHandoff(children, req),
-        land: (id, body) => landHandoff(children, id, body),
+        land: (id, body) => landing.land(id, body),
         // In the domain: the Agent's user, and the Stand-ins its `workspace()` grants.
         // The files landed for a cut at a Handoff go when its exec settles, a timeout's kill too.
-        execs: landingExecs(children),
+        execs: landing.execs,
       }
     : {}),
   checkAdmission: (resolved) =>

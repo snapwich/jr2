@@ -20,6 +20,8 @@
 // How each end maps to the cut's outcome (ADR-0080, "Two kinds of transport error"):
 //   - `nothing`: the range is empty. No PUT; the cut takes the commit from its clone.
 //   - `end`, and the child answers `{ landed: true }`: `carried`.
+//   - the child answers 409 `{ started: true }`: it holds the exec of the cut's id already (the
+//     Orchestrator restarted after the start): `started`, and nothing lands.
 //   - `refused` from the source (the commit or a prerequisite is gone, the step's deadline, a file
 //     that is not regular, the source's bound), or a stream past the bound here: `refused`. A cut
 //     again would meet the same files. The child's leg is ended before its `end`, so the child
@@ -221,6 +223,9 @@ async function carryOnce(
     }
     const text = await landed.text().catch(() => "");
     if (stop !== undefined) return stop;
+    // The child holds the exec of this id already: nothing lands, and the cut goes on to its start,
+    // which runs nothing there, and to the read of that exec.
+    if (landed.status === 409 && isStarted(text)) return { outcome: "started" };
     if (!ended) {
       return notCarried(
         `the child's Harness (${target.sandbox}) answered ${landed.status} before it took them all: ${errorOf(text)}`,
@@ -446,6 +451,14 @@ const bearerOf = (token: string | undefined): Record<string, string> =>
   token ? { authorization: `Bearer ${token}` } : {};
 
 const mediaType = (value: string | null): string => (value ?? "").split(";")[0]!.trim().toLowerCase();
+
+const isStarted = (text: string): boolean => {
+  try {
+    return (JSON.parse(text) as { started?: unknown }).started === true;
+  } catch {
+    return false;
+  }
+};
 
 const isLanded = (text: string): boolean => {
   try {

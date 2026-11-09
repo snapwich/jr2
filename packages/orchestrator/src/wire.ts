@@ -378,6 +378,12 @@ export type HandoffLandFrame = Extract<
 /** What `PUT /handoffs/<id>` answers, with 200, when the child's Harness holds the files. */
 export type HandoffLanded = { landed: true };
 
+/** What `PUT /handoffs/<id>` answers, with 409, when the child's Harness holds the exec of `<id>`
+ * already (it started there, or a kill came first): nothing lands, because no later settle of the
+ * id would remove the files. The Orchestrator then sends the start, which runs nothing, and reads
+ * the exec (ADR-0080). */
+export type HandoffStarted = { started: true };
+
 /** The content type of a `POST /handoff` answer and of a `PUT /handoffs/<id>` body. */
 export const HANDOFF_CONTENT_TYPE = "application/x-jr2-handoff";
 

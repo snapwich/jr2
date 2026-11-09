@@ -224,4 +224,4 @@ export type HandoffCarrier = (args: {
   /** The Harness bearer of a Workspace, by its Sandbox (ADR-0058). */
   bearer: (sandbox: string) => string | undefined;
   signal: AbortSignal;
-}) => Promise<{ outcome: "carried" | "nothing" } | { outcome: "refused" | "unknown"; reason: string }>;
+}) => Promise<{ outcome: "carried" | "nothing" | "started" } | { outcome: "refused" | "unknown"; reason: string }>;
