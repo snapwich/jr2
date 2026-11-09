@@ -16,7 +16,7 @@ patched one symptom of. This ADR settles which binary runs, and what "the Instan
   `jr2.config.ts` (ADR-0009's root marker). If that folder resolves `@jr2/cli` to a real path other than its own, it
   runs that package's `bin.jr2` with the same arguments and stdio, and exits with its code. Nothing else — no flag
   parsing, no verb exceptions (`--url` inside an Instance still forwards; the rule stays one sentence). It also sets one
-  env var, `JR2_HANDOFF_FROM=<version> <realpath>`, naming the copy that forwarded. `jr2 version` prints it as the
+  env var, `JR2_FORWARD_FROM=<version> <realpath>`, naming the copy that forwarded. `jr2 version` prints it as the
   `global` line, so "is my global out of date" is answered without leaving the Instance; nothing else reads it. It is
   the only fact the local copy cannot learn on its own (`npm ls -g` is slow and per-manager). A global that predates the
   variable forwards without it, and the report then shows no `global` line at all — indistinguishable from `npx jr2`,

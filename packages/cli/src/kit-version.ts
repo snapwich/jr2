@@ -118,7 +118,7 @@ export function pinnedVersion(root: string, name: string): string | undefined {
 /**
  * Refuse unless the Instance at `root` and this CLI resolve the SAME `@jr2/orchestrator`, at the
  * CLI's own version. The message names the versions and the lines to edit: an Instance with no
- * `@jr2/cli` of its own is told to add one (the launcher then hands off to it); one that has it is
+ * `@jr2/cli` of its own is told to add one (the launcher then forwards to it); one that has it is
  * told to pin both lines at one number.
  */
 export function assertKitVersion(root: string, cli: CliCopy = THIS_CLI): void {

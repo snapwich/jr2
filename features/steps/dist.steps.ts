@@ -117,7 +117,7 @@ When("I install its dependencies with {string}", async function (this: E2EWorld,
  */
 const CACHE_SETTING: Record<string, string> = { npm: "npm_config_cache", pnpm: "npm_config_cache_dir" };
 
-// `jr2 check` from the installed binary (ADR-0050): the global on PATH hands off to the Instance's
+// `jr2 check` from the installed binary (ADR-0050): the global on PATH forwards to the Instance's
 // own `@jr2/cli` (ADR-0056), which typechecks the folder and imports each Workflow, and with it the
 // kit's `.ts` sources under `node_modules`, where Node alone does not strip types. No `-n`: the
 // check reads no kube context.
@@ -251,11 +251,11 @@ async function withServiceForward(namespace: string, fn: (base: string) => Promi
 /**
  * `jr2 version --json` from the installed global, inside the Instance it just converged. Three
  * claims in one report (ADR-0009/0056 as amended): `cli` is the Instance's OWN copy (its path is
- * under the Instance), `global` is the copy on PATH that handed off (its path is under the
+ * under the Instance), `global` is the copy on PATH that forwarded (its path is under the
  * throwaway prefix), and the deployed orchestrator answers the same number — so `skew` is `same`.
  */
 When(
-  "jr2 version names the Instance's own jr2, the global that handed off, and the deployed orchestrator",
+  "jr2 version names the Instance's own jr2, the global that forwarded, and the deployed orchestrator",
   { timeout: 120_000 },
   async function (this: E2EWorld): Promise<void> {
     assert.ok(this.dist, "a @dist scenario has its installed kit");
@@ -277,7 +277,7 @@ When(
       report.cli.path.startsWith(instanceRoot),
       `the copy that ran is the Instance's own under ${instanceRoot}, not ${report.cli.path}`,
     );
-    assert.ok(report.global, "the global on PATH said it handed off");
+    assert.ok(report.global, "the global on PATH said it forwarded");
     assert.ok(
       report.global.path.startsWith(prefix),
       `the global is the one in the throwaway prefix ${prefix}, not ${report.global.path}`,

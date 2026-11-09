@@ -1,7 +1,7 @@
 // An Instance has one Kit version (ADR-0056): every Instance verb refuses unless the Instance and
 // the CLI resolve the SAME `@jr2/orchestrator` — same real path — at the CLI's own version. The
 // refusal names both sides and the line to edit, differently for an Instance that has no `@jr2/cli`
-// of its own (add one; the launcher hands off to it) and one that has (pin both at one number).
+// of its own (add one; the launcher forwards to it) and one that has (pin both at one number).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

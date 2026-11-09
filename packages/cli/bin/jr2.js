@@ -10,11 +10,11 @@
 // because there the entry is the orchestrator's, not this one.
 //
 // After the hook, the launcher's one decision (ADR-0056): inside an Instance that resolves its own
-// `@jr2/cli` to a different copy, hand off — run THAT copy's binary with the same argv and stdio
+// `@jr2/cli` to a different copy, forward — run THAT copy's binary with the same argv and stdio
 // and exit with its code — so the `jr2` that runs is the one the Instance pins, whatever this one's
 // version is. Otherwise hand argv to `main` and surface the exit code. `main` is pure-ish (takes an
-// injectable IO) so the dispatch + commands stay unit-testable without a process. The handoff
-// modules import no kit code: a global with no orchestrator beside it can still hand off.
+// injectable IO) so the dispatch + commands stay unit-testable without a process. The Forward
+// modules import no kit code: a global with no orchestrator beside it can still forward.
 
 import { readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
@@ -36,10 +36,10 @@ registerHooks({
 });
 
 const argv = process.argv.slice(2);
-const { handoffTarget, handoff } = await import("../src/handoff.ts");
-const local = handoffTarget(process.cwd());
+const { forwardTarget, forward } = await import("../src/forward.ts");
+const local = forwardTarget(process.cwd());
 if (local) {
-  process.exitCode = await handoff(local, argv);
+  process.exitCode = await forward(local, argv);
 } else {
   const { main } = await import("../src/cli.ts");
   process.exitCode = await main(argv);

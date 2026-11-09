@@ -1,5 +1,5 @@
 // `jr2 version [--local] [--json]` (ADR-0009 as amended): the report you paste into a bug. What is
-// HERE — the copy that runs, the global that handed off (ADR-0056), the Instance's Kit version, the
+// HERE — the copy that runs, the global that forwarded (ADR-0056), the Instance's Kit version, the
 // Instance and its mode, node — and what is DEPLOYED — the orchestrator the pod says it is, the
 // operator, the Kit images pods read — side by side, so the gap between the halves is the answer
 // ("you edited the pin and never ran `jr2 up`").
@@ -17,7 +17,7 @@ import { IMAGES_CONFIGMAP, IMAGES_KEY, INSTANCE_SECRET, loadConfig, type ImageRe
 import { detectKitCheckout, KIT_IMAGE_HOME } from "../build.ts";
 import type { InstanceIdentity } from "../client.ts";
 import { compareVersions, LABEL_VERSION, OPERATOR_DEPLOYMENT, OPERATOR_NAMESPACE } from "../deploy.ts";
-import { handedOffFrom } from "../handoff.ts";
+import { forwardedFrom } from "../forward.ts";
 import { targetOptions, type TargetOptions } from "../instance.ts";
 import { checkKitVersion, CLI_ROOT, CLI_VERSION } from "../kit-version.ts";
 import { kubectlAdmin, kubectlKube, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE, type KubeObject } from "../kube.ts";
@@ -36,9 +36,9 @@ type Images = Partial<ImageRefs & { operator?: string; orchestrator?: string }>;
 export type Skew = "same" | "behind" | "ahead" | "unknown";
 
 export type VersionReport = {
-  /** The copy that runs (after any handoff). */
+  /** The copy that runs (after any Forward). */
   cli: Copy;
-  /** The copy that handed off, when one did and said so (ADR-0056 as amended). */
+  /** The copy that forwarded, when one did and said so (ADR-0056). */
   global?: Copy;
   node: string;
   /** Absent outside an Instance; `mode` decides whether deployed Kit tags read as versions
@@ -91,7 +91,7 @@ export async function version(args: string[], io: Io): Promise<number> {
 export async function versionReport(io: Io, opts: TargetOptions, flags: { local: boolean }): Promise<VersionReport> {
   const report: VersionReport = {
     cli: { version: CLI_VERSION, path: CLI_ROOT },
-    global: handedOffFrom(io.env),
+    global: forwardedFrom(io.env),
     node: process.version,
   };
 

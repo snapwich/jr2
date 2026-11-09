@@ -234,7 +234,7 @@ test("each state that invokes a fail() slot is listed, a nested Machine's too, a
 
 test("in an installed Instance, the `jr2` binary loads the kit from node_modules, where node alone does not strip types", async () => {
   // The installed shape: `@jr2/orchestrator` and `@jr2/cli` are copies under `node_modules`. The
-  // checkout's `jr2` hands off to the Instance's own copy (ADR-0056), which checks with the
+  // checkout's `jr2` forwards to the Instance's own copy (ADR-0056), which checks with the
   // Instance's own compiler and imports each workflow, and with it the kit's `.ts` sources.
   const root = await mkInstalledInstance({ cli: true });
   const run = (args: string[]) =>

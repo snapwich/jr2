@@ -160,11 +160,11 @@ const TABLE = [
     env: [
       JR2_URL,
       {
-        name: "JR2_HANDOFF_FROM",
-        description: "set by the global `jr2` that handed off to this one, which the report names",
+        name: "JR2_FORWARD_FROM",
+        description: "set by the global `jr2` that forwarded to this one, which the report names",
       },
     ],
-    summary: "what runs here (this jr2, the global that handed off, the Instance's Kit) and what the cluster runs",
+    summary: "what runs here (this jr2, the global that forwarded, the Instance's Kit) and what the cluster runs",
     lines: ["--local skips the cluster"],
     output: [{ kind: "report" }],
     adrs: ["0009", "0056"],

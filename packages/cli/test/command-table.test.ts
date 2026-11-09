@@ -104,8 +104,8 @@ test("every env var the CLI reads is named in the table", async () => {
     for (const m of source.matchAll(/\b(?:io\.env|process\.env)\.([A-Z][A-Z0-9_]*)/g)) read.add(m[1]!);
   }
   read.delete("HOME");
-  // The handoff variable is read by name through its constant (`env[HANDOFF_ENV]`).
-  read.add("JR2_HANDOFF_FROM");
+  // The Forward variable is read by name through its constant (`env[FORWARD_ENV]`).
+  read.add("JR2_FORWARD_FROM");
   for (const name of read) assert.ok(named.has(name), `${name} is read but no entry names it`);
 });
 

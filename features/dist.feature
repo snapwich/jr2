@@ -49,10 +49,10 @@ Feature: the kit, as a user installs it
       When I converge it onto the cluster
       # `jr2 up` keeps the block between the markers, and leaves it as it is at the same version.
       Then the Instance's AGENTS.md indexes the installed Kit's docs bundle
-      # ADR-0056 as amended, from the only tier with a real global and a real local: the global on
-      # PATH handed off to the Instance's own @jr2/cli, and the report names both — plus the
+      # ADR-0056, from the only tier with a real global and a real local: the global on
+      # PATH forwarded to the Instance's own @jr2/cli, and the report names both — plus the
       # orchestrator the converge just deployed, at the same number.
-      And jr2 version names the Instance's own jr2, the global that handed off, and the deployed orchestrator
+      And jr2 version names the Instance's own jr2, the global that forwarded, and the deployed orchestrator
       And I run "ping" with message "dist"
       Then stdout is the terminal status with reply "pong: dist"
       And the command exits 0

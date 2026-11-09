@@ -44,7 +44,7 @@ export async function mkInstalledInstance(opts: { cli?: boolean } = {}): Promise
   const modules = join(root, "node_modules");
   const pkg = await copyPackage(ORCHESTRATOR, join(modules, "@jr2", "orchestrator"));
   // `cli`: the Instance's own `@jr2/cli` too, as the scaffold pins it in devDependencies. A `jr2`
-  // from the checkout then hands off to this copy (ADR-0056), and this copy loads the kit from here.
+  // from the checkout then forwards to this copy (ADR-0056), and this copy loads the kit from here.
   const cli = opts.cli ? await copyPackage(CLI, join(modules, "@jr2", "cli")) : undefined;
 
   // Flat-hoisted, as npm and pnpm's default public hoisting both leave them. Each is the link the

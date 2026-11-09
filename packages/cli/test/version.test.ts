@@ -9,7 +9,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { render, version, versionReport, type VersionReport } from "../src/commands/version.ts";
-import { HANDOFF_ENV } from "../src/handoff.ts";
+import { FORWARD_ENV } from "../src/forward.ts";
 import { CLI_ROOT, CLI_VERSION } from "../src/kit-version.ts";
 import type { KubeAdmin, KubeObject, KubePort } from "../src/kube.ts";
 import type { Io } from "../src/output.ts";
@@ -67,7 +67,7 @@ test("outside an Instance: the copy that runs, node, and no half to deploy again
   assert.equal(await version(["--json"], io), 0);
   const r = JSON.parse(out().trim()) as VersionReport;
   assert.deepEqual(r.cli, { version: CLI_VERSION, path: CLI_ROOT });
-  assert.equal(r.global, undefined, "no handoff happened");
+  assert.equal(r.global, undefined, "no Forward happened");
   assert.equal(r.node, process.version);
   assert.equal(r.instance, undefined);
   assert.equal(r.kit, undefined);
@@ -77,8 +77,8 @@ test("outside an Instance: the copy that runs, node, and no half to deploy again
   assert.match(render(r), /^instance:\s+none — no jr2\.config\.ts/m);
 });
 
-test("the global that handed off is a line, from the one env var (ADR-0056 as amended)", async () => {
-  const { io } = mkIo({ cwd: "/", env: { [HANDOFF_ENV]: "0.1.1 /opt/homebrew/lib/node_modules/@jr2/cli" } });
+test("the global that forwarded is a line, from the one env var (ADR-0056)", async () => {
+  const { io } = mkIo({ cwd: "/", env: { [FORWARD_ENV]: "0.1.1 /opt/homebrew/lib/node_modules/@jr2/cli" } });
   const r = await versionReport(io, {}, { local: true });
   assert.deepEqual(r.global, { version: "0.1.1", path: "/opt/homebrew/lib/node_modules/@jr2/cli" });
   const table = render(r);
