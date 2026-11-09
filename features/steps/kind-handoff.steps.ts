@@ -35,6 +35,9 @@ type View = {
   pushUrl: string;
   /** How many rounds' marks the clone held before this round's. */
   marks: string;
+  /** Whether this round's mark is in the clone after its touch: "1", so that a `marks` of "0" in
+   * the next round is not a touch that failed. */
+  marked: string;
   refs: string[];
   log: string[];
   lfs: string;
@@ -143,6 +146,7 @@ async function look(world: E2EWorld, round: number): Promise<View> {
         // A mark in the clone: a new Sandbox has a new clone, so no round finds the mark of the last.
         `echo "${p} marks=$(ls "$(git rev-parse --git-common-dir)"/e2e-round-* 2>/dev/null | wc -l)"`,
         `touch "$(git rev-parse --git-common-dir)/e2e-round-${round}"`,
+        `echo "${p} marked=$(ls "$(git rev-parse --git-common-dir)"/e2e-round-${round} 2>/dev/null | wc -l)"`,
         `git for-each-ref --format='${p} ref %(refname)'`,
         `git log --format='${p} log %an %s' origin/main..HEAD`,
         `echo "${p} lfs=$(sha256sum new.bin 2>&1 | cut -c1-64)"`,
@@ -170,6 +174,7 @@ async function look(world: E2EWorld, round: number): Promise<View> {
     fetchUrl: one("fetchurl"),
     pushUrl: one("pushurl"),
     marks: one("marks"),
+    marked: one("marked"),
     refs: lines.filter((l) => l.startsWith("ref ")).map((l) => l.slice(4)),
     log: lines.filter((l) => l.startsWith("log ")).map((l) => l.slice(4)),
     lfs: one("lfs"),
@@ -339,6 +344,11 @@ Then(
       s.views.map((v) => v.marks),
       ["0", "0"],
       "each round's clone is new: no round finds the mark of the last",
+    );
+    assert.deepEqual(
+      s.views.map((v) => v.marked),
+      ["1", "1"],
+      "each round's mark is in its clone after its touch, so the next round's 0 is a new clone",
     );
     const notes = this.provider!.calls.filter(
       (c) => c.stream && c.raw.includes(FINAL) && c.raw.includes("Your notes of round 1"),
