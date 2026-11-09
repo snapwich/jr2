@@ -428,3 +428,40 @@ test("no url-scoped key of the Agent's config chooses the cut's transfer agent",
   assert.ok(ran.length > 0, "git-lfs started a transfer agent");
   assert.deepEqual([...new Set(ran)], ["jr2"], ran.join(" "));
 });
+
+test(
+  "the cut's ask for the large files reads no commit-graph, no multi-pack-index and no HOME's attributes (ADR-0075)",
+  { skip },
+  async (t) => {
+    const w = await world(t);
+    await w.attach("nolfs");
+    // A jr2-lfs that writes the git config of its env, and says that no file is missing.
+    const seen = join(w.dir, "config-env");
+    const stub = join(w.dir, "jr2-lfs-env");
+    writeFileSync(
+      stub,
+      `#!/bin/sh\nenv | grep '^GIT_CONFIG_' | sort > '${seen}'\necho '{"pointers":0,"asked":0,"missing":[]}'\n`,
+      { mode: 0o755 },
+    );
+    const a = await cut(
+      { id: "e1", base: "main", path: w.path("p"), branch: "p2", from: "nolfs" },
+      { ...w.paths, jr2Lfs: stub },
+    );
+    ready(a);
+    const env = Object.fromEntries(
+      readFileSync(seen, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    );
+    const pins: Record<string, string> = {};
+    for (let n = 0; n < Number(env.GIT_CONFIG_COUNT); n++)
+      pins[env[`GIT_CONFIG_KEY_${n}`]!] = env[`GIT_CONFIG_VALUE_${n}`]!;
+    assert.deepEqual(pins, {
+      "safe.directory": "*",
+      "core.commitGraph": "false",
+      "core.multiPackIndex": "false",
+      "core.attributesFile": "/dev/null",
+    });
+  },
+);

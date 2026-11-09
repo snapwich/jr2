@@ -494,13 +494,33 @@ export function describeMissing(missing: readonly MissingFile[], of: string): st
  */
 export const CUT_LFS_MARGIN_MS = 60_000;
 
+/** The config of `jr2-lfs fetch` in the cut, by `GIT_CONFIG_COUNT`: CLEAN's keys that its git reads. */
+export const LARGE_FILES_PINS: ReadonlyArray<readonly [string, string]> = [
+  ["safe.directory", "*"],
+  ["core.commitGraph", "false"],
+  ["core.multiPackIndex", "false"],
+  ["core.attributesFile", "/dev/null"],
+];
+
+/** `pins` as git's `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`. */
+function configEnv(pins: ReadonlyArray<readonly [string, string]>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { GIT_CONFIG_COUNT: String(pins.length) };
+  pins.forEach(([k, v], n) => {
+    env[`GIT_CONFIG_KEY_${n}`] = k;
+    env[`GIT_CONFIG_VALUE_${n}`] = v;
+  });
+  return env;
+}
+
 /**
  * Ask the node cache for the LFS objects of `commit` (ADR-0053, ADR-0075): `jr2-lfs fetch` asks for
  * each object that no store holds, waits for the landing, and names each file whose object is still
  * missing. A commit with no LFS file makes no ask. When the Effect's timeout left no time for the
  * ask (`budgetMs` of zero or less), jr2-lfs sends none, and the refusal names each file that no
- * store holds. jr2-lfs runs no program of the clone's config. It gets `safe.directory` by env,
- * because the cleared environment reads no global config.
+ * store holds. jr2-lfs runs no program of the clone's config. It gets the cut's pins by env
+ * (`LARGE_FILES_PINS`), and pins the same itself: `safe.directory`, because the cleared environment
+ * reads no global config, and no commit-graph, no multi-pack-index and no attributes file of the
+ * cut's HOME, which the Agents write (ADR-0075).
  */
 async function askLargeFiles(
   paths: CutPaths,
@@ -509,12 +529,7 @@ async function askLargeFiles(
   commit: string,
   budgetMs: number | undefined,
 ): Promise<string | undefined> {
-  const env: NodeJS.ProcessEnv = {
-    ...cutEnv(paths, home),
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "safe.directory",
-    GIT_CONFIG_VALUE_0: "*",
-  };
+  const env: NodeJS.ProcessEnv = { ...cutEnv(paths, home), ...configEnv(LARGE_FILES_PINS) };
   const args = [
     "fetch",
     ...(budgetMs !== undefined ? ["--budget", `${Math.max(0, Math.floor(budgetMs))}ms`] : []),

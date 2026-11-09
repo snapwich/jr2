@@ -137,9 +137,18 @@ func copyOut(c checkout, obj Object) (string, error) {
 // the cut states that no hook and no filter runs in its window (ADR-0075).
 // `check-attr` and `read-tree` read an index, and an index read starts the
 // program that core.fsmonitor names. These keys stop that program and every
-// hook. The env stops a replace ref from changing which blobs the program
-// reads.
-var safeConfig = []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"}
+// hook. The cut reads no commit-graph and no multi-pack-index, because an
+// Agent can write either one in the clone and git then reads another tree for
+// a commit, and no attributes file of a HOME, because the cut's HOME is a
+// folder that the Agents write (ADR-0075). The env stops a replace ref from
+// changing which blobs the program reads.
+var safeConfig = []string{
+	"-c", "core.fsmonitor=false",
+	"-c", "core.hooksPath=/dev/null",
+	"-c", "core.commitGraph=false",
+	"-c", "core.multiPackIndex=false",
+	"-c", "core.attributesFile=/dev/null",
+}
 
 // gitCommand is the one way that the program starts git: in dir, with
 // safeConfig, GIT_NO_REPLACE_OBJECTS=1 and extra env (KEY=VALUE).

@@ -318,6 +318,58 @@ func TestFetchRunsNoProgramOfTheClone(t *testing.T) {
 	}
 }
 
+// TestFetchReadsNoAttributesFileOfTheHome plants an attributes file in the
+// HOME. The cut's HOME is a folder that the Agents write, and git reads
+// `$XDG_CONFIG_HOME/git/attributes` when no config names another file, also
+// with no global config. A rule there must not make a file an LFS file that
+// the commit's own attributes do not (ADR-0075).
+func TestFetchReadsNoAttributesFileOfTheHome(t *testing.T) {
+	for _, source := range []bool{true, false} {
+		t.Run(fmt.Sprintf("check-attr --source %v", source), func(t *testing.T) {
+			checkAttrSource = source
+			t.Cleanup(func() { checkAttrSource = true })
+			b := newBlob("in the commit's attributes")
+			other := newBlob("only in the HOME's attributes")
+			p := makePod(t, map[string]string{".gitattributes": attrsLFS, "x.bin": b.pointer, "y.txt": other.pointer})
+			home := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "git")
+			if err := os.MkdirAll(home, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(home, "attributes"), []byte("*.txt filter=lfs\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			newCustodian(t, p.cache, b, other)
+			if r := fetch(t, p.clone, "main"); r.Pointers != 1 || r.Asked != 1 {
+				t.Fatalf("result = %+v, want the one LFS file of the commit's own attributes", r)
+			}
+		})
+	}
+}
+
+// TestGitReadsNoCommitGraphAndNoMultiPackIndex: each git that the program
+// starts reads no commit-graph and no multi-pack-index, which an Agent can
+// write in the clone with no object rewritten (ADR-0075). git 2.56 then reads
+// another tree for a commit; the git of this host may not, so the test reads
+// the arguments.
+func TestGitReadsNoCommitGraphAndNoMultiPackIndex(t *testing.T) {
+	args := gitCommand(t.TempDir(), nil, "ls-tree", "HEAD").Args
+	joined := strings.Join(args, " ")
+	for _, pin := range []string{
+		"-c core.commitGraph=false",
+		"-c core.multiPackIndex=false",
+		"-c core.attributesFile=/dev/null",
+		"-c core.fsmonitor=false",
+		"-c core.hooksPath=/dev/null",
+	} {
+		if !strings.Contains(joined, pin) {
+			t.Fatalf("git %s: no %q", joined, pin)
+		}
+	}
+	if args[len(args)-2] != "ls-tree" {
+		t.Fatalf("the pins come before the subcommand: %v", args)
+	}
+}
+
 // TestFetchFromASubdirectory runs fetch below the top of the checkout. An
 // attribute pattern with a directory still matches.
 func TestFetchFromASubdirectory(t *testing.T) {

@@ -22,7 +22,9 @@ SPDX-License-Identifier: MIT
 //
 // Every git that the program starts has `-c core.fsmonitor=false -c
 // core.hooksPath=/dev/null` and GIT_NO_REPLACE_OBJECTS=1, so no program that
-// the clone's config names runs (ADR-0075). The rest of git's config comes
+// the clone's config names runs, and reads no commit-graph, no
+// multi-pack-index and no attributes file of a HOME (safeConfig, ADR-0075).
+// The rest of git's config comes
 // from the caller's env: a caller that clears the global config (as the cut
 // does) gives safe.directory itself, for example through GIT_CONFIG_COUNT.
 //
