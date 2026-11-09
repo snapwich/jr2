@@ -41,6 +41,9 @@ import { constants, realpathSync } from "node:fs";
 import { mkdtemp, open, readdir, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { CLEAN } from "./cut.ts";
+import { pointersOfRange, rangeOf } from "./lfs-pointer.ts";
+
+export { pointerOf, rangeOf } from "./lfs-pointer.ts";
 
 /** What the Harness gives the step, as its one argument (JSON). */
 export type BundleStepInput = {
@@ -59,10 +62,6 @@ export type BundleStepInput = {
 };
 
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const OID = /^[0-9a-f]{64}$/;
-
-/** A blob that is longer than this is no Git LFS pointer (git-lfs reads no more). */
-const MAX_POINTER = 1024;
 
 /** The name of the step's own folder starts with this and its pid: a later step removes each
  * folder of a step whose process is gone (a kill at the deadline leaves one). */
@@ -160,44 +159,6 @@ async function sweep(tmp: string): Promise<void> {
   }
 }
 
-/** The stdin of a git `--stdin` call for the range: `tip`, then a `^<sha>` line for each negative.
- * No line is an option (step 4). */
-export function rangeOf(tip: string, negatives: readonly string[]): string {
-  return `${tip}\n${negatives.map((n) => `^${n}\n`).join("")}`;
-}
-
-/** The oid and size of a Git LFS pointer, or undefined. */
-export function pointerOf(text: string): { oid: string; size: number } | undefined {
-  const lines = text.split("\n");
-  if (lines[0] !== "version https://git-lfs.github.com/spec/v1") return undefined;
-  let oid: string | undefined;
-  let size: number | undefined;
-  for (const line of lines.slice(1)) {
-    if (line.startsWith("oid sha256:")) oid = line.slice("oid sha256:".length);
-    else if (/^size \d{1,15}$/.test(line)) size = Number(line.slice(5));
-  }
-  return oid !== undefined && OID.test(oid) && size !== undefined ? { oid, size } : undefined;
-}
-
-/** Each blob of `cat-file --batch`'s output, by its bytes. */
-function batchBlobs(out: Buffer): Buffer[] {
-  const blobs: Buffer[] = [];
-  let at = 0;
-  while (at < out.length) {
-    const nl = out.indexOf(0x0a, at);
-    if (nl < 0) break;
-    const [, type, size] = out.subarray(at, nl).toString("latin1").split(" ");
-    if (type === undefined || size === undefined) {
-      at = nl + 1; // `<input> missing`
-      continue;
-    }
-    const n = Number(size);
-    if (type === "blob") blobs.push(out.subarray(nl + 1, nl + 1 + n));
-    at = nl + 1 + n + 1;
-  }
-  return blobs;
-}
-
 /** The step, in this process: it writes the parts, and returns the last frame, which `main`
  * writes after the step's folder is gone. */
 export async function bundleStep(input: BundleStepInput): Promise<{ end: true } | { nothing: true }> {
@@ -264,33 +225,9 @@ export async function bundleStep(input: BundleStepInput): Promise<{ end: true } 
     if (bundled.code !== 0) throw new Refused(`git did not write the bundle of ${input.head}: ${said(bundled)}`);
 
     // The Git LFS objects: the pointers among the range's small blobs.
-    const objects = await at(["rev-list", "--objects", "--stdin"], range(input.head));
-    if (objects.code !== 0) throw new Refused(`the objects of ${input.head} could not be listed: ${said(objects)}`);
-    const shas = objects.out
-      .toString()
-      .split("\n")
-      .map((l) => l.split(" ")[0] ?? "")
-      .filter((s) => COMMIT.test(s));
-    const kinds = await at(
-      ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-      shas.map((s) => `${s}\n`).join(""),
-    );
-    if (kinds.code !== 0) throw new Refused(`the objects of ${input.head} could not be read: ${said(kinds)}`);
-    const small = kinds.out
-      .toString()
-      .split("\n")
-      .map((l) => l.split(" "))
-      .filter(([, type, size]) => type === "blob" && Number(size) <= MAX_POINTER)
-      .map(([sha]) => sha!);
-    const pointers = new Map<string, number>();
-    if (small.length > 0) {
-      const blobs = await at(["cat-file", "--batch"], small.map((s) => `${s}\n`).join(""));
-      if (blobs.code !== 0) throw new Refused(`the small blobs of ${input.head} could not be read: ${said(blobs)}`);
-      for (const blob of batchBlobs(blobs.out)) {
-        const p = pointerOf(blob.toString("utf8"));
-        if (p !== undefined && p.size > 0) pointers.set(p.oid, p.size);
-      }
-    }
+    const pointers = await pointersOfRange(at, range(input.head)).catch((err: Error) => {
+      throw new Refused(`the Handoff of ${input.head}: ${err.message}`);
+    });
     const store = `${input.clone}/.git/lfs/objects`;
     const lfs: { oid: string; size: number }[] = [];
     for (const [oid, size] of [...pointers].sort(([a], [b]) => (a < b ? -1 : 1))) {

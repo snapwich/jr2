@@ -33,6 +33,9 @@
 //     anything, `jr2-lfs fetch <commit>` asks the node cache for each LFS object that no store holds.
 //     A file whose object the cache cannot get makes the cut `refused`, naming the file. A remote that
 //     is down with every object held is `ready` with `stale`. No submodule is fetched or checked out.
+//   - A cut at a Handoff (ADR-0080) takes the files that the Orchestrator landed for its Effect id
+//     (`handoff-take.ts`): only `head`'s closure, with fsck, and only the large files whose sha256
+//     is their oid. It removes those files when it settles, whatever its outcome.
 //   - The lock is a flock on a descriptor no child inherits, so nothing that outlives this process
 //     can hold it. Node has no flock: a small program takes it on our descriptor, then exits.
 //   - The fetch lock (jr2-upload-pack, ADR-0075) is a second lock with one rule: a fetch waits only
@@ -46,9 +49,12 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, realpathSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { LAND_ID, landedFolder } from "./handoff-land-main.ts";
+import { takeHandoff } from "./handoff-take.ts";
+import type { GitCall } from "./lfs-pointer.ts";
 
 /** The input of one cut. `id` is the Effect's id. `base` is where a new branch starts with no `from`:
  * the Binding's own ref, which no run can name, so the branch rule does not hold it. `timeoutMs` is the
@@ -230,6 +236,26 @@ function runner(paths: CutPaths, home: string, extra: NodeJS.ProcessEnv = {}, pi
         const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
         resolve({ code, out: stdout.trim(), err: stderr.trim() });
       });
+    });
+}
+
+/** git with the cleared environment and CLEAN, with no `-C`, its stdout as bytes, and a stdin: the
+ * take of a Handoff's files (`handoff-take.ts`). */
+function bytesRunner(paths: CutPaths, home: string): GitCall {
+  const env = cutEnv(paths, home);
+  return (args, stdin) =>
+    new Promise((resolve) => {
+      const child = execFile(
+        "git",
+        [...CLEAN, ...args],
+        { env, encoding: "buffer", maxBuffer: 256 << 20 },
+        (error, stdout, stderr) => {
+          const code = error == null ? 0 : typeof error.code === "number" ? error.code : 1;
+          resolve({ code, out: stdout, err: stderr.toString("utf8").trim() });
+        },
+      );
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(stdin ?? "");
     });
 }
 
@@ -579,8 +605,17 @@ function describeNoTime(missing: readonly MissingFile[], of: string): string {
 
 const refused = (reason: string): CutAnswer => ({ outcome: "refused", reason: reason.slice(0, 1024) });
 
-/** The cut, in this process. */
+/** The cut, in this process. A cut at a Handoff removes the files that were landed for it, however
+ * it settles: the Orchestrator carries them again before each start that it sends. */
 export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> {
+  try {
+    return await cutOnce(req, paths);
+  } finally {
+    if (req.handoff !== undefined && typeof req.id === "string") await dropLanded(paths.workRoot, req.id);
+  }
+}
+
+async function cutOnce(req: CutRequest, paths: CutPaths): Promise<CutAnswer> {
   const started = Date.now();
   const bad = pathFault(req.path, paths.workRoot);
   if (bad !== undefined) return refused(bad);
@@ -1057,12 +1092,13 @@ async function makeBranch(c: Clone, rec: CutRecord, ready: ReadyOf, stale: strin
 /**
  * A cut at a Handoff (ADR-0080): a branch Worktree at the Handoff's commit, which the Orchestrator
  * found in the run's ledger. The branch is `req.branch`. It tracks `origin/<branch>` when the clone
- * holds that, and a local branch of that name must be at the commit. The commit must be in the
- * clone after the fetch.
+ * holds that, and a local branch of that name must be at the commit.
  *
- * The transport's seam: the files of a Handoff (a bundle of the parent's range, and its large
- * files) land the commit in the clone before the check below. With no files, the clone holds the
- * commit only when the remote has it: the range is empty.
+ * The files of the Handoff (a bundle of the parent's range, and its large files), which the
+ * Orchestrator carried before it started this cut, are in the folder of this cut's Effect id
+ * (`landedFolder`). `takeHandoff` takes from them only `head`'s closure, with fsck, and the large
+ * files whose bytes are their oid. With no files (the range was empty), the clone holds the commit
+ * only when the remote has it. The commit must be in the clone after the fetch and the take.
  */
 async function firstHandoff(req: CutRequest, c: Clone, paths: CutPaths, ready: ReadyOf): Promise<CutAnswer> {
   const branch = req.branch!;
@@ -1070,11 +1106,6 @@ async function firstHandoff(req: CutRequest, c: Clone, paths: CutPaths, ready: R
   const holder = (await worktrees(c)).find((w) => w.branch === branch);
   if (holder !== undefined) return refused(`${holder.path} holds ${branch}: a cut at a Handoff makes its own Worktree`);
   const stale = await fetched(c, paths);
-  if ((await refOf(c, head)) !== head) {
-    return refused(
-      `this clone does not hold the Handoff's commit ${head}${stale ? `, and the fetch said: ${stale}` : ""}`,
-    );
-  }
   const local = await refOf(c, `refs/heads/${branch}`);
   if (local !== undefined && local !== head) {
     return refused(`the branch ${branch} of this clone is at ${local}, not at the Handoff's commit ${head}`);
@@ -1088,6 +1119,16 @@ async function firstHandoff(req: CutRequest, c: Clone, paths: CutPaths, ready: R
   }
   const expected = expectFault(req, there);
   if (expected !== undefined) return refused(expected);
+  const folder = LAND_ID.test(req.id) ? landedFolder(paths.workRoot, req.id) : undefined;
+  if (folder !== undefined && (await exists(folder))) {
+    const fault = await takeHandoff({ folder, clone: c.clone, home: c.home, head, git: bytesRunner(paths, c.home) });
+    if (fault !== undefined) return refused(fault);
+  }
+  if ((await refOf(c, head)) !== head) {
+    return refused(
+      `this clone does not hold the Handoff's commit ${head}${stale ? `, and the fetch said: ${stale}` : ""}`,
+    );
+  }
   const lfs = await c.largeFiles(head);
   if (lfs !== undefined) return refused(lfs);
   const rec: CutRecord = {
@@ -1105,6 +1146,16 @@ async function firstHandoff(req: CutRequest, c: Clone, paths: CutPaths, ready: R
     },
   };
   return makeBranch(c, rec, ready, stale);
+}
+
+/** Remove the landed files of a cut at a Handoff, when the cut settles, and their folder when no
+ * other cut's files are in it. */
+async function dropLanded(workRoot: string, id: string): Promise<void> {
+  if (!LAND_ID.test(id)) return;
+  const folder = landedFolder(workRoot, id);
+  await rm(folder, { recursive: true, force: true }).catch(() => {});
+  await rm(`${folder}.part`, { recursive: true, force: true }).catch(() => {});
+  await rmdir(dirname(folder)).catch(() => {});
 }
 
 /** Read the request, cut, and print one JSON line. A fault here is no outcome: a non-zero exit, which

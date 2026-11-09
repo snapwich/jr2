@@ -55,19 +55,20 @@ another, whatever it writes.
   starts each process that the Harness asks for, and it does each file tool's I/O and each read, list and remove of a
   path that the Harness needs in the Agent's files (the sync's git folders and its bundle). It sends back the output,
   the exit status, the file's bytes and the names in a folder. The files of a Handoff do not use this whole-file read
-  and write: a process of the domain streams them, under the bundle step's deadline, and the Harness counts them against
-  a bound as they come ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)). A process inherits its
-  parent's domain, so every program of every Agent of the Sandbox is in the one domain. They see, signal and trace each
-  other, as one user's processes do on a machine: a later `bash` call can `kill` or `lsof` a server that an earlier call
-  started. The tools that the model calls do not change: `bash` takes a command, and `read`, `write` and `edit` take a
-  path. If the spawner stops, the Harness starts it again, with the same rules. The new spawner makes a new domain, a
-  sibling of the old one, and the processes that the old spawner started run on in the old domain. A process of the new
-  domain cannot trace one of the old domain, or read its `/proc/<pid>/environ` or its open files. Below ABI 6 it can
-  still signal it, so a later `bash` call can end a server from before the restart; at ABI 6 or later it cannot. The
-  confiner never follows a symbolic link to find what a rule allows: a link gets no rule (what it names gets its own
-  rule where it is allowed, and the kernel checks the path that a link resolves to), and the confiner refuses to start
-  when a rule's path has a link on it. A rule on a link would allow what the link names at each restart, and a confined
-  process can change that.
+  and write: in the parent, a process of the domain streams them, under the bundle step's deadline, and the Harness
+  counts them against a bound as they come. In the child, a process of the child's domain writes them from its stdin,
+  and the Harness sends only a window ahead of what it wrote
+  ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)). A process inherits its parent's domain, so every
+  program of every Agent of the Sandbox is in the one domain. They see, signal and trace each other, as one user's
+  processes do on a machine: a later `bash` call can `kill` or `lsof` a server that an earlier call started. The tools
+  that the model calls do not change: `bash` takes a command, and `read`, `write` and `edit` take a path. If the spawner
+  stops, the Harness starts it again, with the same rules. The new spawner makes a new domain, a sibling of the old one,
+  and the processes that the old spawner started run on in the old domain. A process of the new domain cannot trace one
+  of the old domain, or read its `/proc/<pid>/environ` or its open files. Below ABI 6 it can still signal it, so a later
+  `bash` call can end a server from before the restart; at ABI 6 or later it cannot. The confiner never follows a
+  symbolic link to find what a rule allows: a link gets no rule (what it names gets its own rule where it is allowed,
+  and the kernel checks the path that a link resolves to), and the confiner refuses to start when a rule's path has a
+  link on it. A rule on a link would allow what the link names at each restart, and a confined process can change that.
 - **A person's shell is a process of the domain.** `jr2 workspace shell`
   ([ADR-0009](0009-cli-and-instance-interface.md)) is `kubectl exec -c harness` of a small client in `/opt/jr2`, which
   starts as the Harness starts (`effector nocore --harness-env`). The client starts nothing itself. It asks the Harness,

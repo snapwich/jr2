@@ -155,7 +155,11 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
     (`POST /exec/<id>`, [ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
     The Orchestrator streams the source's answer into it. The child's Harness writes the files to a folder of that cut
     through a process that the spawner starts in the child's domain and that stdin frames feed, so neither Harness holds
-    the whole stream. The cut removes the folder when it settles.
+    the whole stream: the land process says each byte count that it wrote, and the Harness sends only a window (4 MiB)
+    ahead of it. The folder is `/work/.jr2-handoffs/<id>`, on the Sandbox's volume, because the Effect's id names no
+    Repo Slot. The land process writes into `<id>.part` and renames it to `<id>` at the end frame, so the cut finds all
+    the files or none. The cut reads the folder of its own Effect id, and removes it when it settles, also when it is
+    `refused`.
 
   The two legs are one pipe: the Orchestrator reads a chunk of the source only when the child's leg took the last one,
   so it holds no whole part, and a slow child holds the source's step paused. The Orchestrator checks the source's
@@ -188,9 +192,10 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   bundle's pack. So the cut does not fetch from the bundle. It refuses a bundle unless it has exactly one ref, at
   `head`. It unbundles into a git folder that it makes in the cut's own folder, whose alternates are the child clone's
   objects, so that git checks the bundle's prerequisites against the clone. It sets a ref at `head` there, and the clone
-  fetches that ref over `file://` with `transfer.fsckObjects=true`. So only `head`'s closure enters the clone, and git
-  checks each of its objects with fsck, also on git before 2.46 (a probe on git 2.39.5 refused a commit with a bad
-  date). Then the cut makes the branch at `head`.
+  fetches that ref over `file://` with `transfer.fsckObjects=true` and `fetch.fsckObjects=true` (the second wins over
+  the first, and over a value in the clone's config). The fetch writes no ref and no `FETCH_HEAD`. So only `head`'s
+  closure enters the clone, and git checks each of its objects with fsck, also on git before 2.46 (a probe on git 2.39.5
+  refused a commit with a bad date). Then the cut makes the branch at `head`.
 - **The cut records its source.** The child cut's intent row keeps the resolved source (the run, the Workspace and the
   ledger row), so a restored run asks the same source, and the cut stays idempotent.
 - **Two kinds of transport error.** An error that the parent's files or the parent's clone cause is `refused`, with the
@@ -199,7 +204,7 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   - the bundle step passes its deadline (for example, at a FIFO that an Agent planted);
   - the bundle file is not a regular file;
   - the stream passes the byte bound or the object bound;
-  - the bundle has a ref that is not at `head`, or fsck refuses an object;
+  - the bundle has a ref that is not at `head`, or more than one ref, or is not a bundle, or fsck refuses an object;
   - the child's clone does not hold a prerequisite of the bundle (for example, the remote was force-pushed after the
     parent fetched). The reason names the missing commit;
   - the range is empty, and the child's clone does not hold `head` after its fetch. The reason names the commit.
@@ -224,8 +229,9 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
 
   The carry only reads the source and replaces the child's files under one Effect id, so it can run again. When the
   child's Harness restarts and the Orchestrator sends the cut's start again, it carries the files again first, so a
-  restart is never a `refused` for a commit that the clone does not hold. A restored run carries them again under the
-  same id, from the source that the intent row keeps.
+  restart is never a `refused` for a commit that the clone does not hold. The landed files are on the Sandbox's volume,
+  so a restart of the Harness container between the land and the start also keeps them. A restored run carries them
+  again under the same id, from the source that the intent row keeps.
 
 - **No server.** No process serves git between Sandboxes, no alternates point at another Sandbox, and no git protocol
   version is chosen. On the parent side, the only git folder that jr2 makes is the bundle step's, which holds one ref

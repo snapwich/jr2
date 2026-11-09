@@ -5,6 +5,7 @@
 // cache's `lfs/objects`, then answers. It skips without git-lfs or Go.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -24,6 +25,7 @@ import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { attacher } from "../src/attach.ts";
 import { CUT_LFS_MARGIN_MS, cut, type CutAnswer, type CutRequest } from "../src/cut.ts";
+import { landedFolder } from "../src/handoff-land-main.ts";
 import { testChildren } from "./support/children.ts";
 
 const LOCK = ["flock", "-x", "0"];
@@ -490,3 +492,91 @@ test(
     assert.equal(existsSync(w.path("f")), false, "nothing is made");
   },
 );
+
+// --- A cut at a Handoff with Git LFS objects (ADR-0080) -------------------------------------------------
+
+/**
+ * The parent's work: a branch `hand` on `main` in the seed with a new LFS file `new.bin`, which the
+ * cache (the remote) does not have, and whose object is in no LFS store but the parent's. `land`
+ * writes the bundle of the branch and the given objects to the folder of the Effect id, as the land
+ * process does. `keep`: the remote's LFS store keeps the object.
+ */
+function handed(w: Awaited<ReturnType<typeof world>>, keep = false) {
+  w.git(w.seed, "switch", "-qc", "hand", "main");
+  writeFileSync(join(w.seed, "new.bin"), w.content("new"));
+  writeFileSync(join(w.seed, "note.txt"), "note\n");
+  w.git(w.seed, "add", ".");
+  w.git(w.seed, "commit", "-qm", "the parent's work");
+  w.git(w.seed, "switch", "-q", "main");
+  const head = w.git(w.seed, "rev-parse", "hand");
+  const oid = createHash("sha256").update(w.content("new")).digest("hex");
+  const bytes = readFileSync(objectPath(w.remoteLfs, oid));
+  if (!keep) rmSync(objectPath(w.remoteLfs, oid));
+  const file = join(w.dir, "hand.bundle");
+  w.git(w.seed, "update-ref", "refs/heads/handoff", head);
+  w.git(w.seed, "bundle", "create", "-q", file, "refs/heads/handoff", "--not", "main");
+  const land = (id: string, objects: Record<string, Buffer>) => {
+    const folder = landedFolder(join(w.dir, "work"), id);
+    mkdirSync(join(folder, "lfs"), { recursive: true });
+    copyFileSync(file, join(folder, "bundle"));
+    for (const [o, b] of Object.entries(objects)) writeFileSync(join(folder, "lfs", o), b);
+  };
+  const go = (id: string) => cut({ id, base: "main", path: w.path("final"), branch: "hand", handoff: head }, w.paths);
+  return { head, oid, bytes, land, go, store: (o: string) => objectPath(join(w.clone, ".git", "lfs"), o) };
+}
+
+test(
+  "a Git LFS object that came with a Handoff lands when its sha256 is its oid, and the file checks out",
+  { skip },
+  async (t) => {
+    const w = await world(t);
+    await w.attach();
+    const h = handed(w);
+    h.land("e1", { [h.oid]: h.bytes });
+    const asks = w.c.lfsAsks();
+    const a = ready(await h.go("e1"));
+    assert.equal(a.found, "handoff");
+    assert.equal(readFileSync(join(a.path, "new.bin"), "utf8"), w.content("new"), "the content, not the pointer");
+    assert.equal(readFileSync(h.store(h.oid), "utf8"), w.content("new"));
+    assert.equal(w.c.lfsAsks(), asks, "the object came with the Handoff: no ask");
+    assert.equal(w.git(a.path, "status", "--porcelain"), "");
+  },
+);
+
+test(
+  "a planted Git LFS object of the right size and other bytes is refused: it does not land, and the file is not checked out",
+  { skip },
+  async (t) => {
+    const w = await world(t);
+    await w.attach();
+    const h = handed(w);
+    const planted = Buffer.from(w.content("new").replace("new", "bad"));
+    assert.equal(planted.length, h.bytes.length, "the same size: git-lfs alone would take it");
+    h.land("e1", { [h.oid]: planted });
+    const reason = refusal(await h.go("e1"));
+    assert.match(reason, /new\.bin/, "no store holds the object: the cut names the file");
+    assert.equal(existsSync(h.store(h.oid)), false, "the planted bytes are not in the clone's store");
+    assert.equal(existsSync(w.path("final")), false);
+  },
+);
+
+test("a planted Git LFS object does not land, and the node cache gives the real one", { skip }, async (t) => {
+  const w = await world(t);
+  await w.attach();
+  const h = handed(w, true);
+  h.land("e1", { [h.oid]: Buffer.from(w.content("new").replace("new", "bad")) });
+  const a = ready(await h.go("e1"));
+  assert.equal(readFileSync(join(a.path, "new.bin"), "utf8"), w.content("new"), "the remote's bytes, not the planted");
+});
+
+test("a Git LFS object that no pointer of the handed-off commits names does not land", { skip }, async (t) => {
+  const w = await world(t);
+  await w.attach();
+  const h = handed(w);
+  const stray = Buffer.from("an object that no pointer names\n");
+  const strayOid = createHash("sha256").update(stray).digest("hex");
+  h.land("e1", { [h.oid]: h.bytes, [strayOid]: stray });
+  ready(await h.go("e1"));
+  assert.equal(existsSync(h.store(h.oid)), true);
+  assert.equal(existsSync(h.store(strayOid)), false);
+});

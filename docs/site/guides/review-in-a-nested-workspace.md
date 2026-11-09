@@ -164,6 +164,20 @@ These settle as `refused`, and nothing changes. `<handoff>` is `the Handoff of <
   `<handoff>: its files hold more than 100000 Git LFS objects`
 - git in the parent's clone fails, for example:
   `<handoff>: the parent's clone's remote-tracking refs could not be read: <git's words>`
+- the nested Workspace's clone does not hold a commit that the bundle builds on, for example because the remote was
+  force-pushed after the parent fetched:
+  `this clone does not hold the commit <sha>, which the Handoff's bundle builds on: the remote may have lost it (a force push) after the parent fetched`
+- git's fsck refuses an object of the handed-off commits:
+  `git refused the Handoff's commit <head>: error: <git's words>`
+- the bundle that came has a ref that is not at the commit, or more than one ref:
+  `the ref of the Handoff's bundle is at <sha>, not at <head>` or
+  `the Handoff's bundle has <n> refs, and a Handoff's bundle has one`
+- the files that came are not a bundle: `the Handoff's bundle cannot be read: <git's words>` or
+  `the Handoff's bundle is not a regular file`
+
+A Git LFS object that came with the Handoff goes into the nested Workspace's clone only when a pointer of the handed-off
+commits names it and its sha256 is its oid. The cut leaves out each other object, and asks the node cache for each large
+file that it still does not have. When the cache cannot get one, the cut is `refused`, and the reason names the file.
 
 These settle as `unknown`, and the Machine can cut again. The reason is
 `the files of the Handoff were not carried: <why>`:

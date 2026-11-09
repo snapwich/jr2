@@ -22,6 +22,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { AttachFault, attachFault } from "./attach.ts";
 import { syncFault } from "./sync.ts";
 import { handoffRequestFault } from "./handoff-bundle.ts";
+import { landIdFault, type Landing } from "./handoff-land.ts";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
 import { Execs } from "./exec.ts";
 import { KEPT_KILLS, killId, PodKills } from "./pod-kills.ts";
@@ -63,6 +64,7 @@ import {
   type SyncAnswer,
   type SyncRequest,
   type HandoffRequest,
+  type HandoffLanded,
   HANDOFF_CONTENT_TYPE,
   type AttachResponse,
   type ExecRequest,
@@ -153,6 +155,9 @@ export type HarnessAppDeps = {
   /** Run the bundle step of a Handoff (ADR-0080) — `handoff-bundle.ts`'s `bundleHandoff()` in
    * production. Omitted, `POST /handoff` answers 501. */
   handoff?: (req: HandoffRequest) => ReadableStream<Uint8Array>;
+  /** Land the files of a Handoff for the cut whose Effect id is `id` (ADR-0080) —
+   * `handoff-land.ts`'s `landHandoff()` in production. Omitted, `PUT /handoffs/<id>` answers 501. */
+  land?: (id: string, body: ReadableStream<Uint8Array> | null) => Promise<Landing>;
   /** The execs a `command` Effect runs as (ADR-0067) — one `Execs` per process in production.
    * Omitted, `/exec/*` answers 501: this Harness runs no command. */
   execs?: Execs;
@@ -331,6 +336,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   app.use("/attach", gate);
   app.use("/sync", gate);
   app.use("/handoff", gate);
+  app.use("/handoffs/*", gate);
   app.use("/exec/*", gate);
   app.use("/memory-kills", gate);
 
@@ -623,6 +629,27 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     if (fault) return c.json({ error: fault }, 400);
     const { path, head } = body as HandoffRequest;
     return c.body(deps.handoff({ path, head }), 200, { "content-type": HANDOFF_CONTENT_TYPE });
+  });
+
+  // The files of a Handoff in the child (ADR-0080): the Orchestrator carries them from the source
+  // Harness, under the cut's Effect id, before it starts that cut. The answer comes when the files
+  // are in place, and a second body for one id replaces the first. The Instance Harness holds no
+  // Workspace, so it cuts nothing (ADR-0031).
+  app.put("/handoffs/:id", async (c) => {
+    if (deps.menuOnly) {
+      return c.json(
+        { error: "this is the Instance Harness, which holds no Workspace — it takes no Handoff (ADR-0031)" },
+        403,
+      );
+    }
+    if (!deps.land) return c.json({ error: "this Harness takes no Handoff (ADR-0080)" }, 501);
+    const fault = landIdFault(c.req.param("id"));
+    if (fault) return c.json({ error: fault }, 400);
+    if (c.req.header("content-type") !== HANDOFF_CONTENT_TYPE) {
+      return c.json({ error: `the body of a Handoff is ${HANDOFF_CONTENT_TYPE}` }, 415);
+    }
+    const landed = await deps.land(c.req.param("id"), c.req.raw.body);
+    return "landed" in landed ? c.json<HandoffLanded>({ landed: true }) : c.json({ error: landed.fault }, 500);
   });
 
   // The exec (ADR-0067): a Machine's `command` Effect, run here as a child of this process — the
