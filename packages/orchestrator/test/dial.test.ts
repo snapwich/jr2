@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { duplexPair } from "node:stream";
 import { dialFetch } from "../src/dial.ts";
 import { answers, fakeConnection, neverOpens } from "./_fake-connection.ts";
 
@@ -120,11 +122,90 @@ test("an abort after the headers ends the body's read with the signal's reason",
   await assert.rejects(res.text(), (err) => err === reason);
 });
 
-test("what it does not take fails clearly: a Request input, a body that is not a string", async () => {
+test("what it does not take fails clearly: a Request input, a body that is not a string or a stream", async () => {
   const fetch = dialFetch({ connect: () => assert.fail("nothing is dialed") });
   await assert.rejects(fetch(new Request("http://ws-1.ns.svc:8080/attach") as never), TypeError);
   await assert.rejects(
     fetch("http://ws-1.ns.svc:8080/attach", { method: "POST", body: new Uint8Array([1]) }),
-    /string body only/,
+    /string or a ReadableStream body only/,
   );
+});
+
+/** An HTTP server behind in-memory connections: each dial is a new connection to it. */
+function pairServer(handler: Parameters<typeof createServer>[1]) {
+  const server = createServer(handler);
+  return {
+    connect: () => {
+      const [client, side] = duplexPair();
+      server.emit("connection", side);
+      return client;
+    },
+    close: () => server.close(),
+  };
+}
+
+test("a ReadableStream body goes in chunks, as the reader pulls them", async () => {
+  let got = "";
+  let encoding: string | undefined;
+  const srv = pairServer(async (req, res) => {
+    encoding = req.headers["transfer-encoding"];
+    for await (const c of req) got += c;
+    res.end(JSON.stringify({ n: got.length }));
+  });
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(ctrl) {
+      if (pulls++ === 3) return ctrl.close();
+      ctrl.enqueue(new TextEncoder().encode(`part${pulls};`));
+    },
+  });
+  try {
+    const res = await dialFetch({ connect: srv.connect })("http://ws-1.ns.svc:8080/handoffs/e", {
+      method: "PUT",
+      body,
+    });
+    assert.deepEqual(await res.json(), { n: 18 });
+    assert.equal(got, "part1;part2;part3;");
+    assert.equal(encoding, "chunked", "no length: the body's size is not known before it ends");
+  } finally {
+    srv.close();
+  }
+});
+
+test("a server that answers before it took a streamed body ends the request, and the body is cancelled", async () => {
+  const srv = pairServer((_req, res) => res.writeHead(404).end("{}"));
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull: (ctrl) => ctrl.enqueue(new Uint8Array(1024)),
+    cancel: () => void (cancelled = true),
+  });
+  try {
+    const res = await dialFetch({ connect: srv.connect })("http://ws-1.ns.svc:8080/handoffs/e", {
+      method: "PUT",
+      body,
+    });
+    assert.equal(res.status, 404);
+    await res.text();
+    for (let i = 0; i < 100 && !cancelled; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(cancelled, "the body is not read for ever");
+  } finally {
+    srv.close();
+  }
+});
+
+test("a streamed body that fails ends the request with its error", async () => {
+  const srv = pairServer((req) => req.resume());
+  let n = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull: (ctrl) => (n++ < 2 ? ctrl.enqueue(new Uint8Array(8)) : ctrl.error(new Error("the carry stopped"))),
+  });
+  try {
+    const err = await failure(
+      dialFetch({ connect: srv.connect })("http://ws-1.ns.svc:8080/x", { method: "PUT", body }),
+    );
+    assert.equal(err.message, "fetch failed");
+    assert.match(String((err.cause as unknown as Error).message), /the carry stopped/);
+  } finally {
+    srv.close();
+  }
 });

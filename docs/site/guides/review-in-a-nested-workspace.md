@@ -150,6 +150,26 @@ These settle as `refused`, and nothing changes. `<handoff>` is `the Handoff of <
   `<branch> is not in this clone, and the remote did not answer, so it may exist there: <warning>`
 - a re-cut with no Handoff: `<path> was cut at the Handoff <head>, and a re-cut names that Handoff`
 - a Handoff at a path that a different cut made: `<path> was cut for <branch>, not at a Handoff`
+- the parent's clone does not hold the commit: `<handoff>: the parent's clone does not hold the commit <head>`
+- the bundle step passed its deadline, for example at a FIFO in the parent's clone:
+  `<handoff>: the bundle step passed its deadline of 300 s`
+- the bundle is not a regular file: `<handoff>: the bundle is not a regular file`
+- the bundle and its Git LFS objects pass the bound of 1 GiB:
+  `<handoff>: the Handoff's files are <n> bytes (the bundle and <k> Git LFS objects), more than the bound of 1073741824 bytes`
+  or `<handoff>: its files pass the bound of 1 GiB`
+- git in the parent's clone fails, for example:
+  `<handoff>: the parent's clone's remote-tracking refs could not be read: <git's words>`
+
+These settle as `unknown`, and the Machine can cut again. The reason is
+`the files of the Handoff were not carried: <why>`:
+
+- the Workspace that made the Handoff does not run: `the Workspace <sandbox> that made it is not running`
+- the parent's Harness does not answer: `the source Harness (<sandbox>) did not answer: <error>`
+- the parent's Harness answers with an error: `the source Harness (<sandbox>) answered <status>: <error>`
+- the parent's Harness cannot run the bundle step: `the source Harness: <why>`
+- the stream from the parent's Harness breaks, for example: `the source Harness's answer ended before its last frame`
+- the nested Workspace's Harness does not take the files: `the child's Harness (<sandbox>) did not take them: <error>`
+  or `the child's Harness (<sandbox>) answered <status>: <error>`
 
 A Chart gives a Handoff as a reference, such as `"{{context.handoff}}"`. The door refuses a literal Handoff. A reference
 that resolves to a value that is not a Handoff is the error of that invoke. A cut that you lend to a Chart must state

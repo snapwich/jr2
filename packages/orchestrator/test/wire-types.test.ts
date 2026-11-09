@@ -66,6 +66,10 @@ const liveSetRequest: Mutual<client.LiveSetRequest, harness.LiveSetRequest> = ag
 const liveSetResponse: Mutual<client.LiveSetResponse, harness.LiveSetResponse> = agree;
 const podKill: Mutual<client.PodMemoryKill, harness.PodMemoryKill> = agree;
 const memoryKills: Mutual<client.MemoryKillsResponse, harness.MemoryKillsResponse> = agree;
+const handoffRequest: Mutual<client.HandoffRequest, harness.HandoffRequest> = agree;
+const handoffFrame: Mutual<client.HandoffFrame, harness.HandoffFrame> = agree;
+const handoffLandFrame: Mutual<client.HandoffLandFrame, harness.HandoffLandFrame> = agree;
+const handoffLanded: Mutual<client.HandoffLanded, harness.HandoffLanded> = agree;
 // The Settlement types the Agent actor switches on are literals, so they are held the same way: a
 // renamed type on either side would otherwise read as an unknown failure, not a restart.
 const runawayType: Mutual<typeof client.SUBMISSION_RUNAWAY, typeof harness.SUBMISSION_RUNAWAY> = agree;
@@ -113,6 +117,10 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     liveSetResponse,
     podKill,
     memoryKills,
+    handoffRequest,
+    handoffFrame,
+    handoffLandFrame,
+    handoffLanded,
     notKept,
     runawayType,
     restartedType,
@@ -141,4 +149,12 @@ test("the bounds of the memory-kill list are the same on the two sides (ADR-0062
   assert.equal(client.MAX_KILL_STAMP, harness.MAX_KILL_STAMP);
   assert.equal(client.MAX_KILL_NAME, harness.MAX_KILL_NAME);
   assert.equal(client.MAX_KILLS_BODY, harness.MAX_KILLS_BODY);
+});
+
+test("the Handoff's content type and bounds are the same on the two sides (ADR-0080)", () => {
+  // The Orchestrator checks the source's answer by its content type, and holds the stream to the
+  // bound that the source Harness holds; it waits longer than the step's deadline.
+  assert.equal(client.HANDOFF_CONTENT_TYPE, harness.HANDOFF_CONTENT_TYPE);
+  assert.equal(client.HANDOFF_MAX_BYTES, harness.HANDOFF_MAX_BYTES);
+  assert.equal(client.HANDOFF_DEADLINE_MS, harness.HANDOFF_DEADLINE_MS);
 });

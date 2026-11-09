@@ -8,9 +8,9 @@
 // intent row, so a restored run asks the same source, and the transport reads it there.
 //
 // This module is the check and the seam. The transport (the bundle of the parent Sandbox, the two
-// Harness legs) plugs in through `HandoffCarrier`. With no carrier, nothing is carried, and the cut
-// takes the Handoff's commit from the child's clone after its fetch: the case of an empty range,
-// where the remote already holds the commit.
+// Harness legs, `handoff-carry.ts`) plugs in through `HandoffCarrier`. With no carrier, nothing is
+// carried, and the cut takes the Handoff's commit from the child's clone after its fetch: the case
+// of an empty range, where the remote already holds the commit.
 
 import { z } from "zod";
 import type { AmbientHandles } from "./ambient.ts";
@@ -208,12 +208,16 @@ export function handoffSourceOf(
  * The Orchestrator calls it again before each send of the cut's start: a child Harness that
  * restarted may not hold the files of the last call.
  *
- * With no carrier, the Orchestrator carries nothing, as for `nothing`.
+ * With no carrier, the Orchestrator carries nothing, as for `nothing`. `worktree()` gives the
+ * carrier of `handoff-carry.ts`.
  */
 export type HandoffCarrier = (args: {
   /** The cut's Effect id: the child's Harness keeps the files under it. */
   effect: string;
   source: HandoffSource;
+  /** The source Workspace's Harness as it runs now: the Workspace of `source.sandbox`, which still
+   * encloses the child. */
+  from: { endpoint: string; sandbox: string };
   /** The child's Harness. */
   target: { endpoint: string; sandbox: string };
   /** The Harness bearer of a Workspace, by its Sandbox (ADR-0058). */

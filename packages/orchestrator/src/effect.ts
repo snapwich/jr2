@@ -1323,11 +1323,25 @@ async function drive<I, O>(
    * error: an Agent's files can cause it. False: the cut settled, and nothing starts. */
   const carry = async (): Promise<boolean> => {
     if (source === undefined || carrier === undefined) return true;
+    // The source must still run: the Workspace of the row, which encloses this one. Its Harness is
+    // asked where it runs now. A source that does not run is `unknown`, as a source that does not
+    // answer is.
+    const from = enclosingHandlesFor(self)
+      .slice(1)
+      .find((handles) => handles.sandbox === source!.sandbox);
+    if (from === undefined) {
+      settled({
+        outcome: "unknown",
+        reason: `the files of the Handoff were not carried: the Workspace ${source.sandbox} that made it is not running`,
+      });
+      return false;
+    }
     let carried: Awaited<ReturnType<HandoffCarrier>>;
     try {
       carried = await carrier({
         effect: id,
         source,
+        from: { endpoint: from.endpoint, sandbox: from.sandbox },
         target: { endpoint: ambient.endpoint, sandbox: ambient.sandbox },
         bearer: (sandbox) => binding?.harnessBearer?.(sandbox),
         signal,

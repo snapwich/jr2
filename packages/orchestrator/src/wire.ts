@@ -351,3 +351,37 @@ export type ExecRead = {
   dropped?: number;
   output?: ExecOutcome;
 };
+
+/** What `POST /handoff` accepts: the Worktree and the head of the ledger row (ADR-0080). */
+export type HandoffRequest = { path: string; head: string };
+
+/** One frame of a `POST /handoff` answer: one JSON line. A part's header, its bytes in `data`
+ * frames, and one terminal frame (`end`, `nothing`, `refused`, `unknown`), which can come between
+ * any two frames (ADR-0080). */
+export type HandoffFrame =
+  | { bundle: number }
+  | { lfs: string; size: number }
+  | { data: number }
+  | { end: true }
+  | { nothing: true }
+  | { refused: string }
+  | { unknown: string };
+
+/** One frame of a `PUT /handoffs/<id>` body: the parts and their end, which the Orchestrator writes
+ * from a source stream that it checked. A body that ends before `end` holds nothing. */
+export type HandoffLandFrame = Extract<
+  HandoffFrame,
+  { bundle: number } | { lfs: string } | { data: number } | { end: true }
+>;
+
+/** What `PUT /handoffs/<id>` answers, with 200, when the child's Harness holds the files. */
+export type HandoffLanded = { landed: true };
+
+/** The content type of a `POST /handoff` answer and of a `PUT /handoffs/<id>` body. */
+export const HANDOFF_CONTENT_TYPE = "application/x-jr2-handoff";
+
+/** The bound on the bundle and its Git LFS objects together, in bytes (ADR-0080). */
+export const HANDOFF_MAX_BYTES = 1024 ** 3;
+
+/** The bundle step's deadline: the step's own time, from its start to its last byte (ADR-0080). */
+export const HANDOFF_DEADLINE_MS = 300_000;

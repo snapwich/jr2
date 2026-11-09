@@ -447,7 +447,27 @@ export type HandoffFrame =
   | { refused: string }
   | { unknown: string };
 
-/** The content type of a `POST /handoff` answer: {@link HandoffFrame}s and their bytes. */
+/**
+ * One frame of a `PUT /handoffs/<id>` body: the files of one Handoff, which the Orchestrator carries
+ * to the child's Harness for the cut whose Effect id is `<id>` (ADR-0080). The same form as a
+ * `POST /handoff` answer, with only the parts and their end: `{ bundle }`, then `{ lfs, size }` for
+ * each Git LFS object, each part's bytes in `{ data }` frames, then `{ end: true }`. The
+ * Orchestrator writes each frame itself, from a source stream that it checked. A body that ends
+ * before `end` is a carry that the Orchestrator ended: the child keeps nothing of it. A second body
+ * for one id replaces the files of the first, because the Orchestrator carries the files again
+ * before each send of the cut's start.
+ */
+export type HandoffLandFrame = Extract<
+  HandoffFrame,
+  { bundle: number } | { lfs: string } | { data: number } | { end: true }
+>;
+
+/** What `PUT /handoffs/<id>` answers, with 200, when the child's Harness holds the files for the
+ * cut. Any other answer is a fault of the carry, and the cut is `unknown` (ADR-0080). */
+export type HandoffLanded = { landed: true };
+
+/** The content type of a `POST /handoff` answer ({@link HandoffFrame}s and their bytes), and of a
+ * `PUT /handoffs/<id>` body ({@link HandoffLandFrame}s). */
 export const HANDOFF_CONTENT_TYPE = "application/x-jr2-handoff";
 
 /** The bound on the bundle and its Git LFS objects together, in bytes (ADR-0080). Past it, the
@@ -457,5 +477,6 @@ export const HANDOFF_MAX_BYTES = 1024 ** 3;
 /** The bundle step's deadline: the step's own time, from its start to its last byte (ADR-0080). The
  * clock stops while the source Harness holds the step paused for a reader that is behind. At the
  * deadline, the source Harness kills the step's process group and ends the stream `refused`. The
- * Orchestrator waits longer. */
+ * Orchestrator ends a carry only after a longer time with no byte from the source, so a step that
+ * the parent's files hold ends `refused` first. */
 export const HANDOFF_DEADLINE_MS = 300_000;

@@ -13,6 +13,7 @@ import type { Duration, EffectLogic, ExecPortFactory, LaterOutcome, Unknown } fr
 import { commandWith } from "./effect.ts";
 import { createExecPort } from "./harness-client.ts";
 import type { Handoff, HandoffCarrier } from "./handoff.ts";
+import { handoffCarrier } from "./handoff-carry.ts";
 
 /** What a Worktree's name may start with: neither `.` nor `-`, and not the end of the path. */
 type NameStart =
@@ -280,5 +281,6 @@ export function worktree(options: WorktreeOptions = {}): EffectLogic<WorktreeInp
   return worktreeWith(
     (endpoint, bearer) => createExecPort({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
     options,
+    handoffCarrier(),
   );
 }

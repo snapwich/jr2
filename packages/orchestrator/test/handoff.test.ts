@@ -8,6 +8,8 @@ import { assign } from "xstate";
 import type { AmbientHandles } from "../src/ambient.ts";
 import { inputShapeOf, oneOfHolds, type EffectRow } from "../src/effect.ts";
 import { handoff, handoffShapeFault, handoffSourceOf, type Handoff, type HandoffCarrier } from "../src/handoff.ts";
+import { handoffCarrier } from "../src/handoff-carry.ts";
+import { HANDOFF_CONTENT_TYPE } from "../src/wire.ts";
 import { RunHost } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { isReady, readyOf, worktreeWith, type WorktreeOutput, type WorktreeReady } from "../src/worktree.ts";
@@ -525,6 +527,144 @@ test("a child Harness that restarts after the carry: the files are carried again
   r.exec.settle(readyAnswer("/work/app/final", "fix/one", H, "handoff"));
   await waitFor(() => r.host.status(r.runId)?.value === "done");
   assert.equal((r.out() as WorktreeReady).found, "handoff");
+  await r.host.stop(r.runId);
+});
+
+/** A fake `fetch` for the carry's two legs. The source answers `frames` and then ends, or hangs
+ * with `hang`. Each request honours its signal, as `dialFetch` does. */
+function carryFetch(frames: string, opts: { hang?: boolean } = {}) {
+  const calls: { method: string; url: string; body?: string }[] = [];
+  const fetch = (async (input: string | URL, init: RequestInit = {}) => {
+    const signal = init.signal!;
+    calls.push({
+      method: init.method!,
+      url: String(input),
+      ...(typeof init.body === "string" ? { body: init.body } : {}),
+    });
+    if (init.method === "POST") {
+      let sent = false;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(ctrl) {
+          if (!sent) return void ((sent = true), ctrl.enqueue(new TextEncoder().encode(frames)));
+          if (opts.hang) return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+          ctrl.close();
+        },
+      });
+      return new Response(stream, { headers: { "content-type": HANDOFF_CONTENT_TYPE } });
+    }
+    const reader = (init.body as ReadableStream<Uint8Array>).getReader();
+    const stopped = new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    stopped.catch(() => {});
+    for (;;) {
+      const next = await Promise.race([reader.read(), stopped]);
+      if (next.done) break;
+    }
+    return Response.json({ landed: true });
+  }) as typeof globalThis.fetch;
+  return { fetch, calls };
+}
+
+const WHOLE = '{"bundle":4}\n{"data":4}\nBNDL{"end":true}\n';
+
+test("an Orchestrator restart mid-carry: the restored cut carries again under its id, from the source its intent row keeps, at the source's Harness where it runs now", async () => {
+  const exec = new FakeHarnessExec();
+  const store = await mkStore();
+  const stalled = carryFetch('{"bundle":4}\n{"data":2}\nBN', { hang: true });
+  const first = new RunHost({ store });
+  first.register(rootDef(exec, { carrier: handoffCarrier({ fetch: stalled.fetch }) }));
+  const { runId } = await first.start("fx", {});
+  await waitFor(() => exec.starts.length === 1);
+  exec.settle(readyAnswer("/work/app/coder", "fix/one", H));
+  await waitFor(() => stalled.calls.some((c) => c.method === "PUT"));
+  const put = stalled.calls.find((c) => c.method === "PUT")!.url;
+  assert.equal(exec.starts.length, 1, "the child's cut waits for its files");
+  await first.stop(runId);
+  exec.forgetAll();
+
+  // In the saved run: the parent's row moves on (a check made again would find no row for H), and
+  // the intent row names an endpoint that the source no longer has.
+  const saved = (await store.load(runId))!.snapshot as { effects: Record<string, EffectRow> };
+  for (const row of Object.values(saved.effects)) {
+    if (row.state === "settled" && row.cut) {
+      row.cut.head = H2;
+      (row.output as { head: string }).head = H2;
+    }
+    if (row.state === "intent" && "handoff" in row && row.handoff)
+      row.handoff.endpoint = "http://ws-parent-then.invalid";
+  }
+  await store.save(runId, saved);
+
+  const whole = carryFetch(WHOLE);
+  const host = new RunHost({ store });
+  host.register(rootDef(exec, { carrier: handoffCarrier({ fetch: whole.fetch }) }));
+  await host.restore();
+  await waitFor(() => exec.starts.length === 2);
+  assert.deepEqual(
+    whole.calls.map((c) => [c.method, c.url]),
+    [
+      ["POST", "http://ws-parent.invalid/handoff"],
+      ["PUT", put],
+    ],
+    "the same Effect id, at the source's Harness where it runs now",
+  );
+  assert.deepEqual(JSON.parse(whole.calls[0]!.body!), { path: "/work/app/coder", head: H }, "the intent row's source");
+  assert.equal(
+    put,
+    `http://ws-child.invalid/handoffs/${exec.starts[1]!.id}`,
+    "the cut starts under the id of its files",
+  );
+  exec.settle(readyAnswer("/work/app/final", "fix/one", H, "handoff"));
+  await waitFor(() => host.status(runId)?.value === "done");
+  assert.equal((host.status(runId)?.context as RootCtx).out?.outcome, "ready");
+  await host.stop(runId);
+});
+
+test("a restored cut whose source Workspace no longer runs is `unknown`, and nothing is carried or started", async () => {
+  const exec = new FakeHarnessExec();
+  const store = await mkStore();
+  const stalled = carryFetch('{"bundle":4}\n', { hang: true });
+  const first = new RunHost({ store });
+  first.register(rootDef(exec, { carrier: handoffCarrier({ fetch: stalled.fetch }) }));
+  const { runId } = await first.start("fx", {});
+  await waitFor(() => exec.starts.length === 1);
+  exec.settle(readyAnswer("/work/app/coder", "fix/one", H));
+  await waitFor(() => stalled.calls.some((c) => c.method === "PUT"));
+  await first.stop(runId);
+  const saved = (await store.load(runId))!.snapshot as { effects: Record<string, EffectRow> };
+  for (const row of Object.values(saved.effects)) {
+    if (row.state === "intent" && "handoff" in row && row.handoff) row.handoff.sandbox = "ws-gone";
+  }
+  await store.save(runId, saved);
+
+  const whole = carryFetch(WHOLE);
+  const host = new RunHost({ store });
+  host.register(rootDef(exec, { carrier: handoffCarrier({ fetch: whole.fetch }) }));
+  await host.restore();
+  await waitFor(() => host.status(runId)?.value === "done");
+  assert.deepEqual((host.status(runId)?.context as RootCtx).out, {
+    outcome: "unknown",
+    reason: "the files of the Handoff were not carried: the Workspace ws-gone that made it is not running",
+  });
+  assert.equal(whole.calls.length, 0);
+  assert.equal(exec.starts.length, 1);
+  await host.stop(runId);
+});
+
+test("the real carrier through the RunHost: a source's refusal settles the child's cut `refused`, and the Machine routes it", async () => {
+  const r = await rig(
+    {},
+    {
+      carrier: handoffCarrier({
+        fetch: carryFetch(`{"refused":"the parent's clone does not hold the commit ${H}"}\n`).fetch,
+      }),
+    },
+  );
+  await waitFor(() => r.host.status(r.runId)?.value === "done");
+  assert.deepEqual(r.out(), {
+    outcome: "refused",
+    reason: `the Handoff of /work/app/coder at ${H}: the parent's clone does not hold the commit ${H}`,
+  });
+  assert.equal(r.exec.starts.length, 1);
   await r.host.stop(r.runId);
 });
 

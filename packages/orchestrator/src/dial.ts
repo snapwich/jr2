@@ -68,8 +68,8 @@ type DialSocket = Duplex & { connecting?: boolean; setTimeout?: (ms: number, cb?
  * the body is read.
  *
  * Narrower than `fetch`, and it says so: the input is a string or a `URL` (a `Request` is a
- * `TypeError`), and a body is a string (anything else is a `TypeError`). It does not follow a
- * redirect, and the `Response`'s `url` is empty. Any scheme but `http:` goes to the global `fetch`,
+ * `TypeError`), and a body is a string or a `ReadableStream`, which goes in chunks (anything else
+ * is a `TypeError`). It does not follow a redirect, and the `Response`'s `url` is empty. Any scheme but `http:` goes to the global `fetch`,
  * unbounded.
  */
 export function dialFetch(options: DialOptions = {}): typeof globalThis.fetch {
@@ -81,20 +81,22 @@ export function dialFetch(options: DialOptions = {}): typeof globalThis.fetch {
     if (typeof input !== "string" && !(input instanceof URL)) {
       return Promise.reject(new TypeError("dialFetch takes a string or a URL, not a Request"));
     }
-    if (init.body !== undefined && init.body !== null && typeof init.body !== "string") {
-      return Promise.reject(new TypeError("dialFetch sends a string body only"));
+    const streamed = init.body instanceof ReadableStream ? (init.body as ReadableStream<Uint8Array>) : undefined;
+    if (init.body !== undefined && init.body !== null && typeof init.body !== "string" && streamed === undefined) {
+      return Promise.reject(new TypeError("dialFetch sends a string or a ReadableStream body only"));
     }
     const url = new URL(input);
     if (url.protocol !== "http:") return fetch(input, init);
     return new Promise<Response>((resolve, reject) => {
       const signal = init.signal ?? undefined;
       if (signal?.aborted) {
+        void streamed?.cancel(signal.reason).catch(() => {});
         reject(signal.reason);
         return;
       }
       const headers: Record<string, string> = {};
       new Headers(init.headers).forEach((value, name) => (headers[name] = value));
-      const body = (init.body ?? undefined) as string | undefined;
+      const body = streamed === undefined ? ((init.body ?? undefined) as string | undefined) : undefined;
       if (body !== undefined) headers["content-length"] = String(Buffer.byteLength(body));
       // `urlToHttpOptions` takes the brackets off an IPv6 literal, which `URL.hostname` keeps.
       const { hostname } = urlToHttpOptions(url);
@@ -168,7 +170,17 @@ export function dialFetch(options: DialOptions = {}): typeof globalThis.fetch {
           reject(new TypeError("fetch failed", { cause: err }));
         }
       });
-      req.end(body);
+      if (streamed === undefined) {
+        req.end(body);
+        return;
+      }
+      // A streamed body goes in chunks, as the reader pulls them, so neither side holds the whole
+      // of it. A body that fails ends the request with its error; a request that ends early cancels
+      // the body.
+      const source = Readable.fromWeb(streamed as never);
+      source.once("error", (err) => req.destroy(err));
+      req.once("close", () => source.destroy());
+      source.pipe(req);
     });
   }) as typeof globalThis.fetch;
 }

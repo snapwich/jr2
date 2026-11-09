@@ -157,6 +157,17 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
     through a process that the spawner starts in the child's domain and that stdin frames feed, so neither Harness holds
     the whole stream. The cut removes the folder when it settles.
 
+  The two legs are one pipe: the Orchestrator reads a chunk of the source only when the child's leg took the last one,
+  so it holds no whole part, and a slow child holds the source's step paused. The Orchestrator checks the source's
+  stream as it reads it: each header is a JSON line of a bounded length, in the order of the form, and the bytes of each
+  part are counted against its header. It writes each frame of the child's body itself, from the values that passed
+  these checks, so the child gets only the parts and their end. A body that ends before its end frame is a carry that
+  the Orchestrator ended, and the child keeps nothing of it. The child answers `{ landed: true }` when it holds the
+  files. A second body for one Effect id replaces the files of the first.
+
+  The Orchestrator asks the Harness of the source Workspace where it runs now, and only while that Workspace still
+  encloses the child: a Workspace that no longer runs gives no Handoff, and the cut is then `unknown`.
+
   The child makes no request for a Handoff, so no credential of the child's domain reaches one: the Orchestrator sends a
   bundle only for the source that the cut's own intent row records, never for a cut that the Machine did not ask for.
   Only the child's Harness knows that a re-cut is `held`, so the Orchestrator carries the files for each cut at a
@@ -192,11 +203,19 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   the stream, and the child asks the node cache for it, as for each object that the Handoff does not carry. A
   remote-tracking ref of the parent clone that names no commit is left out of the range's negatives.
 
-  When the source Harness does not answer, the cut is `unknown`, and the Machine can cut again. The Orchestrator waits
-  for the source longer than the bundle step's deadline, so a step that the parent's files hold ends as `refused` and
-  never as `unknown`. Any other fault of the carry is `unknown` too, never the invoke's error: the parent's files can
-  cause it. When the child's Harness restarts and the Orchestrator sends the cut's start again, it carries the files
-  again first, so a restart is never a `refused` for a commit that the clone does not hold.
+  When the source Harness does not answer, the cut is `unknown`, and the Machine can cut again. A connection that never
+  opened, to either Harness, is tried again a few times first (for about 4 s), because no byte of the carry left. The
+  Orchestrator ends a carry after 360 s with no byte from the source: longer than the bundle step's deadline, so a step
+  that the parent's files hold ends as `refused` and never as `unknown`. A carry that a slow child stalls for that long
+  also ends `unknown`, which ends the source's stream and so kills the step. An HTTP error of either Harness, a source
+  stream that ends before its last frame or is out of its form, and a child that does not answer `{ landed: true }` are
+  `unknown` too. Any other fault of the carry is `unknown` as well, never the invoke's error: the parent's files can
+  cause it.
+
+  The carry only reads the source and replaces the child's files under one Effect id, so it can run again. When the
+  child's Harness restarts and the Orchestrator sends the cut's start again, it carries the files again first, so a
+  restart is never a `refused` for a commit that the clone does not hold. A restored run carries them again under the
+  same id, from the source that the intent row keeps.
 
 - **No server.** No process serves git between Sandboxes, no alternates point at another Sandbox, and no git protocol
   version is chosen. On the parent side, the only git folder that jr2 makes is the bundle step's, which holds one ref
