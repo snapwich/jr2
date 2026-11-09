@@ -51,9 +51,10 @@ Feature: Git LFS in a real pod
   Rule: a push uploads its large files before it moves the branch
 
     The push checks with a download batch that the server holds each object, and takes an object that
-    the server holds with no local copy. An LFS server that speaks only the pure SSH protocol
-    (git-lfs-transfer) serves both ways: the cache agent downloads from it, and the push uploads to it
-    and checks it.
+    the server holds with no local copy, also from a server that gives an upload action for an object
+    that it holds (the batch API lets a server do so). An LFS server that speaks only the pure SSH
+    protocol (git-lfs-transfer) serves both ways: the cache agent downloads from it, and the push
+    uploads to it and checks it after the upload.
 
     Scenario: a push of a commit with a new large file uploads it, and the LFS server then holds it
       Given the seed's push remote trusts this scenario's keys
@@ -65,7 +66,7 @@ Feature: Git LFS in a real pod
     Scenario: a push of a pointer whose object only the LFS server holds is pushed, with no upload
       Given the seed's push remote trusts this scenario's keys
       And the kind instance is serving
-      And an LFS repository over ssh, and a large file that only its LFS server holds
+      And an LFS repository over ssh whose LFS server gives an upload action also for an object it holds, and a large file that only that server holds
       When the Agent commits that file's pointer with no local copy, and the Machine pushes it
       Then the push is pushed, and the LFS server got no upload
 

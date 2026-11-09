@@ -22,6 +22,7 @@ import {
 import {
   ensureLfsServer,
   ensureLfsTransfer,
+  LFS_ALWAYS_UPLOAD,
   lfsObjectNobodyHolds,
   lfsSeedRepo,
   lfsServerHolds,
@@ -190,17 +191,19 @@ Given(
 );
 
 Given(
-  "an LFS repository over ssh, and a large file that only its LFS server holds",
+  "an LFS repository over ssh whose LFS server gives an upload action also for an object it holds, and a large file that only that server holds",
   { timeout: 300_000 },
   async function (this: E2EWorld): Promise<void> {
     await ensureLfsServer();
-    const name = nameFor("held");
+    // An always-upload store: a push that read "no upload action" as "held" would try to upload
+    // the object, which no store in the pod holds, and be rejected (ADR-0067).
+    const name = `${nameFor("held")}${LFS_ALWAYS_UPLOAD}`;
     const [base, held] = await makeLfsObjects(name, [64 * 1024, 70_000]);
     const { url } = await lfsSeedRepo(name, { main: [{ "big.bin": base! }] }, "ssh");
     states.set(this, {
       name,
       url,
-      branch: `up-${name.slice(-8)}`,
+      branch: `up-${randomBytes(4).toString("hex")}`,
       base: { path: "big.bin", object: base! },
       onBranch: { path: "held.bin", object: held! },
     });

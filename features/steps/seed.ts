@@ -544,20 +544,30 @@ export async function dropSeedRepo(name: string): Promise<void> {
 // they find any LFS server: by `lfs.url` at the Binding's base. It is cluster furniture, as the
 // seed is: the next run's apply is a no-op.
 
+/**
+ * The end of the name of an always-upload store: the seed's LFS server gives an upload action for
+ * each object of an upload batch, also for an object that the store holds. The batch API lets a
+ * server do so (that it gives none for an object it holds is only a SHOULD), so a push must not
+ * read "no upload action" as "held" (ADR-0067).
+ */
+export const LFS_ALWAYS_UPLOAD = "-always-upload";
+
 /** The LFS server's host, as a pod reaches it. */
 export const LFS_HOST = "lfs.jr2-e2e-seed.svc";
 
 /**
  * The LFS server: `POST /<repo>/info/lfs/objects/batch`, `GET` and `PUT /<repo>/objects/<oid>`,
  * `POST /<repo>/verify`. A download of an object it does not hold is that object's 404 error; an
- * upload of an object it holds gets no action, which is how the batch API says "held". A `PUT` whose
- * bytes do not hash to the oid is 422 and stores nothing. Every request is one line on stdout. On the
- * host, `SEED_LFS_LISTEN` and `SEED_LFS_STORE` set its port and its store. The names are not
- * `LFS_PORT`: Kubernetes sets that variable in each pod of the namespace, for the Service `lfs`.
+ * upload of an object it holds gets no action, which is how the batch API says "held", except in a
+ * store whose name ends with {@link LFS_ALWAYS_UPLOAD}. A `PUT` whose bytes do not hash to the oid is
+ * 422 and stores nothing. Every request is one line on stdout. On the host, `SEED_LFS_LISTEN` and
+ * `SEED_LFS_STORE` set its port and its store. The names are not `LFS_PORT`: Kubernetes sets that
+ * variable in each pod of the namespace, for the Service `lfs`.
  */
 export const LFS_SERVER_SCRIPT = [
   `const http=require("http"),fs=require("fs"),path=require("path"),crypto=require("crypto");`,
   `const D=process.env.SEED_LFS_STORE||"/data";const OID=/^[0-9a-f]{64}$/;const REPO=/^[a-z0-9][a-z0-9-]{0,80}$/;`,
+  `const ALWAYS=${JSON.stringify(LFS_ALWAYS_UPLOAD)};`,
   `const at=(r,o)=>path.join(D,r,o);`,
   `const holds=(r,o,n)=>{try{const s=fs.statSync(at(r,o));return n===undefined||s.size===n;}catch{return false;}};`,
   `const body=(req)=>new Promise((ok)=>{let b="";req.on("data",(d)=>b+=d);req.on("end",()=>{try{ok(JSON.parse(b));}catch{ok({});}});});`,
@@ -571,7 +581,7 @@ export const LFS_SERVER_SCRIPT = [
   `const objects=(b.objects||[]).map(({oid,size})=>{`,
   `if(!OID.test(String(oid)))return {oid,size,error:{code:422,message:"not an oid"}};`,
   `const held=holds(repo,oid,size);`,
-  `if(up)return held?{oid,size}:{oid,size,actions:{upload:{href:base+"/objects/"+oid},verify:{href:base+"/verify"}}};`,
+  `if(up)return held&&!repo.endsWith(ALWAYS)?{oid,size}:{oid,size,actions:{upload:{href:base+"/objects/"+oid},verify:{href:base+"/verify"}}};`,
   `return held?{oid,size,actions:{download:{href:base+"/objects/"+oid}}}:{oid,size,error:{code:404,message:"Object does not exist"}};});`,
   `return send(200,{transfer:"basic",objects});}`,
   `const oid=s[2];`,
