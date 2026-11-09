@@ -41,11 +41,9 @@ Run [`jr2 up`](../reference/cli.md#up). It builds the image. Then it loads the i
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
-sandbox image "default": building jr2-sandbox-my-instance-default:fce23ddc3cce-amd64
+sandbox image "default": building jr2-sandbox-my-instance-default:a6eff204f3dc-amd64
   no USER declared — the pod's uid-1000 fallback applies
   user context: none (no USER, so the home is jr2's emptyDir)
   kind load → cluster "jr2"

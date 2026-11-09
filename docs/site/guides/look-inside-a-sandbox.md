@@ -30,18 +30,16 @@ the Instance:
 jr2 workspace ls <run id>
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-WORKSPACE     SANDBOX                       WORKFLOW  PHASE  AGE  RUN
-7a0e8b50/x:0  ws-7a0e8b50-x-0-b35f14dc370a  task      Ready  32s  held
+WORKSPACE      SANDBOX                        WORKFLOW  PHASE  AGE  RUN
+4fed0b50/x:16  ws-4fed0b50-x-16-70285a90bcd3  task      Ready  8s   held
 ```
 
 - `WORKSPACE` is the handle of the Workspace: the first 8 characters of the run id, then the path of the Workspace in
   the run. In the commands below, write it in place of `<workspace>`. You can also give the name of the Sandbox, or the
   first characters of the run id, then `/` and the path.
-- `SANDBOX` is the name of the Sandbox, here `ws-7a0e8b50-x-0-b35f14dc370a`. Your name is different. The pod has the
+- `SANDBOX` is the name of the Sandbox, here `ws-4fed0b50-x-16-70285a90bcd3`. Your name is different. The pod has the
   same name.
 - A run that has two Workspaces at the same time has two rows.
 - `PHASE` is `Pending` until the pod is ready and its node has a fresh cache of each
@@ -108,8 +106,8 @@ git -C /work/<Repo Slot>/default worktree list
 For the slot `target` of a run of `task`, the output is:
 
 ```text
-/work/target/default  9f67321f (detached HEAD)
-/work/target/task     9f67321f [jr2/task-48ebf9ad-1e5d-4997-a330-d91ec762f83c]
+/work/target/default  7f258f6 (detached HEAD)
+/work/target/task     7f258f6 [jr2/task-c42ce414-8ba7-4c19-b9ad-ba7622023d8b]
 ```
 
 The first line is the clone, on the base of the Repo Slot. Here the base is a tag, so the clone is detached. On a
@@ -190,11 +188,9 @@ A Sandbox that a cancel with `--keep` or a fault left stays until the operator d
 jr2 workspace rm <workspace>
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-removed Workspace 7a0e8b50/x:0 (ws-7a0e8b50-x-0-b35f14dc370a)
+removed Workspace 4fed0b50/x:16 (ws-4fed0b50-x-16-70285a90bcd3)
 ```
 
 `jr2 workspace rm` removes only a Sandbox that `jr2 workspace ls` shows as `released` or `idle`. To remove the Sandbox
