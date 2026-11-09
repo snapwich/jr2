@@ -523,9 +523,9 @@ function configEnv(pins: ReadonlyArray<readonly [string, string]>): NodeJS.Proce
  * missing. A commit with no LFS file makes no ask. When the Effect's timeout left no time for the
  * ask (`budgetMs` of zero or less), jr2-lfs sends none, and the refusal names each file that no
  * store holds. jr2-lfs runs no program of the clone's config. It gets the cut's pins by env
- * (`LARGE_FILES_PINS`), and pins the same itself: `safe.directory`, because the cleared environment
- * reads no global config, and no commit-graph, no multi-pack-index and no attributes file of the
- * cut's HOME, which the Agents write (ADR-0075).
+ * (`LARGE_FILES_PINS`): `safe.directory`, because the cleared environment reads no global config,
+ * and no commit-graph, no multi-pack-index and no attributes file of the cut's HOME, which the
+ * Agents write. jr2-lfs pins the last three itself too (ADR-0075).
  */
 async function askLargeFiles(
   paths: CutPaths,

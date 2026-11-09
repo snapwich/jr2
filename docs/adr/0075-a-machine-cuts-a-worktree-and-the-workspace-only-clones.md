@@ -360,13 +360,15 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
   The cut and the sync read no commit-graph and no multi-pack-index (`core.commitGraph=false`,
   `core.multiPackIndex=false`): an Agent can write either one with no object rewritten, and git 2.56 then checks out
   another tree for a commit. The git that `jr2-lfs fetch` starts in the cut reads neither one, and no attributes file of
-  the cut's `HOME`, so the large files that the cut asks for are those of the commit's own tree. The cut also trusts the
-  clone's LFS store and the clone's `objects/info/alternates`. git-lfs checks an object in the store by its size only,
-  so an Agent that puts other bytes of the same size there changes the large file that a cut writes. An alternate that
-  an Agent adds gives the cut's git folder more objects to read. Inside the Sandbox the Agents have free rein
-  (ADR-0028), so jr2 accepts these. What leaves the Sandbox is checked where it lands: a cut at a Handoff takes only the
-  handed-off commit's closure into the clone, checks each of its objects with fsck, and lands only a large file that a
-  pointer of the range names and whose sha256 is its oid (ADR-0080).
+  the cut's `HOME`. It runs in the clone, so it reads the clone's `info/attributes`: an Agent that writes a rule there
+  changes which large files the cut asks for. The cut's checkout asks for none, so a large file of the commit that the
+  fetch did not ask for makes the cut refused. The cut also trusts the clone's `info/attributes`, the clone's LFS store
+  and the clone's `objects/info/alternates`. git-lfs checks an object in the store by its size only, so an Agent that
+  puts other bytes of the same size there changes the large file that a cut writes. An alternate that an Agent adds
+  gives the cut's git folder more objects to read. Inside the Sandbox the Agents have free rein (ADR-0028), so jr2
+  accepts these. What leaves the Sandbox is checked where it lands: a cut at a Handoff takes only the handed-off
+  commit's closure into the clone, checks each of its objects with fsck, and lands only a large file that a pointer of
+  the range names and whose sha256 is its oid (ADR-0080).
 - Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a
   Pool in one clone. They share the one Harness and `/work`. Only the Harness process holds the control credential, and
   each process it starts in `/work` runs confined, so no Agent's code can act as another Agent

@@ -62,8 +62,10 @@ const NoAskReason = "no store of the cut holds it; the cut asked the node cache 
 // nothing and answers each download with NoAskReason. The cut's git folder
 // has no origin, so it has no identity to ask with, and it is in TMPDIR,
 // where a copy cannot move into the clone's store on /work. git-lfs reads
-// what the cut's `fetch` landed through the git folder's alternates, so a
-// download comes only for an object that went after that `fetch`.
+// what the cut's `fetch` landed through the git folder's alternates. A
+// download comes for an object that went after that `fetch`, or that the
+// `fetch` did not ask for because a rule in the clone's info/attributes
+// hid its file; the cut is then refused (ADR-0075).
 func runTransfer(o Options, noAsk bool) int {
 	in := bufio.NewReader(o.Stdin)
 	out := json.NewEncoder(o.Stdout)
@@ -92,7 +94,7 @@ func runTransfer(o Options, noAsk bool) int {
 			case "download":
 				answer := completeEvent{Event: eventComplete, OID: ev.OID,
 					Error: &transferError{Code: errorCode, Message: fmt.Sprintf(
-						"jr2: cannot get the large file %s (%d bytes): %s", ev.OID, ev.Size, NoAskReason)}}
+						"jr2: object %s (%d bytes): %s", ev.OID, ev.Size, NoAskReason)}}
 				if !noAsk {
 					answer = download(agent, ev)
 				}
