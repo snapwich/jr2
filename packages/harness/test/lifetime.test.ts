@@ -432,28 +432,73 @@ test("the served Harness keeps node's request timeout, and spares only the body 
   await served.stop();
 });
 
-test("spareLands: a request past node's time gets 408, but the body of PUT /handoffs/<id> may come later", async (t) => {
-  const server = createHttpServer({ requestTimeout: 300, connectionsCheckingInterval: 50 }, (req, res) => {
-    req.resume();
-    req.on("end", () => res.end("whole"));
-  });
-  spareLands(server);
+/** A server whose requests past 300 ms are past node's time, with `spareLands` or as node is. */
+async function sparedServer(t: import("node:test").TestContext, spare: boolean): Promise<number> {
+  const server = createHttpServer(
+    { requestTimeout: 400, headersTimeout: 300, connectionsCheckingInterval: 50, maxHeaderSize: 1024 },
+    (req, res) => {
+      req.resume();
+      req.on("end", () => res.end("whole"));
+    },
+  );
+  if (spare) spareLands(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => (server.closeAllConnections(), server.close()));
-  const port = (server.address() as AddressInfo).port;
-  const ask = async (head: string): Promise<string> => {
-    const socket = connect(port, "127.0.0.1");
-    let got = "";
-    socket.on("data", (c) => (got += c.toString("utf8")));
-    const closed = new Promise<void>((r) => socket.on("close", () => r()));
-    socket.write(`${head} HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabcde`);
-    await new Promise((r) => setTimeout(r, 800));
-    if (!socket.destroyed) socket.end("fghij");
-    await closed;
-    return got;
+  return (server.address() as AddressInfo).port;
+}
+
+/** Write `parts` on one socket (a number is a wait in ms), and read what comes back until it closes. */
+async function exchange(port: number, parts: Array<string | number>): Promise<string> {
+  const socket = connect(port, "127.0.0.1");
+  let got = "";
+  socket.on("data", (c) => (got += c.toString("latin1")));
+  socket.on("error", () => {});
+  const closed = new Promise<void>((r) => socket.on("close", () => r()));
+  for (const p of parts) {
+    if (typeof p === "number") await new Promise((r) => setTimeout(r, p));
+    else if (!socket.destroyed) socket.write(p);
+  }
+  await Promise.race([closed, new Promise((r) => setTimeout(r, 1500))]);
+  socket.destroy();
+  return got.replace(/Date: [^\r]*\r\n/g, "");
+}
+
+test("spareLands spares only the body of PUT /handoffs/<id>, and answers every other fault as node does, byte for byte", async (t) => {
+  const node = await sparedServer(t, false);
+  const spared = await sparedServer(t, true);
+  const late = (head: string): Array<string | number> => [
+    `${head} HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc`,
+    900,
+    "defghij",
+  ];
+  const cases: Record<string, Array<string | number>> = {
+    "a malformed request line": ["GARBAGE\r\n\r\n"],
+    "headers past their size": [`GET / HTTP/1.1\r\nHost: x\r\nX: ${"a".repeat(4000)}\r\n\r\n`],
+    "headers past their time": ["GET / HTTP/1.1\r\nHost: x\r\n", 900],
+    "a POST body past its time": late("POST /exec/one"),
+    "a chunk extension past its size": [
+      `POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n1;${"e=".padEnd(20000, "a")}\r\na\r\n0\r\n\r\n`,
+    ],
+    // The mark goes when the PUT's answer is done: a later request of a kept-alive socket has the time.
+    "a POST past its time after a PUT /handoffs on one socket": [
+      "PUT /handoffs/one HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nab",
+      100,
+      ...late("POST /exec/one"),
+    ],
+    // Hono routes `/handoffs/../exec/one` as `/exec/one`.
+    "a PUT whose path leaves /handoffs/": late("PUT /handoffs/../exec/one"),
+    "a PUT whose id is not one": late("PUT /handoffs/%2e%2e"),
+    "a bad request after a good one": ["GET / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nBad Header\r\n\r\n"],
   };
-  assert.match(await ask("POST /exec/one"), /^HTTP\/1\.1 408 /);
-  assert.match(await ask("PUT /handoffs/one"), /^HTTP\/1\.1 200 [\s\S]*whole$/);
+  for (const [what, parts] of Object.entries(cases)) {
+    const [plain, got] = await Promise.all([exchange(node, parts), exchange(spared, parts)]);
+    assert.match(plain, /HTTP\/1\.1 4\d\d /, `${what}: node refuses it`);
+    assert.equal(got, plain, what);
+  }
+  for (const head of ["PUT /handoffs/one", "PUT /handoffs/0b7c5e1a-4d2f?x=1"]) {
+    assert.match(await exchange(node, late(head)), /^HTTP\/1\.1 408 /, `${head}: node ends it`);
+    assert.match(await exchange(spared, late(head)), /^HTTP\/1\.1 200 [\s\S]*whole$/, `${head}: spared`);
+  }
 });
 
 test("SIGTERM's stop: drains, closes the port, exits 0", async () => {

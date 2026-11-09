@@ -1,10 +1,11 @@
 // The Harness on its port: the listen, what a listen that fails says, and the shutdown a signal
 // runs. `main.ts` calls it once; tests call it with their own `say` and `exit`.
 
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { STATUS_CODES, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { serve, type ServerType } from "@hono/node-server";
 import type { HarnessServer } from "./app.ts";
+import { LAND_ID } from "./handoff-land-main.ts";
 
 export type Served = {
   server: ServerType;
@@ -49,23 +50,31 @@ export function listenFault(err: unknown, port: number): string | undefined {
 export function spareLands(server: Server): void {
   const landing = new WeakSet<Socket>();
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
-    if (req.method !== "PUT" || !req.url?.startsWith("/handoffs/")) return;
+    if (req.method !== "PUT" || !LAND_URL.test(req.url ?? "")) return;
     landing.add(req.socket);
     res.once("close", () => landing.delete(req.socket));
   });
   server.on("clientError", (err: NodeJS.ErrnoException, socket: Socket) => {
     if (err.code === "ERR_HTTP_REQUEST_TIMEOUT" && landing.has(socket)) return;
-    const answer =
+    // What node writes with no listener (`socketOnError`, node 24).
+    const status =
       err.code === "ERR_HTTP_REQUEST_TIMEOUT"
-        ? "408 Request Timeout"
+        ? 408
         : err.code === "HPE_HEADER_OVERFLOW"
-          ? "431 Request Header Fields Too Large"
-          : "400 Bad Request";
-    const sent = (socket as Socket & { _httpMessage?: { headersSent?: boolean } })._httpMessage?.headersSent;
-    if (socket.writable && !sent) socket.write(`HTTP/1.1 ${answer}\r\nConnection: close\r\n\r\n`);
+          ? 431
+          : err.code === "HPE_CHUNK_EXTENSIONS_OVERFLOW"
+            ? 413
+            : 400;
+    const sent = (socket as Socket & { _httpMessage?: { _headerSent?: boolean } })._httpMessage?._headerSent;
+    if (socket.writable && !sent)
+      socket.write(`HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\nConnection: close\r\n\r\n`);
     socket.destroy(err);
   });
 }
+
+/** The raw url of `PUT /handoffs/<id>`, with an id of the form that `LAND_ID` takes. It holds no
+ * `.` and no `%`, so the path that Hono routes on is this one: `/handoffs/../agents` is not spared. */
+const LAND_URL = new RegExp(`^/handoffs/${LAND_ID.source.slice(1, -1)}(?:\\?|$)`);
 
 export function serveHarness(harness: HarnessServer, opts: ServeOptions): Served {
   const say = opts.say ?? ((line: string) => console.error(line));
