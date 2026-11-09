@@ -10,7 +10,9 @@
 //           reading      a cut of the same path: its `ready` output is the Handoff
 //           final        a NEW nested Workspace for each round, with the Handoff and the notes of
 //                        the earlier rounds. `revise` goes back to coding; `pass` goes on
-//           publishing   mode "parent": `push({ pin: true })` of the Handoff's head
+//           lateCommit   mode "parent": the coder commits once more, after the review
+//           publishing   mode "parent": `push({ pin: true })` of the Handoff's head, not of the
+//                        coder's later commit
 //   mode "child": the nested Workspace pushes its own Worktree when its reviewer passes it.
 //   mode "forged": after the first read, the coder commits again and names that commit in its
 //   pick. The parent then gives a nested Workspace a Handoff with that head (a commit that no cut
@@ -158,7 +160,7 @@ type Output = { rounds: Round[]; pushed?: PushOutput };
 type Context = BodyInput & {
   prompt: string;
   handoff?: Handoff;
-  /** The head that the coder's pick named, in mode "forged". */
+  /** The head that the coder's last pick named: a forged head in mode "forged". */
   named?: string;
   earlier: string[];
   rounds: Round[];
@@ -238,7 +240,7 @@ const body = jr2Setup({
         onDone: [
           {
             guard: ({ event, context }) => event.output.verdict === "pass" && context.mode === "parent",
-            target: "publishing",
+            target: "lateCommit",
             actions: assign({
               rounds: ({ context, event }) => [...context.rounds, { handoff: context.handoff!, out: event.output }],
             }),
@@ -262,6 +264,14 @@ const body = jr2Setup({
           },
         ],
       },
+    },
+    // Mode "parent": a commit after the review, which the pin keeps off the remote.
+    lateCommit: {
+      invoke: {
+        src: "coder",
+        input: ({ context }) => ({ prompt: "Commit once more.", cwd: coderTree(context), continue: true }),
+      },
+      on: { finished: { target: "publishing", actions: assign({ named: ({ event }) => event.head }) } },
     },
     publishing: {
       invoke: {

@@ -3,7 +3,7 @@ Feature: The Handoff loop in real pods
 
   A coder and a quick reviewer work in one Workspace. The final review of the coder's commit runs in
   a nested Workspace: a new Sandbox, with a new Agent, which takes the commit as a Handoff at its cut
-  (ADR-0080). The parent Harness bundles the handed-off range in the coder's domain, the
+  (ADR-0080). The parent Harness bundles the handed-off range in the parent Sandbox's domain, the
   Orchestrator carries the bundle and the Git LFS objects that it points to, and the child's cut
   fetches the commit with fsck into its own clone. The run's one Repo is a per-scenario LFS
   repository of the seed over ssh, which both Workspaces bind and the deploy key pushes to
@@ -12,15 +12,15 @@ Feature: The Handoff loop in real pods
 
   Rule: a final review in a nested Workspace takes the coder's commit as a Handoff, and the reviewed commit is published
 
-    Scenario: two rounds of the final review, each in a new nested Workspace, and the parent publishes the reviewed commit
+    Scenario: two rounds of the final review, each in a new nested Workspace, and the parent publishes the reviewed commit, not a later one
       Given the seed's push remote trusts this scenario's keys
       And the kind instance is serving
       And an LFS repository over ssh for the Handoff loop, whose branch the remote has
-      When the coder and the quick reviewer loop, a final reviewer asks for changes, and a new final reviewer passes the new commit
+      When the coder and the quick reviewer loop, a final reviewer asks for changes, a new final reviewer passes the new commit, and the coder commits again
       Then each final reviewer saw ordinary git: the parent's branch, tracking origin's, at the Handoff's commit, with the parent's commits and only origin
       And the coder's large file reached each nested Workspace with its bytes, while no LFS server held it
       And the second round ran in a new Sandbox, at a new Handoff, with the first round's notes
-      And the parent pushed exactly the reviewed commit, and the LFS server holds the large file
+      And the parent pushed exactly the reviewed commit and not the coder's later commit, and the LFS server holds the large file
 
     Scenario: the nested Workspace publishes the commit that it reviewed
       Given the seed's push remote trusts this scenario's keys

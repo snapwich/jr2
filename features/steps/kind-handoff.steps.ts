@@ -8,6 +8,7 @@ import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import { repoIdentity } from "@jr2/orchestrator/internal";
 import { isSettled } from "../lib/run-settled.ts";
 import { startWt, toolResultWith, wsStatus, type WsStatus } from "./kind.steps.ts";
 import { ensureLfsServer, lfsSeedRepo, lfsServerHolds, makeLfsObjects, seedRepoTip, type LfsObject } from "./seed.ts";
@@ -30,6 +31,8 @@ type View = {
   upstream: string;
   head: string;
   remotes: string;
+  fetchUrl: string;
+  pushUrl: string;
   /** How many rounds' marks the clone held before this round's. */
   marks: string;
   refs: string[];
@@ -51,7 +54,7 @@ type HandoffState = {
   heldBeforePush?: boolean;
   /** Each final reviewer's view, by round. */
   views: View[];
-  /** The commit that the coder named in mode "forged". */
+  /** The coder's last commit: in mode "forged" the one that it names, in mode "parent" the one after the review. */
   named?: string;
   settled?: WsStatus;
   out?: Output;
@@ -135,6 +138,8 @@ async function look(world: E2EWorld, round: number): Promise<View> {
         `echo "${p} upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo none)"`,
         `echo "${p} head=$(git rev-parse HEAD)"`,
         `echo "${p} remotes=$(git remote | tr '\\n' ' ')"`,
+        `echo "${p} fetchurl=$(git remote get-url origin)"`,
+        `echo "${p} pushurl=$(git remote get-url --push origin)"`,
         // A mark in the clone: a new Sandbox has a new clone, so no round finds the mark of the last.
         `echo "${p} marks=$(ls "$(git rev-parse --git-common-dir)"/e2e-round-* 2>/dev/null | wc -l)"`,
         `touch "$(git rev-parse --git-common-dir)/e2e-round-${round}"`,
@@ -162,6 +167,8 @@ async function look(world: E2EWorld, round: number): Promise<View> {
     upstream: one("upstream"),
     head: one("head"),
     remotes: one("remotes"),
+    fetchUrl: one("fetchurl"),
+    pushUrl: one("pushurl"),
     marks: one("marks"),
     refs: lines.filter((l) => l.startsWith("ref ")).map((l) => l.slice(4)),
     log: lines.filter((l) => l.startsWith("log ")).map((l) => l.slice(4)),
@@ -197,7 +204,7 @@ async function quickLoop(world: E2EWorld): Promise<void> {
 }
 
 When(
-  "the coder and the quick reviewer loop, a final reviewer asks for changes, and a new final reviewer passes the new commit",
+  "the coder and the quick reviewer loop, a final reviewer asks for changes, a new final reviewer passes the new commit, and the coder commits again",
   { timeout: 2_400_000 },
   async function (this: E2EWorld): Promise<void> {
     const s = stateOf(this);
@@ -211,6 +218,9 @@ When(
     await provider.release("looks_good", {}, { saying: QUICK });
     await look(this, 2);
     await provider.release("pass", {}, { saying: FINAL });
+    // After the review, the coder commits once more: the pin publishes the reviewed commit, not this one.
+    await code(this, "after the review");
+    await provider.release("finished", {}, { saying: CODER });
     await settle(this);
   },
 );
@@ -253,6 +263,13 @@ function assertOrdinary(s: HandoffState, view: View, handoff: Handoff, round: nu
   assert.equal(view.branch, s.branch, `the branch has the parent's name: ${at}`);
   assert.equal(view.head, handoff.head, `the Worktree is at the Handoff's commit: ${at}`);
   assert.equal(view.remotes, "origin", `origin is the only remote: ${at}`);
+  // origin is the real remote: it fetches through the node cache, by the Binding's identity, and pushes to the url.
+  assert.equal(
+    view.fetchUrl,
+    `ext::/opt/jr2/bin/jr2-upload-pack %S ${repoIdentity(s.url).identity}`,
+    `origin fetches through the node cache: ${at}`,
+  );
+  assert.equal(view.pushUrl, s.url, `origin pushes to the remote: ${at}`);
   assert.equal(view.status, "0", `the Worktree is clean: ${at}`);
   const allowed = new RegExp(`^refs/(heads/(main|${s.branch})|remotes/origin/(HEAD|main|${s.branch})|tags/.+)$`);
   const stray = view.refs.filter((r) => !allowed.test(r));
@@ -334,14 +351,19 @@ Then(
 );
 
 Then(
-  "the parent pushed exactly the reviewed commit, and the LFS server holds the large file",
+  "the parent pushed exactly the reviewed commit and not the coder's later commit, and the LFS server holds the large file",
   async function (this: E2EWorld): Promise<void> {
     const s = stateOf(this);
     const reviewed = s.out!.rounds!.at(-1)!.handoff.head;
     const pushed = s.out!.pushed;
+    assert.ok(s.named && s.named !== reviewed, `the coder committed after the review: ${s.named}`);
     assert.equal(pushed?.outcome, "pushed", JSON.stringify(s.out));
     assert.equal(pushed.published, reviewed, "the pin published the reviewed commit");
-    assert.equal(await seedRepoTip(s.name, s.branch), reviewed, "the remote's branch is at the reviewed commit");
+    assert.equal(
+      await seedRepoTip(s.name, s.branch),
+      reviewed,
+      "the remote's branch is at the reviewed commit, not at the coder's later commit",
+    );
     assert.ok(await lfsServerHolds(s.name, s.big!), "the push uploaded the large file");
   },
 );
