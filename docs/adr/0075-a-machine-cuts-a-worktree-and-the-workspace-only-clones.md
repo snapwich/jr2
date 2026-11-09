@@ -153,9 +153,12 @@ send:    { name: "r.md", worktree: "/work/app/fix" } // http with a file body
   the push checks `expect: "new"` again where no Agent writes: the first push of the run to the branch of such a cut
   goes with an empty lease (`--force-with-lease=refs/heads/<branch>:`, and no `+`), and the remote refuses it when it
   holds the branch. The push is then `rejected`, and the remote does not change. A later push of the run to that branch
-  goes as before. The ledger row of the cut keeps the slot, the path and the branch that the Orchestrator sent, and only
-  the head of the answer (ADR-0067). These two rules also hold for a cut at a Handoff, whose `branch` a Chart can give:
-  the cut applies the slot's `expect` to the child's branch
+  goes as before. "The run" includes each of its Workspaces: a push of a nested Workspace, or of the Workspace around
+  it, that published the branch of the same Repo (one identity,
+  [ADR-0051](0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md)) makes the next push a later one,
+  because the remote holds that branch by this run's own push. The ledger row of the cut keeps the slot, the path and
+  the branch that the Orchestrator sent, and only the head of the answer (ADR-0067). These two rules also hold for a cut
+  at a Handoff, whose `branch` a Chart can give: the cut applies the slot's `expect` to the child's branch
   ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)).
 - The door refuses a `cwd` that is a slot's folder.
 - A Chart's payload has no `pattern`, so a Chart cannot state the branch rule, and the cut refuses a bad name. A

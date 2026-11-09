@@ -44,6 +44,7 @@ import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
 import { bindOpenSecretIn, type EffectorPortFactory, type OpenSecretIn } from "./http-effect.ts";
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
 import { open } from "./open.ts";
+import { repoKey } from "./repo-identity.ts";
 import type { AnyWorktreePath, WorktreeOutput, WorktreeReady } from "./worktree.ts";
 import {
   handoffShapeFault,
@@ -616,6 +617,9 @@ export type EffectRow =
       slot: string;
       sandbox?: string;
       repo?: string;
+      /** A push's Repo: its Repo Slot's Binding url (ADR-0051), so that a push of another
+       * Workspace of the run is found by the Repo's identity. */
+      url?: string;
       branch?: string;
       cut?: { path: string; branch: string | null; head?: string; expect?: "new" };
       output: unknown;
@@ -717,6 +721,34 @@ export function lastPushOf(
     if (best === undefined || row.at > best.row.at) best = { rowId, row, output: output as PushedRow };
   }
   return best;
+}
+
+/**
+ * Whether a push of this run published `branch` of this Repo already (ADR-0075): a settled push
+ * row that published, never this Effect's (`self`), of this Workspace's Repo Slot, or of another
+ * Workspace of the run whose Binding url is the same Repo (one identity, ADR-0051). The first push
+ * of the run to the branch of a cut with `expect: "new"` asks for a branch that the remote does
+ * not hold; a later one does not, also when a nested Workspace or the Workspace around it made
+ * the first.
+ */
+export function publishedInRun(
+  rows: Readonly<Record<string, EffectRow>>,
+  push: { sandbox: string; repo: string; url: string | undefined; branch: string },
+  self?: string,
+): boolean {
+  const sameRepo = (url: string | undefined): boolean => {
+    if (url === undefined || push.url === undefined) return false;
+    try {
+      return repoKey(url) === repoKey(push.url);
+    } catch {
+      return false;
+    }
+  };
+  return Object.entries(rows).some(([rowId, row]) => {
+    if (rowId === self || row.state !== "settled" || row.kind !== "push" || row.branch !== push.branch) return false;
+    if ((row.output as { outcome?: unknown } | undefined)?.outcome !== "pushed") return false;
+    return (row.sandbox === push.sandbox && row.repo === push.repo) || sameRepo(row.url);
+  });
 }
 
 /** Every pair the ledger holds for a (slot, branch) of a Workspace (ADR-0067): each settled push row

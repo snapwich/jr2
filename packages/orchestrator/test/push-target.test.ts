@@ -15,6 +15,7 @@ import { FakeHarnessExec, fakeWorkspace, handles } from "./_effects.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
 import { createEffectorClient } from "../src/effector-wire.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
+import type { AmbientHandles } from "../src/ambient.ts";
 import { mkStore, waitFor } from "./_fixtures.ts";
 
 const SHA = "b".repeat(40);
@@ -126,6 +127,68 @@ test('the first push of a cut with `expect: "new"` asks the Effector for a branc
   await run(plain, ready("/work/app/run", "fix/one"));
   await waitFor(() => plain.effector.starts.length === 1);
   assert.equal((plain.effector.starts[0]!.req as { push: { fresh?: boolean } }).push.fresh, undefined);
+});
+
+/** A cut with `expect: "new"` of `fix/one`, then a push of it, in a Workspace with `h`. */
+function cutAndPush(harness: FakeHarnessExec, effector: FakeEffector, h: AmbientHandles, path: string, then?: unknown) {
+  const slot = Object.keys(h.repos)[0]!;
+  return jr2Setup({
+    types: {} as { context: Record<string, never> },
+    actors: {
+      ws: fakeWorkspace(h),
+      cut: worktreeWith(harness.factory, { expect: "new" }),
+      push: pushWith(port(effector), { slot }),
+      then: (then ?? fakeWorkspace(h)) as never,
+    },
+  }).createMachine({
+    id: h.sandbox,
+    context: {},
+    invoke: { src: "ws" },
+    initial: then ? "first" : "cutting",
+    states: {
+      first: { invoke: { src: "then", input: undefined, onDone: "cutting" } },
+      cutting: { invoke: { src: "cut", input: { path, branch: "fix/one" } as never, onDone: "pushing" } },
+      pushing: { invoke: { src: "push", input: { worktree: path } as never, onDone: "done" } },
+      done: { type: "final" },
+    },
+  });
+}
+
+test('the empty lease of `expect: "new"` goes on the first push of the RUN: a nested Workspace\'s push of the branch of the same Repo makes the push around it a later one', async () => {
+  // The nested Workspace names the Repo another way, in a slot of another name: one identity.
+  const nested = (url: string) => ({
+    endpoint: "http://ws-child.invalid",
+    sandbox: "ws-child",
+    repos: { src: "/work/src" },
+    bindings: { src: url },
+  });
+  for (const [url, fresh] of [
+    ["git@example.test:app.git", undefined],
+    ["https://example.test/other.git", true],
+  ] as const) {
+    const harness = new FakeHarnessExec();
+    const effector = new FakeEffector();
+    const child = cutAndPush(harness, effector, nested(url), "/work/src/final");
+    const machine = cutAndPush(harness, effector, ambient, "/work/app/run", child) as unknown as AnyStateMachine;
+    const host = new RunHost({ store: await mkStore(), ...target });
+    hosts.push(host);
+    host.register({ name: "fx", machine, provide: () => ({}) });
+    const { runId } = await host.start("fx");
+    await waitFor(() => harness.starts.length === 1);
+    harness.settle(exited(ready("/work/src/final", "fix/one", "src")));
+    await waitFor(() => effector.starts.length === 1);
+    const first = effector.starts[0]!.req as { push: { fresh?: boolean } };
+    assert.equal(first.push.fresh, true, "the run's first push of the branch");
+    effector.settle(pushed());
+    await waitFor(() => harness.starts.length === 2);
+    harness.settle(exited(ready("/work/app/run", "fix/one")));
+    await waitFor(() => effector.starts.length === 2);
+    const second = effector.starts[1]!.req as { push: { fresh?: boolean } };
+    assert.equal(second.push.fresh, fresh, url);
+    effector.settle(pushed());
+    // The root reached its final state: the run ended.
+    await waitFor(() => host.status(runId) === undefined);
+  }
 });
 
 const rejected = async (cutInput: unknown, answer: unknown, input: unknown, options = { slot: "app" }) => {

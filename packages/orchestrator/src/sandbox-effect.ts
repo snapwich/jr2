@@ -53,7 +53,15 @@ import type {
   PushParts,
   Unknown,
 } from "./effect.ts";
-import { cutRowOf, lastPushOf, needsASlot, pushPairsOf, worktreePathFault, type LaterOutcome } from "./effect.ts";
+import {
+  cutRowOf,
+  lastPushOf,
+  needsASlot,
+  publishedInRun,
+  pushPairsOf,
+  worktreePathFault,
+  type LaterOutcome,
+} from "./effect.ts";
 import {
   createEffectorClient,
   EffectorForged,
@@ -530,8 +538,8 @@ type KindSpec = {
   rowFields?: (ctx: KindContext) => { branch?: string; worktree?: string; repo?: string };
 };
 
-/** `fresh`: the push's cut had `expect: "new"`, and no push of this run published its branch yet,
- * so the remote must not hold the branch (ADR-0075). */
+/** `fresh`: the push's cut had `expect: "new"`, and no push of this run, in any of its Workspaces,
+ * published its branch of this Repo yet, so the remote must not hold the branch (ADR-0075). */
 type StartExtra = { pairs?: readonly Pair[]; fresh?: true };
 
 /** An Effect's run: its abort, and — for a credentialed command, once its Effector is known — the
@@ -959,7 +967,8 @@ export function pushWith<const O extends PushOptions>(
     rowFields: (ctx) => {
       const found = cutTargetOf(worktreeOf(ctx.input), ctx, { repo: repoOf(ctx.ambient, ctx.slot) });
       if ("fault" in found || found.target.branch === null) return {};
-      return { branch: found.target.branch };
+      const url = ctx.ambient.bindings?.[found.target.repo];
+      return { branch: found.target.branch, ...(url !== undefined ? { url } : {}) };
     },
     build: (input, ambient, slot, pinned, extra, binding) => {
       const target = targetOf({ ambient, binding, input, slot });
@@ -982,9 +991,15 @@ export function pushWith<const O extends PushOptions>(
       const target = targetOf(ctx);
       const last = lastPushOf(rows, ctx.ambient.sandbox, repo, target.branch, ctx.id);
       // The cut's `expect: "new"` was checked in the Agents' domain, which can write the cut's
-      // answer. So the first push of that branch checks it again where no Agent writes: the
-      // Effector's push refuses a branch that the remote holds (ADR-0075).
-      if (last === undefined) return target.expect === "new" ? { fresh: true } : {};
+      // answer. So the first push of that branch in the run checks it again where no Agent writes:
+      // the Effector's push refuses a branch that the remote holds (ADR-0075). A push of another
+      // Workspace of the run (a nested one, or the one around it) that published the branch of this
+      // Repo makes this push a later one.
+      if (last === undefined) {
+        if (target.expect !== "new") return {};
+        const push = { sandbox: ctx.ambient.sandbox, repo, url: ctx.ambient.bindings?.[repo], branch: target.branch };
+        return publishedInRun(rows, push, ctx.id) ? {} : { fresh: true };
+      }
       const { row, rowId, output } = last;
       if (output.sync === "busy" || output.sync === "not-synced") {
         const answer = await syncOf(ctx).sync(
