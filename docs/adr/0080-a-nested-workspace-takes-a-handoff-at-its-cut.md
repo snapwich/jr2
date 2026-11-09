@@ -178,8 +178,14 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   part are counted against its header, and a part has at most 16 `data` frames and one more for each KiB of its size. It
   writes each frame of the child's body itself, from the values that passed these checks, so the child gets only the
   parts and their end. A body that ends before its end frame is a carry that the Orchestrator ended, and the child keeps
-  nothing of it. The child answers `{ landed: true }` when it holds the files. A second body for one Effect id replaces
-  the files of the first.
+  nothing of it: the land process removes `<id>.part` when it finds the fault itself, and when the child's Harness kills
+  it (the body broke), the Harness waits for its exit and then removes `<id>.part` and `<id>` in the domain. The child
+  answers `{ landed: true }` when it holds the files. A second body for one Effect id replaces the files of the first.
+  The lands of one id run one at a time, so that a removal never hits the files of a newer body, and a newer body stops
+  the land before it: the Orchestrator sends it only after it gave up the first. A carry that ends `refused` or
+  `unknown` can end after the child renamed the files into place, so the Orchestrator then sends a kill of the cut's
+  Effect id to the child's Harness, best effort. The kill settles that id in the child, which removes its landed files
+  as for every exec that settles.
 
   The Orchestrator asks the Harness of the source Workspace where it runs now, and only while that Workspace still
   encloses the child: a Workspace that no longer runs gives no Handoff, and the cut is then `unknown`.

@@ -1411,6 +1411,10 @@ async function drive<I, O>(
     }
     if (signal.aborted) return false;
     if (carried.outcome === "refused" || carried.outcome === "unknown") {
+      // The child may hold files of this carry: it can end after the child renamed them into place
+      // and before its answer came. A kill of this id settles the id in the child's Harness, which
+      // then removes them (ADR-0080), and keeps a start of the id from running. Best effort.
+      void killUntilKept(port, id, parts.timeoutMs).catch(() => {});
       settled({ outcome: carried.outcome, reason: carried.reason });
       return false;
     }

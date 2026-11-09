@@ -17,7 +17,8 @@
 //      the whole body.
 //   4. At `end` and the end of its stdin, it renames `<id>.part` to `<id>`, and only then writes
 //      `{"landed":true}`. A body that ends before `end` keeps nothing: the Orchestrator ended the
-//      carry.
+//      carry. This process removes `<id>.part` when it finds the fault; when the Harness kills it
+//      (the body broke), the Harness removes `<id>.part` after its exit (`handoff-land.ts`).
 //
 // The folder is on the Sandbox's `/work` volume, so a restart of the Harness container keeps it, and
 // the cut's start that the Orchestrator sends again after the restart finds the files.

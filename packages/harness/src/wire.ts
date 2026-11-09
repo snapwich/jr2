@@ -454,7 +454,8 @@ export type HandoffFrame =
  * `POST /handoff` answer, with only the parts and their end: `{ bundle }`, then `{ lfs, size }` for
  * each Git LFS object, each part's bytes in `{ data }` frames, then `{ end: true }`. The
  * Orchestrator writes each frame itself, from a source stream that it checked. A body that ends
- * before `end` is a carry that the Orchestrator ended: the child keeps nothing of it. A second body
+ * before `end` is a carry that the Orchestrator ended: the child keeps nothing of it, because the
+ * Harness removes what the land process wrote when that process has exited. A second body
  * for one id replaces the files of the first, because the Orchestrator carries the files again
  * before each send of the cut's start.
  */

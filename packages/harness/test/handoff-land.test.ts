@@ -196,19 +196,60 @@ test("the Harness sends only a window ahead of what the land process took, and a
     "fault" in answer && /the body broke: the Orchestrator ended the carry/.test(answer.fault),
     JSON.stringify(answer),
   );
+});
 
-  // A real land process whose body breaks in a part: no folder is kept.
-  let parts = 0;
-  const broken = new ReadableStream<Uint8Array>({
-    pull(c) {
-      if (parts++ === 0) return c.enqueue(new Uint8Array(body({ bundle: 10 }, '{"data":10}\nabc')));
-      c.error(new Error("the socket closed"));
+/** A body whose first chunk is `head`, and which then waits: `fail` breaks it, `more` sends more. */
+function held(head: Buffer) {
+  let ctl!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      ctl = c;
+      c.enqueue(new Uint8Array(head));
     },
   });
-  const other = await landHandoff(w.children, "other-id", broken, { workRoot: w.work });
-  assert.ok("fault" in other && /the body broke/.test(other.fault));
-  await new Promise((r) => setTimeout(r, 200));
-  assert.deepEqual(w.left(), [ID], "only the first landing; no part of the broken one");
+  return { stream, fail: (e: Error) => ctl.error(e), more: (b: Buffer) => ctl.enqueue(new Uint8Array(b)) };
+}
+
+/** Wait until `ok` is true, or fail after about 10 s. */
+async function until(ok: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(ok(), what);
+}
+
+test("a real land process whose body breaks after it wrote a part: the Harness removes the part folder in the domain", async (t) => {
+  const w = world(t);
+  // An earlier body for the id landed: the broken body of the same id keeps nothing of either.
+  await w.land(body({ bundle: 3 }, Buffer.from("one"), { end: true }));
+  const part = `${w.folder}.part`;
+  const b = held(body({ bundle: 10 }, '{"data":10}\nabcde'));
+  const landing = w.land(b.stream);
+  // The land process took the first chunk: it made `<id>.part` and wrote into it.
+  await until(
+    () => existsSync(join(part, "bundle")) && readFileSync(join(part, "bundle"), "utf8") === "abcde",
+    "the part is written",
+  );
+  b.fail(new Error("the socket closed"));
+  const answer = await landing;
+  assert.ok("fault" in answer && /the body broke: the socket closed/.test(answer.fault), JSON.stringify(answer));
+  assert.deepEqual(w.left(), [], "no part folder, and no landed folder, is kept");
+});
+
+test("the lands of one id run one at a time: a newer body stops the land before it, which removes its part first", async (t) => {
+  const w = world(t);
+  const part = `${w.folder}.part`;
+  const first = held(body({ bundle: 10 }, '{"data":10}\nabcde'));
+  const one = w.land(first.stream);
+  await until(() => existsSync(join(part, "bundle")), "the first body's part is written");
+  // The Orchestrator gave up the first body, which no longer comes, and carries again; it gives up
+  // that body too before its land starts, and carries a third time.
+  const waiting = w.land(held(body({ bundle: 3 })).stream);
+  const two = w.land(body({ bundle: 3 }, Buffer.from("two"), { end: true }));
+  for (const ended of [await one, await waiting]) {
+    assert.ok("fault" in ended && /a newer body for the same id came/.test(ended.fault), JSON.stringify(ended));
+  }
+  assert.deepEqual(await two, { landed: true });
+  assert.equal(readFileSync(join(w.folder, "bundle"), "utf8"), "two", "the removal of the first missed the second");
+  assert.deepEqual(w.left(), [ID]);
 });
 
 test("a land process that does not run, or says something out of its form, is a fault", async (t) => {

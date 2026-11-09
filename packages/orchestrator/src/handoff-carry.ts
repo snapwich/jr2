@@ -23,7 +23,9 @@
 //   - `refused` from the source (the commit or a prerequisite is gone, the step's deadline, a file
 //     that is not regular, the source's bound), or a stream past the bound here: `refused`. A cut
 //     again would meet the same files. The child's leg is ended before its `end`, so the child
-//     keeps nothing.
+//     keeps nothing: its Harness removes what the land wrote. A carry that ends `refused` or
+//     `unknown` after the child renamed the files into place leaves them, so the cut's Effect
+//     then kills its id in the child, whose Harness removes them (`effect.ts`).
 //   - `unknown` from the source, no answer, an HTTP error, a stream that ends before its last frame,
 //     breaks or is out of its form, a stall, a carry past its time (`HANDOFF_CARRY_MS`), or a child
 //     that does not take the files: `unknown`. The Machine can cut again.

@@ -368,7 +368,8 @@ export type HandoffFrame =
   | { unknown: string };
 
 /** One frame of a `PUT /handoffs/<id>` body: the parts and their end, which the Orchestrator writes
- * from a source stream that it checked. A body that ends before `end` holds nothing. */
+ * from a source stream that it checked. A body that ends before `end` is a carry that the
+ * Orchestrator ended: the child keeps nothing of it (ADR-0080). */
 export type HandoffLandFrame = Extract<
   HandoffFrame,
   { bundle: number } | { lfs: string } | { data: number } | { end: true }

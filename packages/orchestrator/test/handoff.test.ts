@@ -500,7 +500,7 @@ test("a Handoff of the child's own cut is refused", async () => {
   await host.stop(runId);
 });
 
-test("the carrier's seam: `refused` and `unknown` settle the cut with no exec; `nothing` and `carried` start it", async () => {
+test("the carrier's seam: `refused` and `unknown` settle the cut with no exec, and kill its id in the child; `nothing` and `carried` start it", async () => {
   for (const answer of [
     { outcome: "refused", reason: "the source answered that the commit is not there" },
     { outcome: "unknown", reason: "the source Harness did not answer" },
@@ -513,6 +513,9 @@ test("the carrier's seam: `refused` and `unknown` settle the cut with no exec; `
     assert.equal(calls.length, 1);
     assert.equal(calls[0]!.source.head, H);
     assert.deepEqual(calls[0]!.target, { endpoint: "http://ws-child.invalid", sandbox: "ws-child" });
+    // The carry can end after the child renamed the files into place: a kill of the id settles it
+    // there, and the child's Harness removes them.
+    await waitFor(() => r.exec.kills.includes(calls[0]!.effect));
     // The intent row was written before the carrier ran: the source is on it.
     await r.host.stop(r.runId);
   }
@@ -521,6 +524,7 @@ test("the carrier's seam: `refused` and `unknown` settle the cut with no exec; `
     const r = await rig({}, { carrier: async (args) => ((effect = args.effect), { outcome }) });
     await waitFor(() => r.exec.starts.length === 2);
     assert.equal(r.exec.starts[1]!.id, effect, "the files are carried under the cut's Effect id");
+    assert.deepEqual(r.exec.kills, [], "a carry that ends well kills nothing");
     await r.host.stop(r.runId);
   }
 });
@@ -763,14 +767,22 @@ test("worktree() carries with the real carrier: its source leg dials the parent'
   const r = await rig({}, { childCut: worktree() });
   t.after(() => r.host.stop(r.runId));
   await waitFor(() => dialed.length > 0 || execs.length > 0);
-  assert.deepEqual(execs, [], "the cut did not start on the child's Harness");
+  // Only the kill of the failed carry's id goes to the child's Harness, never the cut's start.
+  assert.deepEqual(
+    execs.filter((url) => !url.endsWith("/kill")),
+    [],
+    "the cut did not start on the child's Harness",
+  );
   await waitFor(() => r.host.status(r.runId)?.value === "done");
   assert.deepEqual(r.out(), {
     outcome: "refused",
     reason: `the Handoff of /work/app/coder at ${H}: the parent's clone does not hold the commit ${H}`,
   });
   assert.deepEqual(dialed, ["POST /handoff"]);
-  assert.deepEqual(execs, []);
+  assert.ok(
+    execs.every((url) => /\/exec\/[^/]+\/kill$/.test(url)),
+    "the child's Harness is asked only to kill the id",
+  );
 });
 
 // --- Through the real actor chain: more than one level, and siblings ------------------------------

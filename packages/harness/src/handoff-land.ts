@@ -46,9 +46,66 @@ export function landIdFault(id: string): string | undefined {
 }
 
 /**
+ * The lands of each Harness, by Effect id. A land of an id waits until the last land of that id
+ * has ended and removed what it left, so that removal never hits the files of a newer body. A newer
+ * body stops the land before it: the Orchestrator sends a second body for one id only after it gave
+ * up the first, and a first body that no longer comes would hold the second until its time.
+ */
+type Lane = { done: Promise<void>; stopped?: string; onStop?: (why: string) => void };
+const lanes = new WeakMap<ChildPolicy, Map<string, Lane>>();
+
+async function inLane<T>(children: ChildPolicy, id: string, run: (lane: Lane) => Promise<T>): Promise<T> {
+  let byId = lanes.get(children);
+  if (byId === undefined) lanes.set(children, (byId = new Map()));
+  const before = byId.get(id);
+  if (before !== undefined) {
+    before.stopped ??= "a newer body for the same id came";
+    before.onStop?.(before.stopped);
+  }
+  let release!: () => void;
+  const lane: Lane = { done: new Promise<void>((r) => (release = r)) };
+  byId.set(id, lane);
+  try {
+    await before?.done;
+    return await run(lane);
+  } finally {
+    lane.onStop = undefined;
+    release();
+    if (byId.get(id) === lane) byId.delete(id);
+  }
+}
+
+/** Remove the landed folder of `id` and its part folder, in the domain: `rm` through the spawner,
+ * with a cleared env. Best effort, and nothing runs when neither is there. */
+async function removeLanded(children: ChildPolicy, id: string, workRoot: string): Promise<void> {
+  const folder = landedFolder(workRoot, id);
+  const there = async (path: string) =>
+    children.spawner.stat(path).then(
+      () => true,
+      () => false,
+    );
+  const paths = [];
+  for (const path of [folder, `${folder}.part`]) if (await there(path)) paths.push(path);
+  if (paths.length === 0) return;
+  try {
+    const proc = children.spawner.spawn({
+      argv: ["rm", "-rf", "--", ...paths],
+      env: { PATH: "/usr/bin:/bin", HOME: HARNESS_HOME },
+      cwd: "/",
+    });
+    await proc.exited;
+  } catch {
+    // The spawner is gone: the files go with the Sandbox.
+  }
+}
+
+/**
  * Land `body` for the cut whose Effect id is `id`. It resolves `landed` when the land process
- * renamed the folder into place and said so, and else names the fault. A body that errors (the
- * Orchestrator ended the carry) kills the land process's group, and nothing is kept.
+ * renamed the folder into place and said so, and else names the fault. A land that ends without
+ * `landed` keeps nothing: a body that errors (the Orchestrator ended the carry) kills the land
+ * process's group, and when that process has exited, the Harness removes `<id>.part` and `<id>` in
+ * the domain. The land process removes its part folder only when it sees the fault itself, and a
+ * killed one does not. The lands of one id run one at a time.
  */
 export async function landHandoff(
   children: ChildPolicy,
@@ -59,9 +116,29 @@ export async function landHandoff(
   const bad = landIdFault(id);
   if (bad !== undefined) return { fault: bad };
   if (body === null) return { fault: "the body is empty" };
+  const workRoot = opts.workRoot ?? "/work";
+  return inLane(children, id, async (lane) => {
+    if (lane.stopped !== undefined) {
+      await body.cancel().catch(() => {});
+      return { fault: lane.stopped };
+    }
+    const landing = await landOnce(children, id, body, workRoot, lane, opts);
+    if (!("landed" in landing)) await removeLanded(children, id, workRoot);
+    return landing;
+  });
+}
+
+async function landOnce(
+  children: ChildPolicy,
+  id: string,
+  body: ReadableStream<Uint8Array>,
+  workRoot: string,
+  lane: Lane,
+  opts: LandOptions,
+): Promise<Landing> {
   const window = opts.window ?? WINDOW;
   const input = {
-    root: `${opts.workRoot ?? "/work"}/${HANDOFF_LAND_DIR}`,
+    root: `${workRoot}/${HANDOFF_LAND_DIR}`,
     id,
     ...(opts.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}),
     ...(opts.maxObjects !== undefined ? { maxObjects: opts.maxObjects } : {}),
@@ -129,6 +206,14 @@ export async function landHandoff(
   exit.catch(() => {});
 
   const reader = body.getReader();
+  // A land that is stopped (a newer body for the id) ends: its process is killed, and a read of a
+  // body that no longer comes ends.
+  lane.onStop = (why) => {
+    fault ??= why;
+    proc.signal("SIGKILL");
+    void reader.cancel().catch(() => {});
+    nudge();
+  };
   // A body that breaks while the Harness waits for the land process (the Orchestrator ended the
   // carry) ends the wait.
   let broke: unknown;
@@ -179,28 +264,12 @@ export async function landHandoff(
  * Remove the files that were landed for the exec `id`, when that exec settles with any outcome
  * (ADR-0080). The cut removes them itself when it ends; a cut that its timeout kills, or an exec
  * that a kill ended before it started, does not, and the files would stay readable by the child's
- * Agents for the Sandbox's life. In the domain: `rm` through the spawner, with a cleared env. Best
- * effort, and nothing runs when no landed folder of `id` is there.
+ * Agents for the Sandbox's life. The Orchestrator also kills the exec of a cut whose carry failed
+ * (ADR-0080): a carry can end after the land renamed the folder into place. In the domain: `rm`
+ * through the spawner, with a cleared env. Best effort, and nothing runs when no landed folder of
+ * `id` is there.
  */
 export async function dropLandedOf(children: ChildPolicy, id: string, workRoot = "/work"): Promise<void> {
   if (!LAND_ID.test(id)) return;
-  const folder = landedFolder(workRoot, id);
-  const there = async (path: string) =>
-    children.spawner.stat(path).then(
-      () => true,
-      () => false,
-    );
-  const paths = [];
-  for (const path of [folder, `${folder}.part`]) if (await there(path)) paths.push(path);
-  if (paths.length === 0) return;
-  try {
-    const proc = children.spawner.spawn({
-      argv: ["rm", "-rf", "--", ...paths],
-      env: { PATH: "/usr/bin:/bin", HOME: HARNESS_HOME },
-      cwd: "/",
-    });
-    await proc.exited;
-  } catch {
-    // The spawner is gone: the files go with the Sandbox.
-  }
+  await removeLanded(children, id, workRoot);
 }
