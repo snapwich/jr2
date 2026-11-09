@@ -74,7 +74,7 @@ which runs the same `destroy` and then sends the Failure up unchanged; a defect 
 Sandbox stays as evidence.
 
 A Workspace that a Machine of the run stops before its body ends — a parent that leaves the Workspace's state on an
-`after` or an event, a Machine that a Failure ended
+`after` or an event, a Machine that a Failure or a defect ended when a Machine above catches it
 ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), the run's Machine at its
 final state — skips `teardown`, because a stop is synchronous. So the host deletes its Sandbox after the stop, unless a
 live Workspace of the run holds the same name then. A Workspace stopped in `placing`

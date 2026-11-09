@@ -460,31 +460,28 @@ test("a route back to Rest that sends itself an event back into work, queued: th
   await r.host.close();
 });
 
-test("a Machine above the Agent's Machine faults and is caught: the Agent's Machine runs on, and its later route that stops the Agent sends a sweep with no cause — the run took the Agent's state away first, even when the pick's route caused the fault", async () => {
-  // `leave`: the pick's work leaves the state after the fault. `send`: an outside event does.
-  // `caused`: the pick's route sends the event that makes the Machine above throw, and an outside
-  // event leaves the state later. The fault is not the pick's, so no route makes the sweep `pick`.
-  for (const route of ["leave", "send", "caused"] as const) {
+test("a Machine above the Agent's Machine faults and is caught: the host stops the Agent's Machine, and the sweep has no cause — the run took the Agent's state away, even when the pick's route caused the fault", async () => {
+  // `pick`: a pick is outstanding when the Machine above faults. `idle`: no pick is. `caused`: the
+  // pick's route sends the event that makes the Machine above throw. The fault is not the pick's, so
+  // no route makes the sweep `pick`. xstate does not stop the children of a Machine that ended
+  // `error`; the host stops them when a Machine above catches the error (ADR-0073).
+  for (const route of ["pick", "idle", "caused"] as const) {
     const go = ev("go");
     const poke = ev("poke");
     const bad = ev("bad");
-    const finish = ev("finish");
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = () => resolve()));
-    const work = fromPromise(() => released.then(() => ({ built: true })));
+    const work = fromPromise(() => new Promise(() => {}));
     const r = await rig({ coder: coderDefinition }, ({ coder }) => {
-      const m = jr2Setup({ events: [go, poke, finish], actors: { coder: coder!, work } }).createMachine({
+      const m = jr2Setup({ events: [go, poke], actors: { coder: coder!, work } }).createMachine({
         on: { "agent.fault": {} },
         id: "m",
         initial: "w",
         states: {
           w: {
             invoke: { src: "coder", input: { prompt: "Fix.", endpoint, sandbox: "ws-1" } },
-            on: { finish: "#m.out", poke: { actions: sendParent({ type: "bad" }) } },
+            on: { poke: { actions: sendParent({ type: "bad" }) } },
             initial: "rest",
-            states: { rest: { on: { go: "running" } }, running: { invoke: { src: "work", onDone: "#m.out" } } },
+            states: { rest: { on: { go: "running" } }, running: { invoke: { src: "work" } } },
           },
-          out: {},
         },
       });
       const a = jr2Setup({ events: [bad], actors: { m } }).createMachine({
@@ -504,22 +501,16 @@ test("a Machine above the Agent's Machine faults and is caught: the Agent's Mach
         states: { b: { invoke: { src: "a", id: "a", onError: "failed" } }, failed: {} },
       }) as AnyStateMachine;
     });
-    if (route === "leave") {
-      assert.equal(r.host.sendToAgent(r.iid("coder"), { type: "go" }).outstanding, true);
-      await tick(60);
-      release();
-    } else {
-      if (route === "caused") r.host.sendToAgent(r.iid("coder"), { type: "poke" });
-      await tick(60);
-      r.host.sendToAgent(r.iid("coder"), { type: "finish" });
-    }
+    if (route === "pick") assert.equal(r.host.sendToAgent(r.iid("coder"), { type: "go" }).outstanding, true);
+    if (route === "caused") r.host.sendToAgent(r.iid("coder"), { type: "poke" });
     await waitFor(() => r.of("coder").aborts.length === 1);
     assert.deepEqual(r.causes("coder"), ["none"], route);
+    assert.equal(r.host.agentSurface(r.iid("coder")), undefined, `${route}: the stopped Agent's surface is gone`);
     await r.host.close();
   }
 });
 
-test("a nested Agent's Machine faults below the outer Agent's pick, and the outer Machine routes the error out: the outer sweep is `pick`; the nested Agent, orphaned, gets none", async () => {
+test("a nested Agent's Machine faults below the outer Agent's pick, and the outer Machine routes the error out: the outer sweep is `pick`; the nested Agent's sweep has no cause", async () => {
   const go = ev("go");
   const dig = ev("dig");
   const r = await rig({ coder: coderDefinition, reviewer: reviewerDefinition }, ({ coder, reviewer }) => {
@@ -556,13 +547,12 @@ test("a nested Agent's Machine faults below the outer Agent's pick, and the oute
   await waitFor(() => r.of("coder").aborts.length === 1);
   await tick(20);
   assert.deepEqual(r.causes("coder"), ["pick"]);
-  // Older than this: the nested Agent's own Machine ended in a fault, and xstate does not stop that
-  // Machine's children. So its actor is never stopped, no sweep is sent, its surface stays live, and
-  // nothing settles its Submission.
-  assert.deepEqual(r.causes("reviewer"), []);
-  assert.notEqual(r.host.agentSurface(r.iid("reviewer")), undefined, "the orphan's surface is still live");
-  const late = r.host.sendToAgent(r.iid("reviewer"), { type: "dig" });
-  assert.equal(late.turnComplete, false, "a pick finds no end of the Turn, so its Harness does not wait for a sweep");
+  // The nested Agent's own Machine ended in a fault, and xstate does not stop that Machine's
+  // children. The host stops them when the outer Machine catches the fault (ADR-0073), so the nested
+  // Agent gets a sweep with no cause, and its surface goes.
+  await waitFor(() => r.of("reviewer").aborts.length === 1);
+  assert.deepEqual(r.causes("reviewer"), ["none"]);
+  assert.equal(r.host.agentSurface(r.iid("reviewer")), undefined, "the stopped Agent's surface is gone");
   await r.host.close();
 });
 

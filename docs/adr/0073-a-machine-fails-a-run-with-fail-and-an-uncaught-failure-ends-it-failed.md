@@ -35,8 +35,10 @@ comment "the run faults rather than lie about a decision", and that run ended `d
   host deletes every Sandbox of a run that ends `failed`, after the stop, as `cancel` does
   ([ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)); after the wrapper's own delete, that is only a backstop. When a
   Machine above catches the Failure, the host stops the children of the Machine that the Failure ended, and after the
-  stop it deletes their Sandboxes, because a stop skips `teardown`. It does not delete a name that a live Workspace of
-  the run holds then, and nor does a Workspace that was stopped in `placing`
+  stop it deletes their Sandboxes, because a stop skips `teardown`. It does the same for a defect that a Machine above
+  catches, so that a nested Workspace under a body that a defect ended does not renew its Lease for ever. A defect that
+  no Machine catches faults the run, and each Sandbox stays as evidence. It does not delete a name that a live Workspace
+  of the run holds then, and nor does a Workspace that was stopped in `placing`
   ([ADR-0064](0064-a-workspace-waits-for-capacity.md)): a parent that invokes the same Machine again gives the new
   Workspace the same actor path, and so the same Sandbox name. That new Workspace takes over the Sandbox and its
   Worktrees, as a restore does, with the work of the failed attempt still in it. To keep the work for a person to read,

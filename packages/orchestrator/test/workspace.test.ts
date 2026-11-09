@@ -1761,6 +1761,80 @@ test("the hold mark: a body defect that the parent catches releases its Sandbox,
   assert.equal(host.status(runId)?.status, "active", "the run lives on");
 });
 
+/** A body whose region `a` holds a nested Workspace at its Gate, and whose region `b` throws at the
+ * answer of the Gate `hold`. */
+const defectWithReview = () =>
+  jr2Setup({
+    types: {} as { input: Workspaced<{}, never> },
+    events: [approveDef],
+    actors: { review: workspace(holdOther, { repos: { app: APP } }) },
+  }).createMachine({
+    id: "defect-with-review",
+    on: { "workspace.lost": {} },
+    type: "parallel",
+    states: {
+      a: { invoke: { id: "review", src: "review" } },
+      b: {
+        invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } },
+        on: {
+          approve: {
+            actions: () => {
+              throw new Error("a body defect");
+            },
+          },
+        },
+      },
+    },
+  });
+
+test("a body defect that the parent catches stops the nested Workspace under that body: its Sandbox goes, and its Lease stops (ADR-0012, ADR-0021)", async () => {
+  // The defect ends the body and its wrapper, and the parent's `onError` catches it. xstate does not
+  // stop the children of a Machine that ends `error`, so the host stops them, as for a Failure.
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({
+    name: "caught-nested",
+    machine: liveParent(workspace(defectWithReview(), { repos: { app: APP } }), { onError: "caught" }),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("caught-nested");
+  await waitFor(() => host.gates(runId).length === 3);
+  const nested = [...sandbox.provisioned.keys()].find((n) => n !== workspaceName(runId, "F-1"));
+  assert.ok(nested !== undefined, "the nested Workspace has a Sandbox");
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.gates(runId).some((g) => g.gate.endsWith("after")));
+  await waitFor(() => destroyed(sandbox).length === 1);
+  assert.deepEqual(destroyed(sandbox), [nested], "the stop deletes the nested Sandbox; the body's own is left");
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no Lease renews a nested Workspace whose body is over");
+  assert.deepEqual(
+    host.gates(runId).map((g) => g.gate),
+    ["after"],
+    "the nested Workspace's Gate is gone",
+  );
+  assert.equal(host.status(runId)?.status, "active", "the run lives on");
+});
+
+test("a body defect that no Machine catches faults the run, stops the nested Workspace's Lease, and leaves its Sandbox (ADR-0012, ADR-0021)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({
+    name: "uncaught-nested",
+    machine: liveParent(workspace(defectWithReview(), { repos: { app: APP } }), {}),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("uncaught-nested");
+  await waitFor(() => host.gates(runId).length === 3);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+  assert.match((await host.read(runId))?.fault ?? "", /a body defect/);
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no Lease renews in a faulted run");
+  assert.deepEqual(destroyed(sandbox), [], "a fault leaves each Sandbox as evidence");
+});
+
 test("the hold mark: a parent that catches a body defect and invokes the same Machine again keeps the new Workspace `held` (ADR-0021)", async () => {
   const sandbox = new FakeSandbox();
   sandbox.leaseIntervalMs = 300; // the old Lease's next tick comes after the re-invoke

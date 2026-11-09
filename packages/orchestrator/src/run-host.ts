@@ -4538,20 +4538,21 @@ export class RunHost {
             () => this.pickCause(record.runId, holds, target, source, event),
             () => this.table.byRun(record.runId).filter((reg) => reg.kind === "agent"),
           );
-          // A Failure ended a Machine that a Machine above can catch (ADR-0073). xstate does not stop
-          // the children of a Machine that ends `error`, so the host stops them, as `stopTree` does for
-          // the run: an Agent in that Machine settles its Turn, and a Gate or a timer there does not
-          // wait for nobody. After the parent takes the event, so its exit is recorded first. A stop
-          // skips `teardown`, so a Workspace in another region of that Machine does not delete its
-          // Sandbox: the stop deletes it, as any stop of a Workspace by a Machine of the run does
-          // (`workspaceStopped`).
-          if (
-            source !== undefined &&
-            source._parent === target &&
-            event.type === `xstate.error.actor.${source.id}` &&
-            isFailure((event as { error?: unknown }).error)
-          ) {
-            queueMicrotask(() => stopTree(source));
+          // A Failure or a defect ended a Machine that a Machine above can catch (ADR-0073). xstate
+          // does not stop the children of a Machine that ends `error`, so the host stops them, as
+          // `stopTree` does for the run: an Agent in that Machine settles its Turn, a Gate or a timer
+          // there does not wait for nobody, and a nested Workspace there does not renew its Lease for
+          // ever (ADR-0021). After the parent takes the event, so its exit is recorded first. A stop
+          // skips `teardown`, so a Workspace in that Machine does not delete its Sandbox: the stop
+          // deletes it, as any stop of a Workspace by a Machine of the run does (`workspaceStopped`).
+          // A defect that the parent did not catch ends the parent too, and so on up: the Machine
+          // that catches it stops this tree with its own, or the run's fault does, and leaves each
+          // Sandbox as evidence (ADR-0012).
+          if (source !== undefined && source._parent === target && event.type === `xstate.error.actor.${source.id}`) {
+            const failure = isFailure((event as { error?: unknown }).error);
+            queueMicrotask(() => {
+              if (failure || target.getSnapshot()?.status !== "error") stopTree(source);
+            });
           }
         }
         // A mechanism event that no transition took (ADR-0074): `agent.fault` or `workspace.lost`

@@ -119,7 +119,8 @@ prevented it writing. An un-ended turn is a concurrent writer in a Workspace tha
     Machine on the way up from the Agent, that Machine's error event is the exit, with the cause of that relay. So a
     pick whose route invokes `fail` ends its Turn `ended`, when a Machine above catches the Failure and when the run
     ends `failed`. xstate does not stop the children of a Machine that ends `error`, so the host stops the children of a
-    Machine that a Failure ended, after its parent takes the error event. The Agent there then gets its sweep.
+    Machine that a Failure ended, or that a defect ended when a Machine above catches it, after its parent takes the
+    error event. The Agent there then gets its sweep.
 
   Which relay an actor takes now is read from the relay order. xstate relays an event to the actor's mailbox
   (`@xstate.event`). The mailbox takes events one at a time, in that order. xstate inspects `@xstate.snapshot` with the
@@ -403,15 +404,12 @@ matter:
     Harness from before `cause` ignores the body, and settles every sweep `aborted`.
   - **A restored run.** A timer's cause is kept in memory, on its `setTimeout` of the run's clock. A timer that a
     restore arms again has no cause, so its exit sends a sweep with no cause.
-  - **A Machine above the Agent's Machine faults, and a Machine above it catches the fault.** xstate does not stop the
-    errored Machine's children, so the Agent's Machine runs on. The run took the Agent's state away when it caught the
-    fault, so that is the exit, and it has no cause, also when the pick's route sent the event that caused the fault. A
-    later route of the Agent's Machine that stops the Agent sends a sweep with no cause, and the Submission settles
+  - **The Agent's Machine, or a Machine above it, faults, and a Machine above that catches the fault.** xstate does not
+    stop the errored Machine's children, so the host stops them after the catch
+    ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), and the Agent with
+    them. The run took the Agent's state away when it caught the fault, so that is the exit, and it has no cause, also
+    when the pick's route sent the event that caused the fault. The sweep has no cause, and the Submission settles
     `aborted`.
-  - **The Agent's own Machine faults, and a Machine above it catches the fault.** xstate does not stop that Machine's
-    children, so the Agent's actor is never stopped. Its surface stays live, and no sweep is sent. A pick of that Agent
-    finds no end of the Turn, so its Harness does not wait for a sweep, and nothing settles the Submission. This orphan
-    is older than this rule, and it is a separate defect.
   - **An exit while the next admission is in flight.** A nudge, a wake or a re-admission is ledgered only when the
     Harness answers it. A Turn that its own pick ends in that window names the Submission before it. The Harness no
     longer runs that one, so the running Submission settles `aborted`. This is conservative, and no wait is added for
