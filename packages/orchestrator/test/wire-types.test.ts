@@ -16,6 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as harness from "@jr2/harness/wire";
 import * as client from "../src/wire.ts";
+import { HANDOFF_CARRY_MS } from "../src/handoff-carry.ts";
 
 /** Both directions, in one expression per pair: the compiler is the assertion. */
 // The `[A] extends [B]` form is load-bearing: a NAKED type parameter distributes over a union, so
@@ -158,4 +159,6 @@ test("the Handoff's content type and bounds are the same on the two sides (ADR-0
   assert.equal(client.HANDOFF_MAX_BYTES, harness.HANDOFF_MAX_BYTES);
   assert.equal(client.HANDOFF_MAX_OBJECTS, harness.HANDOFF_MAX_OBJECTS);
   assert.equal(client.HANDOFF_DEADLINE_MS, harness.HANDOFF_DEADLINE_MS);
+  // The child's Harness bounds a PUT by a time above the carry's (ADR-0080).
+  assert.equal(HANDOFF_CARRY_MS, harness.HANDOFF_CARRY_MS);
 });

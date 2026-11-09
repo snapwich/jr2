@@ -245,13 +245,16 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   also ends `unknown`, which ends the source's stream and so kills the step. A carry also has a time of its own: the
   byte bound at 1 MiB/s, and one idle wait (about 23 minutes). A child that takes a byte now and then resets the idle
   wait, and the bundle step's deadline stops while the step is paused, so without this time such a child would hold the
-  cut, the parent's step and its bundle file without end. The child's Harness sets no request time of its own (node's
-  default ends a body after 300 s), so this time is the only bound of a carry's length. The cut's `timeout` does not
-  cover the carry: it starts with the cut's exec, after the carry. A carry past its time is `unknown`, and both legs
-  end. An HTTP error of either Harness, a source stream that ends before its last frame, breaks, or is out of its form,
-  and a child that does not answer `{ landed: true }` are `unknown` too. A reason names the Harness whose leg failed: a
-  break of the source's stream names the source, not the child. Any other fault of the carry is `unknown` as well, never
-  the invoke's error: the parent's files can cause it.
+  cut, the parent's step and its bundle file without end. The child's Harness has a bound of its own for a
+  `PUT /handoffs/<id>`, because it sends nothing on that request until it answers, so no packet finds an Orchestrator
+  that is gone, and the Orchestrator's times bound a carry only while it runs. node's request time (300 s) is too short
+  for a carry, so the Harness spares that one route from it, and every other route keeps it. The land has a time of its
+  own instead: the carry's time and 60 s. Past it, the land process is killed and its files are removed, as for a body
+  that breaks. The cut's `timeout` does not cover the carry: it starts with the cut's exec, after the carry. A carry
+  past its time is `unknown`, and both legs end. An HTTP error of either Harness, a source stream that ends before its
+  last frame, breaks, or is out of its form, and a child that does not answer `{ landed: true }` are `unknown` too. A
+  reason names the Harness whose leg failed: a break of the source's stream names the source, not the child. Any other
+  fault of the carry is `unknown` as well, never the invoke's error: the parent's files can cause it.
 
   The carry only reads the source and replaces the child's files under one Effect id, so it can run again. When the
   child's Harness restarts and the Orchestrator sends the cut's start again, it carries the files again first, so a

@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { HARNESS_HOME, type ChildPolicy } from "./children.ts";
 import { HANDOFF_LAND_DIR, LAND_ID, landedFolder } from "./handoff-land-main.ts";
 import { SpawnerGoneError, SpawnError, type Spawned } from "./spawner.ts";
+import { HANDOFF_CARRY_MS } from "./wire.ts";
 
 /** The land process's entry, beside this module: `/opt/jr2/src/handoff-land-main.ts` in a pod. */
 export const HANDOFF_LAND_ENTRY = fileURLToPath(new URL("./handoff-land-main.ts", import.meta.url));
@@ -25,6 +26,14 @@ const PIECE = 256 << 10;
 /** The longest line that the land process may write. */
 const MAX_LINE = 256;
 
+/**
+ * The longest time of one land, from the request's headers to its answer: the Orchestrator's carry
+ * time and a margin (ADR-0080). The Orchestrator ends its carry first. This time is the child's
+ * own bound: node does not bound the body of `PUT /handoffs/<id>` (`serve.ts`), and the child sends
+ * nothing until it answers, so no packet finds an Orchestrator that is gone.
+ */
+export const HANDOFF_LAND_MS = HANDOFF_CARRY_MS + 60_000;
+
 export type LandOptions = {
   /** Where the Repo Slots are. Default `/work`. */
   workRoot?: string;
@@ -35,6 +44,8 @@ export type LandOptions = {
   /** The bounds that the land process checks. Default `HANDOFF_MAX_BYTES` and `HANDOFF_MAX_OBJECTS`. */
   maxBytes?: number;
   maxObjects?: number;
+  /** The longest time of the land. Default {@link HANDOFF_LAND_MS}. */
+  timeMs?: number;
 };
 
 /** What a `PUT /handoffs/<id>` lands: `landed`, or why not. */
@@ -221,6 +232,8 @@ async function landOnce(
     broke = err ?? new Error("the body broke");
     nudge();
   });
+  const timeMs = opts.timeMs ?? HANDOFF_LAND_MS;
+  const late = setTimeout(() => lane.onStop?.(`the land passed its time of ${Math.round(timeMs / 1000)} s`), timeMs);
   let sent = 0;
   try {
     for (;;) {
@@ -239,6 +252,7 @@ async function landOnce(
       if (exited || fault !== undefined) break;
     }
   } catch (err) {
+    clearTimeout(late);
     proc.signal("SIGKILL");
     await exit.catch(() => {});
     return { fault: `the body broke: ${err instanceof Error ? err.message : String(err)}` };
@@ -256,6 +270,7 @@ async function landOnce(
     const why = err instanceof SpawnError || err instanceof SpawnerGoneError ? err.message : String(err);
     return { fault: `the land process did not run: ${why}` };
   } finally {
+    clearTimeout(late);
     proc.signal("SIGKILL");
   }
 }

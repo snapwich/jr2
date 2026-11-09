@@ -6,13 +6,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { Agent, request } from "node:http";
-import { createServer, type AddressInfo } from "node:net";
+import { Agent, createServer as createHttpServer, request } from "node:http";
+import { connect, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harnessServer, type ConversationSeat, type HarnessAppDeps } from "../src/app.ts";
 import { conversationDir } from "../src/record.ts";
-import { listenFault, serveHarness } from "../src/serve.ts";
+import { listenFault, serveHarness, spareLands } from "../src/serve.ts";
 import type { AgentDefinition } from "../src/spec.ts";
 import {
   SUBMISSION_HARNESS_RESTARTED,
@@ -415,7 +415,7 @@ test("the drain of an idle Harness resolves at once", async () => {
   await harnessOver(scratch()).drain();
 });
 
-test("the served Harness has no request timeout: a carry's body may take longer than node's 300 s, and the Orchestrator bounds it", async () => {
+test("the served Harness keeps node's request timeout, and spares only the body of a Handoff's PUT", async () => {
   const harness = harnessOver(undefined);
   const exits: number[] = [];
   const served = serveHarness(harness, {
@@ -426,9 +426,34 @@ test("the served Harness has no request timeout: a carry's body may take longer 
   });
   await new Promise((resolve) => served.server.once("listening", resolve));
   const server = served.server as import("node:http").Server;
-  assert.equal(server.requestTimeout, 0);
+  assert.equal(server.requestTimeout, 300_000, "node's default");
   assert.ok(server.headersTimeout > 0, "the headers keep their timeout");
+  assert.equal(server.listenerCount("clientError"), 1, "spareLands answers a request past its time");
   await served.stop();
+});
+
+test("spareLands: a request past node's time gets 408, but the body of PUT /handoffs/<id> may come later", async (t) => {
+  const server = createHttpServer({ requestTimeout: 300, connectionsCheckingInterval: 50 }, (req, res) => {
+    req.resume();
+    req.on("end", () => res.end("whole"));
+  });
+  spareLands(server);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const port = (server.address() as AddressInfo).port;
+  const ask = async (head: string): Promise<string> => {
+    const socket = connect(port, "127.0.0.1");
+    let got = "";
+    socket.on("data", (c) => (got += c.toString("utf8")));
+    const closed = new Promise<void>((r) => socket.on("close", () => r()));
+    socket.write(`${head} HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabcde`);
+    await new Promise((r) => setTimeout(r, 800));
+    if (!socket.destroyed) socket.end("fghij");
+    await closed;
+    return got;
+  };
+  assert.match(await ask("POST /exec/one"), /^HTTP\/1\.1 408 /);
+  assert.match(await ask("PUT /handoffs/one"), /^HTTP\/1\.1 200 [\s\S]*whole$/);
 });
 
 test("SIGTERM's stop: drains, closes the port, exits 0", async () => {

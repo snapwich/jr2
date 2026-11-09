@@ -1,7 +1,8 @@
 // The Harness on its port: the listen, what a listen that fails says, and the shutdown a signal
 // runs. `main.ts` calls it once; tests call it with their own `say` and `exit`.
 
-import type { AddressInfo } from "node:net";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { AddressInfo, Socket } from "node:net";
 import { serve, type ServerType } from "@hono/node-server";
 import type { HarnessServer } from "./app.ts";
 
@@ -37,6 +38,35 @@ export function listenFault(err: unknown, port: number): string | undefined {
   );
 }
 
+/**
+ * node ends a request whose body still comes after its `requestTimeout` (300 s) with 408. Every
+ * route keeps that bound but one: the body of `PUT /handoffs/<id>` is a whole carry, which can take
+ * longer (ADR-0080). That request gets a time of its own instead, longer than the Orchestrator's
+ * carry (`HANDOFF_LAND_MS`, `handoff-land.ts`), and the land ends at it. node tells a request past
+ * its time as a `clientError`, and a server with a `clientError` listener answers it itself, so
+ * this listener answers as node does for every other socket.
+ */
+export function spareLands(server: Server): void {
+  const landing = new WeakSet<Socket>();
+  server.on("request", (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== "PUT" || !req.url?.startsWith("/handoffs/")) return;
+    landing.add(req.socket);
+    res.once("close", () => landing.delete(req.socket));
+  });
+  server.on("clientError", (err: NodeJS.ErrnoException, socket: Socket) => {
+    if (err.code === "ERR_HTTP_REQUEST_TIMEOUT" && landing.has(socket)) return;
+    const answer =
+      err.code === "ERR_HTTP_REQUEST_TIMEOUT"
+        ? "408 Request Timeout"
+        : err.code === "HPE_HEADER_OVERFLOW"
+          ? "431 Request Header Fields Too Large"
+          : "400 Bad Request";
+    const sent = (socket as Socket & { _httpMessage?: { headersSent?: boolean } })._httpMessage?.headersSent;
+    if (socket.writable && !sent) socket.write(`HTTP/1.1 ${answer}\r\nConnection: close\r\n\r\n`);
+    socket.destroy(err);
+  });
+}
+
 export function serveHarness(harness: HarnessServer, opts: ServeOptions): Served {
   const say = opts.say ?? ((line: string) => console.error(line));
   const exit = opts.exit ?? ((code: number) => process.exit(code));
@@ -45,11 +75,7 @@ export function serveHarness(harness: HarnessServer, opts: ServeOptions): Served
     // the definition it runs.
     console.log(`jr2 harness serving on :${(info as AddressInfo).port}`);
   });
-  // node ends a request whose body still comes after 300 s (`requestTimeout`) with 408. The body
-  // of PUT /handoffs/<id> is a whole carry, which the Orchestrator bounds by its own idle and total
-  // times (ADR-0080), and only the Orchestrator sends it, with a bearer. The headers keep node's
-  // `headersTimeout`.
-  if ("requestTimeout" in server) server.requestTimeout = 0;
+  spareLands(server as Server);
   server.on("error", (err) => {
     const fault = listenFault(err, opts.port);
     if (!fault) throw err;

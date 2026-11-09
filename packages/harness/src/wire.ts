@@ -488,3 +488,9 @@ export const HANDOFF_MAX_OBJECTS = 100_000;
  * Orchestrator ends a carry only after a longer time with no byte from the source, so a step that
  * the parent's files hold ends `refused` first. */
 export const HANDOFF_DEADLINE_MS = 300_000;
+
+/** The longest time that the Orchestrator gives one carry of a Handoff's files, from its first ask
+ * of the source to the child's answer: the byte bound at 1 MiB/s, and one wait with no byte from
+ * the source (the step's deadline and 60 s). It is the Orchestrator's `HANDOFF_CARRY_MS`. The
+ * child's Harness gives a `PUT /handoffs/<id>` a longer time of its own (ADR-0080). */
+export const HANDOFF_CARRY_MS = Math.ceil(HANDOFF_MAX_BYTES / (1024 ** 2 / 1000)) + HANDOFF_DEADLINE_MS + 60_000;

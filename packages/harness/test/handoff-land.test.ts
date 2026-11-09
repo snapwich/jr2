@@ -11,10 +11,10 @@ import { test, type TestContext } from "node:test";
 import { harnessApp } from "../src/app.ts";
 import { cut } from "../src/cut.ts";
 import { bundleHandoff } from "../src/handoff-bundle.ts";
-import { dropLandedOf, landHandoff, type LandOptions } from "../src/handoff-land.ts";
+import { dropLandedOf, HANDOFF_LAND_MS, landHandoff, type LandOptions } from "../src/handoff-land.ts";
 import { Execs } from "../src/exec.ts";
 import { landedFolder } from "../src/handoff-land-main.ts";
-import { HANDOFF_CONTENT_TYPE } from "../src/wire.ts";
+import { HANDOFF_CARRY_MS, HANDOFF_CONTENT_TYPE } from "../src/wire.ts";
 import { testChildren } from "./support/children.ts";
 
 const ID = "0b7c5e1a-4d2f-4c55-9a51-6f1d2e3c4b5a";
@@ -232,6 +232,19 @@ test("a real land process whose body breaks after it wrote a part: the Harness r
   const answer = await landing;
   assert.ok("fault" in answer && /the body broke: the socket closed/.test(answer.fault), JSON.stringify(answer));
   assert.deepEqual(w.left(), [], "no part folder, and no landed folder, is kept");
+});
+
+test("a land has a time of its own, above the Orchestrator's carry: past it, the land ends and keeps nothing", async (t) => {
+  assert.ok(HANDOFF_LAND_MS > HANDOFF_CARRY_MS, "the Orchestrator ends its carry first");
+  const w = world(t);
+  const part = `${w.folder}.part`;
+  // The Orchestrator's node is gone: the body neither comes nor breaks.
+  const b = held(body({ bundle: 10 }, '{"data":10}\nabcde'));
+  const landing = w.land(b.stream, { timeMs: 1000 });
+  await until(() => existsSync(join(part, "bundle")), "the part is written");
+  const answer = await landing;
+  assert.ok("fault" in answer && /the land passed its time of 1 s/.test(answer.fault), JSON.stringify(answer));
+  assert.deepEqual(w.left(), []);
 });
 
 test("the lands of one id run one at a time: a newer body stops the land before it, which removes its part first", async (t) => {
