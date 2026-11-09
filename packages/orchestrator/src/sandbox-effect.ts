@@ -997,7 +997,7 @@ export function pushWith<const O extends PushOptions>(
       // Repo makes this push a later one.
       if (last === undefined) {
         if (target.expect !== "new") return {};
-        const push = { sandbox: ctx.ambient.sandbox, repo, url: ctx.ambient.bindings?.[repo], branch: target.branch };
+        const push = { url: ctx.ambient.bindings?.[repo], branch: target.branch };
         return publishedInRun(rows, push, ctx.id) ? {} : { fresh: true };
       }
       const { row, rowId, output } = last;

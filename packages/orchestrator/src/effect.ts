@@ -725,29 +725,32 @@ export function lastPushOf(
 
 /**
  * Whether a push of this run published `branch` of this Repo already (ADR-0075): a settled push
- * row that published, never this Effect's (`self`), of this Workspace's Repo Slot, or of another
- * Workspace of the run whose Binding url is the same Repo (one identity, ADR-0051). The first push
- * of the run to the branch of a cut with `expect: "new"` asks for a branch that the remote does
- * not hold; a later one does not, also when a nested Workspace or the Workspace around it made
- * the first.
+ * row that published, never this Effect's (`self`), whose Binding url is the same Repo (one
+ * identity, ADR-0051), from any Workspace of the run. The first push of the run to the branch of a
+ * cut with `expect: "new"` asks for a branch that the remote does not hold; a later one does not,
+ * also when a nested Workspace or the Workspace around it made the first. The caller asks only when
+ * `lastPushOf` found no push of its own Workspace's Repo Slot, so a row of that slot never decides
+ * here. A row with no url names no Repo, and matches nothing.
  */
 export function publishedInRun(
   rows: Readonly<Record<string, EffectRow>>,
-  push: { sandbox: string; repo: string; url: string | undefined; branch: string },
+  push: { url: string | undefined; branch: string },
   self?: string,
 ): boolean {
-  const sameRepo = (url: string | undefined): boolean => {
-    if (url === undefined || push.url === undefined) return false;
+  const key = (url: string | undefined): string | undefined => {
+    if (url === undefined) return undefined;
     try {
-      return repoKey(url) === repoKey(push.url);
+      return repoKey(url);
     } catch {
-      return false;
+      return undefined;
     }
   };
+  const mine = key(push.url);
+  if (mine === undefined) return false;
   return Object.entries(rows).some(([rowId, row]) => {
     if (rowId === self || row.state !== "settled" || row.kind !== "push" || row.branch !== push.branch) return false;
     if ((row.output as { outcome?: unknown } | undefined)?.outcome !== "pushed") return false;
-    return (row.sandbox === push.sandbox && row.repo === push.repo) || sameRepo(row.url);
+    return key(row.url) === mine;
   });
 }
 

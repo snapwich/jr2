@@ -9,7 +9,7 @@ import { httpFileWith, pushWith } from "../src/sandbox-effect.ts";
 import { secret, file } from "../src/http-effect.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
-import { dropSavedTails, lastPushOf, pushPairsOf, type EffectRow } from "../src/effect.ts";
+import { dropSavedTails, lastPushOf, publishedInRun, pushPairsOf, type EffectRow } from "../src/effect.ts";
 import { worktreeWith } from "../src/worktree.ts";
 import { FakeHarnessExec, fakeWorkspace, handles } from "./_effects.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
@@ -189,6 +189,32 @@ test('the empty lease of `expect: "new"` goes on the first push of the RUN: a ne
     // The root reached its final state: the run ended.
     await waitFor(() => host.status(runId) === undefined);
   }
+});
+
+test("publishedInRun: only a push that published this branch of this Repo, by its identity, counts", () => {
+  const row = (url: string | undefined, branch = "fix/1", outcome = "pushed"): EffectRow => ({
+    state: "settled",
+    kind: "push",
+    slot: "push",
+    sandbox: "ws-child",
+    repo: "app",
+    ...(url !== undefined ? { url } : {}),
+    branch,
+    output: { outcome, published: SHA, source: SHA },
+    at: "1",
+  });
+  const me = { url: "https://example.test/app.git", branch: "fix/1" };
+  const cases: Array<[string, EffectRow, boolean]> = [
+    ["the same Repo, spelt in ssh", row("git@example.test:app.git"), true],
+    ["one slot name, another Repo", row("https://example.test/other.git"), false],
+    ["another branch", row(me.url, "fix/2"), false],
+    ["a push that the empty lease rejected", row(me.url, "fix/1", "rejected"), false],
+    ["a row with no url", row(undefined), false],
+    ["a url that names no Repo", row("not a url at all"), false],
+  ];
+  for (const [what, r, want] of cases) assert.equal(publishedInRun({ a: r }, me), want, what);
+  assert.equal(publishedInRun({ a: row(me.url) }, me, "a"), false, "never this Effect's own row");
+  assert.equal(publishedInRun({ a: row(me.url) }, { url: undefined, branch: "fix/1" }), false, "a push with no url");
 });
 
 const rejected = async (cutInput: unknown, answer: unknown, input: unknown, options = { slot: "app" }) => {
