@@ -404,11 +404,12 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   `skipped`, and keeps it while the sync is `busy` or `not-synced` only as long as it is the newest push of its (slot,
   branch) that published, because the sync that runs again moves the branch from it and only the newest push's sync runs
   again. Once a newer push of that key published, the older row's bundle goes at the next save: one bundle per (slot,
-  branch) at most. A cut's `ready` row keeps its Repo Slot, its path and its branch whole, because a later Effect reads
-  them. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One exception, bounded by
-  one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action
-  may read it after a restore; a loop below the Agent's state then grows the hold by one tail per pass. The hold drops
-  its chain when the pick is answered.
+  branch) at most. A cut's `ready` row keeps its Repo Slot, its path, its branch and its head whole, because a later
+  Effect reads them: a push its branch, and a cut at a Handoff its head
+  ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)). So an Effect in a loop grows the ledger by one
+  short row per pass, never by its tails. One exception, bounded by one pick: while a pick is outstanding, its hold
+  keeps the `chain` whole, tails included, because an `answer` action may read it after a restore; a loop below the
+  Agent's state then grows the hold by one tail per pass. The hold drops its chain when the pick is answered.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start

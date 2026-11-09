@@ -59,13 +59,13 @@ The cut fetches, then finds the branch in this order:
 The output is `ready`, `refused` or `unknown`. Each Effect outcome is open, so give the last arm of `onDone` no guard.
 [`isReady`](../reference/authoring-surface/isready.md) is the guard for `ready`.
 
-| The field of `ready` | What it holds                                                                |
-| -------------------- | ---------------------------------------------------------------------------- |
-| `slot`, `path`       | The Repo Slot and the path of the Worktree.                                  |
-| `branch`             | The branch of the cut, or `null` for a detached cut.                         |
-| `head`               | The tip of the branch, or the commit of a detached cut. It is never `HEAD`.  |
-| `found`              | How the cut found it: `local`, `remote`, `none`, `held` or `commit`.         |
-| `stale`              | The warning of git when the fetch failed. The cut used what the clone holds. |
+| The field of `ready` | What it holds                                                                   |
+| -------------------- | ------------------------------------------------------------------------------- |
+| `slot`, `path`       | The Repo Slot and the path of the Worktree.                                     |
+| `branch`             | The branch of the cut, or `null` for a detached cut.                            |
+| `head`               | The tip of the branch, or the commit of a detached cut. It is never `HEAD`.     |
+| `found`              | How the cut found it: `local`, `remote`, `none`, `held`, `commit` or `handoff`. |
+| `stale`              | The warning of git when the fetch failed. The cut used what the clone holds.    |
 
 `held` means that a cut made this path before, so the Worktree holds earlier work. No fetch happens, and the cut does
 not check `expect` again. Thus a cut of the same path also reads a Worktree:
@@ -107,6 +107,13 @@ not show them. A `.gitattributes` that an Agent wrote goes first, so it changes 
 
 `expect` applies only to a branch. A slot with `expect` can thus also make a detached cut, as `cut` does here. A cut
 that you lend to a [Chart](../reference/glossary.md#chart) must state `expect`, so a Chart uses such a slot too.
+
+## Take a commit from an enclosing Workspace
+
+In a nested Workspace, invoke the Effect with `{ path, handoff }`. `handoff` is the `ready` output of a cut in an
+enclosing Workspace of the run, which came in through the door. The cut makes a branch Worktree at that commit, and
+`found` is `handoff`. jr2 checks the Handoff against the run, and refuses one that the run did not make.
+[Review in a nested Workspace](review-in-a-nested-workspace.md) tells how, and gives its rules.
 
 ## Give the Worktree to each step
 
@@ -168,7 +175,7 @@ These settle as `refused`, and nothing changes. Route them to your last arm:
 - a name that starts with `.` or `-`: `"<path>": a Worktree's name starts with neither . nor -`
 - a slot that the Workspace does not have:
   `"<path>" names Repo Slot "<slot>", which its Workspace does not carry (<slots>)`
-- no branch and no commit, or both: ``a cut names a branch, or a commit in `detach` ``
+- no branch and no commit, or both: ``a cut names a branch, a commit in `detach`, or a `handoff` ``
 - `from` on a detached cut: ``a detached cut takes no `from` ``
 - `expect: "new"` on a branch that exists: `<branch> exists, and this cut makes only a new branch`
 - `expect: "existing"` on a branch that does not exist: `<branch> does not exist, and this cut makes nothing`
@@ -222,6 +229,7 @@ These are not `refused`, because no word of a run can cause them:
 - [Push and sign a branch](push-and-sign-a-branch.md): the `push` Effect.
 - [Set an Agent's access and Dials](set-an-agents-access-and-dials.md): a reviewer in a detached Worktree.
 - [Let an Agent write a Chart](let-an-agent-write-a-chart.md): a cut that you lend to a Chart.
+- [Review in a nested Workspace](review-in-a-nested-workspace.md): a cut at a Handoff.
 - Reference: [`worktree`](../reference/authoring-surface/worktree.md),
   [`WorktreeOptions`](../reference/authoring-surface/type-worktreeoptions.md),
   [`WorktreeInput`](../reference/authoring-surface/type-worktreeinput.md),

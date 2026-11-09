@@ -1251,3 +1251,113 @@ test("a filter in a linked Worktree's own config.worktree is off in a detached r
   assert.equal(existsSync(marker), false, "the Worktree's own filter did not run");
   assert.equal(readFileSync(join(first.path, "auth.txt"), "utf8"), "auth\n");
 });
+
+// --- A cut at a Handoff (ADR-0080) -------------------------------------------------------------------
+
+test("a cut at a Handoff: a new branch at the commit, `found: handoff`, no upstream, and the commits in its log", async (t) => {
+  const w = world(t);
+  const head = run(w.clone, "rev-parse", "origin/feature/auth");
+  const a = ready(await w.go({ path: w.path("final"), branch: "review/auth", handoff: head }));
+  assert.equal(a.found, "handoff");
+  assert.equal(a.branch, "review/auth");
+  assert.equal(a.head, head);
+  assert.equal(run(a.path, "symbolic-ref", "--short", "HEAD"), "review/auth");
+  assert.equal(run(a.path, "rev-parse", "HEAD"), head);
+  assert.throws(() => run(a.path, "rev-parse", "--abbrev-ref", "@{upstream}"), "no origin/review/auth: no upstream");
+  assert.ok(existsSync(join(a.path, "auth.txt")));
+  assert.match(run(a.path, "log", "--format=%s"), /^auth\nfirst$/);
+});
+
+test("a cut at a Handoff on a branch that the remote has: it tracks origin/<branch>, and git status shows ahead", async (t) => {
+  const w = world(t);
+  // The parent's coder built on feature/auth and did not push: the remote has the branch, not the commit.
+  run(w.seed, "switch", "-q", "feature/auth");
+  writeFileSync(join(w.seed, "more.txt"), "more\n");
+  run(w.seed, "add", ".");
+  run(w.seed, "commit", "-qm", "more");
+  const head = run(w.seed, "rev-parse", "HEAD");
+  // The transport's seam lands the commit in the clone; here a fetch of the seed stands in for it.
+  run(w.clone, "fetch", "-q", w.seed, head);
+  const a = ready(await w.go({ path: w.path("final"), branch: "feature/auth", handoff: head }));
+  assert.equal(a.found, "handoff");
+  assert.equal(run(a.path, "rev-parse", "--abbrev-ref", "@{upstream}"), "origin/feature/auth");
+  assert.match(run(a.path, "status", "-sb"), /ahead 1/);
+});
+
+test("a cut at a Handoff whose commit the clone does not hold is refused, names the commit, and changes nothing", async (t) => {
+  const w = world(t);
+  writeFileSync(join(w.seed, "local.txt"), "l\n");
+  run(w.seed, "add", ".");
+  run(w.seed, "commit", "-qm", "not pushed");
+  const head = run(w.seed, "rev-parse", "HEAD");
+  const same = unchanged(w.clone);
+  const reason = refusal(await w.go({ path: w.path("final"), branch: "review", handoff: head }));
+  assert.match(reason, new RegExp(`does not hold the Handoff's commit ${head}`));
+  same();
+  assert.equal(existsSync(w.path("final")), false);
+});
+
+test("a cut at a Handoff refuses a local branch of that name at another commit, and takes one at the commit", async (t) => {
+  const w = world(t);
+  const head = run(w.clone, "rev-parse", "origin/feature/auth");
+  run(w.clone, "branch", "review", "origin/main");
+  const same = unchanged(w.clone);
+  assert.match(
+    refusal(await w.go({ path: w.path("final"), branch: "review", handoff: head })),
+    /the branch review of this clone is at [0-9a-f]+, not at the Handoff's commit/,
+  );
+  same();
+  run(w.clone, "branch", "at-head", head);
+  const a = ready(await w.go({ path: w.path("final"), branch: "at-head", handoff: head }));
+  assert.equal(a.found, "handoff");
+  assert.equal(a.head, head);
+});
+
+test("a re-cut with the same Handoff is held; with another Handoff, with none, or at a branch cut, it is refused", async (t) => {
+  const w = world(t);
+  const head = run(w.clone, "rev-parse", "origin/feature/auth");
+  const main = run(w.clone, "rev-parse", "origin/main");
+  const a = ready(await w.go({ path: w.path("final"), branch: "review", handoff: head }));
+  writeFileSync(join(a.path, "note.txt"), "n\n");
+  run(a.path, "add", ".");
+  run(a.path, "commit", "-qm", "the reviewer's commit");
+  const tip = run(a.path, "rev-parse", "HEAD");
+  const held = ready(await w.go({ path: w.path("final"), branch: "review", handoff: head }));
+  assert.equal(held.found, "held");
+  assert.equal(held.head, tip, "the reviewer's commit stays");
+  const same = unchanged(w.clone);
+  assert.match(
+    refusal(await w.go({ path: w.path("final"), branch: "review", handoff: main })),
+    new RegExp(`was cut at the Handoff ${head}, not ${main}: a nested Workspace takes one Handoff`),
+  );
+  assert.match(refusal(await w.go({ path: w.path("final"), branch: "review" })), /was cut at the Handoff/);
+  same();
+  ready(await w.go({ path: w.path("work"), branch: "fix/one" }));
+  const same2 = unchanged(w.clone);
+  assert.match(
+    refusal(await w.go({ path: w.path("work"), branch: "fix/one", handoff: head })),
+    /was cut for fix\/one, not at a Handoff/,
+  );
+  same2();
+});
+
+test("a cut at a Handoff refuses an Agent's own folder, a held branch, and a malformed request", async (t) => {
+  const w = world(t);
+  const head = run(w.clone, "rev-parse", "origin/feature/auth");
+  run(w.clone, "worktree", "add", "-q", w.path("mine"), "-b", "mine");
+  assert.match(
+    refusal(await w.go({ path: w.path("mine"), branch: "mine", handoff: head })),
+    /a folder that no cut made, and a cut at a Handoff makes its own Worktree/,
+  );
+  assert.match(refusal(await w.go({ path: w.path("other"), branch: "mine", handoff: head })), /holds mine/);
+  assert.match(refusal(await w.go({ path: w.path("x"), handoff: head })), /a cut names a branch or a commit/);
+  assert.match(
+    refusal(await w.go({ path: w.path("x"), branch: "r", handoff: head, from: "main" })),
+    /takes no `from` and no `expect`/,
+  );
+  assert.match(
+    refusal(await w.go({ path: w.path("x"), branch: "r", handoff: head, expect: "new" })),
+    /takes no `from` and no `expect`/,
+  );
+  assert.match(refusal(await w.go({ path: w.path("x"), branch: "r", handoff: head.slice(0, 12) })), /a full commit id/);
+});

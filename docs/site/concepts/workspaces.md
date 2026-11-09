@@ -137,6 +137,21 @@ an Agent that moves `HEAD` does not change what is pushed.
 jr2 has no Effect that removes a Worktree. To remove one, run `git worktree remove` in a `command`.
 [Cut a Worktree](../guides/cut-a-worktree.md) gives the procedure.
 
+## A nested Workspace and a Handoff
+
+The Sandbox is the security boundary. Inside one Sandbox, each Agent can change each file and each Worktree of the
+others. So a coder and a reviewer in one Workspace are a quick loop, not an independent review.
+
+For a final review, the body invokes a nested `workspace()`. It gets a new Sandbox, with its own clone of the Repo. The
+commit to review goes in as a [Handoff](../reference/glossary.md#handoff): the `ready` output of a cut in the parent,
+which the Machine passes through the door of the nested Workspace. The cut there, `{ path, handoff }`, makes a branch
+Worktree at that commit. Only the commit and its ancestors enter the new clone. The other files of the parent's Sandbox
+stay there.
+
+jr2 checks each field of a Handoff against the records of the run, because an Agent can write each field. A Handoff that
+no cut of an enclosing Workspace of the run made is `refused`. Each round of the final review is a new nested Workspace
+with a new Handoff. [Review in a nested Workspace](../guides/review-in-a-nested-workspace.md) gives the procedure.
+
 ## Large files and submodules
 
 A Repo that keeps its large files with Git LFS needs nothing from your Machine or your image. The commit's
@@ -364,6 +379,7 @@ The guides and the Reference give the refusal text of each rule.
 ## Read next
 
 - [Cut a Worktree](../guides/cut-a-worktree.md)
+- [Review in a nested Workspace](../guides/review-in-a-nested-workspace.md)
 - [Look inside a Sandbox](../guides/look-inside-a-sandbox.md)
 - [Add tools to the Sandbox](../guides/add-tools-to-the-sandbox.md)
 - [Size a Workspace](../guides/size-a-workspace.md)
@@ -378,6 +394,8 @@ The guides and the Reference give the refusal text of each rule.
   Sandbox lifecycle
 - [ADR-0075](../reference/decisions/0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md): a Machine cuts a
   Worktree, and the Workspace only clones
+- [ADR-0080](../reference/decisions/0080-a-nested-workspace-takes-a-handoff-at-its-cut.md): a nested Workspace takes a
+  Handoff at its cut
 - [ADR-0051](../reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md): a Repo is a slot
   on the `workspace()` and a cache on the node
 - [ADR-0053](../reference/decisions/0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md): a

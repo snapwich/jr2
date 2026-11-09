@@ -23,7 +23,7 @@ import { posix } from "node:path";
 import { z } from "zod";
 import { defineEvent, type EventAudience, type EventDef } from "@jr2/agent-protocol";
 import type { AgentDefinition, ThinkingLevel, WorkspaceAccess } from "./agent.ts";
-import { inputKeysOf, inputShapeOf, isEffect, type InputShape } from "./effect.ts";
+import { inputKeysOf, inputShapeOf, isEffect, oneOfHolds, type InputShape } from "./effect.ts";
 import { FAILURE_GUARD } from "./fail.ts";
 import { isGateSlot } from "./gate.ts";
 import { compileChart, durationMs, type LentParts, type OpenBodyDeclaration } from "./open-body.ts";
@@ -2097,22 +2097,29 @@ class Door {
       const given = Object.keys(input);
       const missing = shape.required.filter((k) => !given.includes(k));
       const extra = given.filter((k) => !keys.includes(k));
-      const ofOne = shape.oneOf?.filter((k) => given.includes(k)).length ?? 1;
-      if (missing.length || extra.length || ofOne !== 1) {
+      const ofOne = oneOfHolds(shape, given);
+      if (missing.length || extra.length || !ofOne) {
         this.fail(
           8,
           `${ipath}: the lent Effect "${inv.src}" takes ${takes}` +
             (missing.length ? `; missing: ${missing.join(", ")}` : "") +
             (extra.length ? `; not its input: ${extra.join(", ")}` : "") +
-            (ofOne !== 1 ? `; give one of ${shape.oneOf!.join(", ")}` : ""),
+            (!ofOne ? `; give one of ${shape.oneOf!.join(", ")}` : ""),
         );
       }
       if (parts?.kind === "command" && parts.cut && given.includes("detach") && given.includes("from")) {
         this.fail(8, `${ipath}: a detached cut takes no \`from\``);
       }
+      if (parts?.kind === "command" && parts.cut && given.includes("handoff") && given.includes("from")) {
+        this.fail(8, `${ipath}: a cut at a Handoff takes no \`from\``);
+      }
       for (const k of given.filter((g) => keys.includes(g))) {
         const v = (input as Record<string, unknown>)[k];
-        if (typeof v !== "string" && !isRef(v))
+        // A Handoff is a reference: the invoke checks its shape, and the cut checks it against the
+        // run's ledger (ADR-0080).
+        if (shape.handoffs?.includes(k)) {
+          if (!isRef(v)) this.fail(8, `${ipath}.${k}: a cut's Handoff is a reference, such as "{{context.handoff}}"`);
+        } else if (typeof v !== "string" && !isRef(v))
           this.fail(8, `${ipath}.${k}: an Effect's input slot takes a string or a reference`);
         else if ((k === "worktree" || k === "path") && typeof v === "string") this.checkLiteralPath(v, `${ipath}.${k}`);
       }

@@ -12,6 +12,7 @@ import { z } from "zod";
 import type { Duration, EffectLogic, ExecPortFactory, LaterOutcome, Unknown } from "./effect.ts";
 import { commandWith } from "./effect.ts";
 import { createExecPort } from "./harness-client.ts";
+import type { Handoff, HandoffCarrier } from "./handoff.ts";
 
 /** What a Worktree's name may start with: neither `.` nor `-`, and not the end of the path. */
 type NameStart =
@@ -100,7 +101,8 @@ export const BRANCH_NAME =
  * `input: z.object({ branch: branchName })`. */
 export const branchName = z.string().regex(BRANCH_NAME, "a branch name git and jr2's push both take");
 
-/** The input of a `worktree()`: a branch Worktree, or a detached one. */
+/** The input of a `worktree()`: a branch Worktree, a detached one, or a branch Worktree at a
+ * {@link Handoff}. */
 export type WorktreeInput =
   | {
       /** The root of the Worktree: `${context.workspace.repos.app}/<name>`, a constant word. */
@@ -112,6 +114,7 @@ export type WorktreeInput =
        * be that branch's tip, or the cut is `refused`. */
       from?: string;
       detach?: never;
+      handoff?: never;
       expect?: never;
     }
   | {
@@ -121,13 +124,27 @@ export type WorktreeInput =
       detach: string;
       branch?: never;
       from?: never;
+      handoff?: never;
+      expect?: never;
+    }
+  | {
+      path: AnyWorktreePath;
+      /** The commit of a `ready` cut of an enclosing Workspace of this run, which this nested
+       * Workspace takes (ADR-0080). The cut checks each field against the run's ledger. */
+      handoff: Handoff;
+      /** The branch of the new Worktree. Default: the Handoff's branch. A detached Handoff needs
+       * it. */
+      branch?: string;
+      detach?: never;
+      from?: never;
       expect?: never;
     };
 
 /** What a cut found. `held`: a cut made this Worktree earlier, so what is in it is earlier work;
  * `local`, a local branch; `remote`, `origin/<branch>`, now tracked; `none`, a new branch with no
- * upstream; `commit`, a detached cut. Open: a later value does not break an author's code. */
-export type WorktreeFound = "held" | "local" | "remote" | "none" | "commit" | (string & {});
+ * upstream; `commit`, a detached cut; `handoff`, a branch at a Handoff's commit. Open: a later
+ * value does not break an author's code. */
+export type WorktreeFound = "held" | "local" | "remote" | "none" | "commit" | "handoff" | (string & {});
 
 export type WorktreeReady<S extends string = string> = {
   outcome: "ready";
@@ -144,8 +161,8 @@ export type WorktreeReady<S extends string = string> = {
 };
 
 /** No Worktree, and nothing changed. The cause is a bad path, a name git or the push refuses, a
- * re-cut that does not agree with the first, a branch that another Worktree holds, an `expect` that does not hold, or a
- * name that the remote cannot confirm. */
+ * re-cut that does not agree with the first, a branch that another Worktree holds, an `expect` that does not hold, a
+ * name that the remote cannot confirm, or a Handoff that the run's ledger does not hold. */
 export type WorktreeRefused = { outcome: "refused"; reason: string };
 
 /** The output of a `worktree()`. `unknown`: its state exited while it ran, or the cut did not end. */
@@ -173,10 +190,12 @@ export type WorktreeOptions = {
   timeout?: Duration;
 };
 
-/** Over an injected port: the seam of the tests. */
+/** Over an injected port: the seam of the tests. `carrier` carries the files of a Handoff
+ * (ADR-0080). With none, nothing is carried, and the cut takes a Handoff's commit from its clone. */
 export function worktreeWith(
   portFactory: ExecPortFactory,
   options: WorktreeOptions = {},
+  carrier?: HandoffCarrier,
 ): EffectLogic<WorktreeInput, WorktreeOutput> {
   return commandWith(
     portFactory,
@@ -184,6 +203,7 @@ export function worktreeWith(
     { timeout: options.timeout ?? "10m" },
     undefined,
     { ...(options.expect !== undefined ? { expect: options.expect } : {}) },
+    carrier,
   ) as unknown as EffectLogic<WorktreeInput, WorktreeOutput>;
 }
 
@@ -195,6 +215,17 @@ export function worktreeWith(
  * `origin/<branch>`, tracked; a new branch from `from` or the Binding's base, with no upstream. With
  * `{ path, detach }`, the Worktree is forced to that commit and cleaned, each time. `path` is exactly
  * `/work/<slot>/<name>`. Each outcome is output: `ready`, `refused`, `unknown`.
+ *
+ * With `{ path, handoff, branch? }`, in a nested Workspace, the cut makes a branch Worktree at the
+ * {@link Handoff}'s commit: the `ready` output of a cut of an enclosing Workspace, which came in
+ * through the door (ADR-0080). The branch is `branch`, or the Handoff's branch, and it tracks
+ * `origin/<branch>` when the clone holds that branch. `found` is `"handoff"`. A re-cut of the path
+ * with the same Handoff is `held`; with another Handoff, it is `refused`. jr2 trusts no field of a
+ * Handoff: the cut finds it in the run's ledger, and refuses it when a fact does not agree. The
+ * commit must be the head of a `ready` cut of that path in an enclosing Workspace of this run (an
+ * earlier `ready` cut of the path is good too), on the Handoff's branch, in the same Repo. A
+ * Handoff of the nested Workspace's own cut, of a sibling or of another run is `refused`. A
+ * detached Handoff needs `branch`. `expect` does not apply to it.
  *
  * `expect` says if the branch can exist: `worktree({ expect: "new" })` refuses a branch that exists,
  * and `worktree({ expect: "existing" })` refuses a branch that does not exist. A run cannot change it.
@@ -237,9 +268,11 @@ export function worktreeWith(
  * ```
  *
  * @see docs/guides/cut-a-worktree.md
+ * @see docs/guides/review-in-a-nested-workspace.md
  * @see docs/concepts/workspaces.md
  * @see docs/concepts/effects.md
  * @see docs/reference/decisions/0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md
+ * @see docs/reference/decisions/0080-a-nested-workspace-takes-a-handoff-at-its-cut.md
  */
 export function worktree(options: WorktreeOptions = {}): EffectLogic<WorktreeInput, WorktreeOutput> {
   return worktreeWith(

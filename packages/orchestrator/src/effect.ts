@@ -37,7 +37,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ActorLogic, AnyActorRef, EventObject, Snapshot } from "xstate";
-import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
+import { ambientHandlesFor, enclosingHandlesFor, type AmbientHandles } from "./ambient.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import type { HttpMethod, HttpOutput, McpOutput, TextPart, WireAuth } from "./effector-wire.ts";
 import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
@@ -45,6 +45,13 @@ import { bindOpenSecretIn, type EffectorPortFactory, type OpenSecretIn } from ".
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
 import { open } from "./open.ts";
 import type { AnyWorktreePath, WorktreeOutput } from "./worktree.ts";
+import {
+  handoffShapeFault,
+  handoffSourceOf,
+  type Handoff,
+  type HandoffCarrier,
+  type HandoffSource,
+} from "./handoff.ts";
 import {
   effectBindingShape,
   openEffectLogic,
@@ -132,12 +139,23 @@ export type Arg<N extends string = string> = { readonly arg: N };
  */
 export const arg = <const N extends string>(name: N): Arg<N> => ({ arg: name });
 
-/** What an Effect's input takes: `required` keys, `optional` keys, and exactly one of `oneOf`. */
+/** What an Effect's input takes: `required` keys, `optional` keys, and exactly one of `oneOf`.
+ * `joins`: a key of `oneOf` that may come with the keys it names, which then do not count (a cut's
+ * `handoff` with its `branch`). `handoffs`: the keys whose value is a Handoff, not a string. */
 export type InputShape = {
   readonly required: readonly string[];
   readonly optional: readonly string[];
   readonly oneOf?: readonly string[];
+  readonly joins?: Readonly<Record<string, readonly string[]>>;
+  readonly handoffs?: readonly string[];
 };
+
+/** Does `given` hold exactly one key of the shape's `oneOf`, by its `joins`? True with no `oneOf`. */
+export function oneOfHolds(shape: InputShape, given: readonly string[]): boolean {
+  if (shape.oneOf === undefined) return true;
+  const picked = shape.oneOf.filter((k) => given.includes(k));
+  return picked.filter((k) => !picked.some((o) => shape.joins?.[o]?.includes(k))).length === 1;
+}
 
 /** A `command` Effect's plain data. */
 export type CommandParts = {
@@ -379,7 +397,13 @@ export function inputKeysOf(parts: EffectParts): string[] | undefined {
 }
 
 /** The shape of a cut's input. */
-const CUT_SHAPE: InputShape = { required: ["path"], optional: ["from"], oneOf: ["branch", "detach"] };
+const CUT_SHAPE: InputShape = {
+  required: ["path"],
+  optional: ["from"],
+  oneOf: ["branch", "detach", "handoff"],
+  joins: { handoff: ["branch"] },
+  handoffs: ["handoff"],
+};
 
 /** An Effect's input as a Chart's door and its start hold a Chart to it. Undefined where
  * {@link inputKeysOf} is. `worktree` is optional for a key the Workspace decides: the door makes it
@@ -539,7 +563,17 @@ export type DispatchOutput =
  * while it ran. A row replaces the one before it; none is dropped.
  */
 export type EffectRow =
-  | { state: "intent"; kind: "command"; slot: string; endpoint: string; placement: string; at: string }
+  /** A cut at a Handoff keeps what the ledger check found (ADR-0080): a restore asks the same
+   * source, and the transport reads it here. */
+  | {
+      state: "intent";
+      kind: "command";
+      slot: string;
+      endpoint: string;
+      placement: string;
+      handoff?: HandoffSource;
+      at: string;
+    }
   /** An http Effect's intent names its placement and no replica (ADR-0068): a restore asks every
    * replica. `idempotent` is the author's mark, which the restore rule reads. */
   | { state: "intent"; kind: "http" | "mcp"; slot: string; placement: "instance"; idempotent: boolean; at: string }
@@ -573,8 +607,9 @@ export type EffectRow =
   /** `sandbox`, `repo` and `branch`: the Workspace, the Repo Slot and the branch an Effect of the
    * Sandbox Effector ran on — every later push of its own (slot, branch) sends its pair, and the
    * newest push's unfinished sync runs again in `worktree`. `cut`: a `worktree()` that settled
-   * `ready`: its path and branch as fields, because a settled row drops its tail. A push, a
-   * credentialed command and a file body read their branch here. */
+   * `ready`: its path, branch and head as fields, because a settled row drops its tail. A push, a
+   * credentialed command and a file body read their branch here, and a cut at a Handoff its head
+   * (ADR-0080). */
   | {
       state: "settled";
       kind: EffectParts["kind"];
@@ -582,7 +617,7 @@ export type EffectRow =
       sandbox?: string;
       repo?: string;
       branch?: string;
-      cut?: { path: string; branch: string | null };
+      cut?: { path: string; branch: string | null; head?: string };
       output: unknown;
       at: string;
     }
@@ -932,6 +967,7 @@ export function commandWith<
   options?: Opt,
   effectorPorts?: EffectorPortFactory,
   cut?: CommandParts["cut"],
+  carrier?: HandoffCarrier,
 ): EffectLogic<CommandInput<A, Opt["pin"], Opt>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
 export function commandWith(
   portFactory: ExecPortFactory,
@@ -940,6 +976,8 @@ export function commandWith(
   effectorPorts: EffectorPortFactory = sandboxEffectorPort,
   // `worktree()` alone passes this: an author's command is at most once.
   cut?: CommandParts["cut"],
+  // `worktree()` alone: what carries a Handoff's files (ADR-0080).
+  carrier?: HandoffCarrier,
   // The implementation of the overloads above: each one states the input type.
 ): EffectLogic<any, CommandOutput> {
   if (argv === open) {
@@ -1023,7 +1061,7 @@ export function commandWith(
       if (snapshot.status !== "active") return;
       const run: Running = { controller: new AbortController(), started: false, timeoutMs: parts.timeoutMs };
       running.set(self, run);
-      void drive(self, system, snapshot, parts, portFactory, run).catch((error: unknown) => {
+      void drive(self, system, snapshot, parts, portFactory, run, carrier).catch((error: unknown) => {
         if (run.controller.signal.aborted) return;
         if (self.getSnapshot().status === "active") self.send({ type: "jr2.effect.error", error } as Fault);
       });
@@ -1058,11 +1096,23 @@ function cutOutputOf(raw: CommandOutput): WorktreeOutput {
 /** Why a cut's input cannot go to the Harness, or undefined. The door checked a Chart's literals; a
  * reference, a pick param or a mapper can still say this. No exec, no fetch. */
 function cutFaultOf(input: unknown, ambient: AmbientHandles): string | undefined {
-  const given = (input ?? {}) as { path?: unknown; branch?: unknown; detach?: unknown; from?: unknown };
+  const given = (input ?? {}) as {
+    path?: unknown;
+    branch?: unknown;
+    detach?: unknown;
+    from?: unknown;
+    handoff?: unknown;
+  };
   const fault = worktreePathFault(given.path, ambient, { cut: true });
   if (fault !== undefined) return fault;
+  if (given.handoff !== undefined) {
+    if (given.detach !== undefined) return "a cut at a Handoff takes no `detach`: it makes a branch";
+    if (given.from !== undefined) return "a cut at a Handoff takes no `from`: the Handoff's commit is the start";
+    if (given.branch !== undefined && typeof given.branch !== "string") return "a cut's `branch` is a string";
+    return handoffShapeFault(given.handoff);
+  }
   if ((given.branch === undefined) === (given.detach === undefined))
-    return "a cut names a branch, or a commit in `detach`";
+    return "a cut names a branch, a commit in `detach`, or a `handoff`";
   if (given.detach !== undefined && given.from !== undefined) return "a detached cut takes no `from`";
   for (const key of ["branch", "detach", "from"] as const) {
     if (given[key] !== undefined && typeof given[key] !== "string") return `a cut's \`${key}\` is a string`;
@@ -1072,9 +1122,26 @@ function cutFaultOf(input: unknown, ambient: AmbientHandles): string | undefined
 
 /** The cut's one argument: its input, its id (a re-send answers the first `found`), its static
  * `expect`, the base, sent each time, so that no checkout of an Agent's can move it, and the
- * Effect's timeout, so that the cut's ask for its large files ends in time to answer `refused`. */
-function cutRequestOf(id: string, input: unknown, parts: CommandParts, ambient: AmbientHandles): string {
+ * Effect's timeout, so that the cut's ask for its large files ends in time to answer `refused`.
+ * A cut at a Handoff sends what the ledger check found, never the input's fields: the branch and
+ * the commit, and no `expect` (ADR-0080). */
+function cutRequestOf(
+  id: string,
+  input: unknown,
+  parts: CommandParts,
+  ambient: AmbientHandles,
+  source?: HandoffSource,
+): string {
   const given = (input ?? {}) as { path: string; branch?: string; detach?: string; from?: string };
+  if (source !== undefined) {
+    return JSON.stringify({
+      id,
+      path: given.path,
+      branch: source.branch,
+      handoff: source.head,
+      timeoutMs: parts.timeoutMs,
+    });
+  }
   const slot = given.path.split("/")[2]!;
   const base = ambient.bases?.[slot];
   return JSON.stringify({
@@ -1097,6 +1164,7 @@ async function drive<I, O>(
   parts: CommandParts,
   portFactory: ExecPortFactory,
   run: Running,
+  carrier?: HandoffCarrier,
 ): Promise<void> {
   const binding = boundRun(system);
   const id = snapshot.effectId;
@@ -1115,7 +1183,7 @@ async function drive<I, O>(
       // this output, and runs nothing. A `ready` cut's row keeps its fields: a push reads them.
       const cutRow =
         parts.cut && output.outcome === "ready"
-          ? { sandbox, repo: output.slot, cut: { path: output.path, branch: output.branch } }
+          ? { sandbox, repo: output.slot, cut: { path: output.path, branch: output.branch, head: output.head } }
           : {};
       binding?.recordEffect?.(id, {
         state: "settled",
@@ -1204,9 +1272,30 @@ async function drive<I, O>(
       return;
     }
   }
+  // A cut at a Handoff: the ledger check (ADR-0080). A restored cut keeps the source its intent row
+  // names, so it asks the same source.
+  const given = snapshot.input as { path?: string; branch?: string; handoff?: Handoff } | undefined;
+  let source: HandoffSource | undefined;
+  if (parts.cut && given?.handoff !== undefined) {
+    source = row?.state === "intent" && row.kind === "command" && "handoff" in row ? row.handoff : undefined;
+    if (source === undefined) {
+      const checked = handoffSourceOf(given.handoff, {
+        rows: binding?.effectRows?.() ?? {},
+        chain: enclosingHandlesFor(self),
+        run: binding?.runId ?? "",
+        path: given.path!,
+        ...(given.branch !== undefined ? { branch: given.branch } : {}),
+      });
+      if ("refused" in checked) {
+        settled({ outcome: "refused", reason: checked.refused });
+        return;
+      }
+      source = checked.source;
+    }
+  }
   const req: ExecRequest = {
     argv: parts.cut
-      ? [...(parts.argv as string[]), cutRequestOf(id, snapshot.input, parts, ambient)]
+      ? [...(parts.argv as string[]), cutRequestOf(id, snapshot.input, parts, ambient, source)]
       : argvOf(slot, parts, snapshot.input),
     // Named, never left to the Harness: a spawn with no cwd runs in the image's own WORKDIR.
     cwd: parts.cut ? WORK_ROOT : ((worktree as string | undefined) ?? WORK_ROOT),
@@ -1224,8 +1313,26 @@ async function drive<I, O>(
     slot,
     endpoint: ambient.endpoint,
     placement: ambient.sandbox,
+    ...(source !== undefined ? { handoff: source } : {}),
     at: now(),
   });
+  if (source !== undefined && carrier !== undefined) {
+    // The transport's seam (ADR-0080): the files of the Handoff reach the child's Harness, under
+    // this Effect's id, before the cut starts. What the parent's files cause is `refused`; a source
+    // that does not answer is `unknown`.
+    const carried = await carrier({
+      effect: id,
+      source,
+      target: { endpoint: ambient.endpoint, sandbox: ambient.sandbox },
+      bearer: (sandbox) => binding?.harnessBearer?.(sandbox),
+      signal,
+    });
+    if (signal.aborted) return;
+    if (carried.outcome === "refused" || carried.outcome === "unknown") {
+      settled({ outcome: carried.outcome, reason: carried.reason });
+      return;
+    }
+  }
   run.started = true;
   mark({ stage: "started", text: req.argv.join(" ") });
   // One pass for every Effect but the kit's cut: a Harness that restarted knows no id, and a start

@@ -46,7 +46,8 @@ import {
   type ChartTransition,
   type ChartTransitions,
 } from "./chart.ts";
-import { inputShapeOf, isEffect, type Duration, type InputShape } from "./effect.ts";
+import { inputShapeOf, isEffect, oneOfHolds, type Duration, type InputShape } from "./effect.ts";
+import { handoffShapeFault } from "./handoff.ts";
 import { fail, FAILURE_GUARD, failureGuard } from "./fail.ts";
 import { agent } from "./harness-client.ts";
 import { SENT_BY } from "./party.ts";
@@ -885,14 +886,23 @@ const mapValues = <T, U>(o: Record<string, T>, fn: (v: T) => U): Record<string, 
 function effectInputFault(shape: InputShape, value: unknown): string | undefined {
   const given = typeof value === "object" && value !== null && !Array.isArray(value) ? Object.keys(value) : undefined;
   const known = [...shape.required, ...shape.optional, ...(shape.oneOf ?? [])];
+  // A Handoff's key takes a Handoff, whose shape is checked here; the cut checks it against the
+  // run's ledger (ADR-0080).
+  const fits = (k: string): boolean => {
+    const v = (value as Record<string, unknown>)[k];
+    return shape.handoffs?.includes(k) ? handoffShapeFault(v) === undefined : typeof v === "string";
+  };
   const ok =
     given !== undefined &&
     shape.required.every((k) => given.includes(k)) &&
-    given.every((k) => known.includes(k) && typeof (value as Record<string, unknown>)[k] === "string") &&
-    (shape.oneOf === undefined || shape.oneOf.filter((k) => given.includes(k)).length === 1);
+    given.every((k) => known.includes(k) && fits(k)) &&
+    oneOfHolds(shape, given);
+  const each = shape.handoffs?.length
+    ? `${shape.handoffs.join(", ")} a Handoff, and each other a string`
+    : "each a string";
   return ok
     ? undefined
-    : `its input resolved to ${JSON.stringify(value)}; it takes ${known.join(", ") || "nothing"}, each a string (ADR-0070)`;
+    : `its input resolved to ${JSON.stringify(value)}; it takes ${known.join(", ") || "nothing"}, ${each} (ADR-0070)`;
 }
 
 const checkedEffects = new WeakMap<object, UnknownActorLogic>();

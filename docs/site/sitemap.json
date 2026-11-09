@@ -277,6 +277,11 @@
               "source": "page"
             },
             {
+              "slug": "guides/review-in-a-nested-workspace",
+              "title": "Review in a nested Workspace",
+              "source": "page"
+            },
+            {
               "slug": "guides/run-a-command-or-call-a-url",
               "title": "Run a command or call a URL with an Effect",
               "source": "page"

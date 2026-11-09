@@ -1,0 +1,157 @@
+---
+title: Review in a nested Workspace
+description: Give a commit to a final reviewer in a new Sandbox, as a Handoff, and publish the commit that it approved.
+---
+
+Run the final review of a commit in a new [Sandbox](../reference/glossary.md#sandbox), with a new
+[Agent](../reference/glossary.md#agent) that sees only that commit.
+
+The Sandbox is the security boundary. Inside one Sandbox, each Agent can change each file, each Worktree and each object
+of the clone. Thus a coder and a reviewer in one [Workspace](../reference/glossary.md#workspace) are a quick loop, not
+an independent review. For a review that you can trust, the body of the coder's Workspace invokes a nested
+`workspace()`. The nested Workspace gets its own Sandbox and its own clone of the [Repo](../reference/glossary.md#repo).
+The commit goes in as a [Handoff](../reference/glossary.md#handoff), and it enters the clone only at the
+[Cut](../reference/glossary.md#cut) of the nested Workspace.
+
+In this [Workflow](../reference/glossary.md#workflow), a coder fixes a bug. A final reviewer in a nested Workspace
+reviews the commit. When it asks for changes, the coder works again, and a new nested Workspace reviews the new commit.
+When it approves, the parent pushes the commit that it approved. Save the file as `workflows/fix-with-final-review.ts`
+in your [Instance](../reference/glossary.md#instance):
+
+::: tabs key:provider
+
+== Anthropic
+
+<<< @/examples/guides/review-in-a-nested-workspace/anthropic/final-review.ts
+
+== Local
+
+<<< @/examples/guides/review-in-a-nested-workspace/local/final-review.ts
+
+:::
+
+Write your GitHub user name in place of `<you>`. The Agents use the model of the tab.
+[Push and sign a branch](push-and-sign-a-branch.md) tells how to give the push a credential.
+
+## Hand off a commit
+
+A Handoff is the `ready` output of a cut in the parent: `{ slot, path, branch, head }`. To get the commit that the coder
+made, cut the coder's Worktree again. A cut of the same path reads the Worktree, and `head` is the tip of the branch:
+
+<<< @/examples/guides/review-in-a-nested-workspace/anthropic/final-review.ts#reading
+
+The Machine keeps the Handoff in its context. jr2 adds no Effect and no state for it.
+
+## Take the Handoff at the cut
+
+The door of the nested Workspace takes the Handoff as data. Use the schema
+[`handoff`](../reference/authoring-surface/handoff.md) for its field:
+
+<<< @/examples/guides/review-in-a-nested-workspace/anthropic/final-review.ts#door
+
+The parent invokes the nested Workspace as each other actor:
+
+<<< @/examples/guides/review-in-a-nested-workspace/anthropic/final-review.ts#actor
+
+In the nested body, give the Handoff to [`worktree()`](../reference/authoring-surface/worktree.md) with
+`{ path, handoff }`:
+
+<<< @/examples/guides/review-in-a-nested-workspace/anthropic/final-review.ts#cutting
+
+The cut makes a branch Worktree at the commit of the Handoff:
+
+- The branch has the name of the parent's branch. To use a different name, add `branch` to the input:
+  `{ path, handoff, branch: "review/123" }`.
+- The branch tracks `origin/<branch>` when the remote has that branch.
+- `found` is `handoff`.
+- `expect` does not apply to a cut at a Handoff.
+
+jr2 does not trust a field of a Handoff. A door can get its input from a pick or from a
+[Chart](../reference/glossary.md#chart), and an Agent can write each field. Thus the cut finds the Handoff in the
+records of the run, and it refuses a Handoff when one fact does not agree:
+
+- A cut of the run made the commit at that path, in a Workspace that encloses the nested Workspace. A commit of an
+  earlier cut of the path is also good.
+- The branch of the Handoff is the branch of that cut.
+- The Repo Slot holds the same Repo in the two Workspaces.
+
+A Handoff of the nested Workspace's own cut, of a sibling Workspace or of a different run is refused. The refusal is the
+output `refused`, as each other refusal of a cut. Route it on the last arm of `onDone`. In the example, the nested body
+routes it to `fail()`.
+
+A detached Handoff has no branch. Give it one with `branch`, or the cut refuses it.
+
+## Run one nested Workspace for each round
+
+Invoke a new nested Workspace for each round of the final review, with the newest Handoff. A cut of the same path with a
+different Handoff is refused. Give the final reviewer what it must know of the earlier rounds through the door, as data.
+The example gives the notes of each round:
+
+<<< @/examples/guides/review-in-a-nested-workspace/anthropic/final-review.ts#round
+
+The parent and the nested Workspace end together. When the parent leaves the state that invoked it, jr2 stops the nested
+Workspace and deletes its Sandbox.
+
+## Publish the reviewed commit
+
+`push({ pin: true })` with `sha: handoff.head` pushes exactly the commit that the final reviewer approved, also when the
+coder made more commits after it:
+
+<<< @/examples/guides/review-in-a-nested-workspace/anthropic/final-review.ts#publishing
+
+You choose where to publish. The nested Workspace can also push its own Worktree: `push` is available in each Workspace.
+
+## What the final reviewer sees
+
+The final reviewer does not need to know jr2. In the nested Sandbox, git looks ordinary:
+
+- `/work/<slot>/default` is a clone of the Repo. `origin` is the real remote, and `git remote -v` shows only `origin`.
+- The Worktree holds a local branch, at the commit of the Handoff, with the name of the parent's branch.
+- `git log` shows the commits of the parent's Agents, with their authors and their messages.
+- Only the commit and its ancestors enter the clone. The other branches, files and caches of the parent's Sandbox stay
+  there.
+
+The final reviewer can run the tests of the commit in its own Sandbox.
+
+## Rules
+
+These settle as `refused`, and nothing changes. `<handoff>` is `the Handoff of <path> at <head>`:
+
+- no cut of the run made that commit at that path: `<handoff>: no ready cut of this run made that commit at that path`
+- the nested Workspace's own cut made it:
+  `<handoff>: this nested Workspace's own cut made it, and a Handoff comes from an enclosing Workspace`
+- a Workspace that does not enclose this one made it:
+  `<handoff>: a Workspace that does not enclose this one made it, and a Handoff comes from an enclosing Workspace`
+- the slot of the Handoff is not the slot of the cut: `<handoff>: the cut made it in Repo Slot "<slot>", not "<other>"`
+- the two Repo Slots hold different Repos:
+  `<handoff>: Repo Slot "<slot>" of the enclosing Workspace holds <url>, and Repo Slot "<slot>" here holds <url>: a Handoff stays in one Repo`
+- the branch of the Handoff is not the branch of the cut: `<handoff>: the cut made it on <branch>, not on <other>`
+- a detached Handoff with no `branch`:
+  `<handoff>: the Handoff is detached, so the cut names the branch: { path, handoff, branch }`
+- a value that is not a Handoff: ``a cut's `handoff` is a Handoff, { slot, path, branch, head }: <field>: <why>``
+- `from` or `detach` beside `handoff`: ``a cut at a Handoff takes no `from`: the Handoff's commit is the start`` or
+  ``a cut at a Handoff takes no `detach`: it makes a branch``
+- the clone does not hold the commit: `this clone does not hold the Handoff's commit <head>`
+- a local branch of that name at a different commit:
+  `the branch <branch> of this clone is at <sha>, not at the Handoff's commit <head>`
+- a different Worktree holds the branch: `<holder> holds <branch>: a cut at a Handoff makes its own Worktree`
+- a folder that no cut made: `<path> is a folder that no cut made, and a cut at a Handoff makes its own Worktree`
+- a re-cut with a different Handoff:
+  `<path> was cut at the Handoff <head>, not <other>: a nested Workspace takes one Handoff, so invoke a new one for the next`
+- a re-cut with no Handoff: `<path> was cut at the Handoff <head>, and a re-cut names that Handoff`
+- a Handoff at a path that a different cut made: `<path> was cut for <branch>, not at a Handoff`
+
+A Chart gives a Handoff as a reference, such as `"{{context.handoff}}"`. The door refuses a literal Handoff. A reference
+that resolves to a value that is not a Handoff is the error of that invoke.
+
+## Read next
+
+- [Workspaces](../concepts/workspaces.md#a-nested-workspace-and-a-handoff): a nested Workspace and a Handoff.
+- [Cut a Worktree](cut-a-worktree.md): the cut, its outcomes and its rules.
+- [Push and sign a branch](push-and-sign-a-branch.md): the `push` Effect and `pin`.
+- [Set an Agent's access and Dials](set-an-agents-access-and-dials.md): the quick review in one Workspace.
+- Reference: [`worktree`](../reference/authoring-surface/worktree.md),
+  [`handoff`](../reference/authoring-surface/handoff.md) and
+  [`Handoff`](../reference/authoring-surface/type-handoff.md).
+- [ADR-0080](../reference/decisions/0080-a-nested-workspace-takes-a-handoff-at-its-cut.md): a nested Workspace takes a
+  Handoff at its cut.

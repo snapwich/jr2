@@ -32,9 +32,12 @@ on real files (Considered options), and a probe tested the bundle range.
   The child's Workspace clones the real Repo, as each Workspace does, and its attach knows nothing of the Handoff. The
   cut makes a branch Worktree at `handoff.head`. The branch is `branch ?? handoff.branch`, so by default it has the
   parent's name. It tracks `origin/<branch>` when the clone holds that branch. `found` is `"handoff"`. A re-cut of the
-  path with the same Handoff is `held`, and a re-cut with another Handoff is `refused`. The cut at a Handoff does not
-  apply `expect`: the Handoff's head sets what the branch holds, whether or not the name is on the remote, and the
-  ledger check below takes the place of `expect`'s check.
+  path with the same Handoff is `held`, and a re-cut with another Handoff is `refused`. The child's Harness decides
+  these from its own record of the path, as for each re-cut (ADR-0075): two rounds' nested Workspaces can share one
+  Sandbox name ([ADR-0064](0064-a-workspace-waits-for-capacity.md)), so the run's ledger cannot tell their cuts apart,
+  and a new nested Workspace can take over the Sandbox of the last one. The cut at a Handoff does not apply `expect`:
+  the Handoff's head sets what the branch holds, whether or not the name is on the remote, and the ledger check below
+  takes the place of `expect`'s check.
 
 - **jr2 trusts no field of a Handoff.** A Handoff comes through a door, and a door's input can come from an Agent's pick
   or a Chart. So the cut finds the whole Handoff in the run's ledger, and refuses it when one fact does not agree:
@@ -49,7 +52,8 @@ on real files (Considered options), and a probe tested the bundle range.
   - `branch` is that row's branch. Without this check a Chart could forge `main`, and a signed push in the child would
     publish to `main`;
   - the child's branch is a name. A detached Handoff (`branch: null`) needs `branch` in the cut's input;
-  - the child's clone has no local branch of that name at another commit.
+  - the child's clone has no local branch of that name at another commit. The child's Harness checks this one at the
+    cut, as it checks each name of a cut (ADR-0075).
 
   Each of these is the Agent's word, so each settles as `refused`, with a reason, and changes nothing. A bad Handoff
   never goes to `onError`
@@ -58,9 +62,10 @@ on real files (Considered options), and a probe tested the bundle range.
   ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)). These checks are for a
   Handoff of the right shape. The shape is checked where an Agent's value enters. The Menu checks a pick against its
   schema, so a pick's Handoff of the wrong shape never reaches the nested door. A Chart is different: the door checks
-  only the literal parts of a Chart's `input` at its admission, and a reference such as `{ "$ref": "event.h" }` resolves
-  at the invoke. A wrong shape there is that invoke's error, as for each input that a Chart lends
-  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)).
+  only the literal parts of a Chart's `input` at its admission. It refuses a literal Handoff, so a Chart gives a Handoff
+  only as a reference, such as `{ "$ref": "context.h" }`, which resolves at the invoke. A wrong shape there is that
+  invoke's error, as for each input that a Chart lends ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)). A
+  value of the wrong shape that a Machine's own mapper gives settles the cut `refused` when it starts.
 
 - **What the ledger check holds, and what it leaves to the Machine.** The check holds that the commit is the head of a
   `ready` cut in an enclosing Workspace of the run, on that cut's branch. Which of those commits the child takes is the
@@ -132,9 +137,9 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
     the whole stream. The cut removes the folder when it settles.
 
   The child makes no request for a Handoff, so no credential of the child's domain reaches one: the Orchestrator sends a
-  bundle only for the source that the cut's own intent row records, never for a cut that the Machine did not ask for. A
-  re-cut that is `held` (the child's ledger holds a `ready` cut of the path with the same Handoff) needs no file, so the
-  Orchestrator uses neither leg for it, and it does not need the source.
+  bundle only for the source that the cut's own intent row records, never for a cut that the Machine did not ask for.
+  Only the child's Harness knows that a re-cut is `held`, so the Orchestrator carries the files for each cut at a
+  Handoff, and a `held` re-cut does not read them.
 
 - **One bound covers the bundle and its Git LFS objects together.** A Handoff is the parent Agents' files, and the
   Orchestrator serves each run of the Instance, so an Agent's file must not steer how much it carries. The source

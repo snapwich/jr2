@@ -53,3 +53,15 @@ export function ambientHandlesFor(self: AnyActorRef): AmbientHandles | undefined
   }
   return undefined;
 }
+
+/** Actor-side: the handles of each enclosing workspace, nearest first, via the actor parent chain.
+ * The first is the one {@link ambientHandlesFor} answers; each later one encloses it. What a cut at
+ * a Handoff reads to tell an enclosing Workspace from its own and from a sibling (ADR-0080). */
+export function enclosingHandlesFor(self: AnyActorRef): AmbientHandles[] {
+  const chain: AmbientHandles[] = [];
+  for (let ref = self._parent; ref; ref = ref._parent) {
+    const handles = byRef.get(ref);
+    if (handles) chain.push(handles);
+  }
+  return chain;
+}

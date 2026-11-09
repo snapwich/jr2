@@ -45,6 +45,8 @@ export type { HttpOutput } from "./effector-wire.ts";
 export { push } from "./sandbox-effect.ts";
 export type { PushOutput } from "./sandbox-effect.ts";
 export { branchName, isReady, readyOf, worktree } from "./worktree.ts";
+export { handoff } from "./handoff.ts";
+export type { Handoff } from "./handoff.ts";
 export type {
   AnyFramePath,
   AnyWorktreePath,

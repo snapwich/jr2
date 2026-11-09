@@ -63,10 +63,13 @@ export type CutRequest = {
   expect?: "new" | "existing";
   base?: string;
   timeoutMs?: number;
+  /** A cut at a Handoff (ADR-0080): the commit that the branch gets. The Orchestrator found it in
+   * the run's ledger, and `branch` names the branch. */
+  handoff?: string;
 };
 
-/** What a cut found at the path or under the name. */
-export type CutFound = "held" | "local" | "remote" | "none" | "commit";
+/** What a cut found at the path or under the name. `handoff`: a branch at a Handoff's commit. */
+export type CutFound = "held" | "local" | "remote" | "none" | "commit" | "handoff";
 
 export type CutAnswer =
   | {
@@ -115,6 +118,8 @@ export const BRANCH_NAME =
 
 /** A commit-ish a cut takes in `from` and `detach`: a commit id, or a name by the same rule. */
 const SHA = /^[0-9a-f]{7,40}$/;
+/** A full commit id: what a Handoff names. */
+const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /** The path rule: exactly `<root>/<slot>/<name>`, one segment, not `default`, no leading `.` or `-`. */
 export function pathFault(path: unknown, workRoot: string): string | undefined {
@@ -280,6 +285,8 @@ type CutRecord = {
   detach?: string;
   from?: string;
   found: CutFound;
+  /** The Handoff's commit, of a cut at a Handoff (ADR-0080). A re-cut with another is refused. */
+  handoff?: string;
   /** The commit a branch that this cut made started at. */
   start?: string;
   /** The commit that the last fill of a detached Worktree wrote: the next re-cut starts its index
@@ -579,6 +586,13 @@ export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> 
   if ((req.branch === undefined) === (req.detach === undefined)) return refused("a cut names a branch or a commit");
   if (req.detach !== undefined && req.from !== undefined) return refused("a detached cut takes no `from`");
   if (req.detach !== undefined && req.expect !== undefined) return refused("a detached cut takes no `expect`");
+  if (req.handoff !== undefined) {
+    if (req.branch === undefined) return refused("a cut at a Handoff names its branch");
+    if (req.from !== undefined || req.expect !== undefined)
+      return refused("a cut at a Handoff takes no `from` and no `expect`");
+    if (!COMMIT.test(req.handoff))
+      return refused(`a Handoff's commit is a full commit id, not ${JSON.stringify(req.handoff)}`);
+  }
   const fault =
     (req.branch !== undefined ? nameFault("branch", req.branch) : undefined) ??
     (req.from !== undefined ? nameFault("from", req.from) : undefined) ??
@@ -631,11 +645,17 @@ async function cutLocked(req: CutRequest, slot: string, c: Clone, paths: CutPath
   });
   const rec = await readRecord(c, req.path);
   if (rec !== undefined) return recut(req, rec, c, ready);
-  if (await exists(req.path)) return adopt(req, c, ready);
+  if (await exists(req.path)) {
+    if (req.handoff !== undefined) {
+      return refused(`${req.path} is a folder that no cut made, and a cut at a Handoff makes its own Worktree`);
+    }
+    return adopt(req, c, ready);
+  }
   // A folder an Agent removed leaves an entry behind; a kill can leave it `locked`.
   const stray = await adminOf(c, req.path);
   if (stray) await rm(stray, { recursive: true, force: true });
   await c.git(c.clone, ["worktree", "prune"]);
+  if (req.handoff !== undefined) return firstHandoff(req, c, paths, ready);
   return req.detach !== undefined ? firstDetach(req, c, paths, ready) : firstBranch(req, c, paths, ready);
 }
 
@@ -864,6 +884,17 @@ async function alternatesOf(clone: string): Promise<string> {
 
 /** A path a cut made. The record says what it is, and a re-cut agrees with it or is refused. */
 async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf): Promise<CutAnswer> {
+  // One nested Workspace takes one Handoff (ADR-0080): a re-cut agrees with it, or is refused.
+  if (rec.handoff !== undefined && req.handoff !== rec.handoff) {
+    return refused(
+      req.handoff === undefined
+        ? `${req.path} was cut at the Handoff ${rec.handoff}, and a re-cut names that Handoff`
+        : `${req.path} was cut at the Handoff ${rec.handoff}, not ${req.handoff}: a nested Workspace takes one Handoff, so invoke a new one for the next`,
+    );
+  }
+  if (rec.handoff === undefined && req.handoff !== undefined) {
+    return refused(`${req.path} was cut for ${rec.branch ?? "a detached commit"}, not at a Handoff`);
+  }
   if (rec.branch !== undefined && req.branch !== rec.branch) {
     return refused(`${req.path} was cut for ${rec.branch}, not ${req.branch ?? "a detached commit"}`);
   }
@@ -984,18 +1015,29 @@ async function firstBranch(req: CutRequest, c: Clone, paths: CutPaths, ready: Re
       ...(found === "remote" ? { upstream: true } : {}),
     },
   };
+  return makeBranch(c, rec, ready, stale);
+}
+
+/**
+ * Make the branch Worktree that `rec` names, at `rec.start`: the branch when the record says that
+ * the cut makes it, its upstream when the record says so, the folder, and its files. The record is
+ * written first, and a failure runs it backward.
+ */
+async function makeBranch(c: Clone, rec: CutRecord, ready: ReadyOf, stale: string | undefined): Promise<CutAnswer> {
+  const branch = rec.branch!;
+  const start = rec.start!;
   await writeRecord(c, rec);
   const failed = async (r: Git): Promise<CutAnswer> => {
     await undo(c, rec);
     return refused(r.err);
   };
-  if (local === undefined) {
+  if (rec.made.branch) {
     const made = await steady(() =>
       c.git(c.clone, ["update-ref", `refs/heads/${branch}`, start, "0000000000000000000000000000000000000000"]),
     );
     if (made.code !== 0) return failed(made);
   }
-  if (found === "remote") {
+  if (rec.made.upstream) {
     for (const [key, value] of [
       [`branch.${branch}.remote`, "origin"],
       [`branch.${branch}.merge`, `refs/heads/${branch}`],
@@ -1004,12 +1046,57 @@ async function firstBranch(req: CutRequest, c: Clone, paths: CutPaths, ready: Re
       if (set.code !== 0) return failed(set);
     }
   }
-  const add = await steady(() => c.git(c.clone, ["worktree", "add", "--no-checkout", "--", req.path, branch]));
+  const add = await steady(() => c.git(c.clone, ["worktree", "add", "--no-checkout", "--", rec.path, branch]));
   if (add.code !== 0) return failed(add);
-  const fault = await fill(c, req.path, start, { detach: false });
+  const fault = await fill(c, rec.path, start, { detach: false });
   if (fault !== undefined) return failed({ code: 1, out: "", err: fault });
   await writeRecord(c, { ...rec, state: "done" });
-  return ready(branch, start, found, stale);
+  return ready(branch, start, rec.found, stale);
+}
+
+/**
+ * A cut at a Handoff (ADR-0080): a branch Worktree at the Handoff's commit, which the Orchestrator
+ * found in the run's ledger. The branch is `req.branch`. It tracks `origin/<branch>` when the clone
+ * holds that, and a local branch of that name must be at the commit. The commit must be in the
+ * clone after the fetch.
+ *
+ * The transport's seam: the files of a Handoff (a bundle of the parent's range, and its large
+ * files) land the commit in the clone before the check below. With no files, the clone holds the
+ * commit only when the remote has it: the range is empty.
+ */
+async function firstHandoff(req: CutRequest, c: Clone, paths: CutPaths, ready: ReadyOf): Promise<CutAnswer> {
+  const branch = req.branch!;
+  const head = req.handoff!;
+  const holder = (await worktrees(c)).find((w) => w.branch === branch);
+  if (holder !== undefined) return refused(`${holder.path} holds ${branch}: a cut at a Handoff makes its own Worktree`);
+  const stale = await fetched(c, paths);
+  if ((await refOf(c, head)) !== head) {
+    return refused(
+      `this clone does not hold the Handoff's commit ${head}${stale ? `, and the fetch said: ${stale}` : ""}`,
+    );
+  }
+  const local = await refOf(c, `refs/heads/${branch}`);
+  if (local !== undefined && local !== head) {
+    return refused(`the branch ${branch} of this clone is at ${local}, not at the Handoff's commit ${head}`);
+  }
+  const remote = local === undefined ? await refOf(c, `refs/remotes/origin/${branch}`) : undefined;
+  const lfs = await c.largeFiles(head);
+  if (lfs !== undefined) return refused(lfs);
+  const rec: CutRecord = {
+    state: "cutting",
+    id: req.id,
+    path: req.path,
+    branch,
+    handoff: head,
+    found: "handoff",
+    start: head,
+    made: {
+      folder: true,
+      ...(local === undefined ? { branch: true } : {}),
+      ...(remote !== undefined ? { upstream: true } : {}),
+    },
+  };
+  return makeBranch(c, rec, ready, stale);
 }
 
 /** Read the request, cut, and print one JSON line. A fault here is no outcome: a non-zero exit, which

@@ -187,11 +187,11 @@ test("the door on a cut: inputShapeOf, and exact words", async () => {
   assert.equal(await door(withCut({ src: "cut", input: { path: "/work/app/x", detach: "abc" }, onDone })), "admitted");
   assert.match(
     await door(withCut({ src: "cut", input: { path: "/work/app/x", branch: "a", detach: "abc" }, onDone })),
-    /takes path, exactly one of branch, detach, and optionally from; give one of branch, detach/,
+    /takes path, exactly one of branch, detach, handoff, and optionally from; give one of branch, detach, handoff/,
   );
   assert.match(
     await door(withCut({ src: "cut", input: { path: "/work/app/x" }, onDone })),
-    /give one of branch, detach/,
+    /give one of branch, detach, handoff/,
   );
   assert.match(await door(withCut({ src: "cut", input: { branch: "a" }, onDone })), /missing: path/);
   assert.match(
@@ -210,6 +210,50 @@ test("the door on a cut: inputShapeOf, and exact words", async () => {
     await door(withCut({ src: "cut", input: { path: "/work/app/.x", branch: "a" }, onDone })),
     /not a Worktree path/,
   );
+});
+
+test("the door on a cut at a Handoff: a reference is admitted, with or without `branch`; a literal or `from` is not (ADR-0080)", async () => {
+  const withH = (input: unknown) => ({ ...withCut({ src: "cut", input, onDone }), context: { h: "" } });
+  assert.equal(await door(withH({ path: "/work/app/x", handoff: "{{context.h}}" })), "admitted");
+  assert.equal(await door(withH({ path: "/work/app/x", handoff: { $ref: "context.h" }, branch: "r" })), "admitted");
+  assert.match(
+    await door(withH({ path: "/work/app/x", handoff: { slot: "app", path: "/work/app/c", branch: "b", head: "a" } })),
+    /\.handoff: a cut's Handoff is a reference/,
+  );
+  assert.match(await door(withH({ path: "/work/app/x", handoff: "abc" })), /a cut's Handoff is a reference/);
+  assert.match(await door(withH({ path: "/work/app/x", handoff: "{{context.h}}", from: "v3" })), /takes no `from`/);
+  assert.match(
+    await door(withH({ path: "/work/app/x", handoff: "{{context.h}}", detach: "abc" })),
+    /give one of branch, detach, handoff/,
+  );
+});
+
+test("a Chart's Handoff reference that resolves to the wrong shape is that invoke's error, and no cut starts (ADR-0080)", async () => {
+  const r = rig();
+  const chart = {
+    context: { h: { slot: "app", path: "/work/app/c", head: "abc" }, why: "" },
+    initial: "cutting",
+    states: {
+      cutting: {
+        invoke: {
+          src: "cut",
+          input: { path: "/work/app/x", handoff: "{{context.h}}" },
+          onDone: "done",
+          onError: { target: "stopped", actions: [{ type: "set", path: "why", from: "{{event.error}}" }] },
+        },
+      },
+      done: { type: "final", output: { why: "cut" } },
+      stopped: { type: "final", output: { why: "{{context.why}}" } },
+    },
+  };
+  const host = new RunHost({ store: await mkStore() });
+  hosts.push(host);
+  host.register(r.def());
+  const { runId } = await host.start("charted", { endpoint: "http://h.invalid", chart: chart as unknown as ChartText });
+  await waitFor(() => host.status(runId) === undefined);
+  const { result } = (await host.read(runId))?.context as { result: { output: { why: string } } };
+  assert.match(result.output.why, /the lent Effect "cut": its input resolved to .*; it takes .*, handoff a Handoff/);
+  assert.equal(r.harness.starts.length, 0);
 });
 
 test("the door refuses to lend a cut that does not state `expect`", async () => {
