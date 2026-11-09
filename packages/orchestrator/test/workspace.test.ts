@@ -1759,6 +1759,45 @@ test("the hold mark: a body defect that the parent catches releases its Sandbox,
   await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
   assert.equal(renews(sandbox), settled, "no Lease renews a Workspace that is over");
   assert.equal(host.status(runId)?.status, "active", "the run lives on");
+  assert.deepEqual(destroyed(sandbox), [...sandbox.provisioned.keys()], "a caught defect deletes the Sandbox");
+});
+
+test("a round after a caught body defect places its Sandbox only after the host deleted the old one of the same name (ADR-0012, ADR-0080)", async () => {
+  // A final review in a nested Workspace whose body throws in round 1. The parent catches it, leaves
+  // the state, and invokes the same Machine again: the same actor path, so the same Sandbox name.
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const ws = workspace(defectBody, { repos: { app: APP } });
+  const parent = jr2Setup({ actors: { child: ws }, events: [approveDef] }).createMachine({
+    id: "rounds",
+    initial: "finalReview",
+    states: {
+      finalReview: { invoke: { id: "final", src: "child", onDone: "coding", onError: "coding" } },
+      coding: {
+        invoke: { src: "gate", input: { gate: "again", accepts: ["approve"] } },
+        on: { approve: "finalReview" },
+      },
+    },
+  });
+  host.register({ name: "rounds", machine: parent, provide: () => ({}) });
+  const { runId } = await host.start("rounds");
+  await waitFor(() => host.gates(runId).some((g) => g.gate.endsWith("hold")));
+  const name = workspaceName(runId, "final");
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.gates(runId).some((g) => g.gate.endsWith("again")));
+  // The answer comes later than the step that ended round 1, as an answer through the API does.
+  await new Promise((r) => setTimeout(r, 0));
+  host.sendToGate(runId, "again", { type: "approve" });
+  const named = () => sandbox.calls.filter((c) => !c.startsWith("renew:"));
+  await waitFor(() => named().filter((c) => c === `place:${name}`).length === 2);
+  const all = named();
+  const between = all.slice(all.indexOf(`place:${name}`) + 1, all.lastIndexOf(`place:${name}`));
+  assert.ok(
+    between.includes(`destroy:${name}`),
+    `round 2 placed ${name} over round 1's Sandbox: ${JSON.stringify(all)}`,
+  );
+  assert.equal(host.status(runId)?.status, "active");
+  await host.stop(runId);
 });
 
 /** A body whose region `a` holds a nested Workspace at its Gate, and whose region `b` throws at the
@@ -1787,7 +1826,7 @@ const defectWithReview = () =>
     },
   });
 
-test("a body defect that the parent catches stops the nested Workspace under that body: its Sandbox goes, and its Lease stops (ADR-0012, ADR-0021)", async () => {
+test("a body defect that the parent catches stops the nested Workspace under that body: both Sandboxes go, and the Leases stop (ADR-0012, ADR-0021)", async () => {
   // The defect ends the body and its wrapper, and the parent's `onError` catches it. xstate does not
   // stop the children of a Machine that ends `error`, so the host stops them, as for a Failure.
   const sandbox = new FakeSandbox();
@@ -1803,8 +1842,12 @@ test("a body defect that the parent catches stops the nested Workspace under tha
   assert.ok(nested !== undefined, "the nested Workspace has a Sandbox");
   host.sendToGate(runId, "hold", { type: "approve" });
   await waitFor(() => host.gates(runId).some((g) => g.gate.endsWith("after")));
-  await waitFor(() => destroyed(sandbox).length === 1);
-  assert.deepEqual(destroyed(sandbox), [nested], "the stop deletes the nested Sandbox; the body's own is left");
+  await waitFor(() => destroyed(sandbox).length === 2);
+  assert.deepEqual(
+    [...destroyed(sandbox)].sort(),
+    [nested, workspaceName(runId, "F-1")].sort(),
+    "the stop deletes the nested Sandbox, and the host deletes the Sandbox of the Workspace that the defect ended",
+  );
   const settled = renews(sandbox);
   await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
   assert.equal(renews(sandbox), settled, "no Lease renews a nested Workspace whose body is over");

@@ -70,25 +70,28 @@ key, the secrets it does not name, the push credentials and the Worktree (ADR-00
 
 Teardown fires **only when the body reaches a final state or fails**. A Failure from the body
 ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)) goes to a `failing` state,
-which runs the same `destroy` and then sends the Failure up unchanged; a defect goes up with no `onError`, and its
-Sandbox stays as evidence.
+which runs the same `destroy` and then sends the Failure up unchanged; a defect goes up with no `onError`. When no
+Machine catches the defect, the run faults, and the Sandbox stays as evidence. When a Machine above catches it, the host
+deletes the Sandbox after the step, as for a Workspace that a Machine stops (below): a later invoke of the same Machine
+gets the same name, and it must not take over the old pod.
 
 A Workspace that a Machine of the run stops before its body ends — a parent that leaves the Workspace's state on an
 `after` or an event, a Machine that a Failure or a defect ended when a Machine above catches it
 ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), the run's Machine at its
-final state — skips `teardown`, because a stop is synchronous. So the host deletes its Sandbox after the stop, unless a
-live Workspace of the run holds the same name then. A Workspace stopped in `placing`
-([ADR-0064](0064-a-workspace-waits-for-capacity.md)) goes the same way, after its write in flight settles. The host
-records each delete in the Orchestrator's store at the stop, marks it sent when it decides to delete, and removes the
-record when the delete is done. A restore redoes each record, whatever the run's status: an ended run's, a drifted or
-lost one's, and a restored run's before its tree starts. A restored record that was sent has no held check: the
-Workspace that holds its name is one that placed the name after the delete was sent, and waits for it. A Workspace that
-places a name before its delete is done waits for the delete. A stop by the host is not the Machine's and deletes
-nothing here: a park for a restart ([ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) keeps each Sandbox for the
-restored run, a fault keeps them as evidence, and a cancel deletes them itself or, with `keep`, keeps them. We rejected
-a delete by the wrapper when it is stopped: the wrapper cannot record the delete, so a crash between the stop and the
-delete left the Sandbox to the idle GC, and for 30 minutes it held its whole Size for nobody. We also rejected a record
-in the run's snapshot: a restore reads only the live runs, so the delete of a run that had ended was not redone.
+final state — skips `teardown`, because a stop is synchronous. A Workspace that a defect ended, when a Machine above
+catches the defect, skips it too. So the host deletes its Sandbox after the stop, unless a live Workspace of the run
+holds the same name then. A Workspace stopped in `placing` ([ADR-0064](0064-a-workspace-waits-for-capacity.md)) goes the
+same way, after its write in flight settles. The host records each delete in the Orchestrator's store at the stop, marks
+it sent when it decides to delete, and removes the record when the delete is done. A restore redoes each record,
+whatever the run's status: an ended run's, a drifted or lost one's, and a restored run's before its tree starts. A
+restored record that was sent has no held check: the Workspace that holds its name is one that placed the name after the
+delete was sent, and waits for it. A Workspace that places a name before its delete is done waits for the delete. A stop
+by the host is not the Machine's and deletes nothing here: a park for a restart
+([ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) keeps each Sandbox for the restored run, a fault keeps them as
+evidence, and a cancel deletes them itself or, with `keep`, keeps them. We rejected a delete by the wrapper when it is
+stopped: the wrapper cannot record the delete, so a crash between the stop and the delete left the Sandbox to the idle
+GC, and for 30 minutes it held its whole Size for nobody. We also rejected a record in the run's snapshot: a restore
+reads only the live runs, so the delete of a run that had ended was not redone.
 
 A body that needs its Sandbox kept alive — escalation, a human inspecting the worktree, a human-review gate — simply
 parks in a non-final state (typically holding a `gate`, ADR-0011). We considered and rejected an

@@ -4548,8 +4548,17 @@ export class RunHost {
           // A defect that the parent did not catch ends the parent too, and so on up. If no Machine
           // catches it, the run's fault is set in this same step, before this stop, so the stop
           // deletes no Sandbox: each stays as evidence (ADR-0012).
+          //
+          // A Workspace that a defect ended, and that its parent catches, did not run `teardown`
+          // (a Failure runs it in `failing`), and it never gets the `stopped` status. So the host
+          // deletes its Sandbox here, as for a Workspace that a Machine stops: a later invoke of the
+          // same Machine gets the same name, and it must not take over the old pod (ADR-0080).
           if (source !== undefined && source._parent === target && event.type === `xstate.error.actor.${source.id}`) {
-            queueMicrotask(() => stopTree(source));
+            const defect = !isFailure((event as { error?: unknown }).error);
+            queueMicrotask(() => {
+              stopTree(source);
+              if (defect) this.workspaceStopped(record.runId, binding, source);
+            });
           }
         }
         // A mechanism event that no transition took (ADR-0074): `agent.fault` or `workspace.lost`

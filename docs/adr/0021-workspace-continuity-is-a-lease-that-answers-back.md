@@ -64,14 +64,15 @@ end. And a restarted Harness answered a `continue` with no memory of the convers
   takes the error event, as for a Failure
   ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)). The Lease then stops,
   and so does each nested Workspace in that body, whose Sandbox the stop deletes
-  ([ADR-0012](0012-workspace-wrapper-machine.md)). A Lease that missed its stop sees at its next renewal that its
-  Workspace is over, and sets `released` then. A Lease does not set `released` on a name that a live Workspace of the
-  run holds: a parent that catches the defect can invoke the same Machine again, and the new Workspace gets the same
-  Sandbox name and a Lease of its own. A step of the wrapper from one state to the next writes nothing: the next state
-  has a Lease of its own. A park (`RunHost.stop`, [ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) and a process
-  shutdown write nothing, so a crash keeps the mark `held` and the restored run's Lease writes it again. A restore that
-  ends a run `drifted` or `lost` without hosting it starts no Lease, so the Orchestrator sets `released` on each CR with
-  that run's `jr2.dev/run` label. So `jr2 workspace rm` tells a held Sandbox from a free one with the cluster alone
+  ([ADR-0012](0012-workspace-wrapper-machine.md)). The host also deletes the Sandbox of the Workspace that the defect
+  ended. A Lease that missed its stop sees at its next renewal that its Workspace is over, and sets `released` then. A
+  Lease does not set `released` on a name that a live Workspace of the run holds: a parent that catches the defect can
+  invoke the same Machine again, and the new Workspace gets the same Sandbox name and a Lease of its own. A step of the
+  wrapper from one state to the next writes nothing: the next state has a Lease of its own. A park (`RunHost.stop`,
+  [ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) and a process shutdown write nothing, so a crash keeps the mark
+  `held` and the restored run's Lease writes it again. A restore that ends a run `drifted` or `lost` without hosting it
+  starts no Lease, so the Orchestrator sets `released` on each CR with that run's `jr2.dev/run` label. So
+  `jr2 workspace rm` tells a held Sandbox from a free one with the cluster alone
   ([ADR-0009](0009-cli-and-instance-interface.md)): the keepalive's age cannot tell it, because a renewal can be late by
   more than one interval and a few missed renewals are survivable.
 
