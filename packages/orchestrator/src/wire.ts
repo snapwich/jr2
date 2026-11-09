@@ -383,5 +383,8 @@ export const HANDOFF_CONTENT_TYPE = "application/x-jr2-handoff";
 /** The bound on the bundle and its Git LFS objects together, in bytes (ADR-0080). */
 export const HANDOFF_MAX_BYTES = 1024 ** 3;
 
+/** The bound on the number of Git LFS objects that go with one bundle (ADR-0080). */
+export const HANDOFF_MAX_OBJECTS = 100_000;
+
 /** The bundle step's deadline: the step's own time, from its start to its last byte (ADR-0080). */
 export const HANDOFF_DEADLINE_MS = 300_000;

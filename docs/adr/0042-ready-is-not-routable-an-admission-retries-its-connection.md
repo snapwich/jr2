@@ -47,7 +47,10 @@ windows more often. That is why the flake was degree-independent and serial runs
   buys nothing, so the bound makes a DROP cost about 2 s, not about 10.5 s. `dialFetch`
   (`packages/orchestrator/src/dial.ts`) holds it for the two calls that can be first to reach a Service just come into
   service: the attach ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)) to a Sandbox's, and the admission to a
-  Sandbox's (a Workspace with no Repo Slot skips the attach) or to the Instance Harness's after it restarts.
+  Sandbox's (a Workspace with no Repo Slot skips the attach) or to the Instance Harness's after it restarts. The carry
+  of a Handoff ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)) uses it too, for both of its legs:
+  the child's Harness can be just come into service, and the carry streams a body that the global `fetch` sends only
+  with `duplex: "half"`.
   - **The bound starts when the name lookup has answered.** Node cannot cancel a `getaddrinfo`, so a bound that cut the
     lookup would leave it holding one of libuv's pool threads (4 by default), and in a DNS outage the retries of
     concurrent attaches would fill the pool and stall every other lookup and file read in the process. The drop measured
@@ -57,14 +60,19 @@ windows more often. That is why the flake was degree-independent and serial runs
     global `fetch`'s own limit (undici's `headersTimeout` and `bodyTimeout`), so an attach or admission that took up to
     300 s before takes up to 300 s now, and a Harness whose node vanished mid-request cannot hold one for ever. The
     attach's fault then says that it got no answer from its Harness, not that it never reached it. TCP keepalive is not
-    used: Node sets only its first delay, and the kernel's default probes take about 11 minutes to give up.
+    used: Node sets only its first delay, and the kernel's default probes take about 11 minutes to give up. The caller
+    can set another idle bound: the carry of a Handoff sets 360 s, longer than the bundle step's deadline of 300 s, so a
+    step that the parent's files hold ends `refused` before the carry ends `unknown` (ADR-0080). The idle timer is the
+    socket's, so a byte in either direction resets it.
   - **An attach that loses the race to a Sandbox's loss is ended.** The Workspace wrapper fails the attach by name when
     the Sandbox is Lost or gone ([ADR-0021](0021-workspace-continuity-is-a-lease-that-answers-back.md)), and aborts the
     attach's signal, which closes its request to the Harness.
   - **jr2's own `fetch` over `node:http`, not undici's dispatcher.** The global `fetch` cannot shorten its connect
     timeout without an undici `Agent`, and Node does not export one (there is no `node:undici`). That would be one more
     dependency, and a second `fetch` implementation beside the global one, for one timeout. `dialFetch` is narrower than
-    `fetch` and refuses what it does not take: a `Request` input or a body that is not a string.
+    `fetch` and refuses what it does not take: a `Request` input, or a body that is not a string or a `ReadableStream`.
+    A `ReadableStream` body goes in chunks, as it is read: an error of the body ends the request, and the end of the
+    request cancels the body.
 - **Only never-delivered.** Admission is accept-and-queue
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)): a POST the Harness received but
   could not answer has already queued a Submission, so re-sending it would run the turn **twice** — a worse failure than

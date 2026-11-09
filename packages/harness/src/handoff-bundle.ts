@@ -12,6 +12,9 @@
 //     and once, then Git LFS objects by oid, each once, then `end`. Else the stream ends `refused`.
 //   - The bytes of each part are counted, and the bundle and the objects together never pass the
 //     bound (`HANDOFF_MAX_BYTES`): at a header that would pass it, the stream ends `refused`.
+//   - Each Git LFS object has at least one byte, and the objects are never more than
+//     `HANDOFF_MAX_OBJECTS`: at the next one, the stream ends `refused`. So the oids that this
+//     module holds have a bound, and an object of no bytes cannot go past the byte bound for free.
 //   - The deadline (`HANDOFF_DEADLINE_MS`) counts the step's own time, from the start to the last
 //     byte: the clock stops while the Harness holds the step paused for a reader that is behind,
 //     because a slow carry is not a fault of the parent's files. At the deadline, the step's whole
@@ -28,7 +31,13 @@ import { fileURLToPath } from "node:url";
 import { HARNESS_HOME, type ChildPolicy } from "./children.ts";
 import { pathFault } from "./cut.ts";
 import { SpawnerGoneError, SpawnError, type Spawned } from "./spawner.ts";
-import { HANDOFF_DEADLINE_MS, HANDOFF_MAX_BYTES, type HandoffFrame, type HandoffRequest } from "./wire.ts";
+import {
+  HANDOFF_DEADLINE_MS,
+  HANDOFF_MAX_BYTES,
+  HANDOFF_MAX_OBJECTS,
+  type HandoffFrame,
+  type HandoffRequest,
+} from "./wire.ts";
 
 /** The step's entry, beside this module: `/opt/jr2/src/handoff-bundle-main.ts` in a pod. */
 export const HANDOFF_BUNDLE_ENTRY = fileURLToPath(new URL("./handoff-bundle-main.ts", import.meta.url));
@@ -54,6 +63,8 @@ export type BundleOptions = {
   workRoot?: string;
   /** Default {@link HANDOFF_MAX_BYTES}. */
   maxBytes?: number;
+  /** Default {@link HANDOFF_MAX_OBJECTS}. */
+  maxObjects?: number;
   /** Default {@link HANDOFF_DEADLINE_MS}. */
   deadlineMs?: number;
   /** The step's entry. Default {@link HANDOFF_BUNDLE_ENTRY}; a test names another. */
@@ -76,12 +87,14 @@ export function bundleHandoff(
 ): ReadableStream<Uint8Array> {
   const workRoot = opts.workRoot ?? "/work";
   const maxBytes = opts.maxBytes ?? HANDOFF_MAX_BYTES;
+  const maxObjects = opts.maxObjects ?? HANDOFF_MAX_OBJECTS;
   const deadlineMs = opts.deadlineMs ?? HANDOFF_DEADLINE_MS;
   const slot = req.path.slice(workRoot.length + 1).split("/")[0]!;
   const input = {
     clone: `${workRoot}/${slot}/default`,
     head: req.head,
     maxBytes,
+    maxObjects,
     tmp: children.env.TMPDIR ?? "/tmp",
     path: children.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
   };
@@ -165,8 +178,16 @@ export function bundleHandoff(
       body = h.bundle;
       return push(line({ bundle: h.bundle }));
     }
-    if (keys === "lfs,size" && typeof h.lfs === "string" && OID.test(h.lfs) && size(h.size) && parts > 0) {
+    if (
+      keys === "lfs,size" &&
+      typeof h.lfs === "string" &&
+      OID.test(h.lfs) &&
+      size(h.size) &&
+      h.size > 0 &&
+      parts > 0
+    ) {
       if (oids.has(h.lfs)) return refuse(`the bundle step wrote the Git LFS object ${h.lfs} twice`);
+      if (oids.size >= maxObjects) return refuse(`the Handoff's files hold more than ${maxObjects} Git LFS objects`);
       if (!fits(h.size)) return;
       oids.add(h.lfs);
       parts += 1;

@@ -1,6 +1,7 @@
 // How jr2 dials a Service at a lifecycle edge (ADR-0042): the request that is the first to reach a
 // Service just coming into service — a Sandbox's attach (ADR-0063), an admission — and the one log
-// line that says what reaching it cost.
+// line that says what reaching it cost. The carry of a Handoff (ADR-0080) uses it for both of its
+// legs, with a longer idle bound and a body that streams.
 //
 // `dialFetch` is a `fetch` whose TCP CONNECT is bounded. A connection that does not open within
 // `connectTimeoutMs` fails as a connect failure (`syscall: "connect"`, so it never reached the
@@ -22,8 +23,9 @@
 //
 // A connected request has an IDLE bound, as the global `fetch` had (undici's 300 s headers and body
 // timeouts): no byte from the server for `idleTimeoutMs` ends it, so a server whose node vanished
-// mid-request cannot hold it for ever. One connection for each request, never a pooled one, so each
-// try is a new connection.
+// mid-request cannot hold it for ever. A caller can set another bound (`idleTimeoutMs`). The timer is
+// the socket's, so a byte in either direction resets it. One connection for each request, never a
+// pooled one, so each try is a new connection.
 
 import { request, type ClientRequestArgs, type IncomingMessage } from "node:http";
 import net from "node:net";

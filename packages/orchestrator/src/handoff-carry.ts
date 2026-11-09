@@ -11,8 +11,11 @@
 // The source's stream comes from a process of the parent Sandbox, through its Harness. The Harness
 // writes each frame in its own words, but the Orchestrator serves every run of the Instance, so it
 // trusts the stream no more than it must: each header is a bounded JSON line in the order of the
-// form, the parts' bytes are counted against their headers, and the parts together never pass the
-// bound (`HANDOFF_MAX_BYTES`). The child's leg gets only frames that passed these checks.
+// form, the parts' bytes are counted against their headers, the parts together never pass the
+// bound (`HANDOFF_MAX_BYTES`), and the Git LFS objects are never more than `HANDOFF_MAX_OBJECTS`,
+// each with at least one byte. So what the carry holds (one oid for each object) and what it sends
+// have a bound that no file of the parent's can move. The child's leg gets only frames that passed
+// these checks.
 //
 // How each end maps to the cut's outcome (ADR-0080, "Two kinds of transport error"):
 //   - `nothing`: the range is empty. No PUT; the cut takes the commit from its clone.
@@ -21,9 +24,9 @@
 //     that is not regular, the source's bound), or a stream past the bound here: `refused`. A cut
 //     again would meet the same files. The child's leg is ended before its `end`, so the child
 //     keeps nothing.
-//   - `unknown` from the source, no answer, an HTTP error, a stream that ends before its last frame
-//     or out of its form, a stall, or a child that does not take the files: `unknown`. The Machine
-//     can cut again.
+//   - `unknown` from the source, no answer, an HTTP error, a stream that ends before its last frame,
+//     breaks or is out of its form, a stall, a carry past its time (`HANDOFF_CARRY_MS`), or a child
+//     that does not take the files: `unknown`. The Machine can cut again.
 //
 // The carry reads the source and replaces the child's files under one id, so it is safe to run
 // again: the Orchestrator runs it before each send of the cut's start, and a restored run runs it
@@ -35,6 +38,7 @@ import {
   HANDOFF_CONTENT_TYPE,
   HANDOFF_DEADLINE_MS,
   HANDOFF_MAX_BYTES,
+  HANDOFF_MAX_OBJECTS,
   type HandoffFrame,
   type HandoffLandFrame,
   type HandoffRequest,
@@ -49,6 +53,21 @@ import {
  */
 export const HANDOFF_IDLE_MS = HANDOFF_DEADLINE_MS + 60_000;
 
+/** The slowest carry that jr2 takes: 1 MiB/s, so the bound's 1 GiB takes about 17 minutes. */
+const MIN_BYTES_PER_MS = 1024 ** 2 / 1000;
+
+/**
+ * The longest time a carry takes, from the first ask of the source to the child's answer, tries
+ * again included: the bound at the slowest rate, and one idle wait. The idle wait alone does not
+ * end a carry that a child (or a source) keeps alive with a byte now and then, and the cut's
+ * `timeout` starts only with the cut's exec, after the carry. Past it, the carry is `unknown`, and
+ * the source's step and the child's request end.
+ */
+export const HANDOFF_CARRY_MS = Math.ceil(HANDOFF_MAX_BYTES / MIN_BYTES_PER_MS) + HANDOFF_IDLE_MS;
+
+/** The dial of both legs: a connected leg with no byte for {@link HANDOFF_IDLE_MS} ends. */
+export const HANDOFF_DIAL = { idleTimeoutMs: HANDOFF_IDLE_MS } as const;
+
 /** The longest header line that the carry reads. A refusal's reason can hold a line of git's. */
 const MAX_LINE = 64 * 1024;
 
@@ -59,10 +78,16 @@ const OID = /^[0-9a-f]{64}$/;
 const RETRY_WAITS_MS = [250, 500, 1_000, 2_000];
 
 export type CarryOptions = {
-  /** Default: `dialFetch` with {@link HANDOFF_IDLE_MS} as its idle bound. */
+  /** Default: `dial(HANDOFF_DIAL)`, with {@link HANDOFF_IDLE_MS} as its idle bound. */
   fetch?: typeof globalThis.fetch;
+  /** Makes the default `fetch` from its options. Default `dialFetch`; a test sees the options. */
+  dial?: typeof dialFetch;
   /** Default {@link HANDOFF_MAX_BYTES}. */
   maxBytes?: number;
+  /** Default {@link HANDOFF_MAX_OBJECTS}. */
+  maxObjects?: number;
+  /** Default {@link HANDOFF_CARRY_MS}. */
+  carryMs?: number;
   /** The waits before each new try of a carry that never reached a Harness. */
   retryWaitsMs?: readonly number[];
 };
@@ -71,15 +96,38 @@ type Carried = Awaited<ReturnType<HandoffCarrier>>;
 
 /** The Orchestrator's carrier of a Handoff's files: the transport of `worktree()` (ADR-0080). */
 export function handoffCarrier(options: CarryOptions = {}): HandoffCarrier {
-  const fetchImpl = options.fetch ?? dialFetch({ idleTimeoutMs: HANDOFF_IDLE_MS });
-  const maxBytes = options.maxBytes ?? HANDOFF_MAX_BYTES;
+  const fetchImpl = options.fetch ?? (options.dial ?? dialFetch)(HANDOFF_DIAL);
+  const bounds = {
+    maxBytes: options.maxBytes ?? HANDOFF_MAX_BYTES,
+    maxObjects: options.maxObjects ?? HANDOFF_MAX_OBJECTS,
+  };
+  const carryMs = options.carryMs ?? HANDOFF_CARRY_MS;
   const waits = options.retryWaitsMs ?? RETRY_WAITS_MS;
   return async (args) => {
-    for (let attempt = 0; ; attempt++) {
-      const result = await carryOnce(fetchImpl, maxBytes, args);
-      if (!("retry" in result)) return result;
-      if (attempt >= waits.length || args.signal.aborted) return notCarried(result.retry);
-      await sleep(waits[attempt]!, args.signal);
+    // The carry's own time: its end aborts both legs, as a stop of the cut does, but settles.
+    const late = new AbortController();
+    const timer = setTimeout(() => late.abort(new Error("the carry passed its time")), carryMs);
+    const signal = AbortSignal.any([args.signal, late.signal]);
+    const pastTime = notCarried(`the carry passed its time of ${Math.round(carryMs / 1000)} s`);
+    try {
+      for (let attempt = 0; ; attempt++) {
+        let result: Carried | { retry: string };
+        try {
+          result = await carryOnce(fetchImpl, bounds, { ...args, signal });
+        } catch (err) {
+          if (late.signal.aborted && !args.signal.aborted) return pastTime;
+          throw err;
+        }
+        // A fault that the end of the time caused is told as the end of the time.
+        if (late.signal.aborted && !args.signal.aborted && ("retry" in result || result.outcome === "unknown")) {
+          return pastTime;
+        }
+        if (!("retry" in result)) return result;
+        if (attempt >= waits.length || args.signal.aborted) return notCarried(result.retry);
+        await sleep(waits[attempt]!, signal);
+      }
+    } finally {
+      clearTimeout(timer);
     }
   };
 }
@@ -96,9 +144,10 @@ const refusedFor = (source: HandoffSource, reason: string): Carried => ({
 /** One carry. `retry`: no connection to a Harness opened, so nothing was read or sent. */
 async function carryOnce(
   fetchImpl: typeof globalThis.fetch,
-  maxBytes: number,
+  bounds: Bounds,
   args: Parameters<HandoffCarrier>[0],
 ): Promise<Carried | { retry: string }> {
+  const { maxBytes } = bounds;
   const { source, from, target, signal } = args;
   const ask: HandoffRequest = { path: source.path, head: source.head };
   let answer: Response;
@@ -121,7 +170,7 @@ async function carryOnce(
   const frames = new FrameReader(answer.body!, MAX_LINE);
   try {
     const first = await frames.header();
-    if ("fault" in first) return notCarried(`the source Harness's answer ${first.fault}`);
+    if ("fault" in first) return notCarried(first.fault);
     const frame = first.frame;
     if ("nothing" in frame) return { outcome: "nothing" };
     if ("refused" in frame) return refusedFor(source, frame.refused);
@@ -132,13 +181,14 @@ async function carryOnce(
     // The pipe: what the child's leg pulls, read from the source and checked on the way.
     let stop: Carried | undefined;
     let ended = false;
-    const parts = forward(frames, frame.bundle, maxBytes, (end) => {
+    const parts = forward(frames, frame.bundle, bounds, (end) => {
       if (end === "end") ended = true;
       else stop = end.stop === "refused" ? refusedFor(source, end.reason) : notCarried(end.reason);
     });
     const body = new ReadableStream<Uint8Array>(
       {
         async pull(ctrl) {
+          // A read of the source never throws here: a break of its stream is a stop (`FrameReader`).
           const next = await parts.next();
           if (next.done) {
             if (stop !== undefined) ctrl.error(new Error("the carry stopped"));
@@ -185,6 +235,9 @@ async function carryOnce(
   }
 }
 
+/** The bounds of one carry: the bytes of the parts together, and the number of Git LFS objects. */
+type Bounds = { maxBytes: number; maxObjects: number };
+
 /** What ends the forward: the source's `end`, or a stop with the cut's outcome. */
 type ForwardEnd = "end" | { stop: "refused" | "unknown"; reason: string };
 
@@ -197,11 +250,12 @@ type ForwardEnd = "end" | { stop: "refused" | "unknown"; reason: string };
 async function* forward(
   frames: FrameReader,
   bundle: number,
-  maxBytes: number,
+  { maxBytes, maxObjects }: Bounds,
   onEnd: (end: ForwardEnd) => void,
 ): AsyncGenerator<Uint8Array, void, undefined> {
   // The bundle's size is within the bound: the caller checked it.
   let total = bundle;
+  // At most `maxObjects` oids: the next one past it ends the carry first.
   const seen = new Set<string>();
   const out = (frame: HandoffLandFrame) => Buffer.from(`${JSON.stringify(frame)}\n`);
   const counted = (size: number): boolean => {
@@ -214,7 +268,7 @@ async function* forward(
   let part = bundle;
   for (;;) {
     const got = await frames.header();
-    if ("fault" in got) return onEnd({ stop: "unknown", reason: `the source Harness's answer ${got.fault}` });
+    if ("fault" in got) return onEnd({ stop: "unknown", reason: got.fault });
     const frame = got.frame;
     if ("refused" in frame) return onEnd({ stop: "refused", reason: frame.refused });
     if ("unknown" in frame) return onEnd({ stop: "unknown", reason: `the source Harness: ${frame.unknown}` });
@@ -224,6 +278,7 @@ async function* forward(
       }
       yield out({ data: frame.data });
       for await (const chunk of frames.bytes(frame.data)) yield chunk;
+      if (frames.broke !== undefined) return onEnd({ stop: "unknown", reason: frames.broke });
       if (frames.short) return onEnd({ stop: "unknown", reason: "the source Harness's stream ended in a part" });
       part -= frame.data;
       continue;
@@ -241,6 +296,9 @@ async function* forward(
     if ("lfs" in frame) {
       if (seen.has(frame.lfs)) {
         return onEnd({ stop: "unknown", reason: `the source Harness's answer has the object ${frame.lfs} twice` });
+      }
+      if (seen.size >= maxObjects) {
+        return onEnd({ stop: "refused", reason: `its files hold more than ${maxObjects} Git LFS objects` });
       }
       seen.add(frame.lfs);
       if (!counted(frame.size)) return;
@@ -262,6 +320,8 @@ class FrameReader {
   private done = false;
   /** The stream ended in the middle of the last `bytes()`. */
   short = false;
+  /** Why the source's stream broke (a reset, the idle bound, an abort), as the carry's reason. */
+  broke: string | undefined;
 
   private readonly maxLine: number;
 
@@ -272,7 +332,14 @@ class FrameReader {
 
   private async fill(): Promise<boolean> {
     if (this.done) return false;
-    const next = await this.reader.read();
+    let next: Awaited<ReturnType<typeof this.reader.read>>;
+    try {
+      next = await this.reader.read();
+    } catch (err) {
+      this.done = true;
+      this.broke = `the source Harness's stream broke: ${transportDetail(err)}`;
+      return false;
+    }
     if (next.done) {
       this.done = true;
       return false;
@@ -281,20 +348,22 @@ class FrameReader {
     return true;
   }
 
-  /** The next header, or what is wrong with it. */
+  /** The next header, or what is wrong with it (the carry's reason). */
   async header(): Promise<{ frame: HandoffFrame } | { fault: string }> {
     for (;;) {
       const nl = this.buf.indexOf(0x0a);
       if (nl >= 0) {
-        if (nl > this.maxLine) return { fault: "has a header longer than its form" };
+        if (nl > this.maxLine) return { fault: "the source Harness's answer has a header longer than its form" };
         const line = this.buf.subarray(0, nl).toString("utf8");
         this.buf = this.buf.subarray(nl + 1);
         const frame = frameOf(line);
-        if (frame === undefined) return { fault: "has a header out of its form" };
+        if (frame === undefined) return { fault: "the source Harness's answer has a header out of its form" };
         return { frame };
       }
-      if (this.buf.length > this.maxLine) return { fault: "has a header longer than its form" };
-      if (!(await this.fill())) return { fault: "ended before its last frame" };
+      if (this.buf.length > this.maxLine)
+        return { fault: "the source Harness's answer has a header longer than its form" };
+      if (!(await this.fill()))
+        return { fault: this.broke ?? "the source Harness's answer ended before its last frame" };
     }
   }
 
@@ -322,7 +391,9 @@ class FrameReader {
 }
 
 /** One header line as a frame, or undefined when it is out of the form: one JSON object, with
- * exactly the keys of one kind of frame and values of their types. */
+ * exactly the keys of one kind of frame and values of their types. A Git LFS object has at least one
+ * byte: git-lfs stores no empty file, and an object of no bytes would cost nothing against the
+ * bound. */
 function frameOf(line: string): HandoffFrame | undefined {
   let v: unknown;
   try {
@@ -338,7 +409,7 @@ function frameOf(line: string): HandoffFrame | undefined {
     case "bundle":
       return size(o.bundle) && (o.bundle as number) > 0 ? { bundle: o.bundle as number } : undefined;
     case "lfs,size":
-      return typeof o.lfs === "string" && OID.test(o.lfs) && size(o.size)
+      return typeof o.lfs === "string" && OID.test(o.lfs) && size(o.size) && (o.size as number) > 0
         ? { lfs: o.lfs, size: o.size as number }
         : undefined;
     case "data":

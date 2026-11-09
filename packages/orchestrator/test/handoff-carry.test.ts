@@ -12,8 +12,8 @@ import { duplexPair, type Duplex } from "node:stream";
 import { test } from "node:test";
 import { dialFetch } from "../src/dial.ts";
 import type { HandoffCarrier, HandoffSource } from "../src/handoff.ts";
-import { handoffCarrier, HANDOFF_IDLE_MS } from "../src/handoff-carry.ts";
-import { HANDOFF_CONTENT_TYPE, HANDOFF_DEADLINE_MS } from "../src/wire.ts";
+import { handoffCarrier, HANDOFF_CARRY_MS, HANDOFF_IDLE_MS } from "../src/handoff-carry.ts";
+import { HANDOFF_CONTENT_TYPE, HANDOFF_DEADLINE_MS, HANDOFF_MAX_BYTES, HANDOFF_MAX_OBJECTS } from "../src/wire.ts";
 
 const H = "a".repeat(40);
 const OID1 = "1".repeat(64);
@@ -254,8 +254,24 @@ test("a stream out of its form is `unknown`: the source Harness writes each fram
     ["a part with fewer bytes", wire({ bundle: 3 }, { data: 2 }, "ab", { end: true }), /fewer bytes than its header/],
     [
       "an object twice",
-      wire({ bundle: 1 }, { data: 1 }, "a", { lfs: OID1, size: 0 }, { lfs: OID2, size: 0 }, { lfs: OID1, size: 0 }),
+      wire(
+        { bundle: 1 },
+        { data: 1 },
+        "a",
+        { lfs: OID1, size: 1 },
+        { data: 1 },
+        "b",
+        { lfs: OID2, size: 1 },
+        { data: 1 },
+        "c",
+        { lfs: OID1, size: 1 },
+      ),
       /the object 1{64} twice/,
+    ],
+    [
+      "an object of no bytes",
+      wire({ bundle: 1 }, { data: 1 }, "a", { lfs: OID1, size: 0 }),
+      /a header out of its form/,
     ],
     ["a second bundle", wire({ bundle: 1 }, { data: 1 }, "a", { bundle: 1 }), /has bundle in a stream/],
     ["nothing after a part", wire({ bundle: 1 }, { data: 1 }, "a", { nothing: true }), /has nothing in a stream/],
@@ -273,6 +289,145 @@ test("a stream out of its form is `unknown`: the source Harness writes each fram
     assert.match(out.reason, re, name);
     for (const put of r.landed) assert.ok(!put.bytes.toString().includes('"end"'), `${name}: the child got no end`);
   }
+});
+
+/** A source of one 1-byte bundle and then `n` Git LFS objects, each a header and nothing more: a
+ * header costs the source nothing, so only the carry's own bounds stop it. */
+function manyObjects(n: number, size: number) {
+  let i = 0;
+  let sent = 0;
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(ctrl) {
+        if (i === 0 && sent === 0) ctrl.enqueue(enc.encode('{"bundle":1}\n{"data":1}\nB'));
+        if (i >= n) return void (ctrl.enqueue(enc.encode('{"end":true}\n')), ctrl.close());
+        let s = "";
+        for (let k = 0; k < 500 && i < n; k++, i++) {
+          s += `{"lfs":"${i.toString(16).padStart(64, "0")}","size":${size}}\n`;
+          if (size > 0) s += `{"data":${size}}\n${"x".repeat(size)}`;
+        }
+        sent += s.length;
+        ctrl.enqueue(enc.encode(s));
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, objects: () => i };
+}
+
+/** A fake `fetch` whose child counts the bytes it takes and keeps none: `rig` keeps them all. */
+function counting(src: ReadableStream<Uint8Array>) {
+  const child = { bytes: 0, broke: false };
+  const fetch = (async (_input: string | URL, init: RequestInit = {}) => {
+    if (init.method === "POST") return handoffAnswer(src);
+    const reader = (init.body as ReadableStream<Uint8Array>).getReader();
+    try {
+      for (let next = await reader.read(); !next.done; next = await reader.read()) child.bytes += next.value.length;
+    } catch (err) {
+      child.broke = true;
+      throw new TypeError("fetch failed", { cause: err });
+    }
+    return Response.json({ landed: true });
+  }) as typeof globalThis.fetch;
+  return { fetch, child };
+}
+
+test("the number of Git LFS objects has a bound: a million objects are `refused` at the first past it, so what the carry holds has a bound", async () => {
+  // The validator's probe: a million objects of no bytes each passed the byte bound for free, and
+  // the carry kept one oid for each (about 250 MiB). Now an object of no bytes is out of the form...
+  let src = manyObjects(1_000_000, 0);
+  let c = counting(src.stream);
+  let out = (await handoffCarrier({ fetch: c.fetch })(argsOf())) as { outcome: string; reason: string };
+  assert.equal(out.outcome, "unknown");
+  assert.match(out.reason, /a header out of its form/);
+  assert.ok(src.objects() <= 500, "the carry stopped at the first one");
+
+  // ...and objects of one byte each stop at the object bound, well under the byte bound.
+  src = manyObjects(1_000_000, 1);
+  c = counting(src.stream);
+  out = (await handoffCarrier({ fetch: c.fetch })(argsOf())) as typeof out;
+  assert.deepEqual(out, {
+    outcome: "refused",
+    reason: `the Handoff of /work/app/coder at ${H}: its files hold more than ${HANDOFF_MAX_OBJECTS} Git LFS objects`,
+  });
+  assert.ok(src.objects() < HANDOFF_MAX_OBJECTS + 1000, "the source was read no further");
+  assert.ok(c.child.broke, "the child's body broke before its end");
+  assert.ok(HANDOFF_MAX_OBJECTS < HANDOFF_MAX_BYTES / 1000, "the object bound is far under the byte bound");
+
+  // A smaller bound, for the exact edge: two objects pass, the third is refused.
+  const three = wire(
+    { bundle: 1 },
+    { data: 1 },
+    "a",
+    { lfs: OID1, size: 1 },
+    { data: 1 },
+    "b",
+    { lfs: OID2, size: 1 },
+    { data: 1 },
+    "c",
+    { lfs: "3".repeat(64), size: 1 },
+    { data: 1 },
+    "d",
+    { end: true },
+  );
+  let r = rig({ source: () => handoffAnswer(body(three).stream) });
+  assert.equal((await handoffCarrier({ fetch: r.fetch, maxObjects: 3 })(argsOf())).outcome, "carried");
+  r = rig({ source: () => handoffAnswer(body(three).stream) });
+  assert.equal((await handoffCarrier({ fetch: r.fetch, maxObjects: 2 })(argsOf())).outcome, "refused");
+});
+
+test("the default dial of both legs has the carry's idle bound, longer than the step's deadline", async () => {
+  const given: unknown[] = [];
+  const r = rig({ source: () => handoffAnswer(body(whole).stream) });
+  const carrier = handoffCarrier({
+    dial: (options) => {
+      given.push(options);
+      return r.fetch;
+    },
+  });
+  assert.deepEqual(given, [{ idleTimeoutMs: HANDOFF_IDLE_MS }]);
+  assert.deepEqual(await carrier(argsOf()), { outcome: "carried" });
+});
+
+test("a carry has a time of its own: a child that takes a byte now and then cannot hold it, and it ends `unknown`", async () => {
+  // A child that reads one chunk, then nothing more (each byte would reset the idle bound).
+  const src = body(whole, { chunk: 1 });
+  let childClosed = false;
+  const fetch = (async (_input: string | URL, init: RequestInit = {}) => {
+    if (init.method === "POST") return handoffAnswer(src.stream);
+    const reader = (init.body as ReadableStream<Uint8Array>).getReader();
+    await reader.read();
+    return new Promise<Response>((_, reject) =>
+      init.signal!.addEventListener("abort", () => {
+        childClosed = true;
+        reject(init.signal!.reason);
+      }),
+    );
+  }) as typeof globalThis.fetch;
+  const out = await handoffCarrier({ fetch, carryMs: 50 })(argsOf());
+  assert.deepEqual(out, {
+    outcome: "unknown",
+    reason: "the files of the Handoff were not carried: the carry passed its time of 0 s",
+  });
+  assert.ok(childClosed, "the child's request ended");
+  assert.ok(src.state.cancelled, "the source's stream ended, which kills its step");
+
+  // A source that sends nothing: its stream breaks at the end of the time, and the reason is the time.
+  const quiet = (async (_input: string | URL, init: RequestInit = {}) =>
+    handoffAnswer(
+      new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          init.signal!.addEventListener("abort", () => ctrl.error(init.signal!.reason));
+        },
+      }),
+    )) as typeof globalThis.fetch;
+  assert.deepEqual(await handoffCarrier({ fetch: quiet, carryMs: 50 })(argsOf()), {
+    outcome: "unknown",
+    reason: "the files of the Handoff were not carried: the carry passed its time of 0 s",
+  });
+  // The default: the bound at 1 MiB/s, and one idle wait.
+  assert.equal(HANDOFF_CARRY_MS, Math.ceil(HANDOFF_MAX_BYTES / (1024 ** 2 / 1000)) + HANDOFF_IDLE_MS);
 });
 
 test("a source that answers with an HTTP error or another content type is `unknown`, and the child is not asked", async () => {
@@ -484,6 +639,33 @@ test("over real HTTP: a source that is not there is tried again and then `unknow
     });
     for (let i = 0; i < 100 && childSaw === undefined; i++) await new Promise((res) => setTimeout(res, 5));
     assert.equal(childSaw, "aborted", "the child's request broke before its end");
+  } finally {
+    net.close();
+  }
+});
+
+test("over real HTTP: a source whose stream breaks mid-part is `unknown`, and the reason names the source, not the child", async () => {
+  const net = servers({
+    "ws-parent.invalid": (req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": HANDOFF_CONTENT_TYPE });
+        res.write(wire({ bundle: 100 }, { data: 100 }, "abcd"));
+        setTimeout(() => res.socket?.destroy(), 20);
+      });
+    },
+    "ws-child.invalid": (req, res) => {
+      req.resume();
+      req.on("end", () => res.end(JSON.stringify({ landed: true })));
+    },
+  });
+  try {
+    const out = (await handoffCarrier({ fetch: dialFetch({ connect: net.connect as never }) })(argsOf())) as {
+      outcome: string;
+      reason: string;
+    };
+    assert.equal(out.outcome, "unknown");
+    assert.match(out.reason, /^the files of the Handoff were not carried: the source Harness's stream broke: /);
   } finally {
     net.close();
   }

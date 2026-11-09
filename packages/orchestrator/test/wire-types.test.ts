@@ -156,5 +156,6 @@ test("the Handoff's content type and bounds are the same on the two sides (ADR-0
   // bound that the source Harness holds; it waits longer than the step's deadline.
   assert.equal(client.HANDOFF_CONTENT_TYPE, harness.HANDOFF_CONTENT_TYPE);
   assert.equal(client.HANDOFF_MAX_BYTES, harness.HANDOFF_MAX_BYTES);
+  assert.equal(client.HANDOFF_MAX_OBJECTS, harness.HANDOFF_MAX_OBJECTS);
   assert.equal(client.HANDOFF_DEADLINE_MS, harness.HANDOFF_DEADLINE_MS);
 });

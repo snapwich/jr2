@@ -458,6 +458,27 @@ test("the bundle and its Git LFS objects together past the bound are refused bef
   assert.match(String((got.frames[0] as { refused: string }).refused), /more than the bound of 3000 bytes/);
 });
 
+test("the Git LFS objects past their number bound are refused before any part, and a pointer of no bytes names no object", async (t) => {
+  const w = world(t);
+  lfsFile(w.clone, w.coder, "one.bin", "one\n");
+  lfsFile(w.clone, w.coder, "two.bin", "two\n");
+  // A pointer of size 0, with an empty file in the store: git-lfs stores no empty object, and one of
+  // no bytes would cost nothing against the byte bound.
+  const empty = lfsFile(w.clone, w.coder, "empty.bin", "");
+  const head = git(w.coder, "rev-parse", "HEAD");
+  const refused = await w.take(head, { maxObjects: 1 });
+  assert.equal(refused.frames.length, 1);
+  assert.match(
+    String((refused.frames[0] as { refused: string }).refused),
+    /2 Git LFS objects, more than the bound of 1/,
+  );
+  const got = await w.take(head, { maxObjects: 2 });
+  assert.deepEqual(last(got), { end: true });
+  const carried = got.frames.filter((f) => "lfs" in f).map((f) => (f as { lfs: string }).lfs);
+  assert.equal(carried.length, 2);
+  assert.ok(!carried.includes(empty.oid), "the empty object is not carried");
+});
+
 test("a Git LFS pointer is read by its form", () => {
   const oid = "a".repeat(64);
   assert.deepEqual(pointerOf(lfsPointer(oid, 12)), { oid, size: 12 });
@@ -499,7 +520,7 @@ async function takeFake(t: TestContext, body: string, opts: BundleOptions = {}):
   );
 }
 
-test("a step's output out of its form ends the stream refused: a header that is not JSON, out of order, too long, a part past the bound, an object twice", async (t) => {
+test("a step's output out of its form ends the stream refused: a header that is not JSON, out of order, too long, a part past the bound, an object twice, an object of no bytes, objects past their number", async (t) => {
   const cases: [string, string, RegExp][] = [
     ["not JSON", `process.stdout.write("hello\\n")`, /not JSON/],
     [
@@ -517,9 +538,19 @@ test("a step's output out of its form ends the stream refused: a header that is 
       /object a{64} twice/,
     ],
     ["an extra key", `process.stdout.write('{"bundle":1,"more":2}\\nx')`, /out of its form/],
+    [
+      "an object of no bytes",
+      `process.stdout.write('{"bundle":1}\\nx' + JSON.stringify({ lfs: "${"a".repeat(64)}", size: 0 }) + "\\n")`,
+      /out of its form/,
+    ],
+    [
+      "objects past their number bound",
+      `let s = '{"bundle":1}\\nx'; for (const c of "abc") s += JSON.stringify({ lfs: c.repeat(64), size: 1 }) + "\\ny"; process.stdout.write(s)`,
+      /more than 2 Git LFS objects/,
+    ],
   ];
   for (const [what, body, want] of cases) {
-    const got = await takeFake(t, body, { maxBytes: 100 });
+    const got = await takeFake(t, body, { maxBytes: 100, maxObjects: 2 });
     const end = last(got);
     assert.ok("refused" in end, `${what}: ${JSON.stringify(got.frames)}`);
     assert.match(end.refused, want, what);

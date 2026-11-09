@@ -20,7 +20,8 @@
 //   5. The Git LFS objects: each blob of the range that is a Git LFS pointer names an object. The
 //      object goes with the bundle when the clone's LFS store holds it as a regular file of the
 //      pointer's size. Else the child asks the node cache for it.
-//   6. The bound: the bundle and the objects together, or `{ refused }` before the first part.
+//   6. The bounds: the bundle and the objects together, and the number of objects, or `{ refused }`
+//      before the first part. A pointer of no bytes names no object: git-lfs stores no empty file.
 //   7. The parts: each file is opened as a regular file only (no link, no FIFO, no device), and
 //      exactly the bytes that its header says are written.
 //   8. The step removes its own folder, and only then writes the last frame (`end` or `nothing`):
@@ -49,6 +50,8 @@ export type BundleStepInput = {
   head: string;
   /** The bound on the bundle and its Git LFS objects together. */
   maxBytes: number;
+  /** The bound on the number of Git LFS objects. */
+  maxObjects: number;
   /** Where the step makes its own folder: the domain's TMPDIR. */
   tmp: string;
   /** The PATH of its git: the domain's. */
@@ -285,7 +288,7 @@ export async function bundleStep(input: BundleStepInput): Promise<{ end: true } 
       if (blobs.code !== 0) throw new Refused(`the small blobs of ${input.head} could not be read: ${said(blobs)}`);
       for (const blob of batchBlobs(blobs.out)) {
         const p = pointerOf(blob.toString("utf8"));
-        if (p !== undefined) pointers.set(p.oid, p.size);
+        if (p !== undefined && p.size > 0) pointers.set(p.oid, p.size);
       }
     }
     const store = `${input.clone}/.git/lfs/objects`;
@@ -300,6 +303,11 @@ export async function bundleStep(input: BundleStepInput): Promise<{ end: true } 
     const bundle = await openRegular(file);
     if (bundle === undefined) throw new Refused("the bundle is not a regular file");
     try {
+      if (lfs.length > input.maxObjects) {
+        throw new Refused(
+          `the Handoff's files hold ${lfs.length} Git LFS objects, more than the bound of ${input.maxObjects}`,
+        );
+      }
       const total = lfs.reduce((n, o) => n + o.size, bundle.size);
       if (total > input.maxBytes) {
         throw new Refused(

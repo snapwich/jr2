@@ -73,7 +73,8 @@ export function handoffShapeFault(value: unknown): string | undefined {
  * What the ledger check found: the `ready` cut that the Handoff names, in the run that the child
  * runs in (ADR-0080). It goes on the child cut's intent row. `run`, `sandbox` and `row` say where
  * the commit is: the run, the Workspace whose cut made it, and that cut's ledger row. `endpoint` is
- * that Workspace's Harness, which the transport asks for the files. `branch` is the branch of the
+ * that Workspace's Harness when the check ran. The transport does not ask it: it asks the Harness
+ * where that Workspace runs now. `branch` is the branch of the
  * child's cut: the cut's `branch`, or the row's.
  */
 export type HandoffSource = {

@@ -187,7 +187,9 @@ export type WorktreeOptions = {
    * refuse a branch that does not exist, and make nothing. For a run that must continue a branch.
    * A Chart cannot change it, and a cut lent to a Chart must state it. */
   expect?: "new" | "existing";
-  /** How long the fetch and the cut can take. Default `"10m"`. */
+  /** How long the fetch and the cut can take. Default `"10m"`. A cut at a Handoff carries its
+   * files before the cut starts, and this time does not include the carry: the carry has a time of
+   * its own (ADR-0080). */
   timeout?: Duration;
 };
 
@@ -238,7 +240,7 @@ export function worktreeWith(
  * Repo Slot, and there is none — declare one: repos: { app: "<url>" } (ADR-0075)`.
  *
  * @param options - Optional. `expect`, and `timeout`, how long the fetch and the cut can take.
- *   Default: `"10m"`.
+ *   Default: `"10m"`. The carry of a Handoff's files, before the cut, has a time of its own.
  * @returns The actor logic of the Effect's slot. Its output is a {@link WorktreeOutput}.
  *
  * @example

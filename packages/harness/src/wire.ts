@@ -430,7 +430,8 @@ export type HandoffRequest = { path: string; head: string };
  *
  * - `{ bundle }`: the git bundle, of `bundle` bytes. It is the first part, and it comes once.
  * - `{ lfs, size }`: one Git LFS object of the parent clone, by its oid (sha256, in hex), that a
- *   blob of the bundled range points to. jr2 has not checked its bytes: the child does.
+ *   blob of the bundled range points to, of at least one byte, at most `HANDOFF_MAX_OBJECTS` of
+ *   them. jr2 has not checked its bytes: the child does.
  * - `{ data }`: the next `data` bytes of the part, which follow the line.
  * - `{ end: true }`: each part came. Terminal.
  * - `{ nothing: true }`: the range is empty, so no part comes. Terminal, and the first frame.
@@ -473,6 +474,12 @@ export const HANDOFF_CONTENT_TYPE = "application/x-jr2-handoff";
 /** The bound on the bundle and its Git LFS objects together, in bytes (ADR-0080). Past it, the
  * source Harness ends the stream `refused`. */
 export const HANDOFF_MAX_BYTES = 1024 ** 3;
+
+/** The bound on the number of Git LFS objects that go with one bundle (ADR-0080). Each has at least
+ * one byte. Past it, the source Harness ends the stream `refused`, and the Orchestrator ends the
+ * carry `refused`: what each of them holds for a carry (one oid for each object) has a bound that
+ * the parent's files cannot move. */
+export const HANDOFF_MAX_OBJECTS = 100_000;
 
 /** The bundle step's deadline: the step's own time, from its start to its last byte (ADR-0080). The
  * clock stops while the source Harness holds the step paused for a reader that is behind. At the

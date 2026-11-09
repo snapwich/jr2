@@ -173,11 +173,16 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   Only the child's Harness knows that a re-cut is `held`, so the Orchestrator carries the files for each cut at a
   Handoff, and a `held` re-cut does not read them.
 
-- **One bound covers the bundle and its Git LFS objects together.** A Handoff is the parent Agents' files, and the
-  Orchestrator serves each run of the Instance, so an Agent's file must not steer how much it carries. The bound is 1
-  GiB. The bundle step adds the sizes before it writes the first part, and refuses a Handoff past the bound. The source
-  Harness and the Orchestrator each stop the stream at the bound, and the cut is then `refused`, with the bound in the
-  reason.
+- **One bound covers the bundle and its Git LFS objects together, and a second bound covers the number of objects.** A
+  Handoff is the parent Agents' files, and the Orchestrator serves each run of the Instance, so an Agent's file must not
+  steer how much it carries or holds. The byte bound is 1 GiB. The object bound is 100 000 Git LFS objects, and each
+  object has at least one byte: git-lfs stores no empty file, and an object of no bytes would cost nothing against the
+  byte bound. The Orchestrator and the source Harness each keep one oid for each object of a carry (each object comes
+  once), so without the object bound a stream of headers of no bytes held about 250 MiB for each million objects, and
+  could stop the Orchestrator (1 GiB) for every run. The bundle step adds the sizes and counts the objects before it
+  writes the first part, and refuses a Handoff past either bound; a pointer of no bytes names no object to carry. The
+  source Harness and the Orchestrator each stop the stream at either bound, and the cut is then `refused`, with the
+  bound in the reason. A header of an object of no bytes is out of the form.
 - **The child's cut takes only `head`'s closure, and git checks each object.** git before about 2.46 runs no fsck on a
   fetch from a bundle, whatever `transfer.fsckObjects` says, and a fetch from a bundle stores each object of the
   bundle's pack. So the cut does not fetch from the bundle. It refuses a bundle unless it has exactly one ref, at
@@ -193,7 +198,7 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   - the source Harness answers that the commit, or a prerequisite of the bundle, is not there;
   - the bundle step passes its deadline (for example, at a FIFO that an Agent planted);
   - the bundle file is not a regular file;
-  - the stream passes the bound;
+  - the stream passes the byte bound or the object bound;
   - the bundle has a ref that is not at `head`, or fsck refuses an object;
   - the child's clone does not hold a prerequisite of the bundle (for example, the remote was force-pushed after the
     parent fetched). The reason names the missing commit;
@@ -207,10 +212,15 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   opened, to either Harness, is tried again a few times first (for about 4 s), because no byte of the carry left. The
   Orchestrator ends a carry after 360 s with no byte from the source: longer than the bundle step's deadline, so a step
   that the parent's files hold ends as `refused` and never as `unknown`. A carry that a slow child stalls for that long
-  also ends `unknown`, which ends the source's stream and so kills the step. An HTTP error of either Harness, a source
-  stream that ends before its last frame or is out of its form, and a child that does not answer `{ landed: true }` are
-  `unknown` too. Any other fault of the carry is `unknown` as well, never the invoke's error: the parent's files can
-  cause it.
+  also ends `unknown`, which ends the source's stream and so kills the step. A carry also has a time of its own: the
+  byte bound at 1 MiB/s, and one idle wait (about 23 minutes). A child that takes a byte now and then resets the idle
+  wait, and the bundle step's deadline stops while the step is paused, so without this time such a child would hold the
+  cut, the parent's step and its bundle file without end. The cut's `timeout` does not cover the carry: it starts with
+  the cut's exec, after the carry. A carry past its time is `unknown`, and both legs end. An HTTP error of either
+  Harness, a source stream that ends before its last frame, breaks, or is out of its form, and a child that does not
+  answer `{ landed: true }` are `unknown` too. A reason names the Harness whose leg failed: a break of the source's
+  stream names the source, not the child. Any other fault of the carry is `unknown` as well, never the invoke's error:
+  the parent's files can cause it.
 
   The carry only reads the source and replaces the child's files under one Effect id, so it can run again. When the
   child's Harness restarts and the Orchestrator sends the cut's start again, it carries the files again first, so a
