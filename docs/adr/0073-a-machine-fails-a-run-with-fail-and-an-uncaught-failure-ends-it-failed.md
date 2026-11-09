@@ -31,18 +31,17 @@ comment "the run faults rather than lie about a decision", and that run ended `d
   catches a Failure from its body: `running` gets `onError` guarded by `isFailure` to a `failing` state, which runs the
   same `destroy` as `teardown` and then invokes `fail` again with the same payload. So `workspace()` still owns the
   Sandbox's life ([ADR-0012](0012-workspace-wrapper-machine.md)), a caught Failure leaves no Sandbox behind, and the
-  parent gets the Failure unchanged. A defect still goes up with no `onError`, and its Sandbox stays as evidence. The
-  host deletes every Sandbox of a run that ends `failed`, after the stop, as `cancel` does
-  ([ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)); after the wrapper's own delete, that is only a backstop. When a
-  Machine above catches the Failure, the host stops the children of the Machine that the Failure ended, and after the
-  stop it deletes their Sandboxes, because a stop skips `teardown`. It does the same for a defect that a Machine above
-  catches, so that a nested Workspace under a body that a defect ended does not renew its Lease for ever. A defect that
-  no Machine catches faults the run, and each Sandbox stays as evidence. It does not delete a name that a live Workspace
-  of the run holds then, and nor does a Workspace that was stopped in `placing`
-  ([ADR-0064](0064-a-workspace-waits-for-capacity.md)): a parent that invokes the same Machine again gives the new
-  Workspace the same actor path, and so the same Sandbox name. That new Workspace takes over the Sandbox and its
-  Worktrees, as a restore does, with the work of the failed attempt still in it. To keep the work for a person to read,
-  the Machine waits at a Gate before it fails.
+  parent gets the Failure unchanged. A defect still goes up with no `onError`. A defect that no Machine catches faults
+  the run, and each Sandbox stays as evidence. The host deletes every Sandbox of a run that ends `failed`, after the
+  stop, as `cancel` does ([ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)); after the wrapper's own delete, that is
+  only a backstop. When a Machine above catches the Failure, the host stops the children of the Machine that the Failure
+  ended, and after the stop it deletes their Sandboxes, because a stop skips `teardown`. It does the same for a defect
+  that a Machine above catches, so that a nested Workspace under a body that a defect ended does not renew its Lease for
+  ever. The stop does not delete a name that a live Workspace of the run holds then, and nor does a Workspace that was
+  stopped in `placing` ([ADR-0064](0064-a-workspace-waits-for-capacity.md)): a parent that invokes the same Machine
+  again gives the new Workspace the same actor path, and so the same Sandbox name. That new Workspace takes over the
+  Sandbox and its Worktrees, as a restore does, with the work of the failed attempt still in it. To keep the work for a
+  person to read, the Machine waits at a Gate before it fails.
 - **`jr2 run` exits 0 only for `done`.** It exits 1 for every other end: `failed`, `error`, `cancelled`, `lost`,
   `drifted`, and a run that was parked before it settled. Exit code 2 stays the CLI's code for a usage error. The status
   line on stderr tells which end it was, and `jr2 status --json` tells a script.

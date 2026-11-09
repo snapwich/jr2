@@ -4545,14 +4545,11 @@ export class RunHost {
           // ever (ADR-0021). After the parent takes the event, so its exit is recorded first. A stop
           // skips `teardown`, so a Workspace in that Machine does not delete its Sandbox: the stop
           // deletes it, as any stop of a Workspace by a Machine of the run does (`workspaceStopped`).
-          // A defect that the parent did not catch ends the parent too, and so on up: the Machine
-          // that catches it stops this tree with its own, or the run's fault does, and leaves each
-          // Sandbox as evidence (ADR-0012).
+          // A defect that the parent did not catch ends the parent too, and so on up. If no Machine
+          // catches it, the run's fault is set in this same step, before this stop, so the stop
+          // deletes no Sandbox: each stays as evidence (ADR-0012).
           if (source !== undefined && source._parent === target && event.type === `xstate.error.actor.${source.id}`) {
-            const failure = isFailure((event as { error?: unknown }).error);
-            queueMicrotask(() => {
-              if (failure || target.getSnapshot()?.status !== "error") stopTree(source);
-            });
+            queueMicrotask(() => stopTree(source));
           }
         }
         // A mechanism event that no transition took (ADR-0074): `agent.fault` or `workspace.lost`
