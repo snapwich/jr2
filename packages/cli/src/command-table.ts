@@ -160,7 +160,7 @@ const TABLE = [
     env: [
       JR2_URL,
       {
-        name: "JR2_FORWARD_FROM",
+        name: "JR2_HANDOFF_FROM",
         description: "set by the global `jr2` that forwarded to this one, which the report names",
       },
     ],

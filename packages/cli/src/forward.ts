@@ -11,8 +11,10 @@
 // preamble runs: its pinned erasure hook, whatever a future bin adds.
 //
 // Plus one env var (ADR-0056): the copy that forwards names itself in
-// `JR2_FORWARD_FROM`, because "is my global out of date" is the one fact the local copy cannot
-// learn on its own, and `jr2 version` answers it from here. Nothing else reads it.
+// `JR2_HANDOFF_FROM`, because "is my global out of date" is the one fact the local copy cannot
+// learn on its own, and `jr2 version` answers it from here. Nothing else reads it. The name keeps
+// the word that the Forward had before: every published global sets it, and a global cannot be
+// updated once it ships, so the name is a contract between versions and does not change.
 //
 // Builtins only, like everything the launcher runs before it knows which `jr2` will run.
 
@@ -21,8 +23,9 @@ import { join } from "node:path";
 import { CLI_ROOT, CLI_VERSION, resolvePackage } from "./kit-version.ts";
 import { findRoot } from "./root.ts";
 
-/** `<version> <realpath>` of the copy that forwarded — set on the child by {@link forward}. */
-export const FORWARD_ENV = "JR2_FORWARD_FROM";
+/** `<version> <realpath>` of the copy that forwarded — set on the child by {@link forward}. Its
+ * name is fixed across versions: every published global sets it (see the header). */
+export const FORWARD_ENV = "JR2_HANDOFF_FROM";
 
 /** The copy that forwarded to this process, if one did and said so. A global that predates the
  * variable forwards silently, which reads the same as no Forward at all — there is no third source. */

@@ -104,6 +104,17 @@ test("outside any Instance the launcher runs itself", async () => {
   }
 });
 
+test("a global of any published version names itself to this copy: the variable is JR2_HANDOFF_FROM", () => {
+  // v0.1.4 to v0.7.0 set this name, and a global cannot be updated once it ships (ADR-0056). A
+  // new name would drop the `global` line for every user who upgrades the Instance and keeps the
+  // global, and a newer global that forwards into an older Instance would drop it too.
+  assert.equal(FORWARD_ENV, "JR2_HANDOFF_FROM");
+  assert.deepEqual(forwardedFrom({ JR2_HANDOFF_FROM: "0.7.0 /opt/g/node_modules/@jr2/cli" }), {
+    version: "0.7.0",
+    path: "/opt/g/node_modules/@jr2/cli",
+  });
+});
+
 test("forwardedFrom reads `<version> <path>` and nothing else", () => {
   assert.equal(forwardedFrom({}), undefined, "no Forward, or a global that predates the variable");
   assert.equal(forwardedFrom({ [FORWARD_ENV]: "" }), undefined);

@@ -10,6 +10,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
+import { FORWARD_ENV } from "../src/forward.ts";
 import {
   COMMANDS,
   commandNamed,
@@ -105,7 +106,7 @@ test("every env var the CLI reads is named in the table", async () => {
   }
   read.delete("HOME");
   // The Forward variable is read by name through its constant (`env[FORWARD_ENV]`).
-  read.add("JR2_FORWARD_FROM");
+  read.add(FORWARD_ENV);
   for (const name of read) assert.ok(named.has(name), `${name} is read but no entry names it`);
 });
 
