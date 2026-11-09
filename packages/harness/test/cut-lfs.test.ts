@@ -465,3 +465,28 @@ test(
     });
   },
 );
+
+test(
+  "a large file that went from the stores after the cut's ask makes the cut refused, naming the file, with no second ask (ADR-0075)",
+  { skip },
+  async (t) => {
+    const w = await world(t);
+    await w.attach();
+    // A jr2-lfs whose fetch says that every object is held: the object of more.bin is in no store
+    // at the checkout. Its transfer is the real one.
+    const stub = join(w.dir, "jr2-lfs-held");
+    writeFileSync(
+      stub,
+      `#!/bin/sh\nif [ "$1" = transfer ]; then exec '${w.paths.jr2Lfs}' "$@"; fi\necho '{"pointers":2,"asked":0,"missing":[]}'\n`,
+      { mode: 0o755 },
+    );
+    const asks = w.c.lfsAsks();
+    const reason = refusal(
+      await cut({ id: "e1", base: "main", path: w.path("f"), branch: "feature" }, { ...w.paths, jr2Lfs: stub }),
+    );
+    assert.match(reason, /^the checkout of [0-9a-f]{40} cannot get the large file more\.bin: /, reason);
+    assert.match(reason, /the cut asked the node cache for the large files of its commit before the checkout/, reason);
+    assert.equal(w.c.lfsAsks(), asks, "the checkout asked for nothing");
+    assert.equal(existsSync(w.path("f")), false, "nothing is made");
+  },
+);

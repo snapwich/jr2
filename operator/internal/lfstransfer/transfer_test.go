@@ -27,13 +27,13 @@ type session struct {
 	done chan int
 }
 
-func startAgent(t *testing.T, dir string) *session {
+func startAgent(t *testing.T, dir string, args ...string) *session {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	s := &session{t: t, in: inW, out: bufio.NewReader(outR), done: make(chan int, 1)}
 	go func() {
-		code := Run(Options{Args: []string{"transfer"}, Dir: dir, Stdin: inR, Stdout: outW, Stderr: io.Discard})
+		code := Run(Options{Args: append([]string{"transfer"}, args...), Dir: dir, Stdin: inR, Stdout: outW, Stderr: io.Discard})
 		_ = outW.Close()
 		s.done <- code
 	}()
@@ -177,6 +177,34 @@ func TestTransferMissThenErrorNamesTheOID(t *testing.T) {
 	}
 }
 
+// TestTransferNoAskAsksForNothing is the agent of the cut's checkout: it
+// asks for nothing, copies nothing, and refuses each object, also one that
+// the node cache holds, naming the oid (ADR-0075).
+func TestTransferNoAskAsksForNothing(t *testing.T) {
+	held := newBlob("the cache holds this\n")
+	gone := newBlob("nobody holds this\n")
+	p := lfsPod(t, held)
+	land(t, filepath.Join(p.cache, "lfs"), held)
+	c := newCustodian(t, p.cache, gone)
+
+	// A folder that is no checkout: the cut's agent reads none.
+	s := startAgent(t, t.TempDir(), "--no-ask")
+	s.init()
+	for _, b := range []blob{held, gone} {
+		msg := errorMessage(t, s.download(b))
+		if !strings.HasPrefix(msg, "jr2:") || !strings.Contains(msg, b.obj.OID) || !strings.Contains(msg, NoAskReason) {
+			t.Fatalf("error message = %q, want a jr2: line naming %s and the reason", msg, b.obj.OID)
+		}
+	}
+	s.terminate()
+	if n := len(c.asked()); n != 0 {
+		t.Fatalf("--no-ask made %d asks, want 0", n)
+	}
+	if entries, err := os.ReadDir(filepath.Join(p.clone, ".git", "lfs", "tmp")); err == nil && len(entries) > 0 {
+		t.Fatalf("--no-ask copied %d files", len(entries))
+	}
+}
+
 func TestTransferFaultsBecomeReasons(t *testing.T) {
 	for name, set := range map[string]func(*custodian){
 		"status":  func(c *custodian) { c.code = 502 },
@@ -260,7 +288,7 @@ func TestTransferEndsAtEOF(t *testing.T) {
 }
 
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"nope"}, {"transfer", "x"}, {"fetch"}, {"fetch", "a", "b"}, {"fetch", "--bogus", "a"}, {"fetch", "--base", "main", "a"}} {
+	for _, args := range [][]string{nil, {"nope"}, {"transfer", "x"}, {"transfer", "--no-ask", "x"}, {"fetch"}, {"fetch", "a", "b"}, {"fetch", "--bogus", "a"}, {"fetch", "--base", "main", "a"}} {
 		var errOut bytes.Buffer
 		if code := Run(Options{Args: args, Stderr: &errOut}); code == 0 || !strings.HasPrefix(errOut.String(), "usage: jr2-lfs") {
 			t.Fatalf("%v: exit %d, stderr %q", args, code, errOut.String())

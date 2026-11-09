@@ -49,11 +49,22 @@ type initAnswer struct {
 	Error *transferError `json:"error,omitempty"`
 }
 
+// NoAskReason is the error of each download of `transfer --no-ask`.
+const NoAskReason = "no store of the cut holds it; the cut asked the node cache for the large files of its commit " +
+	"before the checkout, and its checkout asks for none (ADR-0075)"
+
 // runTransfer is jr2's standalone transfer agent: git-lfs's custom transfer
 // protocol, one JSON object per line. git-lfs starts it with no `action` on an
 // event, because the agent is standalone: it needs no LFS server url, and it
 // gets every object from the node cache.
-func runTransfer(o Options) int {
+//
+// With noAsk (the cut's checkout), the agent reads no config, asks for
+// nothing and answers each download with NoAskReason. The cut's git folder
+// has no origin, so it has no identity to ask with, and it is in TMPDIR,
+// where a copy cannot move into the clone's store on /work. git-lfs reads
+// what the cut's `fetch` landed through the git folder's alternates, so a
+// download comes only for an object that went after that `fetch`.
+func runTransfer(o Options, noAsk bool) int {
 	in := bufio.NewReader(o.Stdin)
 	out := json.NewEncoder(o.Stdout)
 	var agent *transferAgent
@@ -67,17 +78,25 @@ func runTransfer(o Options) int {
 			}
 			switch ev.Event {
 			case "init":
-				a, ierr := newTransferAgent(o)
 				answer := initAnswer{}
-				if ierr != nil {
-					answer.Error = &transferError{Code: errorCode, Message: "jr2: " + oneLine(ierr.Error())}
+				if !noAsk {
+					a, ierr := newTransferAgent(o)
+					if ierr != nil {
+						answer.Error = &transferError{Code: errorCode, Message: "jr2: " + oneLine(ierr.Error())}
+					}
+					agent = a
 				}
 				if werr := out.Encode(answer); werr != nil {
 					return 1
 				}
-				agent = a
 			case "download":
-				if werr := out.Encode(download(agent, ev)); werr != nil {
+				answer := completeEvent{Event: eventComplete, OID: ev.OID,
+					Error: &transferError{Code: errorCode, Message: fmt.Sprintf(
+						"jr2: cannot get the large file %s (%d bytes): %s", ev.OID, ev.Size, NoAskReason)}}
+				if !noAsk {
+					answer = download(agent, ev)
+				}
+				if werr := out.Encode(answer); werr != nil {
 					return 1
 				}
 			case "upload":

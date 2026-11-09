@@ -7,13 +7,15 @@ SPDX-License-Identifier: MIT
 // Package lfstransfer is the program behind `/opt/jr2/bin/jr2-lfs` (ADR-0053).
 // It has two subcommands:
 //
-//	jr2-lfs transfer
+//	jr2-lfs transfer [--no-ask]
 //	jr2-lfs fetch [--identity I] [--budget D] <commit>
 //
 // `transfer` is jr2's standalone transfer agent. git-lfs starts it when a
 // smudge needs an object that neither the clone's store nor the node cache's
 // store holds. `fetch` is the ask of the attach and of the cut: it gets the
 // LFS objects of one commit before git checks the commit out (ADR-0075).
+// The cut's checkout starts `transfer --no-ask`, which asks for nothing and
+// refuses each object: the cut's `fetch` asked for them all before.
 //
 // Both ask by the same carrier. The asker sends the oids to the Custodian on
 // the pod's loopback, on the path that a fetch's ask takes. The cache agent
@@ -41,7 +43,7 @@ import (
 )
 
 // Usage is the text the program prints when its arguments are wrong.
-const Usage = `usage: jr2-lfs transfer
+const Usage = `usage: jr2-lfs transfer [--no-ask]
        jr2-lfs fetch [--identity I] [--budget D] <commit>
 `
 
@@ -76,11 +78,12 @@ func Run(o Options) int {
 	}
 	switch o.Args[0] {
 	case "transfer":
-		if len(o.Args) != 1 {
+		noAsk := len(o.Args) == 2 && o.Args[1] == "--no-ask"
+		if len(o.Args) != 1 && !noAsk {
 			_, _ = io.WriteString(o.Stderr, Usage)
 			return 2
 		}
-		return runTransfer(o)
+		return runTransfer(o, noAsk)
 	case "fetch":
 		return runFetch(o, o.Args[1:])
 	default:

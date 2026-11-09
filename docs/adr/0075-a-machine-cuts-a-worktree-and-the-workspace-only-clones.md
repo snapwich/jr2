@@ -76,9 +76,11 @@ worktree({ expect: "existing" }); // refuse a branch that does not exist, and ma
   and then gives that index to the Worktree. It reads no ignore or attributes file of a `HOME` (`core.excludesFile` and
   `core.attributesFile` are `/dev/null`). The objects are the clone's (`alternates`), and an Agent writes them too
   (below). The one filter that this checkout runs is jr2's Git LFS filter, set by `-c` with git-lfs and jr2's transfer
-  agent at their absolute paths on the runtime volume, and with `lfs.storage` at the clone's LFS store. The git folder's
-  alternates also name the node cache's object store that the clone borrows from, because git-lfs reads the large files
-  beside each alternate and does not follow an alternate's own alternates
+  agent at their absolute paths on the runtime volume, and with `lfs.storage` at the clone's LFS store. This transfer
+  agent asks for nothing (`jr2-lfs transfer --no-ask`), because the cut asked for the commit's large files before the
+  checkout (below): a large file that no store holds at the checkout makes the cut `refused`, naming the file. The git
+  folder's alternates also name the node cache's object store that the clone borrows from, because git-lfs reads the
+  large files beside each alternate and does not follow an alternate's own alternates
   ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). A cut refuses a
   Worktree whose `.git` names another admin folder, and one whose own git works in another folder (a `core.worktree`):
   each later git of an Agent there would read that other folder.

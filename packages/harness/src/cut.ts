@@ -27,6 +27,8 @@
 //   - The one filter that a cut's checkout runs is jr2's own LFS filter, set by `-c` by the absolute
 //     paths of the runtime volume, with jr2's transfer agent: no config of the Agent's chooses the
 //     program (ADR-0053). It reads the large files from the clone's LFS store and the node cache's.
+//     The agent asks for nothing there (`transfer --no-ask`): a file that no store holds at the
+//     checkout makes the cut `refused`, naming the file.
 //   - A cut gets its commit's large files first (ADR-0075). After the fetch and before git changes
 //     anything, `jr2-lfs fetch <commit>` asks the node cache for each LFS object that no store holds.
 //     A file whose object the cache cannot get makes the cut `refused`, naming the file. A remote that
@@ -172,8 +174,11 @@ const CLEAN = [
 const PINNED_LFS_URL = "https://jr2-cut.invalid/lfs";
 
 /** jr2's own LFS filter and transfer agent, by `-c` on `fill`'s git, so that the program that a
- * checkout starts is jr2's (ADR-0053). The keys are the attach's (attach.ts). `lfs.storage` is the
- * clone's LFS store, where git-lfs keeps what it gets: `fill`'s git folder is the cut's, and goes. */
+ * checkout starts is jr2's (ADR-0053). The keys are the attach's (attach.ts), but the agent is
+ * `transfer --no-ask`: the cut asked for its commit's large files before (`askLargeFiles`), and
+ * git-lfs reads them from the stores, so the agent refuses each object that it is asked for, and
+ * the cut's refusal names the file (`smudgeFault`). `lfs.storage` is the clone's LFS store, where
+ * git-lfs keeps what it gets: `fill`'s git folder is the cut's, and goes. */
 function lfsPins(paths: CutPaths, clone: string): string[] {
   return [
     ["lfs.url", PINNED_LFS_URL],
@@ -184,7 +189,7 @@ function lfsPins(paths: CutPaths, clone: string): string[] {
     ["filter.lfs.required", "true"],
     ["lfs.standalonetransferagent", "jr2"],
     ["lfs.customtransfer.jr2.path", paths.jr2Lfs],
-    ["lfs.customtransfer.jr2.args", "transfer"],
+    ["lfs.customtransfer.jr2.args", "transfer --no-ask"],
     ["lfs.customtransfer.jr2.concurrent", "true"],
     ["lfs.customtransfer.jr2.direction", "download"],
     ["lfs.storage", `${clone}/.git/lfs`],
@@ -810,7 +815,7 @@ async function fill(
     if (attributes.code !== 0) return attributes.err;
   }
   const co = await git(path, ["checkout", "-q", "-f", "--detach", sha]);
-  if (co.code !== 0) return co.err;
+  if (co.code !== 0) return smudgeFault(co.err, sha) ?? co.err;
   if (opts.again !== undefined) {
     // `-ff`: a nested repo goes too. No `-x`: a reviewer runs the tests (ADR-0028).
     const clean = await git(path, ["clean", "-ffdq"]);
@@ -828,11 +833,23 @@ async function fill(
 }
 
 /**
+ * The refusal of a checkout that git-lfs could not smudge: the file, from git's last line
+ * (`fatal: <path>: smudge filter lfs failed`), and jr2's line, from the agent. A large file that the
+ * cut asked for and that went from the stores before the checkout comes here. Undefined for another
+ * fault.
+ */
+export function smudgeFault(err: string, sha: string): string | undefined {
+  const file = /^fatal: (.+): smudge filter lfs failed$/m.exec(err)?.[1];
+  if (file === undefined) return undefined;
+  const why = /jr2: (.+?)(?:\s*$)/m.exec(err)?.[1];
+  return `the checkout of ${sha} cannot get the large file ${file}${why !== undefined ? `: ${why}` : ""}`;
+}
+
+/**
  * The alternates of `fill`'s git folder: the node cache's object stores that the clone borrows from,
  * first, then the clone's objects. git reads alternates of alternates, but git-lfs reads only the
  * first level, beside each one (`<objects>/../lfs/objects`): so the cache's large files are found by
- * a cache line here, and jr2-lfs's transfer agent takes the first line as the node cache (ADR-0053).
- * A line that names no folder is passed over by git and git-lfs alike.
+ * a cache line here (ADR-0053). A line that names no folder is passed over by git and git-lfs alike.
  */
 async function alternatesOf(clone: string): Promise<string> {
   const objects = `${clone}/.git/objects`;
