@@ -45,6 +45,11 @@ export function serveHarness(harness: HarnessServer, opts: ServeOptions): Served
     // the definition it runs.
     console.log(`jr2 harness serving on :${(info as AddressInfo).port}`);
   });
+  // node ends a request whose body still comes after 300 s (`requestTimeout`) with 408. The body
+  // of PUT /handoffs/<id> is a whole carry, which the Orchestrator bounds by its own idle and total
+  // times (ADR-0080), and only the Orchestrator sends it, with a bearer. The headers keep node's
+  // `headersTimeout`.
+  if ("requestTimeout" in server) server.requestTimeout = 0;
   server.on("error", (err) => {
     const fault = listenFault(err, opts.port);
     if (!fault) throw err;

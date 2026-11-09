@@ -415,6 +415,22 @@ test("the drain of an idle Harness resolves at once", async () => {
   await harnessOver(scratch()).drain();
 });
 
+test("the served Harness has no request timeout: a carry's body may take longer than node's 300 s, and the Orchestrator bounds it", async () => {
+  const harness = harnessOver(undefined);
+  const exits: number[] = [];
+  const served = serveHarness(harness, {
+    port: 0,
+    hostname: "127.0.0.1",
+    exit: (code) => exits.push(code),
+    flushMs: 10,
+  });
+  await new Promise((resolve) => served.server.once("listening", resolve));
+  const server = served.server as import("node:http").Server;
+  assert.equal(server.requestTimeout, 0);
+  assert.ok(server.headersTimeout > 0, "the headers keep their timeout");
+  await served.stop();
+});
+
 test("SIGTERM's stop: drains, closes the port, exits 0", async () => {
   const harness = harnessOver(undefined);
   const exits: number[] = [];
