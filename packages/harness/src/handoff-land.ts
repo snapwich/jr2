@@ -28,8 +28,10 @@ const PIECE = 256 << 10;
 const MAX_LINE = 256;
 
 /**
- * The longest time of one land, from the request's headers to its answer: the Orchestrator's carry
- * time and a margin (ADR-0080). The Orchestrator ends its carry first. This time is the child's
+ * The longest time of one land: the Orchestrator's carry time and a margin (ADR-0080). It starts
+ * when the land process is started, after the wait for an earlier land of the same id, and at its
+ * end the land process is killed and its files are removed before the answer. The Orchestrator
+ * ends its carry first. This time is the child's
  * own bound: node does not bound the body of `PUT /handoffs/<id>` (`serve.ts`), and the child sends
  * nothing until it answers, so no packet finds an Orchestrator that is gone.
  */

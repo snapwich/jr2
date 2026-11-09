@@ -535,7 +535,7 @@ type KindSpec = {
    * It settles before any intent row: nothing went out. */
   refuse?: (ctx: KindContext) => unknown;
   /** The fields of the settled row that a later Effect reads. */
-  rowFields?: (ctx: KindContext) => { branch?: string; worktree?: string; repo?: string };
+  rowFields?: (ctx: KindContext) => { branch?: string; worktree?: string; repo?: string; url?: string };
 };
 
 /** `fresh`: the push's cut had `expect: "new"`, and no push of this run, in any of its Workspaces,
