@@ -156,9 +156,17 @@ send:    { name: "r.md", worktree: "/work/app/fix" } // http with a file body
   goes as before. "The run" includes each of its Workspaces: a push of a nested Workspace, or of the Workspace around
   it, that published the branch of the same Repo (one identity,
   [ADR-0051](0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md)) makes the next push a later one,
-  because the remote holds that branch by this run's own push. The ledger row of the cut keeps the slot, the path and
-  the branch that the Orchestrator sent, and only the head of the answer (ADR-0067). These two rules also hold for a cut
-  at a Handoff, whose `branch` a Chart can give: the cut applies the slot's `expect` to the child's branch
+  because the remote holds that branch by this run's own push. A known limit: when the first push with the empty lease
+  published and its answer was lost (the Orchestrator or the Effector restarted before the ledger kept it), the push
+  that goes again finds the branch on the remote, and is `rejected` with the reason of `expect: "new"`, although the
+  remote holds this run's own commit. A signed push signs again with a new committer time, so its commit is another one;
+  an unsigned push sends the same commit. jr2 accepts neither as this run's: the ledger has no row of that publish, and
+  the Effector can tell its own commit from another writer's only by its content and by the slot's key. An Agent can
+  copy the content (it can make its commit the commit of another branch), and each run of the Instance signs with that
+  key. To accept it would let an Agent's commit take an existing branch past the check. So the limit is stricter, never
+  looser, and the Machine routes the `rejected` push. The ledger row of the cut keeps the slot, the path and the branch
+  that the Orchestrator sent, and only the head of the answer (ADR-0067). These two rules also hold for a cut at a
+  Handoff, whose `branch` a Chart can give: the cut applies the slot's `expect` to the child's branch
   ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)).
 - The door refuses a `cwd` that is a slot's folder.
 - A Chart's payload has no `pattern`, so a Chart cannot state the branch rule, and the cut refuses a bad name. A

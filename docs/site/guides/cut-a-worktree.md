@@ -84,7 +84,9 @@ carry the guard to the action.
   or a run input chooses for new work. A name that collides is then a refusal, and not the branch of a different person.
   The first `push` of the run to that branch, from any of its Workspaces, checks again that the remote does not hold it.
   If the remote holds it, the push is `rejected` with the reason
-  `the remote holds the branch, and its cut had expect: "new"`, and the remote does not change.
+  `the remote holds the branch, and its cut had expect: "new"`, and the remote does not change. If the first push
+  published and jr2 restarted before it kept the answer, the push that goes again is `rejected` with this reason too,
+  although the remote holds the run's own commit.
 - `worktree({ expect: "existing" })`: refuse a branch that does not exist, and make nothing. Use it when a run must
   continue a branch that exists.
 
