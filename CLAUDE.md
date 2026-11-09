@@ -126,10 +126,10 @@ JR2_MODEL_ENDPOINT=anthropic-sonnet just e2e-model    # Claude Sonnet 5.5 on the
 
 The recipe probes the endpoint from the host first. With nothing answering it prints `skipped: no model endpoint at …`
 and exits 0. A refusal prints its HTTP status, and a profile with `key` and no `JR2_MODEL_API_KEY` says that the
-variable is not set. Report that skip in your handoff exactly as you would a result; it is never silent and never a
-pass. A key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone. It stays in env, never in a file or on a
-command line that is logged. Reachability from the PODS is `jr2 up`'s own provider preflight, per scenario, for every
-profile. It checks each model from a check pod, so a pod with no egress to the API fails the converge at the check pod.
+variable is not set. Report that skip in your report exactly as you would a result; it is never silent and never a pass.
+A key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone. It stays in env, never in a file or on a command line
+that is logged. Reachability from the PODS is `jr2 up`'s own provider preflight, per scenario, for every profile. It
+checks each model from a check pod, so a pod with no egress to the API fails the converge at the check pod.
 
 An agent starts `just e2e-model`, and each other long tier, with the Bash tool's `run_in_background` and waits for its
 completion notice. It never polls with `pgrep -f` on the command line: the pattern also matches the shell that polls, so
