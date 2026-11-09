@@ -37,10 +37,10 @@ Feature: Git LFS in a real pod
 
   Rule: the LFS server of an ask is the one that `.lfsconfig` names at the Binding's base, never one that the pod names
 
-    The Orchestrator puts the Binding's base in each mark, and ignores a base that the pod sends. So
-    an Agent that sends its own base in an ask, or checks out a branch whose `.lfsconfig` names
-    another LFS server, cannot point the cache agent at that server: the cache agent asks the
-    Binding's base's server, which does not hold the object, and the checkout fails.
+    The Orchestrator puts the Binding's base in each mark, and ignores a base that the pod sends. An
+    Agent can send its own base in an ask, or check out a branch whose `.lfsconfig` names another LFS
+    server. In both cases, the cache agent asks the Binding's base's server and not the other server.
+    The base's server does not hold the object, so the checkout fails.
 
     Scenario: an Agent that names another base in its own ask and checks out a branch whose .lfsconfig names another server gets nothing from that server
       Given the kind instance is serving
@@ -50,11 +50,11 @@ Feature: Git LFS in a real pod
 
   Rule: a push uploads its large files before it moves the branch
 
-    The push checks with a download batch that the server holds each object, and takes an object that
-    the server holds with no local copy, also from a server that gives an upload action for an object
-    that it holds (the batch API lets a server do so). An LFS server that speaks only the pure SSH
-    protocol (git-lfs-transfer) serves both ways: the cache agent downloads from it, and the push
-    uploads to it and checks it after the upload.
+    The push checks with a download batch that the server holds each object. It takes an object that
+    the server holds with no local copy. It does so also when the server gives an upload action for an
+    object that it holds. The batch API lets a server do this. An LFS server that speaks only the
+    pure SSH protocol (git-lfs-transfer) serves both ways: the cache agent downloads from it, and the
+    push checks it, uploads to it and checks it again.
 
     Scenario: a push of a commit with a new large file uploads it, and the LFS server then holds it
       Given the seed's push remote trusts this scenario's keys

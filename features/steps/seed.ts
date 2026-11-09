@@ -678,6 +678,9 @@ export function ensureLfsServer(): Promise<void> {
         "pods",
         "-l",
         "app=lfs",
+        // A Failed or Succeeded pod (an Evicted one, say) stays until pod GC, and serves nothing. A
+        // pod that stops after a roll is still Running, so the wait counts it.
+        "--field-selector=status.phase!=Failed,status.phase!=Succeeded",
         "-o",
         "name",
       ]);
