@@ -15,6 +15,8 @@ import { dropLandedOf, HANDOFF_LAND_MS, landHandoff, type LandOptions } from "..
 import { Execs } from "../src/exec.ts";
 import { landedFolder } from "../src/handoff-land-main.ts";
 import { HANDOFF_CARRY_MS, HANDOFF_CONTENT_TYPE } from "../src/wire.ts";
+import type { ChildPolicy } from "../src/children.ts";
+import type { SpawnHandlers, SpawnRequest, Spawned } from "../src/spawner.ts";
 import { testChildren } from "./support/children.ts";
 
 const ID = "0b7c5e1a-4d2f-4c55-9a51-6f1d2e3c4b5a";
@@ -44,13 +46,33 @@ function streamOf(bytes: Buffer, size = 7): ReadableStream<Uint8Array> {
   });
 }
 
-function world(t: TestContext) {
+/** The domain's spawner, but each `rm` that it runs starts `ms` late: a removal that comes after the
+ * next step of a land unless something waits for it. */
+function slowRm(children: ChildPolicy, ms: number): ChildPolicy {
+  const real = children.spawner;
+  const spawn = (req: SpawnRequest, handlers?: SpawnHandlers): Spawned => {
+    if (req.argv[0] !== "rm") return real.spawn(req, handlers);
+    const later = new Promise((r) => setTimeout(r, ms)).then(() => real.spawn(req, handlers));
+    return { exited: later.then((p) => p.exited) } as Spawned;
+  };
+  const spawner = new Proxy(real, {
+    get(target, prop) {
+      if (prop === "spawn") return spawn;
+      const v = Reflect.get(target, prop, target) as unknown;
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+  return { ...children, spawner };
+}
+
+function world(t: TestContext, opts: { slowRmMs?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "handoff-land-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const work = join(dir, "work");
   mkdirSync(work);
-  const children = testChildren({ work });
-  t.after(() => children.spawner.close());
+  const real = testChildren({ work });
+  t.after(() => real.spawner.close());
+  const children = opts.slowRmMs === undefined ? real : slowRm(real, opts.slowRmMs);
   const land = (bytes: Buffer | ReadableStream<Uint8Array>, opts: LandOptions = {}, id = ID) =>
     landHandoff(children, id, Buffer.isBuffer(bytes) ? streamOf(bytes) : bytes, { workRoot: work, ...opts });
   const folder = landedFolder(work, ID);
@@ -263,6 +285,21 @@ test("the lands of one id run one at a time: a newer body stops the land before 
   assert.deepEqual(await two, { landed: true });
   assert.equal(readFileSync(join(w.folder, "bundle"), "utf8"), "two", "the removal of the first missed the second");
   assert.deepEqual(w.left(), [ID]);
+});
+
+test("a newer land waits until the land before it removed what it left: a slow removal never hits the newer land's files", async (t) => {
+  const w = world(t, { slowRmMs: 800 });
+  // An earlier body of the id landed, so the older land's removal finds `<id>` as well as its part.
+  assert.deepEqual(await w.land(body({ bundle: 3 }, Buffer.from("one"), { end: true })), { landed: true });
+  const first = held(body({ bundle: 10 }, '{"data":10}\nabcde'));
+  const one = w.land(first.stream);
+  await until(() => existsSync(join(`${w.folder}.part`, "bundle")), "the first body's part is written");
+  const two = await w.land(body({ bundle: 3 }, Buffer.from("two"), { end: true }));
+  assert.ok("fault" in (await one));
+  assert.deepEqual(two, { landed: true });
+  // Past the time at which a removal that nothing waited for would come.
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.equal(readFileSync(join(w.folder, "bundle"), "utf8"), "two", "the newer land's files are there");
 });
 
 test("a land process that does not run, or says something out of its form, is a fault", async (t) => {
