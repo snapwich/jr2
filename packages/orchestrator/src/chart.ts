@@ -1038,7 +1038,11 @@ export function admitChart(
 
 /** What an Effect's input takes, for a line of the door. */
 function shapeText(shape: InputShape): string {
-  const need = [...shape.required, ...(shape.oneOf ? [`exactly one of ${shape.oneOf.join(", ")}`] : [])].join(", ");
+  const joins = Object.entries(shape.joins ?? {}).map(([key, with_]) => `${key} may come with ${with_.join(", ")}`);
+  const oneOf = shape.oneOf
+    ? [`exactly one of ${shape.oneOf.join(", ")}${joins.length ? ` (${joins.join("; ")})` : ""}`]
+    : [];
+  const need = [...shape.required, ...oneOf].join(", ");
   const may = shape.optional.length ? `${need ? ", and " : ""}optionally ${shape.optional.join(", ")}` : "";
   return need || may ? `${need}${may}` : "nothing";
 }

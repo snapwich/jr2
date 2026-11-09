@@ -225,7 +225,9 @@ export function worktreeWith(
  * commit must be the head of a `ready` cut of that path in an enclosing Workspace of this run (an
  * earlier `ready` cut of the path is good too), on the Handoff's branch, in the same Repo. A
  * Handoff of the nested Workspace's own cut, of a sibling or of another run is `refused`. A
- * detached Handoff needs `branch`. `expect` does not apply to it.
+ * detached Handoff needs `branch`. `expect` applies to the branch, as at a branch cut. Each round
+ * of a final review is a new nested Workspace: invoke it after the parent leaves the state that
+ * invoked the last one, or the new one takes over the last one's Sandbox and its cut.
  *
  * `expect` says if the branch can exist: `worktree({ expect: "new" })` refuses a branch that exists,
  * and `worktree({ expect: "existing" })` refuses a branch that does not exist. A run cannot change it.

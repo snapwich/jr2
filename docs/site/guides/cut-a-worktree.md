@@ -112,8 +112,9 @@ that you lend to a [Chart](../reference/glossary.md#chart) must state `expect`, 
 
 In a nested Workspace, invoke the Effect with `{ path, handoff }`. `handoff` is the `ready` output of a cut in an
 enclosing Workspace of the run, which came in through the door. The cut makes a branch Worktree at that commit, and
-`found` is `handoff`. jr2 checks the Handoff against the run, and refuses one that the run did not make.
-[Review in a nested Workspace](review-in-a-nested-workspace.md) tells how, and gives its rules.
+`found` is `handoff`, and the slot's `expect` applies to the branch. jr2 checks the Handoff against the run, and refuses
+one that the run did not make. [Review in a nested Workspace](review-in-a-nested-workspace.md) tells how, and gives its
+rules.
 
 ## Give the Worktree to each step
 

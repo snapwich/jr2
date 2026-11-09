@@ -150,7 +150,8 @@ stay there.
 
 jr2 checks each field of a Handoff against the records of the run, because an Agent can write each field. A Handoff that
 no cut of an enclosing Workspace of the run made is `refused`. Each round of the final review is a new nested Workspace
-with a new Handoff. [Review in a nested Workspace](../guides/review-in-a-nested-workspace.md) gives the procedure.
+with a new Handoff, and the parent leaves the state that invoked the last round before it invokes the next one.
+[Review in a nested Workspace](../guides/review-in-a-nested-workspace.md) gives the procedure.
 
 ## Large files and submodules
 

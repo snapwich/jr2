@@ -34,10 +34,20 @@ on real files (Considered options), and a probe tested the bundle range.
   parent's name. It tracks `origin/<branch>` when the clone holds that branch. `found` is `"handoff"`. A re-cut of the
   path with the same Handoff is `held`, and a re-cut with another Handoff is `refused`. The child's Harness decides
   these from its own record of the path, as for each re-cut (ADR-0075): two rounds' nested Workspaces can share one
-  Sandbox name ([ADR-0064](0064-a-workspace-waits-for-capacity.md)), so the run's ledger cannot tell their cuts apart,
-  and a new nested Workspace can take over the Sandbox of the last one. The cut at a Handoff does not apply `expect`:
-  the Handoff's head sets what the branch holds, whether or not the name is on the remote, and the ledger check below
-  takes the place of `expect`'s check.
+  Sandbox name ([ADR-0064](0064-a-workspace-waits-for-capacity.md)), so the run's ledger cannot tell their cuts apart.
+
+- **The slot's `expect` applies to the child's branch**, as at a branch cut (ADR-0075). The Handoff's head sets what the
+  branch holds, and `expect` says whether the name can exist. A push in the child publishes to the child's branch, and a
+  Chart or a pick can name that branch through `branch`. With `expect: "new"`, the cut refuses a name that the remote
+  has, so such a name cannot reach an existing branch. The door's rules for a lent cut (ADR-0075, "A Chart") thus hold
+  for a cut at a Handoff too.
+- **Each round leaves the state that invoked the last one.** A parent that leaves the state stops the nested Workspace,
+  and the host deletes its Sandbox before the next round places one of the same name (ADR-0012, ADR-0064). A parent that
+  invokes the nested Workspace again from the same state, in one transition (for example `reenter: true`), stops the old
+  one and starts the new one in one step. The new one then takes over the old Sandbox, as a re-invoke after a caught
+  defect does. Its cut with a new Handoff is `refused`, and its cut with the same Handoff is `held`: it gets the last
+  round's Worktree, with the commits of the last reviewer. Such a round is not independent. So a Machine goes through
+  another state between two rounds, for example the parent's coding state.
 
 - **jr2 trusts no field of a Handoff.** A Handoff comes through a door, and a door's input can come from an Agent's pick
   or a Chart. So the cut finds the whole Handoff in the run's ledger, and refuses it when one fact does not agree:
@@ -71,7 +81,9 @@ on real files (Considered options), and a probe tested the bundle range.
   `ready` cut in an enclosing Workspace of the run, on that cut's branch. Which of those commits the child takes is the
   Machine's choice: a Handoff that a pick carries lets the Agent choose among them. The `branch` of the cut's input is
   not a ledger fact. It names the child's branch, as the `branch` of a branch arm does (ADR-0075), so a Machine that
-  takes it from a pick or a Chart lets the Agent name the branch that a push in the child publishes to.
+  takes it from a pick or a Chart lets the Agent name the branch that a push in the child publishes to. The slot's
+  `expect` limits that name, as for a branch arm: with `expect: "new"`, it cannot be a branch that exists. A slot with
+  no `expect` limits nothing, and a Chart cannot use such a slot.
 
 - **The cut is the only check.** `jr2 up` does not look at a door that takes a Handoff, and the Orchestrator does not
   look a Handoff up when the parent invokes the nested Workspace. A forged Handoff costs one Sandbox, and the cut
@@ -171,7 +183,9 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
 
   When the source Harness does not answer, the cut is `unknown`, and the Machine can cut again. The Orchestrator waits
   for the source longer than the bundle step's deadline, so a step that the parent's files hold ends as `refused` and
-  never as `unknown`.
+  never as `unknown`. Any other fault of the carry is `unknown` too, never the invoke's error: the parent's files can
+  cause it. When the child's Harness restarts and the Orchestrator sends the cut's start again, it carries the files
+  again first, so a restart is never a `refused` for a commit that the clone does not hold.
 
 - **No server.** No process serves git between Sandboxes, no alternates point at another Sandbox, and no git protocol
   version is chosen. On the parent side, the only git folder that jr2 makes is the bundle step's, which holds one ref
@@ -274,7 +288,9 @@ publishing: {
   pod. Rejected. A parent that invokes the same Machine again from the same state must give it the same name, so that a
   restored or re-invoked Workspace takes over its Sandbox ([ADR-0064](0064-a-workspace-waits-for-capacity.md),
   ADR-0073). The name comes from the actor path (ADR-0012), which tells the Workspaces of two Pool workers apart. Two
-  rounds share one name, and a new round waits for the delete of the old one.
+  rounds share one name. A round that the parent invokes after it left the invoking state waits for the delete of the
+  old one. A round that the parent invokes again from the same state takes over the old Sandbox, so a Machine leaves the
+  state between two rounds (Decision).
 - **The coder pushes its branch, and a review Workspace cuts the pushed commit.** This needs no kit change. Rejected as
   the way to the final review: it publishes work before its review, it needs a push and a fetch of the remote for each
   round, and the Machine cannot keep the reviewed commit off the remote.

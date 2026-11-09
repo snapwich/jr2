@@ -117,7 +117,11 @@ it. Then the Chart ends, and the run ends with the status `done`.
     then what a write supplies
   - `<path>: "<reference>" is not a reference: it starts at context, event or input (a reference is a path, never an expression)`
   - ``<path>: the lent cut "<slot>" does not state `expect`, so a Chart cannot use it; <fix>``
-  - ``<path>: the lent cut "<slot>" states `expect: "existing"` beside the lent force push "<slot>", and together they can force-push any existing branch; <fix>``
+  - ``<path>: the lent cut "<slot>" states `expect: "existing"` beside the lent force push "<slot>", and together they can force-push any existing branch; <fix>``.
+    These two rules also apply to a cut at a [Handoff](../reference/glossary.md#handoff). The cut applies the `expect`
+    of the slot to the `branch` that a Chart gives.
+  - `<path>.handoff: a cut's Handoff is a reference, such as "{{context.handoff}}"`
+  - ``<path>: a cut at a Handoff takes no `from` ``
   - ``<path>.cwd: "<cwd>" is a Repo Slot's folder, not a Worktree; `cwd` is a Worktree that a cut made, "/work/<slot>/<name>", or "/work/<slot>/default" to read, or "/work"``
   - ``<path>: <agent> works under a Workspace with Repo Slots, and a Turn there says where: `cwd` is a Worktree, or "/work"``
 - The door then compiles the Chart as the Open body does. A line of this last check starts with `(chart):`, and names a

@@ -588,8 +588,7 @@ export async function cut(req: CutRequest, paths: CutPaths): Promise<CutAnswer> 
   if (req.detach !== undefined && req.expect !== undefined) return refused("a detached cut takes no `expect`");
   if (req.handoff !== undefined) {
     if (req.branch === undefined) return refused("a cut at a Handoff names its branch");
-    if (req.from !== undefined || req.expect !== undefined)
-      return refused("a cut at a Handoff takes no `from` and no `expect`");
+    if (req.from !== undefined) return refused("a cut at a Handoff takes no `from`");
     if (!COMMIT.test(req.handoff))
       return refused(`a Handoff's commit is a full commit id, not ${JSON.stringify(req.handoff)}`);
   }
@@ -889,7 +888,7 @@ async function recut(req: CutRequest, rec: CutRecord, c: Clone, ready: ReadyOf):
     return refused(
       req.handoff === undefined
         ? `${req.path} was cut at the Handoff ${rec.handoff}, and a re-cut names that Handoff`
-        : `${req.path} was cut at the Handoff ${rec.handoff}, not ${req.handoff}: a nested Workspace takes one Handoff, so invoke a new one for the next`,
+        : `${req.path} was cut at the Handoff ${rec.handoff}, not ${req.handoff}: this Sandbox takes one Handoff, and a nested Workspace that its parent invokes again before it leaves the invoking state takes over the Sandbox of the last one`,
     );
   }
   if (rec.handoff === undefined && req.handoff !== undefined) {
@@ -1080,6 +1079,14 @@ async function firstHandoff(req: CutRequest, c: Clone, paths: CutPaths, ready: R
     return refused(`the branch ${branch} of this clone is at ${local}, not at the Handoff's commit ${head}`);
   }
   const remote = local === undefined ? await refOf(c, `refs/remotes/origin/${branch}`) : undefined;
+  // The slot's `expect` holds here as at a branch cut: the push publishes to this name, and a
+  // Chart or a pick can give the name (ADR-0080, ADR-0075).
+  const there = local !== undefined || remote !== undefined;
+  if (req.expect === "new" && !there && stale !== undefined) {
+    return refused(`${branch} is not in this clone, and the remote did not answer, so it may exist there: ${stale}`);
+  }
+  const expected = expectFault(req, there);
+  if (expected !== undefined) return refused(expected);
   const lfs = await c.largeFiles(head);
   if (lfs !== undefined) return refused(lfs);
   const rec: CutRecord = {

@@ -187,7 +187,7 @@ test("the door on a cut: inputShapeOf, and exact words", async () => {
   assert.equal(await door(withCut({ src: "cut", input: { path: "/work/app/x", detach: "abc" }, onDone })), "admitted");
   assert.match(
     await door(withCut({ src: "cut", input: { path: "/work/app/x", branch: "a", detach: "abc" }, onDone })),
-    /takes path, exactly one of branch, detach, handoff, and optionally from; give one of branch, detach, handoff/,
+    /takes path, exactly one of branch, detach, handoff \(handoff may come with branch\), and optionally from; give one of branch, detach, handoff/,
   );
   assert.match(
     await door(withCut({ src: "cut", input: { path: "/work/app/x" }, onDone })),

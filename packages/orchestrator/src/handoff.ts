@@ -202,7 +202,11 @@ export function handoffSourceOf(
  * to the child's, under the cut's Effect id, before the cut's exec starts. `carried`: the child's
  * Harness holds them for this cut. `nothing`: the range is empty, and the cut takes the commit from
  * its clone. `refused`: the parent's files or clone caused it, and the cut is `refused` with the
- * reason. `unknown`: the source Harness did not answer, and the cut is `unknown`.
+ * reason. `unknown`: the source Harness did not answer, and the cut is `unknown`. A carrier that
+ * throws is `unknown` too: a fault that an Agent's files can cause never reaches `onError`.
+ *
+ * The Orchestrator calls it again before each send of the cut's start: a child Harness that
+ * restarted may not hold the files of the last call.
  *
  * With no carrier, the Orchestrator carries nothing, as for `nothing`.
  */

@@ -276,7 +276,7 @@ async function rig(input: RootCtx = {}, opts: { carrier?: HandoffCarrier } = {})
   return { exec, host, runId, rows, out };
 }
 
-test("an accepted Handoff: the child's cut sends the ledger's branch and commit, no `expect`, and keeps the source on its intent row", async () => {
+test("an accepted Handoff: the child's cut sends the ledger's branch and commit, and keeps the source on its intent row", async () => {
   const r = await rig();
   await waitFor(() => r.exec.starts.length === 2);
   const start = r.exec.starts[1]!;
@@ -492,4 +492,214 @@ test("an Orchestrator restart mid-cut at a Handoff: the cut goes again under its
   exec.settle(readyAnswer("/work/app/final", "fix/one", H, "handoff"));
   await waitFor(() => host.status(runId)?.value === "done");
   await host.stop(runId);
+});
+
+test("a carrier that throws settles the cut `unknown`, never the invoke's error: an Agent's files can cause it", async () => {
+  const r = await rig(
+    {},
+    {
+      carrier: async () => {
+        throw new Error("the stream ended early");
+      },
+    },
+  );
+  await waitFor(() => r.host.status(r.runId)?.value === "done");
+  const out = r.out() as { outcome: string; reason: string };
+  assert.equal(out.outcome, "unknown", JSON.stringify(out));
+  assert.match(out.reason, /the files of the Handoff were not carried: the stream ended early/);
+  assert.equal(r.exec.starts.length, 1, "the child's cut did not start");
+  await r.host.stop(r.runId);
+});
+
+test("a child Harness that restarts after the carry: the files are carried again before the cut is sent again", async () => {
+  const calls: string[] = [];
+  const r = await rig({}, { carrier: async (args) => (calls.push(args.effect), { outcome: "carried" }) });
+  await waitFor(() => r.exec.starts.length === 2);
+  const id = r.exec.starts[1]!.id;
+  assert.deepEqual(calls, [id]);
+  // The child's Harness restarts: it knows no exec, and the files of the last carry may be gone.
+  r.exec.forgetAll();
+  await waitFor(() => r.exec.starts.length === 3);
+  assert.equal(r.exec.starts[2]!.id, id, "the cut is sent again under its id");
+  assert.deepEqual(calls, [id, id], "and its files went again first");
+  r.exec.settle(readyAnswer("/work/app/final", "fix/one", H, "handoff"));
+  await waitFor(() => r.host.status(r.runId)?.value === "done");
+  assert.equal((r.out() as WorktreeReady).found, "handoff");
+  await r.host.stop(r.runId);
+});
+
+// --- Through the real actor chain: more than one level, and siblings ------------------------------
+
+/** A nested Workspace `name` that cuts with `mk(context)`, and outputs the cut. */
+function nestedCut(
+  exec: FakeHarnessExec,
+  name: string,
+  mk: (ctx: { h?: WorktreeReady }) => unknown,
+  options: Parameters<typeof worktreeWith>[1] = {},
+) {
+  return jr2Setup({
+    types: {} as { input: { h?: WorktreeReady }; context: { h?: WorktreeReady; out?: WorktreeOutput } },
+    actors: { ws: fakeWorkspace(ws(name)), cut: worktreeWith(exec.factory, options) },
+  }).createMachine({
+    id: name,
+    context: ({ input }) => input,
+    invoke: { src: "ws" },
+    initial: "cutting",
+    states: {
+      cutting: {
+        invoke: {
+          src: "cut",
+          input: ({ context }) => mk(context) as never,
+          onDone: { target: "done", actions: assign({ out: ({ event }) => event.output }) },
+        },
+      },
+      done: { type: "final" },
+    },
+    output: ({ context }) => context.out,
+  });
+}
+
+/** A root Workspace `ws-parent` that cuts the coder's Worktree, then invokes `next` with its Handoff. */
+function cutThen(
+  exec: FakeHarnessExec,
+  next: ReturnType<typeof nestedCut>,
+  options: Parameters<typeof worktreeWith>[1] = {},
+) {
+  return jr2Setup({
+    types: {} as { context: { h?: WorktreeReady; out?: WorktreeOutput } },
+    actors: { ws: fakeWorkspace(ws("ws-parent")), cut: worktreeWith(exec.factory, options), next },
+  }).createMachine({
+    id: "root",
+    context: {},
+    invoke: { src: "ws" },
+    initial: "cutting",
+    states: {
+      cutting: {
+        invoke: {
+          src: "cut",
+          input: { path: "/work/app/coder", branch: "fix/one" },
+          onDone: { target: "nested", actions: assign({ h: ({ event }) => readyOf(event.output) }) },
+        },
+      },
+      nested: {
+        invoke: {
+          src: "next",
+          input: ({ context }) => ({ h: context.h }),
+          onDone: { target: "done", actions: assign({ out: ({ event }) => event.output as WorktreeOutput }) },
+          onError: { target: "done", actions: assign({ out: () => ({ outcome: "ERROR" }) as never }) },
+        },
+      },
+      done: {},
+    },
+  });
+}
+
+async function runRoot(exec: FakeHarnessExec, machine: ReturnType<typeof cutThen>, first = "/work/app/coder") {
+  const store = await mkStore();
+  const host = new RunHost({ store });
+  host.register({ name: "chain", machine, provide: () => ({}) });
+  const { runId } = await host.start("chain");
+  await waitFor(() => exec.starts.length === 1);
+  exec.settle(readyAnswer(first, "fix/one", H));
+  const rows = async () => ((await store.load(runId))?.snapshot as { effects: Record<string, EffectRow> }).effects;
+  const out = () => (host.status(runId)?.context as { out?: { outcome: string; reason?: string } }).out;
+  return { host, runId, rows, out };
+}
+
+test("a Handoff of a Workspace two levels up, through the real actor chain: accepted, and the source is the top Workspace", async () => {
+  const exec = new FakeHarnessExec();
+  const leaf = nestedCut(exec, "ws-leaf", (c) => ({ path: "/work/app/final", handoff: c.h }));
+  // The middle Workspace cuts nothing: it passes the Handoff down.
+  const mid = jr2Setup({
+    types: {} as { input: { h?: WorktreeReady }; context: { h?: WorktreeReady; out?: WorktreeOutput } },
+    actors: { ws: fakeWorkspace(ws("ws-mid")), leaf },
+  }).createMachine({
+    id: "mid",
+    context: ({ input }) => input,
+    invoke: { src: "ws" },
+    initial: "n",
+    states: {
+      n: {
+        invoke: {
+          src: "leaf",
+          input: ({ context }) => ({ h: context.h }),
+          onDone: { target: "done", actions: assign({ out: ({ event }) => event.output as WorktreeOutput }) },
+        },
+      },
+      done: { type: "final" },
+    },
+    output: ({ context }) => context.out,
+  });
+  const r = await runRoot(exec, cutThen(exec, mid as unknown as ReturnType<typeof nestedCut>));
+  await waitFor(() => exec.starts.length === 2);
+  assert.equal(exec.starts[1]!.endpoint, "http://ws-leaf.invalid");
+  const intent = (await r.rows())[exec.starts[1]!.id] as { handoff?: { sandbox: string; endpoint: string } };
+  assert.equal(intent.handoff?.sandbox, "ws-parent");
+  assert.equal(intent.handoff?.endpoint, "http://ws-parent.invalid");
+  await r.host.stop(r.runId);
+});
+
+test("a Handoff of a sibling nested Workspace's cut, through the real actor chain, is refused", async () => {
+  const exec = new FakeHarnessExec();
+  const s1 = nestedCut(exec, "ws-s1", () => ({ path: "/work/app/coder", branch: "fix/one" }));
+  const s2 = nestedCut(exec, "ws-s2", (c) => ({ path: "/work/app/final", handoff: c.h }));
+  const root = jr2Setup({
+    types: {} as { context: { h?: WorktreeReady; out?: WorktreeOutput } },
+    actors: { ws: fakeWorkspace(ws("ws-parent")), s1, s2 },
+  }).createMachine({
+    id: "root",
+    context: {},
+    invoke: { src: "ws" },
+    initial: "one",
+    states: {
+      one: {
+        invoke: {
+          src: "s1",
+          input: {},
+          onDone: { target: "two", actions: assign({ h: ({ event }) => readyOf(event.output as WorktreeOutput) }) },
+        },
+      },
+      two: {
+        invoke: {
+          src: "s2",
+          input: ({ context }) => ({ h: context.h }),
+          onDone: { target: "done", actions: assign({ out: ({ event }) => event.output as WorktreeOutput }) },
+        },
+      },
+      done: {},
+    },
+  });
+  const r = await runRoot(exec, root as unknown as ReturnType<typeof cutThen>);
+  await waitFor(() => r.host.status(r.runId)?.value === "done");
+  const out = r.out()!;
+  assert.equal(out.outcome, "refused", JSON.stringify(out));
+  assert.match(out.reason!, /a Workspace that does not enclose this one made it/);
+  assert.equal(exec.starts.length, 1, "the sibling's cut reached no Harness");
+  await r.host.stop(r.runId);
+});
+
+test("a `branch` that is not a string beside a Handoff is refused, not the invoke's error", async () => {
+  const exec = new FakeHarnessExec();
+  const child = nestedCut(exec, "ws-child", (c) => ({ path: "/work/app/final", handoff: c.h, branch: 7 }));
+  const r = await runRoot(exec, cutThen(exec, child));
+  await waitFor(() => r.host.status(r.runId)?.value === "done");
+  const out = r.out()!;
+  assert.equal(out.outcome, "refused", JSON.stringify(out));
+  assert.match(out.reason!, /a cut's `branch` is a string/);
+  assert.equal(exec.starts.length, 1);
+  await r.host.stop(r.runId);
+});
+
+test("a slot's static `expect` goes with a cut at a Handoff, so a `branch` cannot name a branch that exists", async () => {
+  // The child's Harness applies it to the child's branch, as at a branch cut (ADR-0080, ADR-0075).
+  const exec = new FakeHarnessExec();
+  const child = nestedCut(exec, "ws-child", (c) => ({ path: "/work/app/final", handoff: c.h, branch: "release" }), {
+    expect: "new",
+  });
+  const r = await runRoot(exec, cutThen(exec, child, { expect: "new" }));
+  await waitFor(() => exec.starts.length === 2);
+  const req = cutRequest(exec.starts[1]!.req);
+  assert.equal(req.branch, "release");
+  assert.equal(req.expect, "new");
+  await r.host.stop(r.runId);
 });

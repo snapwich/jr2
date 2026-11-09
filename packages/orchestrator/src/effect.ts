@@ -1124,7 +1124,7 @@ function cutFaultOf(input: unknown, ambient: AmbientHandles): string | undefined
  * `expect`, the base, sent each time, so that no checkout of an Agent's can move it, and the
  * Effect's timeout, so that the cut's ask for its large files ends in time to answer `refused`.
  * A cut at a Handoff sends what the ledger check found, never the input's fields: the branch and
- * the commit, and no `expect` (ADR-0080). */
+ * the commit, with the static `expect` and no base (ADR-0080). */
 function cutRequestOf(
   id: string,
   input: unknown,
@@ -1139,6 +1139,7 @@ function cutRequestOf(
       path: given.path,
       branch: source.branch,
       handoff: source.head,
+      ...(parts.cut?.expect ? { expect: parts.cut.expect } : {}),
       timeoutMs: parts.timeoutMs,
     });
   }
@@ -1316,29 +1317,40 @@ async function drive<I, O>(
     ...(source !== undefined ? { handoff: source } : {}),
     at: now(),
   });
-  if (source !== undefined && carrier !== undefined) {
-    // The transport's seam (ADR-0080): the files of the Handoff reach the child's Harness, under
-    // this Effect's id, before the cut starts. What the parent's files cause is `refused`; a source
-    // that does not answer is `unknown`.
-    const carried = await carrier({
-      effect: id,
-      source,
-      target: { endpoint: ambient.endpoint, sandbox: ambient.sandbox },
-      bearer: (sandbox) => binding?.harnessBearer?.(sandbox),
-      signal,
-    });
-    if (signal.aborted) return;
+  /** The transport's seam (ADR-0080): the files of the Handoff reach the child's Harness, under
+   * this Effect's id, before the cut starts. What the parent's files cause is `refused`; a source
+   * that does not answer is `unknown`. A carrier that throws is `unknown` too, never the invoke's
+   * error: an Agent's files can cause it. False: the cut settled, and nothing starts. */
+  const carry = async (): Promise<boolean> => {
+    if (source === undefined || carrier === undefined) return true;
+    let carried: Awaited<ReturnType<HandoffCarrier>>;
+    try {
+      carried = await carrier({
+        effect: id,
+        source,
+        target: { endpoint: ambient.endpoint, sandbox: ambient.sandbox },
+        bearer: (sandbox) => binding?.harnessBearer?.(sandbox),
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) return false;
+      carried = { outcome: "unknown", reason: `the files of the Handoff were not carried: ${(err as Error).message}` };
+    }
+    if (signal.aborted) return false;
     if (carried.outcome === "refused" || carried.outcome === "unknown") {
       settled({ outcome: carried.outcome, reason: carried.reason });
-      return;
+      return false;
     }
-  }
+    return true;
+  };
   run.started = true;
   mark({ stage: "started", text: req.argv.join(" ") });
   // One pass for every Effect but the kit's cut: a Harness that restarted knows no id, and a start
-  // that may have reached it is never sent again. A cut goes out again: it is idempotent.
+  // that may have reached it is never sent again. A cut goes out again: it is idempotent. A cut at a
+  // Handoff gets its files again on each pass: a Harness that restarted may not hold them.
   const passes = parts.idempotent ? RESENDS + 1 : 1;
   for (let pass = 1; pass <= passes; pass++) {
+    if (!(await carry())) return;
     const sent = await startOnce(port, id, req, signal);
     if (signal.aborted) return;
     const first = await retrying(() => port.read(id, 0, signal), signal);

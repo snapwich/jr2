@@ -1313,6 +1313,27 @@ test("a cut at a Handoff refuses a local branch of that name at another commit, 
   assert.equal(a.head, head);
 });
 
+test("a cut at a Handoff keeps the slot's `expect`: `new` refuses a name that the remote has, so a push cannot reach it", async (t) => {
+  const w = world(t);
+  const head = run(w.clone, "rev-parse", "origin/feature/auth");
+  const same = unchanged(w.clone);
+  // A Chart's or a pick's `branch` names an existing branch: the push of the child would publish there.
+  assert.match(
+    refusal(await w.go({ path: w.path("final"), branch: "feature/auth", handoff: head, expect: "new" })),
+    /feature\/auth exists, and this cut makes only a new branch/,
+  );
+  assert.match(
+    refusal(await w.go({ path: w.path("final"), branch: "fresh", handoff: head, expect: "existing" })),
+    /fresh does not exist, and this cut makes nothing/,
+  );
+  same();
+  assert.equal(existsSync(w.path("final")), false);
+  const a = ready(await w.go({ path: w.path("final"), branch: "fresh", handoff: head, expect: "new" }));
+  assert.equal(a.found, "handoff");
+  const b = ready(await w.go({ path: w.path("tracked"), branch: "feature/auth", handoff: head, expect: "existing" }));
+  assert.equal(run(b.path, "rev-parse", "--abbrev-ref", "@{upstream}"), "origin/feature/auth");
+});
+
 test("a re-cut with the same Handoff is held; with another Handoff, with none, or at a branch cut, it is refused", async (t) => {
   const w = world(t);
   const head = run(w.clone, "rev-parse", "origin/feature/auth");
@@ -1328,7 +1349,9 @@ test("a re-cut with the same Handoff is held; with another Handoff, with none, o
   const same = unchanged(w.clone);
   assert.match(
     refusal(await w.go({ path: w.path("final"), branch: "review", handoff: main })),
-    new RegExp(`was cut at the Handoff ${head}, not ${main}: a nested Workspace takes one Handoff`),
+    new RegExp(
+      `was cut at the Handoff ${head}, not ${main}: this Sandbox takes one Handoff, and a nested Workspace that its parent invokes again before it leaves the invoking state takes over`,
+    ),
   );
   assert.match(refusal(await w.go({ path: w.path("final"), branch: "review" })), /was cut at the Handoff/);
   same();
@@ -1353,11 +1376,7 @@ test("a cut at a Handoff refuses an Agent's own folder, a held branch, and a mal
   assert.match(refusal(await w.go({ path: w.path("x"), handoff: head })), /a cut names a branch or a commit/);
   assert.match(
     refusal(await w.go({ path: w.path("x"), branch: "r", handoff: head, from: "main" })),
-    /takes no `from` and no `expect`/,
-  );
-  assert.match(
-    refusal(await w.go({ path: w.path("x"), branch: "r", handoff: head, expect: "new" })),
-    /takes no `from` and no `expect`/,
+    /a cut at a Handoff takes no `from`/,
   );
   assert.match(refusal(await w.go({ path: w.path("x"), branch: "r", handoff: head.slice(0, 12) })), /a full commit id/);
 });

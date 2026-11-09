@@ -64,7 +64,8 @@ The cut makes a branch Worktree at the commit of the Handoff:
   `{ path, handoff, branch: "review/123" }`.
 - The branch tracks `origin/<branch>` when the remote has that branch.
 - `found` is `handoff`.
-- `expect` does not apply to a cut at a Handoff.
+- The `expect` of the slot applies to the branch, as at a cut of a branch. With `worktree({ expect: "new" })`, a
+  `branch` cannot name a branch that the remote has, so a push from the nested Workspace cannot go to it.
 
 jr2 does not trust a field of a Handoff. A door can get its input from a pick or from a
 [Chart](../reference/glossary.md#chart), and an Agent can write each field. Thus the cut finds the Handoff in the
@@ -91,6 +92,11 @@ The example gives the notes of each round:
 
 The parent and the nested Workspace end together. When the parent leaves the state that invoked it, jr2 stops the nested
 Workspace and deletes its Sandbox.
+
+Thus, between two rounds, the parent must leave the state that invokes the nested Workspace. In the example, the parent
+goes back to `coding`. Do not invoke the next round from the same state in one transition (for example with
+`reenter: true`). Then the new nested Workspace gets the Sandbox of the last one: its cut with the new Handoff is
+refused, and its cut with the same Handoff gives the Worktree of the last round, with the commits of the last reviewer.
 
 ## Publish the reviewed commit
 
@@ -136,13 +142,18 @@ These settle as `refused`, and nothing changes. `<handoff>` is `the Handoff of <
   `the branch <branch> of this clone is at <sha>, not at the Handoff's commit <head>`
 - a different Worktree holds the branch: `<holder> holds <branch>: a cut at a Handoff makes its own Worktree`
 - a folder that no cut made: `<path> is a folder that no cut made, and a cut at a Handoff makes its own Worktree`
-- a re-cut with a different Handoff:
-  `<path> was cut at the Handoff <head>, not <other>: a nested Workspace takes one Handoff, so invoke a new one for the next`
+- a re-cut with a different Handoff, which occurs when the parent invoked the round from the same state:
+  `<path> was cut at the Handoff <head>, not <other>: this Sandbox takes one Handoff, and a nested Workspace that its parent invokes again before it leaves the invoking state takes over the Sandbox of the last one`
+- `expect: "new"` on a branch that exists: `<branch> exists, and this cut makes only a new branch`
+- `expect: "existing"` on a branch that does not exist: `<branch> does not exist, and this cut makes nothing`
+- with `expect: "new"`, a fetch that failed for a branch that the clone does not hold:
+  `<branch> is not in this clone, and the remote did not answer, so it may exist there: <warning>`
 - a re-cut with no Handoff: `<path> was cut at the Handoff <head>, and a re-cut names that Handoff`
 - a Handoff at a path that a different cut made: `<path> was cut for <branch>, not at a Handoff`
 
 A Chart gives a Handoff as a reference, such as `"{{context.handoff}}"`. The door refuses a literal Handoff. A reference
-that resolves to a value that is not a Handoff is the error of that invoke.
+that resolves to a value that is not a Handoff is the error of that invoke. A cut that you lend to a Chart must state
+`expect`, as for each cut, and the door refuses `expect: "existing"` beside a lent force push.
 
 ## Read next
 
