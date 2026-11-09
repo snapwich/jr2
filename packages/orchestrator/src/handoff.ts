@@ -97,13 +97,6 @@ type CutRowView = {
   output?: unknown;
 };
 
-/** The head of a settled `ready` cut row: the row's field, or its output's. */
-function headOf(row: CutRowView): string | undefined {
-  if (row.cut?.head !== undefined) return row.cut.head;
-  const head = (row.output as { head?: unknown } | undefined)?.head;
-  return typeof head === "string" ? head : undefined;
-}
-
 /** Two Binding urls are one Repo: one identity (ADR-0051). */
 function sameRepo(a: string | undefined, b: string | undefined): boolean {
   if (a === undefined || b === undefined) return false;
@@ -147,7 +140,8 @@ export function handoffSourceOf(
       row.cut !== undefined &&
       row.sandbox !== undefined &&
       row.cut.path === given.path &&
-      headOf(row) === given.head,
+      // Each `ready` row keeps its head on `cut` (`cutRowOf`); the output is the Agents' answer.
+      row.cut.head === given.head,
   );
   if (matching.length === 0) {
     return { refused: `${of}: no ready cut of this run made that commit at that path` };

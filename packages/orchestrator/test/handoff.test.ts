@@ -106,6 +106,11 @@ test("the ledger check refuses a head that no ready cut of the run made at that 
   assert.match(refusedOf(check(given({ path: "/work/app/other" }), rows)), /no ready cut of this run/);
   // A run's ledger holds only its own cuts: a Handoff of another run, a dispatched one too, finds none.
   assert.match(refusedOf(check(given(), {})), /no ready cut of this run/);
+  // The head is the row's own field, never the cut's answer: a row with no head of its own is no
+  // source, whatever its output says.
+  const answered = cutRow("ws-parent", "/work/app/coder", "fix/one", H);
+  const headless = { ...answered, cut: { path: answered.cut.path, branch: answered.cut.branch } };
+  assert.match(refusedOf(check(given(), { r1: headless as never })), /no ready cut of this run/);
 });
 
 test("the ledger check refuses a Handoff of the child's own cut and of a sibling Workspace", () => {
