@@ -75,7 +75,7 @@ Feature: Git LFS in a real pod
       And an LFS repository over ssh whose LFS server speaks only the pure SSH protocol, with a large file on main
       When the Agent commits a new large file and the Machine pushes it
       Then the push is pushed, the remote holds the branch, and the LFS server holds the object
-      And the attach got the base's large file, and the cache agent and the push spoke git-lfs-transfer
+      And the attach got the base's large file, and the cache agent, the upload and the check after it spoke git-lfs-transfer
 
   Rule: the measurements
 

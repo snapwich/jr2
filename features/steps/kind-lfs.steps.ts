@@ -650,12 +650,19 @@ Then("the push is pushed, and the LFS server got no upload", async function (thi
 });
 
 Then(
-  "the attach got the base's large file, and the cache agent and the push spoke git-lfs-transfer",
+  "the attach got the base's large file, and the cache agent, the upload and the check after it spoke git-lfs-transfer",
   async function (this: E2EWorld): Promise<void> {
     const s = lfsOf(this);
     assert.equal(s.read?.base, s.base!.object.oid, `the Worktree's ${s.base!.path} holds the object's bytes`);
     const sessions = await lfsTransferSessions(s.name);
+    // The cache agent's download (the attach), the push's check before its upload, the upload,
+    // and the check after it: a download session after the last upload is the Effector's own.
     assert.ok(sessions.includes("download"), `a download session: ${JSON.stringify(sessions)}`);
-    assert.ok(sessions.includes("upload"), `an upload session: ${JSON.stringify(sessions)}`);
+    const upload = sessions.lastIndexOf("upload");
+    assert.ok(upload >= 0, `an upload session: ${JSON.stringify(sessions)}`);
+    assert.ok(
+      sessions.slice(upload + 1).includes("download"),
+      `the push's check after its upload spoke git-lfs-transfer: a download session after the last upload: ${JSON.stringify(sessions)}`,
+    );
   },
 );
