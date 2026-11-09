@@ -19,9 +19,9 @@ const failure = (p: Promise<unknown>): Promise<CauseError> =>
 test("a connection that does not open is given up after the bound, as a connect failure", async () => {
   const socket = neverOpens();
   const fetch = dialFetch({ connectTimeoutMs: 50, connect: () => socket });
-  const started = Date.now();
+  const started = performance.now();
   const err = await failure(fetch("http://ws-1.ns.svc:8080/attach", { method: "POST", body: "{}" }));
-  const took = Date.now() - started;
+  const took = performance.now() - started;
   assert.ok(took >= 45 && took < 2_000, `given up after the bound, not the 10 s of the global fetch (took ${took}ms)`);
   assert.equal(err.message, "fetch failed", "shaped as the global fetch's transport failure");
   assert.equal(err.cause.syscall, "connect", "a connect failure: it never reached the wire");
@@ -34,13 +34,13 @@ test("the bound is on the connect only: a connection that opens in time waits pa
   // Connects at 20 ms, inside the 50 ms bound; the answer comes 150 ms after the request.
   const socket = fakeConnection({ lookupMs: 5, connectMs: 20, answer: JSON.stringify({ ok: true }), answerMs: 150 });
   const fetch = dialFetch({ connectTimeoutMs: 50, connect: () => socket });
-  const started = Date.now();
+  const started = performance.now();
   const res = await fetch("http://ws-1.ns.svc:8080/attach?x=1", {
     method: "POST",
     headers: { authorization: "Bearer t", "content-type": "application/json" },
     body: JSON.stringify({ slots: [] }),
   });
-  assert.ok(Date.now() - started >= 140, "the answer came after the connect bound had passed");
+  assert.ok(performance.now() - started >= 140, "the answer came after the connect bound had passed");
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
   const raw = await socket.request;
