@@ -166,6 +166,10 @@ type PushSpec struct {
 	Sign       bool    `json:"sign,omitempty"`
 	Squash     *string `json:"squash,omitempty"`
 	Force      bool    `json:"force,omitempty"`
+	// Fresh says that the remote must not hold the branch: its cut had `expect: "new"`, and no push of
+	// the run published the branch yet (ADR-0075). The cut checked it in the Agents' domain, which can
+	// write the cut's answer; the push checks it again with a lease on no branch.
+	Fresh bool `json:"fresh,omitempty"`
 	// Base is the Binding's base, where the Binding names one (ADR-0051): the push reads the LFS
 	// server from `.lfsconfig` at this commit of the node cache. Absent, the cache's HEAD.
 	Base string `json:"base,omitempty"`

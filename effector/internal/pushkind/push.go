@@ -395,10 +395,15 @@ func (c *call) push(ctx context.Context, res wire.PushResult) wire.Output {
 		_ = os.Remove(c.sshLog)
 	}
 	refspec := res.Published + ":refs/heads/" + c.spec.Branch
-	if c.spec.Force {
+	args := []string{"push", "--porcelain", "--no-verify"}
+	if c.spec.Fresh {
+		// An empty lease: git refuses the push when the remote holds the branch (ADR-0075). No `+`:
+		// it would override the lease, and a branch that the remote does not hold needs no force.
+		args = append(args, "--force-with-lease=refs/heads/"+c.spec.Branch+":")
+	} else if c.spec.Force {
 		refspec = "+" + refspec
 	}
-	out, err := c.repo.Git(ctx, nil, "push", "--porcelain", "--no-verify", "--", c.spec.URL, refspec)
+	out, err := c.repo.Git(ctx, nil, append(args, "--", c.spec.URL, refspec)...)
 	stderr := stderrOf(err)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return wire.Output{Outcome: wire.OutcomeUnknown,
@@ -422,6 +427,8 @@ func (c *call) push(ctx context.Context, res wire.PushResult) wire.Output {
 		case '!':
 			reason := "the remote refused it"
 			switch {
+			case c.spec.Fresh && strings.Contains(summary, "stale info"):
+				reason = "the remote holds the branch, and its cut had expect: \"new\""
 			case strings.Contains(summary, "non-fast-forward"), strings.Contains(summary, "fetch first"),
 				strings.Contains(summary, "stale info"):
 				reason = "non-fast-forward: the remote's branch moved"

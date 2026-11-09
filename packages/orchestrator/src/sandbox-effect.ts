@@ -139,14 +139,15 @@ function slotOf(kind: string, slot: string, named: string | undefined, ambient: 
 /**
  * The cut behind an Effect's `worktree`, or why there is none. A push, a credentialed command and a
  * file body act with a credential, so a path alone does not name their target: the path must be a
- * Worktree a cut made in this Sandbox, and the branch is the cut's record. Nothing reads HEAD, and
- * no input names a branch, so a Chart cannot fill one, and `git switch` in the Worktree moves nothing.
+ * Worktree a cut made in this Sandbox, and the branch is the cut's row. The row keeps the branch
+ * that the Orchestrator sent to the cut, never the cut's answer, which a process of the Agents'
+ * domain can write (ADR-0067). Nothing reads HEAD, and `git switch` in the Worktree moves nothing.
  */
 function cutTargetOf(
   worktree: unknown,
   ctx: Pick<KindContext, "ambient" | "binding">,
   opts: { repo?: string },
-): { target: { repo: string; path: string; branch: string | null } } | { fault: string } {
+): { target: { repo: string; path: string; branch: string | null; expect?: "new" } } | { fault: string } {
   const bad = worktreePathFault(worktree, ctx.ambient);
   if (bad !== undefined) return { fault: bad };
   const row = cutRowOf(ctx.binding?.effectRows?.() ?? {}, ctx.ambient.sandbox, worktree);
@@ -529,7 +530,9 @@ type KindSpec = {
   rowFields?: (ctx: KindContext) => { branch?: string; worktree?: string; repo?: string };
 };
 
-type StartExtra = { pairs?: readonly Pair[] };
+/** `fresh`: the push's cut had `expect: "new"`, and no push of this run published its branch yet,
+ * so the remote must not hold the branch (ADR-0075). */
+type StartExtra = { pairs?: readonly Pair[]; fresh?: true };
 
 /** An Effect's run: its abort, and — for a credentialed command, once its Effector is known — the
  * port its stop goes through (ADR-0067). */
@@ -933,7 +936,7 @@ export function pushWith<const O extends PushOptions>(
   const targetOf = (ctx: Pick<KindContext, "ambient" | "binding" | "input" | "slot">) => {
     const found = cutTargetOf(worktreeOf(ctx.input), ctx, { repo: repoOf(ctx.ambient, ctx.slot) });
     if ("fault" in found) throw new Error(`push "${ctx.slot}": ${found.fault}`);
-    return found.target as { repo: string; path: string; branch: string };
+    return found.target as { repo: string; path: string; branch: string; expect?: "new" };
   };
   return sandboxLogic(portFactory, parts, {
     kind: "push",
@@ -966,6 +969,7 @@ export function pushWith<const O extends PushOptions>(
       const ref = { ...repoRefOf(ambient, target.repo, target.path), ...(base ? { base } : {}) };
       const req = pushStartOf(parts, ref, target.branch, input as { sha?: string; message?: string }, extra?.pairs);
       if (pinned) req.push.pin = pinned;
+      if (extra?.fresh) req.push.fresh = true;
       return req;
     },
     // Every push of this Repo Slot's branch that published gives the Effector a pair, oldest first
@@ -977,7 +981,10 @@ export function pushWith<const O extends PushOptions>(
       const repo = repoOf(ctx.ambient, ctx.slot);
       const target = targetOf(ctx);
       const last = lastPushOf(rows, ctx.ambient.sandbox, repo, target.branch, ctx.id);
-      if (last === undefined) return {};
+      // The cut's `expect: "new"` was checked in the Agents' domain, which can write the cut's
+      // answer. So the first push of that branch checks it again where no Agent writes: the
+      // Effector's push refuses a branch that the remote holds (ADR-0075).
+      if (last === undefined) return target.expect === "new" ? { fresh: true } : {};
       const { row, rowId, output } = last;
       if (output.sync === "busy" || output.sync === "not-synced") {
         const answer = await syncOf(ctx).sync(

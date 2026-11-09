@@ -194,6 +194,45 @@ func TestAnUnsignedPushThatIsNotAFastForwardIsRejected(t *testing.T) {
 	}
 }
 
+// ADR-0075: a push whose cut had expect: "new" checks again, where no Agent writes, that the remote
+// does not hold the branch. The cut ran in the Agents' domain, and a process there can write its
+// answer, so a forged `ready` cut on a branch that the remote holds must not publish to it.
+func TestAFreshPushToABranchTheRemoteHoldsIsRejectedAndMovesNothing(t *testing.T) {
+	f := newFixture(t, "")
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	if out := f.push(false, nil); out.Outcome != wire.OutcomePushed {
+		t.Fatalf("first: %+v", out)
+	}
+	before := remoteRef(f)
+	f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+	for _, force := range []bool{false, true} {
+		req := f.request(false, nil)
+		req.Push.Fresh = true
+		req.Push.Force = force
+		out := f.runner.Run(context.Background(), req)
+		if out.Outcome != wire.OutcomeRejected || !strings.Contains(out.Reason, `expect: "new"`) {
+			t.Fatalf("force %v: got %+v %+v", force, out, out.Push)
+		}
+		if remoteRef(f) != before {
+			t.Fatalf("force %v: the remote moved", force)
+		}
+	}
+}
+
+// A fresh push of a branch that the remote does not hold publishes it.
+func TestAFreshPushOfANewBranchPublishes(t *testing.T) {
+	f := newFixture(t, "")
+	sha := f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	req := f.request(false, nil)
+	req.Push.Fresh = true
+	if out := f.runner.Run(context.Background(), req); out.Outcome != wire.OutcomePushed || out.Push.Published != sha {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != sha {
+		t.Fatalf("the remote holds %q", remoteRef(f))
+	}
+}
+
 func allowedSigners(t *testing.T, f *fixture) string {
 	t.Helper()
 	file := filepath.Join(f.pod.Root, "allowed_signers")

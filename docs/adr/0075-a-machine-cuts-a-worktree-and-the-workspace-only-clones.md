@@ -148,8 +148,14 @@ send:    { name: "r.md", worktree: "/work/app/fix" } // http with a file body
 
 - A cut lent to a Chart must state `expect`, and a Chart reads it with the kit guard `jr2.ready`.
 - The door refuses `expect: "existing"` beside a lent force push, because together they let a Chart force-push any
-  existing branch that `default/` does not hold. These two rules also hold for a cut at a Handoff, whose `branch` a
-  Chart can give: the cut applies the slot's `expect` to the child's branch
+  existing branch that `default/` does not hold.
+- The cut checks `expect` in the Agents' domain, and a process of that domain can write the cut's answer (ADR-0076). So
+  the push checks `expect: "new"` again where no Agent writes: the first push of the run to the branch of such a cut
+  goes with an empty lease (`--force-with-lease=refs/heads/<branch>:`, and no `+`), and the remote refuses it when it
+  holds the branch. The push is then `rejected`, and the remote does not change. A later push of the run to that branch
+  goes as before. The ledger row of the cut keeps the slot, the path and the branch that the Orchestrator sent, and only
+  the head of the answer (ADR-0067). These two rules also hold for a cut at a Handoff, whose `branch` a Chart can give:
+  the cut applies the slot's `expect` to the child's branch
   ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)).
 - The door refuses a `cwd` that is a slot's folder.
 - A Chart's payload has no `pattern`, so a Chart cannot state the branch rule, and the cut refuses a bad name. A

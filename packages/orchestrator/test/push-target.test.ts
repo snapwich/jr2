@@ -41,14 +41,14 @@ const target = { effector: () => ({ placement: "sandbox" as const, service: "ws-
 const port = (fake: FakeEffector) => () => createEffectorClient({ key: EFFECTOR_KEY, transport: fake.transport });
 
 /** Cut `cutInput`, then run `effect` with `input`. */
-function rig(cutInput: unknown, effect: unknown, input: unknown) {
+function rig(cutInput: unknown, effect: unknown, input: unknown, cutOptions: Parameters<typeof worktreeWith>[1] = {}) {
   const harness = new FakeHarnessExec();
   const effector = new FakeEffector();
   const machine = jr2Setup({
     types: {} as { context: { out?: unknown } },
     actors: {
       ws: fakeWorkspace(ambient),
-      cut: worktreeWith(harness.factory),
+      cut: worktreeWith(harness.factory, cutOptions),
       act: (effect as (e: FakeEffector) => never)(effector),
     },
   }).createMachine({
@@ -106,6 +106,26 @@ test("the push's branch is the cut's, not a word of any input; a `git switch` in
   assert.equal(start.push.branch, "fix/one");
   assert.equal(start.push.repo.worktree, "app/run");
   assert.equal(start.push.repo.gitDir, "app/default/.git");
+});
+
+test('the first push of a cut with `expect: "new"` asks the Effector for a branch that the remote does not hold; another cut\'s push does not', async () => {
+  const fresh = rig(
+    { path: "/work/app/run", branch: "fix/one" },
+    pushEffect({ slot: "app" }),
+    { worktree: "/work/app/run" },
+    {
+      expect: "new",
+    },
+  );
+  await run(fresh, ready("/work/app/run", "fix/one"));
+  await waitFor(() => fresh.effector.starts.length === 1);
+  assert.equal((fresh.effector.starts[0]!.req as { push: { fresh?: boolean } }).push.fresh, true);
+  const plain = rig({ path: "/work/app/run", branch: "fix/one" }, pushEffect({ slot: "app" }), {
+    worktree: "/work/app/run",
+  });
+  await run(plain, ready("/work/app/run", "fix/one"));
+  await waitFor(() => plain.effector.starts.length === 1);
+  assert.equal((plain.effector.starts[0]!.req as { push: { fresh?: boolean } }).push.fresh, undefined);
 });
 
 const rejected = async (cutInput: unknown, answer: unknown, input: unknown, options = { slot: "app" }) => {

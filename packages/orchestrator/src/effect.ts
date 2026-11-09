@@ -44,7 +44,7 @@ import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
 import { bindOpenSecretIn, type EffectorPortFactory, type OpenSecretIn } from "./http-effect.ts";
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
 import { open } from "./open.ts";
-import type { AnyWorktreePath, WorktreeOutput } from "./worktree.ts";
+import type { AnyWorktreePath, WorktreeOutput, WorktreeReady } from "./worktree.ts";
 import {
   handoffShapeFault,
   handoffSourceOf,
@@ -617,7 +617,7 @@ export type EffectRow =
       sandbox?: string;
       repo?: string;
       branch?: string;
-      cut?: { path: string; branch: string | null; head?: string };
+      cut?: { path: string; branch: string | null; head?: string; expect?: "new" };
       output: unknown;
       at: string;
     }
@@ -770,16 +770,24 @@ export function cutRowOf(
   rows: Readonly<Record<string, EffectRow>>,
   sandbox: string,
   path: unknown,
-): { repo: string; path: string; branch: string | null } | undefined {
-  let best: { at: string; repo: string; path: string; branch: string | null } | undefined;
+): { repo: string; path: string; branch: string | null; expect?: "new" } | undefined {
+  let best: { at: string; repo: string; path: string; branch: string | null; expect?: "new" } | undefined;
   for (const row of Object.values(rows)) {
     if (row.state !== "settled" || row.cut === undefined || row.sandbox !== sandbox) continue;
     if (row.cut.path !== path || row.repo === undefined) continue;
     if (best === undefined || row.at > best.at) {
-      best = { at: row.at, repo: row.repo, path: row.cut.path, branch: row.cut.branch };
+      best = {
+        at: row.at,
+        repo: row.repo,
+        path: row.cut.path,
+        branch: row.cut.branch,
+        ...(row.cut.expect === "new" ? { expect: "new" as const } : {}),
+      };
     }
   }
-  return best;
+  if (best === undefined) return undefined;
+  const { at: _at, ...found } = best;
+  return found;
 }
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
@@ -1093,6 +1101,38 @@ function cutOutputOf(raw: CommandOutput): WorktreeOutput {
   return { outcome: "unknown", reason: `the cut ended ${raw.outcome} with no answer: ${tail.slice(-400)}` };
 }
 
+/** What a cut was asked for: the Repo Slot and the path of its input, and the branch that the
+ * Orchestrator sent — the input's `branch`, the Handoff's branch that the ledger check found, or
+ * none for a detached cut. A `ready` cut's row keeps these, never the answer's (ADR-0067). */
+function cutAskedOf(
+  input: unknown,
+  source: HandoffSource | undefined,
+): { slot: string; path: string; branch: string | null } | undefined {
+  const given = (input ?? {}) as { path?: unknown; branch?: unknown; detach?: unknown };
+  if (typeof given.path !== "string") return undefined;
+  const slot = given.path.split("/")[2];
+  if (slot === undefined) return undefined;
+  if (source !== undefined) return { slot, path: given.path, branch: source.branch };
+  if (given.detach !== undefined) return { slot, path: given.path, branch: null };
+  return typeof given.branch === "string" ? { slot, path: given.path, branch: given.branch } : undefined;
+}
+
+/** Which field of a `ready` answer is not what the cut was asked for, or undefined. */
+function cutAnswerFault(
+  answer: WorktreeReady,
+  asked: { slot: string; path: string; branch: string | null },
+): string | undefined {
+  for (const key of ["slot", "path", "branch"] as const) {
+    if (answer[key] !== asked[key]) {
+      return `it names ${key} ${JSON.stringify(answer[key])}, and the cut was asked for ${JSON.stringify(asked[key])}`;
+    }
+  }
+  if (typeof answer.head !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(answer.head)) {
+    return `its head ${JSON.stringify(answer.head)} is not a full commit id`;
+  }
+  return undefined;
+}
+
 /** Why a cut's input cannot go to the Harness, or undefined. The door checked a Chart's literals; a
  * reference, a pick param or a mapper can still say this. No exec, no fetch. */
 function cutFaultOf(input: unknown, ambient: AmbientHandles): string | undefined {
@@ -1174,18 +1214,40 @@ async function drive<I, O>(
   const now = (): string => new Date().toISOString();
   const mark = (marker: Omit<EffectMarker, "kind" | "slot" | "effect">): void =>
     binding?.marker?.({ kind: "effect", slot, effect: id, ...marker });
+  const row = binding?.effectRow?.(id);
+  /** What the ledger check of a cut at a Handoff found. A restored cut keeps the source its intent
+   * row names. */
+  let source: HandoffSource | undefined =
+    parts.cut && row?.state === "intent" && row.kind === "command" && "handoff" in row ? row.handoff : undefined;
   /** A settled row of an exec. `sandbox` is the row's own on a restore: the Workspace it ran in. */
   const settleIn =
     (sandbox: string | undefined) =>
     (raw: CommandOutput | WorktreeOutput): void => {
       if (signal.aborted || self.getSnapshot().status !== "active") return;
-      const output = parts.cut && raw.outcome !== "refused" ? cutOutputOf(raw as CommandOutput) : raw;
-      // The settled row first, saved at the write: a restart before the transition is saved delivers
-      // this output, and runs nothing. A `ready` cut's row keeps its fields: a push reads them.
-      const cutRow =
-        parts.cut && output.outcome === "ready"
-          ? { sandbox, repo: output.slot, cut: { path: output.path, branch: output.branch, head: output.head } }
-          : {};
+      let output = parts.cut && raw.outcome !== "refused" ? cutOutputOf(raw as CommandOutput) : raw;
+      // A cut's answer is the last line of an exec in the Agents' domain, and a process of that
+      // domain can write it (ADR-0076). So the row of a `ready` cut takes its slot, path and branch
+      // from what the Orchestrator sent, and only its head from the answer. An answer that names
+      // another slot, path or branch is `unknown`: an Agent can cause it, so never `onError`.
+      let cutRow = {};
+      if (parts.cut && output.outcome === "ready") {
+        const asked = cutAskedOf(snapshot.input, source);
+        const fault = asked === undefined ? "it was asked for no Worktree" : cutAnswerFault(output, asked);
+        if (fault !== undefined) {
+          output = { outcome: "unknown", reason: `the cut's answer does not agree with its request: ${fault}` };
+        } else {
+          cutRow = {
+            sandbox,
+            repo: asked!.slot,
+            cut: {
+              path: asked!.path,
+              branch: asked!.branch,
+              head: output.head,
+              ...(parts.cut.expect === "new" ? { expect: "new" as const } : {}),
+            },
+          };
+        }
+      }
       binding?.recordEffect?.(id, {
         state: "settled",
         kind: parts.kind,
@@ -1199,7 +1261,6 @@ async function drive<I, O>(
     };
   const settle = settleIn(undefined);
 
-  const row = binding?.effectRow?.(id);
   if (row?.state === "settled") {
     // Settled before the restart, its transition unsaved: the output is delivered, nothing runs.
     await Promise.resolve();
@@ -1276,9 +1337,7 @@ async function drive<I, O>(
   // A cut at a Handoff: the ledger check (ADR-0080). A restored cut keeps the source its intent row
   // names, so it asks the same source.
   const given = snapshot.input as { path?: string; branch?: string; handoff?: Handoff } | undefined;
-  let source: HandoffSource | undefined;
   if (parts.cut && given?.handoff !== undefined) {
-    source = row?.state === "intent" && row.kind === "command" && "handoff" in row ? row.handoff : undefined;
     if (source === undefined) {
       const checked = handoffSourceOf(given.handoff, {
         rows: binding?.effectRows?.() ?? {},

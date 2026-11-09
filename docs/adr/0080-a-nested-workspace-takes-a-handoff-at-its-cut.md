@@ -60,7 +60,8 @@ on real files (Considered options), and a probe tested the bundle range.
     good, so a Machine can hand off a commit on which the coder has since built: the author pins the publish to the
     reviewed commit (below);
   - `branch` is that row's branch. Without this check a Chart could forge `main`, and a signed push in the child would
-    publish to `main`;
+    publish to `main`. The row's branch is what the Orchestrator sent to the parent's cut, never the cut's answer, which
+    a process of the parent Agents' domain can write (ADR-0067);
   - the child's branch is a name. A detached Handoff (`branch: null`) needs `branch` in the cut's input;
   - the child's clone has no local branch of that name at another commit. The child's Harness checks this one at the
     cut, as it checks each name of a cut (ADR-0075).

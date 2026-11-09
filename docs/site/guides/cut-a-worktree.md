@@ -82,6 +82,9 @@ carry the guard to the action.
 - `worktree()`: use a local branch, then a branch of the remote, then make a new branch.
 - `worktree({ expect: "new" })`: refuse a branch that exists, local or on the remote. Use it for a name that a planner
   or a run input chooses for new work. A name that collides is then a refusal, and not the branch of a different person.
+  The first `push` of the run to that branch checks again that the remote does not hold it. If the remote holds it, the
+  push is `rejected` with the reason `the remote holds the branch, and its cut had expect: "new"`, and the remote does
+  not change.
 - `worktree({ expect: "existing" })`: refuse a branch that does not exist, and make nothing. Use it when a run must
   continue a branch that exists.
 

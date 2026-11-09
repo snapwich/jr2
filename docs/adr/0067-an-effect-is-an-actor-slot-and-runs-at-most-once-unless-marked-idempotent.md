@@ -101,7 +101,10 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   no new wire kind, marked idempotent. Its outcomes are `ready | refused | unknown`, and its output is the contract in
   ADR-0075. Each thing that an Agent's word can cause settles `refused`, with nothing changed, and never goes to
   `onError`. A settled `ready` row in the ledger holds the cut's Repo Slot, path and branch, and it is the one thing a
-  `push`, a credentialed `command` and an `http` file body read for their target.
+  `push`, a credentialed `command` and an `http` file body read for their target. The Orchestrator writes these three
+  fields from what it sent to the cut, and takes only the head from the cut's answer. The answer is the last line of an
+  exec in the Agents' domain, and a process of that domain can write it (ADR-0076). An answer that names another slot,
+  path or branch settles `unknown`.
 - **Every outcome is output**: `exited | timeout | killed | unknown` for a `command` (`killed` with the signal that
   ended it; a stopped credentialed command's is `exited` with the stop's signal, D1);
   `response | unreachable | refused | unknown` for an `http` Effect; `pushed | rejected | diverged | unknown` for a

@@ -121,6 +121,9 @@ export const PushStartShape = z.strictObject({
     sign: z.boolean().optional(),
     squash: z.string().optional(),
     force: z.boolean().optional(),
+    /** The remote must not hold the branch: the push's cut had `expect: "new"`, and no push of the
+     * run published the branch yet. The Effector pushes with a lease on no branch (ADR-0075). */
+    fresh: z.boolean().optional(),
     /** The Binding's base, where the Binding names one (ADR-0051): the Effector reads the LFS
      * server from `.lfsconfig` at this commit of the node cache, and uploads the push's LFS objects
      * there before the branch moves (ADR-0067). Absent, the cache's HEAD. */
