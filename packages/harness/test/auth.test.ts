@@ -12,6 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harnessApp } from "../src/app.ts";
+import { HANDOFF_CONTENT_TYPE } from "../src/wire.ts";
 import type { AgentDefinition } from "../src/spec.ts";
 
 const BEARER = "placement-bearer";
@@ -154,6 +155,26 @@ test("the Handoff's files take the same bearer, and a refused request runs no bu
   assert.deepEqual(asked, []);
   assert.equal((await handoff(BEARER)).status, 200);
   assert.equal(asked.length, 1);
+});
+
+test("the land of a Handoff's files takes the same bearer, and a refused PUT lands nothing (ADR-0080)", async () => {
+  const landed: string[] = [];
+  const app = harnessApp({
+    checkBearer: (bearer) => bearer === BEARER,
+    runSubmissionFor: () => () => new Promise<void>(() => {}),
+    land: async (id) => (landed.push(id), { landed: true }),
+  });
+  const put = (bearer?: string) =>
+    app.request("/handoffs/0b7c5e1a-4d2f-4c55-9a51-6f1d2e3c4b5a", {
+      method: "PUT",
+      body: '{"end":true}\n',
+      headers: { "content-type": HANDOFF_CONTENT_TYPE, ...auth(bearer) },
+    });
+  assert.equal((await put()).status, 401);
+  assert.equal((await put("wrong")).status, 401);
+  assert.deepEqual(landed, []);
+  assert.equal((await put(BEARER)).status, 200);
+  assert.equal(landed.length, 1);
 });
 
 test("the pod's memory kills are gated: 401 with no bearer and with a wrong one, and 401 before the Instance Harness's 403 (ADR-0058, ADR-0062)", async () => {

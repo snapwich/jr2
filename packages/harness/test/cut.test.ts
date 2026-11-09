@@ -1334,6 +1334,18 @@ test("a cut at a Handoff keeps the slot's `expect`: `new` refuses a name that th
   assert.equal(run(b.path, "rev-parse", "--abbrev-ref", "@{upstream}"), "origin/feature/auth");
 });
 
+test('a cut at a Handoff with `expect: "new"` refuses a name that the clone lacks when the remote did not answer: it may exist there', async (t) => {
+  // Without it, the cut makes a name that the remote may hold, and the push of that branch reaches it.
+  const w = world(t);
+  const head = run(w.clone, "rev-parse", "origin/main");
+  const remote = extRemote(w);
+  remote.down();
+  const same = unchanged(w.clone);
+  const r = refusal(await w.go({ path: w.path("final"), branch: "fresh", handoff: head, expect: "new" }));
+  assert.match(r, /^fresh is not in this clone, and the remote did not answer, so it may exist there: /);
+  same();
+});
+
 test("a re-cut with the same Handoff is held; with another Handoff, with none, or at a branch cut, it is refused", async (t) => {
   const w = world(t);
   const head = run(w.clone, "rev-parse", "origin/feature/auth");

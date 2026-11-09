@@ -223,6 +223,52 @@ test("the take's upload-pack reads no commit-graph of the clone: the reason name
   assert.equal(has(w.clone, forged), false);
 });
 
+test("the take's upload-pack reads no multi-pack-index of the clone: the reason names the fsck fault", async (t) => {
+  const w = world(t);
+  // An Agent writes a broken multi-pack-index in the child's clone, and the Handoff holds a commit
+  // that fsck refuses. A git that read the file would fail on it first.
+  run(w.clone, "repack", "-qad");
+  run(w.clone, "multi-pack-index", "write");
+  const midx = join(w.clone, ".git", "objects", "pack", "multi-pack-index");
+  const bytes = readFileSync(midx);
+  bytes.write("XXXX", 0, "latin1");
+  chmodSync(midx, 0o644);
+  writeFileSync(midx, bytes);
+  const tree = run(w.parent, "rev-parse", `${w.head}^{tree}`);
+  const raw = `tree ${tree}\nparent ${w.head}\nauthor Coder <coder@example.test> not-a-date\ncommitter Coder <coder@example.test> 1700000000 +0000\n\nforged\n`;
+  const forged = execFileSync("git", ["hash-object", "-t", "commit", "-w", "--literally", "--stdin"], {
+    cwd: w.parent,
+    input: raw,
+    encoding: "utf8",
+  }).trim();
+  run(w.parent, "update-ref", "refs/heads/forged", forged);
+  w.hand("e1", w.bundleOf(["refs/heads/forged"]));
+  const reason = refusal(await w.go({ id: "e1", path: w.path("final"), branch: "review", handoff: forged }));
+  assert.doesNotMatch(reason, /multi-pack-index/, "no git of the take read the clone's multi-pack-index");
+  assert.match(reason, /badDate/);
+  assert.equal(has(w.clone, forged), false);
+});
+
+test("a bundle whose pack is cut short is refused: git could not unbundle it", async (t) => {
+  const w = world(t);
+  const b = w.bundleOf();
+  w.hand("e1", b.subarray(0, b.length - 40));
+  const reason = refusal(await w.go({ id: "e1", path: w.path("final"), branch: "review", handoff: w.head }));
+  assert.match(reason, /^git could not unbundle the Handoff's bundle: /);
+  assert.equal(has(w.clone, w.head), false);
+});
+
+test("a bundle whose header names head while its pack lacks it is refused: it does not hold the commit", async (t) => {
+  const w = world(t);
+  run(w.parent, "update-ref", "refs/heads/other", w.c1);
+  const b = w.bundleOf(["refs/heads/other"]);
+  const text = b.toString("latin1").replace(`${w.c1} refs/heads/other`, `${w.head} refs/heads/handoff`);
+  w.hand("e1", Buffer.from(text, "latin1"));
+  const reason = refusal(await w.go({ id: "e1", path: w.path("final"), branch: "review", handoff: w.head }));
+  assert.match(reason, new RegExp(`^the Handoff's bundle does not hold the commit ${w.head}: `));
+  assert.equal(has(w.clone, w.head), false);
+});
+
 test("a missing prerequisite when the remote did not answer names what the fetch said, not a force push", async (t) => {
   const w = world(t);
   // The child's clone holds its own objects, not the remote's through `--shared`.
