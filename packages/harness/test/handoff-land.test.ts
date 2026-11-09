@@ -53,7 +53,8 @@ function world(t: TestContext) {
   const land = (bytes: Buffer | ReadableStream<Uint8Array>, opts: LandOptions = {}, id = ID) =>
     landHandoff(children, id, Buffer.isBuffer(bytes) ? streamOf(bytes) : bytes, { workRoot: work, ...opts });
   const folder = landedFolder(work, ID);
-  const left = () => (existsSync(join(work, ".jr2-handoffs")) ? readdirSync(join(work, ".jr2-handoffs")).sort() : []);
+  const left = () =>
+    existsSync(join(work, ".jr2", "handoffs")) ? readdirSync(join(work, ".jr2", "handoffs")).sort() : [];
   return { dir, work, children, land, folder, left };
 }
 
@@ -307,5 +308,5 @@ test("the whole path on real git: the parent's bundle step, the land in the chil
   assert.equal(git(final, "log", "-1", "--format=%H %an %s"), `${head} Coder the fix`);
   assert.equal(readFileSync(join(final, "fix.txt"), "utf8"), "the fix\n");
   assert.equal(git(childClone, "remote"), "origin");
-  assert.equal(existsSync(join(childWork, ".jr2-handoffs")), false, "the cut removed the landed files");
+  assert.equal(existsSync(join(childWork, ".jr2", "handoffs")), false, "the cut removed the landed files");
 });

@@ -123,7 +123,7 @@ test("a cut at a Handoff takes the bundle's commits, and git shows the child's A
   assert.equal(spawnSync("git", ["-C", a.path, "rev-parse", "--abbrev-ref", "@{upstream}"]).status, 128);
   // The landed files are gone, and so is their folder.
   assert.equal(existsSync(landedFolder(w.workRoot, "e1")), false);
-  assert.equal(existsSync(join(w.workRoot, ".jr2-handoffs")), false);
+  assert.equal(existsSync(join(w.workRoot, ".jr2", "handoffs")), false);
 });
 
 test("a cut at a Handoff on a branch that the remote has tracks origin/<branch>, and git status shows it ahead", async (t) => {
@@ -198,6 +198,57 @@ test("a bundle whose prerequisite the clone does not hold is refused, and the re
   assert.equal(has(w.clone, head), false);
 });
 
+test("the take's upload-pack reads no commit-graph of the clone: the reason names the fsck fault", async (t) => {
+  const w = world(t);
+  // An Agent writes a commit-graph in the child's clone (here one with a bad signature, so that a read
+  // shows), and the Handoff holds a commit that fsck refuses.
+  run(w.clone, "commit-graph", "write", "--reachable");
+  const graph = join(w.clone, ".git", "objects", "info", "commit-graph");
+  const bytes = readFileSync(graph);
+  bytes.write("XXXX", 0, "latin1");
+  chmodSync(graph, 0o644);
+  writeFileSync(graph, bytes);
+  const tree = run(w.parent, "rev-parse", `${w.head}^{tree}`);
+  const raw = `tree ${tree}\nparent ${w.head}\nauthor Coder <coder@example.test> not-a-date\ncommitter Coder <coder@example.test> 1700000000 +0000\n\nforged\n`;
+  const forged = execFileSync("git", ["hash-object", "-t", "commit", "-w", "--literally", "--stdin"], {
+    cwd: w.parent,
+    input: raw,
+    encoding: "utf8",
+  }).trim();
+  run(w.parent, "update-ref", "refs/heads/forged", forged);
+  w.hand("e1", w.bundleOf(["refs/heads/forged"]));
+  const reason = refusal(await w.go({ id: "e1", path: w.path("final"), branch: "review", handoff: forged }));
+  assert.doesNotMatch(reason, /commit-graph/, "no git of the take read the clone's commit-graph");
+  assert.match(reason, new RegExp(`^git refused the Handoff's commit ${forged}: error: .*badDate`));
+  assert.equal(has(w.clone, forged), false);
+});
+
+test("a missing prerequisite when the remote did not answer names what the fetch said, not a force push", async (t) => {
+  const w = world(t);
+  // The child's clone holds its own objects, not the remote's through `--shared`.
+  run(w.clone, "repack", "-qad");
+  rmSync(join(w.clone, ".git", "objects", "info", "alternates"));
+  // The remote's main moves on, and the parent builds on it; then the child's fetch gets no answer.
+  const other = join(w.dir, "other");
+  execFileSync("git", ["clone", "-q", w.remote, other], { stdio: "ignore" });
+  const moved = commit(other, "m.txt", "m\n", "main moves on");
+  run(other, "push", "-q", "origin", "HEAD:main");
+  run(w.parent, "fetch", "-q", "origin");
+  run(w.parent, "switch", "-qc", "on-moved", "origin/main");
+  const head = commit(w.parent, "e.txt", "e\n", "built on the moved main");
+  run(w.parent, "update-ref", "refs/heads/handoff", head);
+  w.hand("e1", w.bundleOf(["refs/heads/handoff"], ["origin/main"]));
+  run(w.clone, "remote", "set-url", "origin", join(w.dir, "no-such-remote.git"));
+  const reason = refusal(await w.go({ id: "e1", path: w.path("final"), branch: "review", handoff: head }));
+  assert.match(
+    reason,
+    new RegExp(
+      `^this clone does not hold the commit ${moved}, which the Handoff's bundle builds on, and the remote did not answer, so it may hold it: .*no-such-remote`,
+    ),
+  );
+  assert.doesNotMatch(reason, /force push/);
+});
+
 test("a bundle whose one ref is not at head, with two refs, not a bundle, or a link is refused", async (t) => {
   const w = world(t);
   w.hand("e1");
@@ -251,7 +302,7 @@ test("a held re-cut does not read the files, and removes them", async (t) => {
 
 test("an id that names no folder reads no landed files", async (t) => {
   const w = world(t);
-  // A bundle at `<root>/.jr2-handoffs/../x` would be read by an id of `../x`: no such id is read.
+  // A bundle at `<root>/.jr2/handoffs/../x` would be read by an id of `../x`: no such id is read.
   const outside = join(w.workRoot, "x");
   mkdirSync(outside, { recursive: true });
   writeFileSync(join(outside, "bundle"), w.bundleOf());

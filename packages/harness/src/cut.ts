@@ -1121,7 +1121,14 @@ async function firstHandoff(req: CutRequest, c: Clone, paths: CutPaths, ready: R
   if (expected !== undefined) return refused(expected);
   const folder = LAND_ID.test(req.id) ? landedFolder(paths.workRoot, req.id) : undefined;
   if (folder !== undefined && (await exists(folder))) {
-    const fault = await takeHandoff({ folder, clone: c.clone, home: c.home, head, git: bytesRunner(paths, c.home) });
+    const fault = await takeHandoff({
+      folder,
+      clone: c.clone,
+      home: c.home,
+      head,
+      git: bytesRunner(paths, c.home),
+      ...(stale !== undefined ? { stale } : {}),
+    });
     if (fault !== undefined) return refused(fault);
   }
   if ((await refOf(c, head)) !== head) {

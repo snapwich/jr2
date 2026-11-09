@@ -31,7 +31,7 @@ import { HANDOFF_MAX_BYTES, HANDOFF_MAX_OBJECTS } from "./wire.ts";
 
 /** What the Harness gives the land process, as its one argument (JSON). */
 export type LandInput = {
-  /** The folder of the landed Handoffs: `<work root>/.jr2-handoffs`. */
+  /** The folder of the landed Handoffs: `<work root>/.jr2/handoffs`. */
   root: string;
   /** The cut's Effect id. */
   id: string;
@@ -39,9 +39,9 @@ export type LandInput = {
   maxObjects?: number;
 };
 
-/** The folder of the landed Handoffs in a Sandbox. A dot folder of `/work`, beside the Repo Slots,
- * because a cut's Effect id names no slot. */
-export const HANDOFF_LAND_DIR = ".jr2-handoffs";
+/** The folder of the landed Handoffs in a Sandbox: in `/work/.jr2/`, jr2's own folder of `/work`
+ * (ADR-0075), beside the Repo Slots, because a cut's Effect id names no slot. */
+export const HANDOFF_LAND_DIR = ".jr2/handoffs";
 
 /** An Effect id that names a folder: what the Orchestrator gives (a UUID), and nothing that is a
  * path. */

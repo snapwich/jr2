@@ -156,10 +156,11 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
     The Orchestrator streams the source's answer into it. The child's Harness writes the files to a folder of that cut
     through a process that the spawner starts in the child's domain and that stdin frames feed, so neither Harness holds
     the whole stream: the land process says each byte count that it wrote, and the Harness sends only a window (4 MiB)
-    ahead of it. The folder is `/work/.jr2-handoffs/<id>`, on the Sandbox's volume, because the Effect's id names no
-    Repo Slot. The land process writes into `<id>.part` and renames it to `<id>` at the end frame, so the cut finds all
-    the files or none. The cut reads the folder of its own Effect id, and removes it when it settles, also when it is
-    `refused`.
+    ahead of it. The folder is `/work/.jr2/handoffs/<id>`, in jr2's folder of `/work`
+    ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), on the Sandbox's volume, because the
+    Effect's id names no Repo Slot. The land process writes into `<id>.part` and renames it to `<id>` at the end frame,
+    so the cut finds all the files or none. The cut reads the folder of its own Effect id, and removes it when it
+    settles, also when it is `refused`.
 
   The two legs are one pipe: the Orchestrator reads a chunk of the source only when the child's leg took the last one,
   so it holds no whole part, and a slow child holds the source's step paused. The Orchestrator checks the source's
@@ -193,9 +194,12 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   `head`. It unbundles into a git folder that it makes in the cut's own folder, whose alternates are the child clone's
   objects, so that git checks the bundle's prerequisites against the clone. It sets a ref at `head` there, and the clone
   fetches that ref over `file://` with `transfer.fsckObjects=true` and `fetch.fsckObjects=true` (the second wins over
-  the first, and over a value in the clone's config). The fetch writes no ref and no `FETCH_HEAD`. So only `head`'s
-  closure enters the clone, and git checks each of its objects with fsck, also on git before 2.46 (a probe on git 2.39.5
-  refused a commit with a bad date). Then the cut makes the branch at `head`.
+  the first, and over a value in the clone's config). For a fetch over `file://`, git clears the config that the cut
+  gives by env in the `upload-pack` that it starts, so the cut writes `core.commitGraph=false` and
+  `core.multiPackIndex=false` into its git folder's own config: that `upload-pack` reads the clone's objects through the
+  alternates, and reads no commit-graph and no multi-pack-index that an Agent wrote in the clone. The fetch writes no
+  ref and no `FETCH_HEAD`. So only `head`'s closure enters the clone, and git checks each of its objects with fsck, also
+  on git before 2.46 (a probe on git 2.39.5 refused a commit with a bad date). Then the cut makes the branch at `head`.
 - **The cut records its source.** The child cut's intent row keeps the resolved source (the run, the Workspace and the
   ledger row), so a restored run asks the same source, and the cut stays idempotent.
 - **Two kinds of transport error.** An error that the parent's files or the parent's clone cause is `refused`, with the
@@ -206,7 +210,8 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   - the stream passes the byte bound or the object bound;
   - the bundle has a ref that is not at `head`, or more than one ref, or is not a bundle, or fsck refuses an object;
   - the child's clone does not hold a prerequisite of the bundle (for example, the remote was force-pushed after the
-    parent fetched). The reason names the missing commit;
+    parent fetched, or the cut's fetch got no answer). The reason names the missing commit, and what the fetch said when
+    it got no answer;
   - the range is empty, and the child's clone does not hold `head` after its fetch. The reason names the commit.
 
   A Git LFS object that is not a regular file in the parent clone, or whose size is not its pointer's, is left out of

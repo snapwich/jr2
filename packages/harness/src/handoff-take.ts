@@ -6,9 +6,11 @@
 //   1. The bundle has exactly one ref, and it is at `head`.
 //   2. A git folder of the cut's own, whose alternates are the clone's objects, checks the bundle's
 //      prerequisites against the clone. A prerequisite that the clone does not hold (the remote was
-//      force-pushed after the parent fetched) is refused, and the reason names it.
+//      force-pushed after the parent fetched, or the cut's fetch got no answer) is refused, and the
+//      reason names it and what the fetch said.
 //   3. The bundle is unbundled into that folder, and a ref there names `head`. The clone fetches
-//      that ref over `file://` with `transfer.fsckObjects=true`: only `head`'s closure enters the
+//      that ref over `file://` with `transfer.fsckObjects=true` (the folder's own config pins that its
+//      upload-pack reads no commit-graph and no multi-pack-index): only `head`'s closure enters the
 //      clone, and git checks each of its objects. git before about 2.46 runs no fsck on a fetch
 //      from a bundle, so the cut never fetches from the bundle itself. The fetch writes no ref and no
 //      `FETCH_HEAD`: the cut's branch is the one ref that names the commits.
@@ -22,7 +24,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { lastLine, pointersOfRange, rangeOf, type GitCall } from "./lfs-pointer.ts";
 
@@ -37,6 +39,8 @@ export type Take = {
   head: string;
   /** git with the cut's cleared env and its pinned config, and no `-C`. */
   git: GitCall;
+  /** What the cut's fetch of `origin` said when the remote did not answer. Undefined: it answered. */
+  stale?: string;
 };
 
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -64,6 +68,11 @@ export async function takeHandoff(t: Take): Promise<string | undefined> {
   const made = await t.git(["init", "-q", "--bare", "--template=", `--object-format=${format}`, own]);
   if (made.code !== 0) return `the cut's git folder for the Handoff could not be made: ${lastLine(made)}`;
   await writeFile(join(own, "objects", "info", "alternates"), `${t.clone}/.git/objects\n`);
+  // The clone's fetch starts upload-pack in this folder, and for a local transport git clears the
+  // config that the cut gives by env (`CLEAN`). So this folder's own config pins what that
+  // upload-pack reads: no commit-graph and no multi-pack-index, which an Agent can write in the
+  // clone that the alternates name (ADR-0075).
+  await appendFile(join(own, "config"), "[core]\n\tcommitGraph = false\n\tmultiPackIndex = false\n");
   const at = (args: readonly string[], stdin?: string) => t.git(["--git-dir", own, ...args], stdin);
 
   // 1. One ref, at head.
@@ -85,7 +94,12 @@ export async function takeHandoff(t: Take): Promise<string | undefined> {
       : [];
     if (lacks.length > 0) {
       const named = lacks.slice(0, 5).join(", ") + (lacks.length > 5 ? `, and ${lacks.length - 5} more` : "");
-      return `this clone does not hold ${lacks.length === 1 ? "the commit" : "the commits"} ${named}, which the Handoff's bundle builds on: the remote may have lost ${lacks.length === 1 ? "it" : "them"} (a force push) after the parent fetched`;
+      const it = lacks.length === 1 ? "it" : "them";
+      const lacked = `this clone does not hold ${lacks.length === 1 ? "the commit" : "the commits"} ${named}, which the Handoff's bundle builds on`;
+      // A fetch that did not answer may have missed what the remote holds: no force push is told.
+      return t.stale !== undefined
+        ? `${lacked}, and the remote did not answer, so it may hold ${it}: ${t.stale}`
+        : `${lacked}: the remote may have lost ${it} (a force push) after the parent fetched`;
     }
     return `git refused the Handoff's bundle: ${lastLine(verify)}`;
   }
