@@ -65,6 +65,16 @@ test("the golden signatures: a request and an answer signed as the Go side signs
   );
 });
 
+test("a pin is a full commit id, sha-1 or sha-256: another length is refused before anything is sent", () => {
+  const pin = (sha: string) =>
+    pushStartOf(pushParts({ pin: true }), repo("https://github.com/ourorg/app.git"), "jr2/run-1", { sha });
+  assert.equal(pin("1".repeat(40)).push.pin, "1".repeat(40));
+  assert.equal(pin("1".repeat(64)).push.pin, "1".repeat(64));
+  for (const sha of ["1".repeat(39), "1".repeat(50), "1".repeat(65), "A".repeat(40)]) {
+    assert.throws(() => pin(sha), /its input's sha is not a full commit id/, sha);
+  }
+});
+
 test("every request fixture is what a definition encodes", () => {
   const cases: Record<string, unknown> = {
     "request.get-minimal.json": startRequestOf(
@@ -126,6 +136,14 @@ test("every request fixture is what a definition encodes", () => {
       repo("https://github.com/ourorg/app.git"),
       "jr2/run-1",
       { sha: "1".repeat(40), message: "Add the report" },
+    ),
+    // A SHA-256 Repo pins, and pairs, with its own 64-hex ids (ADR-0080).
+    "request.push-pinned-sha256.json": pushStartOf(
+      pushParts({ pin: true }),
+      repo("https://github.com/ourorg/app.git"),
+      "jr2/run-1",
+      { sha: "1".repeat(64) },
+      [{ published: "2".repeat(64), source: "3".repeat(64) }],
     ),
     // The Binding's base rides the push: the Effector reads the LFS server at it (ADR-0051, ADR-0067).
     "request.push-base.json": pushStartOf(

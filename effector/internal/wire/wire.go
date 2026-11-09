@@ -882,7 +882,9 @@ func ValidBranch(name string) bool {
 		!strings.HasPrefix(name, "-") && !strings.HasSuffix(name, "/") && !strings.HasSuffix(name, ".lock")
 }
 
-var fullSha = regexp.MustCompile(`^[0-9a-f]{40}$`)
+// fullSha is a full commit id: sha-1 (40 hex) or sha-256 (64 hex), so that a SHA-256 Repo pins and
+// pairs with its own ids (ADR-0080).
+var fullSha = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // relative says whether p is a path relative to a root, with no `..` component.
 func relative(p string) bool {

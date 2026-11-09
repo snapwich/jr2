@@ -124,6 +124,10 @@ export type SecretPath = { readonly secret: string; readonly path: true };
 // --- Where a Repo Slot's repositories are in the pod ----------------------------------------------
 
 /** The Repo Slot an Effect runs on: the one named, or the Workspace's only one. */
+/** A full commit id: sha-1 (40 hex) or sha-256 (64 hex), as a Handoff's head is (ADR-0080). A pin
+ * names the commit to publish, so a SHA-256 Repo pins with its own ids. */
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
 function slotOf(kind: string, slot: string, named: string | undefined, ambient: AmbientHandles): string {
   const slots = Object.keys(ambient.repos);
   if (named !== undefined) {
@@ -402,7 +406,7 @@ export function pushStartOf(
   pairs?: readonly Pair[],
 ): PushStartRequest {
   const pin = parts.pin ? input?.sha : undefined;
-  if (parts.pin && (typeof pin !== "string" || !/^[0-9a-f]{40}$/.test(pin))) {
+  if (parts.pin && (typeof pin !== "string" || !COMMIT_ID.test(pin))) {
     throw new Error(`push({ pin: true }): its input's sha is not a full commit id (got ${JSON.stringify(pin)})`);
   }
   const message = parts.squash ? input?.message : undefined;
@@ -1167,7 +1171,7 @@ export function credentialedCommandWith(
       if ("fault" in found) throw new Error(`command "${slot}": ${found.fault}`);
       const ref = repoRefOf(ambient, found.target.repo, found.target.path);
       const approved = pin ? (input as { sha?: unknown } | undefined)?.sha : undefined;
-      if (pin && (typeof approved !== "string" || !/^[0-9a-f]{40}$/.test(approved))) {
+      if (pin && (typeof approved !== "string" || !COMMIT_ID.test(approved))) {
         throw new Error(`command "${slot}" (pin): its input's sha is not a full commit id`);
       }
       return commandStartOf(

@@ -329,10 +329,10 @@ func gitDirOf(repo string) string {
 	return filepath.Join(repo, ".git")
 }
 
-var hex40 = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var fullID = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
-// IsSha says whether s is a full object id.
-func IsSha(s string) bool { return hex40.MatchString(s) }
+// IsSha says whether s is a full object id: sha-1 (40 hex) or sha-256 (64 hex).
+func IsSha(s string) bool { return fullID.MatchString(s) }
 
 // ErrImport is an import of the Agent's objects that failed: output of the Effect, never a fault
 // (the Agent owns those objects, so it can make them fail).

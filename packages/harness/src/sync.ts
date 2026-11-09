@@ -64,7 +64,8 @@ const CLEAN = [
   "core.alternateRefsCommand=true",
 ];
 
-const SHA = /^[0-9a-f]{40}$/;
+/** A full commit id: sha-1 or sha-256, as the Effector's pairs are. */
+const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const BRANCH = /^[A-Za-z0-9._/-]+$/;
 
 /** What `POST /sync` refuses before anything runs: a body that is not a sync request. */

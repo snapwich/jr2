@@ -265,3 +265,35 @@ func TestTheMacFixturesAreWhatGoDecodesAndEncodes(t *testing.T) {
 		}
 	}
 }
+
+// A pin and a pair are full commit ids, sha-1 or sha-256 (ADR-0080): a SHA-256 Repo pins with its
+// own ids, and an id of another length is refused.
+func TestAPinIsASha1OrASha256CommitID(t *testing.T) {
+	load := func() StartRequest {
+		raw, _ := os.ReadFile(filepath.Join(fixtures, "request.push-pinned-sha256.json"))
+		var req StartRequest
+		if err := Decode(bytes.NewReader(raw), &req); err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	for _, pin := range []string{strings.Repeat("a", 40), strings.Repeat("a", 64)} {
+		req := load()
+		req.Push.Pin = pin
+		if err := req.Validate(); err != nil {
+			t.Fatalf("a pin of %d hex is refused: %v", len(pin), err)
+		}
+	}
+	for _, pin := range []string{strings.Repeat("a", 39), strings.Repeat("a", 41), strings.Repeat("a", 63), strings.Repeat("A", 64)} {
+		req := load()
+		req.Push.Pin = pin
+		if err := req.Validate(); err == nil {
+			t.Fatalf("a pin %q is accepted", pin)
+		}
+	}
+	req := load()
+	req.Push.Pairs[0].Published = strings.Repeat("b", 50)
+	if err := req.Validate(); err == nil {
+		t.Fatal("a pair of 50 hex is accepted")
+	}
+}

@@ -207,3 +207,14 @@ func TestJr2sProgramsRunFromPathNeverFromTheInheritedPATH(t *testing.T) {
 		t.Fatalf("a program from the inherited PATH ran: %q", raw)
 	}
 }
+
+func TestIsShaTakesASha1OrASha256ObjectID(t *testing.T) {
+	for s, want := range map[string]bool{
+		strings.Repeat("a", 40): true, strings.Repeat("a", 64): true, strings.Repeat("a", 39): false,
+		strings.Repeat("a", 50): false, strings.Repeat("a", 65): false, strings.Repeat("A", 40): false, "": false,
+	} {
+		if IsSha(s) != want {
+			t.Fatalf("IsSha(%q) = %v", s, !want)
+		}
+	}
+}

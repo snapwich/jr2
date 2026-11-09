@@ -229,13 +229,16 @@ test("no program the Agent's repository names runs in the sync: a planted refere
   assert.equal(existsSync(ran), false, `a planted program ran: ${existsSync(ran) ? await readFile(ran, "utf8") : ""}`);
 });
 
-test("a sync request names a Worktree under /work, a branch, and two full commit ids", () => {
+test("a sync request names a Worktree under /work, a branch, and two full commit ids, sha-1 or sha-256", () => {
   const ok = { worktree: "/work/app/jr2-work", branch: "jr2/work", published: "a".repeat(40), source: "b".repeat(40) };
   assert.equal(syncFault(ok), undefined);
   assert.match(syncFault({ ...ok, worktree: "/etc" })!, /under \/work/);
   assert.match(syncFault({ ...ok, worktree: "/work/../etc" })!, /under \/work/);
   assert.match(syncFault({ ...ok, branch: "a..b" })!, /branch/);
   assert.match(syncFault({ ...ok, published: "abc" })!, /published/);
+  // A SHA-256 Repo's ids are 64 hex.
+  assert.equal(syncFault({ ...ok, published: "a".repeat(64), source: "b".repeat(64) }), undefined);
+  assert.match(syncFault({ ...ok, published: "a".repeat(50) })!, /published/);
 });
 
 // ADR-0076 (G2): jr2's own git runs confined — a filter, a textconv or an object store that the
