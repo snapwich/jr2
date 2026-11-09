@@ -37,12 +37,12 @@ const FILES = [
     "_body",
     "advised",
     "consulted",
-    "handoff",
     "interrupted",
     "perrun",
     "sandboxed",
     "seated",
     "task",
+    "turn-end",
     "unsynced",
   ].map((f) => `features/kind-instance/workflows/${f}.ts`),
 ];

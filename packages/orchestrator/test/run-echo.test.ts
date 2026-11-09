@@ -55,7 +55,7 @@ class EchoSandbox implements SandboxPort {
 
 /**
  * The workflow: a `workspace()` whose body runs a LOCAL turn (no endpoint — resolves the
- * enclosing Workspace's Harness ambiently), whose pick emits a note and hands off to a REMOTE
+ * enclosing Workspace's Harness ambiently), whose pick emits a note and passes to a REMOTE
  * turn (explicit endpoint — the stub-path stand-in for an Instance-Harness-hosted decisioner),
  * whose pick finishes the run. The port factory is baked into the body's own actors (an inline-
  * invoked machine is out of `provide()`'s reach), one client for every turn — a test tells the

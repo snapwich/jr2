@@ -4,12 +4,12 @@
 // released; the scenario answers the Gate with `halt` once the request is held, so an outside event
 // leaves the state, at the moment the scenario chooses. The Harness then hears of the exit only
 // through the Orchestrator's abort: no pick answered, so the Harness's own end of a Turn (a pick's
-// answer that ended it, ADR-0024) cannot be the cause. `handoff` shows the other cause — the Agent's
+// answer that ended it, ADR-0024) cannot be the cause. `turn-end` shows the other cause — the Agent's
 // own pick.
 //
 // `parked` is not final, so the Sandbox survives and a scenario can read the Harness's settlement.
 // One Agent, one conversation (`continue`, ADR-0057): the steps read it at
-// `/agents/coder/<runId>/body/coder`, as `handoff`'s do.
+// `/agents/coder/<runId>/body/coder`, as `turn-end`'s do.
 
 import { z } from "zod";
 import { agent, defineEvent, fail, jr2Setup, sentBy, workspace, isReady, worktree } from "@jr2/orchestrator";
