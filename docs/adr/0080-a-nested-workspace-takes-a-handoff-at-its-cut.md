@@ -185,7 +185,8 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   the land before it: the Orchestrator sends it only after it gave up the first. A carry that ends `refused` or
   `unknown` can end after the child renamed the files into place, so the Orchestrator then sends a kill of the cut's
   Effect id to the child's Harness, best effort. The kill settles that id in the child, which removes its landed files
-  as for every exec that settles.
+  as for every exec that settles. That removal goes in the id's lane too: it stops a land of the id that still runs and
+  waits for its end, so that land cannot rename its part into place after the removal looked.
 
   The Orchestrator asks the Harness of the source Workspace where it runs now, and only while that Workspace still
   encloses the child: a Workspace that no longer runs gives no Handoff, and the cut is then `unknown`.

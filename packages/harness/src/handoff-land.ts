@@ -15,6 +15,7 @@ import { HARNESS_HOME, type ChildPolicy } from "./children.ts";
 import { HANDOFF_LAND_DIR, LAND_ID, landedFolder } from "./handoff-land-main.ts";
 import { SpawnerGoneError, SpawnError, type Spawned } from "./spawner.ts";
 import { HANDOFF_CARRY_MS } from "./wire.ts";
+import { Execs } from "./exec.ts";
 
 /** The land process's entry, beside this module: `/opt/jr2/src/handoff-land-main.ts` in a pod. */
 export const HANDOFF_LAND_ENTRY = fileURLToPath(new URL("./handoff-land-main.ts", import.meta.url));
@@ -65,12 +66,12 @@ export function landIdFault(id: string): string | undefined {
 type Lane = { done: Promise<void>; stopped?: string; onStop?: (why: string) => void };
 const lanes = new WeakMap<ChildPolicy, Map<string, Lane>>();
 
-async function inLane<T>(children: ChildPolicy, id: string, run: (lane: Lane) => Promise<T>): Promise<T> {
+async function inLane<T>(children: ChildPolicy, id: string, why: string, run: (lane: Lane) => Promise<T>): Promise<T> {
   let byId = lanes.get(children);
   if (byId === undefined) lanes.set(children, (byId = new Map()));
   const before = byId.get(id);
   if (before !== undefined) {
-    before.stopped ??= "a newer body for the same id came";
+    before.stopped ??= why;
     before.onStop?.(before.stopped);
   }
   let release!: () => void;
@@ -128,7 +129,7 @@ export async function landHandoff(
   if (bad !== undefined) return { fault: bad };
   if (body === null) return { fault: "the body is empty" };
   const workRoot = opts.workRoot ?? "/work";
-  return inLane(children, id, async (lane) => {
+  return inLane(children, id, "a newer body for the same id came", async (lane) => {
     if (lane.stopped !== undefined) {
       await body.cancel().catch(() => {});
       return { fault: lane.stopped };
@@ -280,11 +281,18 @@ async function landOnce(
  * (ADR-0080). The cut removes them itself when it ends; a cut that its timeout kills, or an exec
  * that a kill ended before it started, does not, and the files would stay readable by the child's
  * Agents for the Sandbox's life. The Orchestrator also kills the exec of a cut whose carry failed
- * (ADR-0080): a carry can end after the land renamed the folder into place. In the domain: `rm`
- * through the spawner, with a cleared env. Best effort, and nothing runs when no landed folder of
- * `id` is there.
+ * (ADR-0080): a carry can end after the land renamed the folder into place. The removal goes in the
+ * id's lane: it stops a land of the id that still runs and waits for its end, so that land cannot
+ * rename its part into place after the removal looked. In the domain: `rm` through the spawner,
+ * with a cleared env. Best effort, and nothing runs when no landed folder of `id` is there.
  */
 export async function dropLandedOf(children: ChildPolicy, id: string, workRoot = "/work"): Promise<void> {
   if (!LAND_ID.test(id)) return;
-  await removeLanded(children, id, workRoot);
+  await inLane(children, id, "its exec settled", () => removeLanded(children, id, workRoot));
+}
+
+/** The exec of a Harness with a domain (ADR-0067): when an exec settles, the files landed for its
+ * id go ({@link dropLandedOf}). What `main.ts` serves. */
+export function landingExecs(children: ChildPolicy, workRoot = "/work"): Execs {
+  return new Execs({ children, onSettled: (id) => void dropLandedOf(children, id, workRoot) });
 }

@@ -11,8 +11,7 @@ import { test, type TestContext } from "node:test";
 import { harnessApp } from "../src/app.ts";
 import { cut } from "../src/cut.ts";
 import { bundleHandoff } from "../src/handoff-bundle.ts";
-import { dropLandedOf, HANDOFF_LAND_MS, landHandoff, type LandOptions } from "../src/handoff-land.ts";
-import { Execs } from "../src/exec.ts";
+import { HANDOFF_LAND_MS, landHandoff, landingExecs, type LandOptions } from "../src/handoff-land.ts";
 import { landedFolder } from "../src/handoff-land-main.ts";
 import { HANDOFF_CARRY_MS, HANDOFF_CONTENT_TYPE } from "../src/wire.ts";
 import type { ChildPolicy } from "../src/children.ts";
@@ -229,7 +228,12 @@ function held(head: Buffer) {
       c.enqueue(new Uint8Array(head));
     },
   });
-  return { stream, fail: (e: Error) => ctl.error(e), more: (b: Buffer) => ctl.enqueue(new Uint8Array(b)) };
+  return {
+    stream,
+    fail: (e: Error) => ctl.error(e),
+    more: (b: Buffer) => ctl.enqueue(new Uint8Array(b)),
+    close: () => ctl.close(),
+  };
 }
 
 /** Wait until `ok` is true, or fail after about 10 s. */
@@ -408,8 +412,8 @@ test("the files landed for a cut go when its exec settles, also when the Effect'
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const children = testChildren({ work });
   t.after(() => children.spawner.close());
-  const dropped: Promise<void>[] = [];
-  const execs = new Execs({ children, onSettled: (id) => void dropped.push(dropLandedOf(children, id, work)) });
+  // The Execs that `main.ts` serves.
+  const execs = landingExecs(children, work);
   const plant = (id: string) => {
     const folder = landedFolder(work, id);
     mkdirSync(join(folder, "lfs"), { recursive: true });
@@ -420,14 +424,31 @@ test("the files landed for a cut go when its exec settles, also when the Effect'
   // The cut hangs, and its timeout kills its group: no `finally` of the cut runs.
   const hung = plant(ID);
   execs.start(ID, { argv: ["sleep", "30"], cwd: work, timeoutMs: 200, tail: 100 });
-  for (let i = 0; i < 100 && dropped.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
-  await Promise.all(dropped);
-  assert.equal(existsSync(hung), false, "the landed folder is gone");
-  assert.equal(existsSync(`${hung}.part`), false);
+  await until(() => !existsSync(hung) && !existsSync(`${hung}.part`), "the landed folder is gone");
   // A kill before the start: the carry landed the files, and the cut's state exited.
   const early = "1d2e3c4b-0b7c-4c55-9a51-6f1d2e3c4b5a";
   const folder = plant(early);
   execs.kill(early);
-  await Promise.all(dropped);
-  assert.equal(existsSync(folder), false);
+  await until(() => !existsSync(folder) && !existsSync(`${folder}.part`), "the files of the killed id are gone");
+});
+
+test("a kill of an id whose land still runs stops that land first, so the land cannot rename its part into place after the removal looked", async (t) => {
+  const w = world(t, { slowRmMs: 800 });
+  const execs = landingExecs(w.children, w.work);
+  const b = held(body({ bundle: 10 }, '{"data":10}\nabcde'));
+  const landing = w.land(b.stream);
+  await until(() => existsSync(join(`${w.folder}.part`, "bundle")), "the part is written");
+  // The Orchestrator's carry ended after the child got the whole body: it kills the id.
+  execs.kill(ID);
+  await new Promise((r) => setTimeout(r, 100));
+  try {
+    b.more(Buffer.from(`fghij${JSON.stringify({ end: true })}\n`));
+    b.close();
+  } catch {
+    // The land was stopped, and its body cancelled.
+  }
+  const answer = await landing;
+  assert.ok("fault" in answer && /its exec settled/.test(answer.fault), JSON.stringify(answer));
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.deepEqual(w.left(), [], "no landed folder is kept");
 });
