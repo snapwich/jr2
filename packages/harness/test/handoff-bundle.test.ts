@@ -173,6 +173,15 @@ function noReader(path: string): boolean {
   }
 }
 
+/** Wait up to 5 s until no process holds `path` open for reading: the step's group is gone. */
+async function readerGone(path: string): Promise<boolean> {
+  for (let i = 0; i < 50; i++) {
+    if (noReader(path)) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
 const lfsPointer = (oid: string, size: number) =>
   `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${size}\n`;
 
@@ -373,20 +382,18 @@ test("a FIFO that holds git (an include.path of the clone's config) ends at the 
   const got = await w.take(w.head, { deadlineMs: 2_000 });
   assert.deepEqual(got.frames, [{ refused: "the bundle step passed its deadline of 2 s" }]);
   assert.ok(got.ms < 10_000);
-  // The kill reaches the group: no git of the step still waits at the FIFO.
-  let gone = false;
-  for (let i = 0; i < 50 && !gone; i++) {
-    gone = noReader(pipe);
-    if (!gone) await new Promise((r) => setTimeout(r, 100));
-  }
-  assert.ok(gone, "no process of the step holds the FIFO open");
+  assert.ok(await readerGone(pipe), "no process of the step holds the FIFO open");
 });
 
-test("an alternates file of the clone that is a FIFO ends at the deadline, refused", async (t) => {
+test("an alternates file of the clone that is a FIFO ends at the deadline, refused, and the step's process group is gone", async (t) => {
   const w = world(t);
-  fifo(join(w.clone, ".git/objects/info/alternates"));
+  const pipe = join(w.clone, ".git/objects/info/alternates");
+  fifo(pipe);
   const got = await w.take(w.head, { deadlineMs: 2_000 });
   assert.deepEqual(got.frames, [{ refused: "the bundle step passed its deadline of 2 s" }]);
+  // The spawner stays open until the kill took effect: a git of the step that still waited at the
+  // FIFO when the test ended ran on for hours.
+  assert.ok(await readerGone(pipe), "no process of the step holds the FIFO open");
 });
 
 test("an alternate of the clone with more objects puts none of them in the bundle", async (t) => {
