@@ -56,6 +56,10 @@ export type ExecsOptions = {
   children: ChildPolicy;
   maxStream?: number;
   keepSettled?: number;
+  /** Called once when an exec settles, with any outcome: a kill by its timeout too. The Harness
+   * removes the files that were landed for a cut at a Handoff here (ADR-0080), because a cut that
+   * its timeout kills does not reach its own cleanup. */
+  onSettled?: (id: string) => void;
 };
 
 /** Every exec this Harness process runs or has settled, by the Effect id the Orchestrator named. */
@@ -64,9 +68,11 @@ export class Execs {
   private readonly children: ChildPolicy;
   private readonly maxStream: number;
   private readonly keepSettled: number;
+  private readonly onSettled: ((id: string) => void) | undefined;
 
   constructor(opts: ExecsOptions) {
     this.children = opts.children;
+    this.onSettled = opts.onSettled;
     this.maxStream = opts.maxStream ?? DEFAULT_MAX_STREAM;
     this.keepSettled = opts.keepSettled ?? DEFAULT_KEEP_SETTLED;
   }
@@ -86,7 +92,7 @@ export class Execs {
         : `no folder ${req.cwd}: cut the Worktree first`;
     if (missing !== undefined) {
       this.append(exec, `jr2: ${missing}; nothing ran\n`);
-      this.settle(exec, { outcome: "exited", code: 127, tail: exec.tail });
+      this.settle(id, exec, { outcome: "exited", code: 127, tail: exec.tail });
       return "started";
     }
     const out = new StringDecoder("utf8");
@@ -125,9 +131,9 @@ export class Execs {
         if (exec.output !== undefined) return;
         clearTimeout(exec.timer);
         const tail = exec.tail;
-        if (exec.ended === "timeout") this.settle(exec, { outcome: "timeout", tail });
-        else if (signal !== null) this.settle(exec, { outcome: "killed", signal, tail });
-        else this.settle(exec, { outcome: "exited", code: code ?? 0, tail });
+        if (exec.ended === "timeout") this.settle(id, exec, { outcome: "timeout", tail });
+        else if (signal !== null) this.settle(id, exec, { outcome: "killed", signal, tail });
+        else this.settle(id, exec, { outcome: "exited", code: code ?? 0, tail });
       },
       (e: Error & { code?: unknown }) => {
         // It did not start (ENOENT, EACCES), or the spawner ended under it: the shell's exit 127,
@@ -135,8 +141,8 @@ export class Execs {
         if (exec.output !== undefined) return;
         this.append(exec, `jr2: could not start ${req.argv[0]}: ${e.message}\n`);
         clearTimeout(exec.timer);
-        if (exec.ended === "killed") this.settle(exec, { outcome: "killed", signal: "SIGKILL", tail: exec.tail });
-        else this.settle(exec, { outcome: "exited", code: 127, tail: exec.tail });
+        if (exec.ended === "killed") this.settle(id, exec, { outcome: "killed", signal: "SIGKILL", tail: exec.tail });
+        else this.settle(id, exec, { outcome: "exited", code: 127, tail: exec.tail });
       },
     );
     return "started";
@@ -185,7 +191,7 @@ export class Execs {
       const killed: Exec = { stream: "", base: 0, tailMax: 0, tail: "", ended: "killed", waiters: new Set() };
       this.execs.set(id, killed);
       this.append(killed, "jr2: killed before it started; nothing ran\n");
-      this.settle(killed, { outcome: "killed", signal: "SIGKILL", tail: "" });
+      this.settle(id, killed, { outcome: "killed", signal: "SIGKILL", tail: "" });
       return true;
     }
     if (exec.output !== undefined || exec.child === undefined) return false;
@@ -213,10 +219,15 @@ export class Execs {
     this.wake(exec);
   }
 
-  private settle(exec: Exec, output: ExecOutcome): void {
+  private settle(id: string, exec: Exec, output: ExecOutcome): void {
     exec.output = output;
     exec.child = undefined;
     this.wake(exec);
+    try {
+      this.onSettled?.(id);
+    } catch {
+      // Best effort: the settle stands.
+    }
     // Keep the newest settled ones for a reader behind; the oldest go first.
     const settled = [...this.execs].filter(([, e]) => e.output !== undefined);
     for (const [id] of settled.slice(0, Math.max(0, settled.length - this.keepSettled))) this.execs.delete(id);

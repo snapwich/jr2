@@ -11,7 +11,8 @@ import { test, type TestContext } from "node:test";
 import { harnessApp } from "../src/app.ts";
 import { cut } from "../src/cut.ts";
 import { bundleHandoff } from "../src/handoff-bundle.ts";
-import { landHandoff, type LandOptions } from "../src/handoff-land.ts";
+import { dropLandedOf, landHandoff, type LandOptions } from "../src/handoff-land.ts";
+import { Execs } from "../src/exec.ts";
 import { landedFolder } from "../src/handoff-land-main.ts";
 import { HANDOFF_CONTENT_TYPE } from "../src/wire.ts";
 import { testChildren } from "./support/children.ts";
@@ -309,4 +310,33 @@ test("the whole path on real git: the parent's bundle step, the land in the chil
   assert.equal(readFileSync(join(final, "fix.txt"), "utf8"), "the fix\n");
   assert.equal(git(childClone, "remote"), "origin");
   assert.equal(existsSync(join(childWork, ".jr2", "handoffs")), false, "the cut removed the landed files");
+});
+
+test("the files landed for a cut go when its exec settles, also when the Effect's timeout kills it, and when a kill comes before its start", async (t) => {
+  const work = mkdtempSync(join(tmpdir(), "handoff-drop-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const children = testChildren({ work });
+  t.after(() => children.spawner.close());
+  const dropped: Promise<void>[] = [];
+  const execs = new Execs({ children, onSettled: (id) => void dropped.push(dropLandedOf(children, id, work)) });
+  const plant = (id: string) => {
+    const folder = landedFolder(work, id);
+    mkdirSync(join(folder, "lfs"), { recursive: true });
+    writeFileSync(join(folder, "bundle"), "the parent's bytes");
+    mkdirSync(`${folder}.part`, { recursive: true });
+    return folder;
+  };
+  // The cut hangs, and its timeout kills its group: no `finally` of the cut runs.
+  const hung = plant(ID);
+  execs.start(ID, { argv: ["sleep", "30"], cwd: work, timeoutMs: 200, tail: 100 });
+  for (let i = 0; i < 100 && dropped.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+  await Promise.all(dropped);
+  assert.equal(existsSync(hung), false, "the landed folder is gone");
+  assert.equal(existsSync(`${hung}.part`), false);
+  // A kill before the start: the carry landed the files, and the cut's state exited.
+  const early = "1d2e3c4b-0b7c-4c55-9a51-6f1d2e3c4b5a";
+  const folder = plant(early);
+  execs.kill(early);
+  await Promise.all(dropped);
+  assert.equal(existsSync(folder), false);
 });

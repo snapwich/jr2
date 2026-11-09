@@ -40,7 +40,7 @@ import {
 } from "./children.ts";
 import { syncer } from "./sync.ts";
 import { bundleHandoff } from "./handoff-bundle.ts";
-import { landHandoff } from "./handoff-land.ts";
+import { dropLandedOf, landHandoff } from "./handoff-land.ts";
 import { Execs } from "./exec.ts";
 import { seatFacts, standingBriefing } from "./briefing.ts";
 import { clearShm, clearShmInDomain, podMemoryGuard } from "./memory-guard.ts";
@@ -320,7 +320,8 @@ const harnessWire = harnessServer({
         handoff: (req) => bundleHandoff(children, req),
         land: (id, body) => landHandoff(children, id, body),
         // In the domain: the Agent's user, and the Stand-ins its `workspace()` grants.
-        execs: new Execs({ children }),
+        // The files landed for a cut at a Handoff go when its exec settles, a timeout's kill too.
+        execs: new Execs({ children, onSettled: (id) => void dropLandedOf(children, id) }),
       }
     : {}),
   checkAdmission: (resolved) =>

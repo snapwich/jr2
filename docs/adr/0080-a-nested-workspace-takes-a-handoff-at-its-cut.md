@@ -164,7 +164,10 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
     ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), on the Sandbox's volume, because the
     Effect's id names no Repo Slot. The land process writes into `<id>.part` and renames it to `<id>` at the end frame,
     so the cut finds all the files or none. The cut reads the folder of its own Effect id, and removes it when it
-    settles, also when it is `refused`.
+    settles, also when it is `refused`. The child's Harness removes it too, in the domain, when the exec of that id
+    settles with any outcome: a cut that its timeout kills does not reach its own cleanup, and an exec that a kill ended
+    before its start never ran. The take's own git folder in `TMPDIR` of a killed cut stays until the next cut of that
+    clone removes it (ADR-0075).
 
   The two legs are one pipe: the Orchestrator reads a chunk of the source only when the child's leg took the last one,
   so it holds no whole part, and a slow child holds the source's step paused. The Orchestrator checks the source's

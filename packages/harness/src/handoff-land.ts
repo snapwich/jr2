@@ -12,7 +12,7 @@
 
 import { fileURLToPath } from "node:url";
 import { HARNESS_HOME, type ChildPolicy } from "./children.ts";
-import { HANDOFF_LAND_DIR, LAND_ID } from "./handoff-land-main.ts";
+import { HANDOFF_LAND_DIR, LAND_ID, landedFolder } from "./handoff-land-main.ts";
 import { SpawnerGoneError, SpawnError, type Spawned } from "./spawner.ts";
 
 /** The land process's entry, beside this module: `/opt/jr2/src/handoff-land-main.ts` in a pod. */
@@ -172,5 +172,35 @@ export async function landHandoff(
     return { fault: `the land process did not run: ${why}` };
   } finally {
     proc.signal("SIGKILL");
+  }
+}
+
+/**
+ * Remove the files that were landed for the exec `id`, when that exec settles with any outcome
+ * (ADR-0080). The cut removes them itself when it ends; a cut that its timeout kills, or an exec
+ * that a kill ended before it started, does not, and the files would stay readable by the child's
+ * Agents for the Sandbox's life. In the domain: `rm` through the spawner, with a cleared env. Best
+ * effort, and nothing runs when no landed folder of `id` is there.
+ */
+export async function dropLandedOf(children: ChildPolicy, id: string, workRoot = "/work"): Promise<void> {
+  if (!LAND_ID.test(id)) return;
+  const folder = landedFolder(workRoot, id);
+  const there = async (path: string) =>
+    children.spawner.stat(path).then(
+      () => true,
+      () => false,
+    );
+  const paths = [];
+  for (const path of [folder, `${folder}.part`]) if (await there(path)) paths.push(path);
+  if (paths.length === 0) return;
+  try {
+    const proc = children.spawner.spawn({
+      argv: ["rm", "-rf", "--", ...paths],
+      env: { PATH: "/usr/bin:/bin", HOME: HARNESS_HOME },
+      cwd: "/",
+    });
+    await proc.exited;
+  } catch {
+    // The spawner is gone: the files go with the Sandbox.
   }
 }
