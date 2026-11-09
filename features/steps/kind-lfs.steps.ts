@@ -672,8 +672,13 @@ Then(
     assert.equal(s.read?.base, s.base!.object.oid, `the Worktree's ${s.base!.path} holds the object's bytes`);
     const sessions = await lfsTransferSessions(s.name);
     // The cache agent's download (the attach), the push's check before its upload, the upload,
-    // and the check after it: a download session after the last upload is the Effector's own.
-    assert.ok(sessions.includes("download"), `a download session: ${JSON.stringify(sessions)}`);
+    // and the check after it. Two download sessions before the first upload are the attach's and
+    // the check's before it; a download session after the last upload is the check's after it.
+    const first = sessions.indexOf("upload");
+    assert.ok(
+      sessions.slice(0, first < 0 ? sessions.length : first).filter((o) => o === "download").length >= 2,
+      `the attach and the push's check before its upload spoke git-lfs-transfer: two download sessions before the first upload: ${JSON.stringify(sessions)}`,
+    );
     const upload = sessions.lastIndexOf("upload");
     assert.ok(upload >= 0, `an upload session: ${JSON.stringify(sessions)}`);
     assert.ok(
