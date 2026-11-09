@@ -412,3 +412,48 @@ export type ExecRead = {
   dropped?: number;
   output?: ExecOutcome;
 };
+
+// --- the Handoff's files (ADR-0080) -------------------------------------------------------------
+// The Orchestrator asks the source Harness for the files of a Handoff (`POST /handoff`) when it
+// runs the cut of a nested Workspace. The bundle step (`handoff-bundle.ts`) runs in the parent
+// Agent's domain, and the answer is one stream of frames. Same bearer as every Harness route
+// (ADR-0058).
+
+/** What `POST /handoff` accepts: the Worktree and the head of the ledger row (ADR-0080). The
+ * Worktree names the clone (`<root>/<slot>/default`); the head is a full commit id. */
+export type HandoffRequest = { path: string; head: string };
+
+/**
+ * One frame of a `POST /handoff` answer: one JSON object on one line. A part's header names its
+ * size, and its bytes follow as `data` frames, which together hold exactly that size. A terminal
+ * frame ends the stream, and nothing comes after it. It can come between any two frames.
+ *
+ * - `{ bundle }`: the git bundle, of `bundle` bytes. It is the first part, and it comes once.
+ * - `{ lfs, size }`: one Git LFS object of the parent clone, by its oid (sha256, in hex), that a
+ *   blob of the bundled range points to. jr2 has not checked its bytes: the child does.
+ * - `{ data }`: the next `data` bytes of the part, which follow the line.
+ * - `{ end: true }`: each part came. Terminal.
+ * - `{ nothing: true }`: the range is empty, so no part comes. Terminal, and the first frame.
+ * - `{ refused }`: the parent's files or clone stop the step (the commit is not there, the deadline,
+ *   the bound, a stream out of its form). Terminal, also in a part: each part before it is void.
+ * - `{ unknown }`: the source Harness could not run the step. Terminal.
+ */
+export type HandoffFrame =
+  | { bundle: number }
+  | { lfs: string; size: number }
+  | { data: number }
+  | { end: true }
+  | { nothing: true }
+  | { refused: string }
+  | { unknown: string };
+
+/** The content type of a `POST /handoff` answer: {@link HandoffFrame}s and their bytes. */
+export const HANDOFF_CONTENT_TYPE = "application/x-jr2-handoff";
+
+/** The bound on the bundle and its Git LFS objects together, in bytes (ADR-0080). Past it, the
+ * source Harness ends the stream `refused`. */
+export const HANDOFF_MAX_BYTES = 1024 ** 3;
+
+/** The bundle step's deadline, from its start to its last byte (ADR-0080). At it, the source Harness
+ * kills the step's process group and ends the stream `refused`. The Orchestrator waits longer. */
+export const HANDOFF_DEADLINE_MS = 300_000;

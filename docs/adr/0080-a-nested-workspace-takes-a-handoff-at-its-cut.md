@@ -128,7 +128,14 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   to the source Harness as output frames, and the Harness pauses and resumes it as it sends on. The process opens only a
   regular file, so it does not read a FIFO, a device or a link to one. The Harness does not use the spawner's whole-file
   read for a Handoff, and it counts the bytes as they come (the bound, below). A read that an Agent's file holds ends at
-  the deadline, as git does.
+  the deadline, as git does. The deadline is 300 s, from the start of the step to its last byte.
+- **The answer is a stream of frames.** Each frame is one JSON line: a part's header (the bundle first, then each Git
+  LFS object by its oid) with its size, `data` frames that hold the part's bytes, and one terminal frame: the end,
+  "nothing to carry", `refused` with a reason, or `unknown`. The source Harness writes each frame in its own words from
+  what the step wrote, and it ends the stream `refused` at the first header that is out of this form. An Agent can trace
+  the step and change its output, so the Harness reads that output as the domain's data. A terminal frame can come
+  between any two frames, so a refusal in the middle of a part still reaches the reader, and the parts before it are
+  void.
 - **An empty range carries nothing.** When a remote-tracking ref of the parent clone already reaches `head`, git writes
   no bundle (`Refusing to create empty bundle`). This occurs when the parent pushed the branch before the final review,
   or when the branch has no commit of its own. The bundle step finds this before it writes a bundle, and the source
@@ -154,7 +161,8 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   Handoff, and a `held` re-cut does not read them.
 
 - **One bound covers the bundle and its Git LFS objects together.** A Handoff is the parent Agents' files, and the
-  Orchestrator serves each run of the Instance, so an Agent's file must not steer how much it carries. The source
+  Orchestrator serves each run of the Instance, so an Agent's file must not steer how much it carries. The bound is 1
+  GiB. The bundle step adds the sizes before it writes the first part, and refuses a Handoff past the bound. The source
   Harness and the Orchestrator each stop the stream at the bound, and the cut is then `refused`, with the bound in the
   reason.
 - **The child's cut takes only `head`'s closure, and git checks each object.** git before about 2.46 runs no fsck on a
@@ -178,8 +186,9 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
     parent fetched). The reason names the missing commit;
   - the range is empty, and the child's clone does not hold `head` after its fetch. The reason names the commit.
 
-  A Git LFS object that is not a regular file in the parent clone is left out of the stream, and the child asks the node
-  cache for it, as for each object that the Handoff does not carry.
+  A Git LFS object that is not a regular file in the parent clone, or whose size is not its pointer's, is left out of
+  the stream, and the child asks the node cache for it, as for each object that the Handoff does not carry. A
+  remote-tracking ref of the parent clone that names no commit is left out of the range's negatives.
 
   When the source Harness does not answer, the cut is `unknown`, and the Machine can cut again. The Orchestrator waits
   for the source longer than the bundle step's deadline, so a step that the parent's files hold ends as `refused` and
@@ -196,7 +205,9 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
 ### Large files
 
 - **Git LFS objects travel with the Handoff.** The bundle step also collects each Git LFS object that a bundled commit
-  points to and that the parent clone holds. The Orchestrator carries them with the bundle.
+  points to and that the parent clone holds. A pointer is a blob of the range (a blob that the remote-tracking refs do
+  not reach) that has the form of a Git LFS pointer: the step reads no `.gitattributes`, which an Agent writes. The
+  object is the file of its oid in the clone's LFS store. The Orchestrator carries them with the bundle.
 - **The child lands an object only when a pointer names it and its bytes match.** A pointer in a commit of the
   handed-off range (the commits that the fetch brought into the clone) must name the object's oid, and the object's
   sha256 must be its oid. The cut leaves out each other object. git-lfs checks only the size of an object in the store,

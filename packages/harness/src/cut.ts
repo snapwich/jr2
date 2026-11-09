@@ -139,10 +139,11 @@ export function pathFault(path: unknown, workRoot: string): string | undefined {
 // --- git, with nothing of the Agent's in the way ------------------------------------------------------
 
 /** sync.ts's CLEAN, and `safe.directory`, because the cleared environment reads no global config.
+ * The bundle step of a Handoff (`handoff-bundle-main.ts`, ADR-0080) runs its git with it too.
  * And no ignore or attributes file of a HOME: git reads `$HOME/.config/git/ignore` and `attributes`
  * (or the same files under `XDG_CONFIG_HOME`) when no config names another file, also with
  * `GIT_CONFIG_GLOBAL=/dev/null`. The cut's HOME is a folder in TMPDIR, which the Agents write. */
-const CLEAN = [
+export const CLEAN = [
   "-c",
   "core.commitGraph=false",
   "-c",

@@ -39,6 +39,7 @@ import {
   type ChildPolicy,
 } from "./children.ts";
 import { syncer } from "./sync.ts";
+import { bundleHandoff } from "./handoff-bundle.ts";
 import { Execs } from "./exec.ts";
 import { seatFacts, standingBriefing } from "./briefing.ts";
 import { clearShm, clearShmInDomain, podMemoryGuard } from "./memory-guard.ts";
@@ -310,6 +311,8 @@ const harnessWire = harnessServer({
         attach: attacher({ children }),
         // The Agent's branch to the published commits, when they are not its own.
         sync: syncer({ children }),
+        // The files of a Handoff, for the cut of a nested Workspace (ADR-0080).
+        handoff: (req) => bundleHandoff(children, req),
         // In the domain: the Agent's user, and the Stand-ins its `workspace()` grants.
         execs: new Execs({ children }),
       }

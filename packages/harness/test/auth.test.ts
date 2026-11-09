@@ -136,6 +136,26 @@ test("the sync takes the same bearer, and a refused sync moves nothing (ADR-0067
   assert.equal(synced.length, 1);
 });
 
+test("the Handoff's files take the same bearer, and a refused request runs no bundle step (ADR-0080)", async () => {
+  const asked: unknown[] = [];
+  const app = harnessApp({
+    checkBearer: (bearer) => bearer === BEARER,
+    runSubmissionFor: () => () => new Promise<void>(() => {}),
+    handoff: (req) => (asked.push(req), new ReadableStream({ start: (c) => c.close() })),
+  });
+  const handoff = (bearer?: string) =>
+    app.request("/handoff", {
+      method: "POST",
+      body: JSON.stringify({ path: "/work/app/coder", head: "1".repeat(40) }),
+      headers: { "content-type": "application/json", ...auth(bearer) },
+    });
+  assert.equal((await handoff()).status, 401);
+  assert.equal((await handoff("wrong")).status, 401);
+  assert.deepEqual(asked, []);
+  assert.equal((await handoff(BEARER)).status, 200);
+  assert.equal(asked.length, 1);
+});
+
 test("the pod's memory kills are gated: 401 with no bearer and with a wrong one, and 401 before the Instance Harness's 403 (ADR-0058, ADR-0062)", async () => {
   const { app } = gated();
   for (const bearer of [undefined, "wrong"]) {

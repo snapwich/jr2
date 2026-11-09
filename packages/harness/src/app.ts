@@ -21,6 +21,7 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { AttachFault, attachFault } from "./attach.ts";
 import { syncFault } from "./sync.ts";
+import { handoffRequestFault } from "./handoff-bundle.ts";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
 import { Execs } from "./exec.ts";
 import { KEPT_KILLS, killId, PodKills } from "./pod-kills.ts";
@@ -61,6 +62,8 @@ import {
   type AttachRequest,
   type SyncAnswer,
   type SyncRequest,
+  type HandoffRequest,
+  HANDOFF_CONTENT_TYPE,
   type AttachResponse,
   type ExecRequest,
   type HistoryMessage,
@@ -147,6 +150,9 @@ export type HarnessAppDeps = {
   /** Run the sync after a push whose published commit is not the Agent's own (ADR-0067) — `sync.ts`'s `syncer()` in production. Omitted,
    * `POST /sync` answers 501. */
   sync?: (req: SyncRequest) => Promise<SyncAnswer>;
+  /** Run the bundle step of a Handoff (ADR-0080) — `handoff-bundle.ts`'s `bundleHandoff()` in
+   * production. Omitted, `POST /handoff` answers 501. */
+  handoff?: (req: HandoffRequest) => ReadableStream<Uint8Array>;
   /** The execs a `command` Effect runs as (ADR-0067) — one `Execs` per process in production.
    * Omitted, `/exec/*` answers 501: this Harness runs no command. */
   execs?: Execs;
@@ -324,6 +330,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   app.use("/echo", gate);
   app.use("/attach", gate);
   app.use("/sync", gate);
+  app.use("/handoff", gate);
   app.use("/exec/*", gate);
   app.use("/memory-kills", gate);
 
@@ -597,6 +604,25 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     const fault = syncFault(body);
     if (fault) return c.json({ error: fault }, 400);
     return c.json(await deps.sync(body as SyncRequest));
+  });
+
+  // A Handoff's files (ADR-0080): the Orchestrator asks the Harness of the parent Workspace for the
+  // bundle of a commit and its Git LFS objects, when it runs the cut of a nested Workspace. The
+  // answer is a stream of frames that ends with one terminal frame, so a refusal after the first
+  // byte still reads as one. The Instance Harness holds no Workspace, so it has no Handoff (ADR-0031).
+  app.post("/handoff", async (c) => {
+    if (deps.menuOnly) {
+      return c.json(
+        { error: "this is the Instance Harness, which holds no Workspace — it has no Handoff (ADR-0031)" },
+        403,
+      );
+    }
+    if (!deps.handoff) return c.json({ error: "this Harness gives no Handoff (ADR-0080)" }, 501);
+    const body = await c.req.json().catch(() => undefined);
+    const fault = handoffRequestFault(body);
+    if (fault) return c.json({ error: fault }, 400);
+    const { path, head } = body as HandoffRequest;
+    return c.body(deps.handoff({ path, head }), 200, { "content-type": HANDOFF_CONTENT_TYPE });
   });
 
   // The exec (ADR-0067): a Machine's `command` Effect, run here as a child of this process — the
