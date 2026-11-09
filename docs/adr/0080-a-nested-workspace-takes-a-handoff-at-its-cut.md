@@ -48,9 +48,9 @@ on real files (Considered options), and a probe tested the bundle range.
   and the host deletes its Sandbox before the next round places one of the same name (ADR-0012, ADR-0064). A parent that
   invokes the nested Workspace again from the same state, in one transition (for example `reenter: true`), stops the old
   one and starts the new one in one step. The new one then takes over the old Sandbox, as a re-invoke after a caught
-  defect does. Its cut with a new Handoff is `refused`, and its cut with the same Handoff is `held`: it gets the last
-  round's Worktree, with the commits of the last reviewer. Such a round is not independent. So a Machine goes through
-  another state between two rounds, for example the parent's coding state.
+  defect does in the step that catches it. Its cut with a new Handoff is `refused`, and its cut with the same Handoff is
+  `held`: it gets the last round's Worktree, with the commits of the last reviewer. Such a round is not independent. So
+  a Machine goes through another state between two rounds, for example the parent's coding state.
 
 - **jr2 trusts no field of a Handoff.** A Handoff comes through a door, and a door's input can come from an Agent's pick
   or a Chart. So the cut finds the whole Handoff in the run's ledger, and refuses it when one fact does not agree:

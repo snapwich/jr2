@@ -321,15 +321,17 @@ stop a Workspace, and keeps its Sandbox.
 
 A parent that invokes the same Machine again from the same state gives the new Workspace the same Sandbox name. When the
 parent does this in the same transition that stops the old Workspace, jr2 does not delete the Sandbox. That happens on a
-retry after the parent catches a Failure, or when it enters the state again at once. The new Workspace takes the Sandbox
-over, with the Worktree and each commit of the attempt before it, as a restore does.
+retry after the parent catches a Failure or a defect, or when it enters the state again at once. The new Workspace takes
+the Sandbox over, with the Worktree and each commit of the attempt before it, as a restore does.
 
 When the parent leaves the state, and enters it again later, jr2 deletes the old Sandbox when the parent leaves. The new
 Workspace waits until that delete is done. Then it gets a new Sandbox with the same name, and an empty `/work`.
 
 When a run faults after its Sandbox was placed, the Sandbox stays, so that you can look inside it. jr2's operator
-removes it after an idle timeout of 30 minutes. jr2 immediately deletes a Sandbox that it never placed. `CANCEL` deletes
-the Workspaces of the run, unless you send it with `--keep` (see [`jr2 send`](../reference/cli.md#send)).
+removes it after an idle timeout of 30 minutes. A defect that a parent catches with `onError` does not fault the run, so
+jr2 deletes the Sandbox of the Workspace that the defect ended after that step. jr2 immediately deletes a Sandbox that
+it never placed. `CANCEL` deletes the Workspaces of the run, unless you send it with `--keep` (see
+[`jr2 send`](../reference/cli.md#send)).
 
 ## Lease and Continuity
 

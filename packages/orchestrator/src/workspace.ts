@@ -21,7 +21,10 @@
 // for its pod to be scheduled; `provisioning` waits for Ready under a budget that starts there;
 // `attaching` runs the Harness's attach; `running` runs the body; `teardown` destroys. A Failure from
 // the body (ADR-0073) goes to `failing`, which destroys as `teardown` does and then sends the same
-// Failure up; a defect has no `onError` here, so it goes up at once and its Sandbox stays as evidence.
+// Failure up; a defect has no `onError` here, so it goes up at once. When no Machine catches it, the
+// run faults and the Sandbox stays as evidence; when a Machine above catches it, the host deletes the
+// Sandbox after the step (run-host.ts), so the next invoke of the same name does not take over the old
+// pod.
 //
 // Restore-reconcile (ADR-0012, ADR-0021): every state from `placing` to `running` co-invokes the
 // lease, and in `running` the lease judges Continuity from the Orchestrator's watch for its
@@ -871,8 +874,11 @@ export type PermissiveNoSlotWorkspaceOptions = Omit<SandboxOptions<never>, "repo
  *
  * When the body fails (it invokes a `fail()` slot), the Workspace deletes the Sandbox, and then the
  * same Failure goes up to the parent. With no parent to catch it, the run ends `failed`. When the
- * body has a defect (an error that is not a Failure), the run faults: it ends `error`, and the
- * Sandbox stays for you to inspect, until jr2's operator removes it after an idle timeout.
+ * body has a defect (an error that is not a Failure), the defect goes up to the parent. When no
+ * Machine catches it, the run faults: it ends `error`, and the Sandbox stays for you to inspect,
+ * until jr2's operator removes it after an idle timeout. When a Machine above catches it (an
+ * `onError`), jr2 deletes the Sandbox after that step, as for a Workspace that its parent stops. Only
+ * an invoke again in the step that catches it takes over the old Sandbox.
  *
  * Give the run input to `input`, not to the body: a body with an `input` schema of its own is
  * refused. The types refuse a body whose input does not accept the run input plus the handles,
@@ -1110,8 +1116,9 @@ export function workspace(
   // The body receives the wrapper's input plus the handles — `Workspaced<TInput, TSlots>`, which is also what the
   // declared door checks the body against. A Failure of the body is caught: the wrapper destroys
   // the Sandbox and fails again with the same payload (ADR-0073). Every other body error (a defect)
-  // is not caught: it faults the run (RunStatus.fault) and leaves the Sandbox to the operator's
-  // idle-timeout GC, so the trail stays as evidence.
+  // is not caught here: it goes up. Uncaught above too, it faults the run (RunStatus.fault) and leaves
+  // the Sandbox to the operator's idle-timeout GC, so the trail stays as evidence. Caught above, the
+  // host deletes the Sandbox after the step (ADR-0012).
   //
   // A body that still declares its own run input is a dead declaration under the door design: the
   // wrapper never serves it, never validates against it, and feeds the body something it does not
@@ -1823,7 +1830,8 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
               actions: assign({ output: ({ event }) => (event as unknown as { output: unknown }).output }),
             },
             // A Failure deletes the Sandbox before it goes up (ADR-0073). Guarded, so a defect
-            // takes no transition and goes up at once, as before: its Sandbox stays as evidence.
+            // takes no transition and goes up at once: its Sandbox stays as evidence when no Machine
+            // catches it, and the host deletes it after the step when a Machine above does (ADR-0012).
             onError: {
               guard: ({ event }: { event: { error?: unknown } }) => isFailure(event.error),
               target: "failing",
