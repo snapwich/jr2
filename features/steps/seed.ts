@@ -763,6 +763,29 @@ export async function lfsServerLog(): Promise<string> {
   return stdout;
 }
 
+/**
+ * The LFS server's request lines that its container wrote at or after `since`, each with the time
+ * that the kubelet gave it. `--since-time` reads by time, not by place in the file, so a rotation of
+ * the log or a new container does not move the window. The kind node and this host share one clock.
+ */
+export async function lfsServerLogSince(since: number): Promise<Array<{ at: number; line: string }>> {
+  // --since-time takes whole seconds; the lines of the rest of that second are dropped below.
+  const from = new Date(Math.floor(since / 1000) * 1000).toISOString().replace(".000Z", "Z");
+  const { stdout } = await exec(
+    "kubectl",
+    ["--namespace", NAMESPACE, "logs", "deployment/lfs", "-c", "lfs", "--timestamps", `--since-time=${from}`],
+    { maxBuffer: 64 << 20 },
+  );
+  return stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => {
+      const space = l.indexOf(" ");
+      return { at: Date.parse(l.slice(0, space)), line: l.slice(space + 1) };
+    })
+    .filter((l) => l.at >= since);
+}
+
 /** The text of a Git LFS pointer to `o`, in the canonical form. */
 export function lfsPointer(o: LfsObject): string {
   return `version https://git-lfs.github.com/spec/v1\noid sha256:${o.oid}\nsize ${o.size}\n`;

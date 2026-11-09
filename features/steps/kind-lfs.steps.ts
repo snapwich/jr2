@@ -27,6 +27,7 @@ import {
   lfsSeedRepo,
   lfsServerHolds,
   lfsServerLog,
+  lfsServerLogSince,
   lfsTransferSessions,
   makeLfsObjects,
   makeSeedLfsObjects,
@@ -67,8 +68,9 @@ type LfsState = {
   said?: string;
   /** What the Custodian answered the Agent's own ask, which named the evil branch as its base. */
   asked?: string;
-  /** The LFS server's request lines that came after the evil branch's step began. */
-  logAfter?: string[];
+  /** The LFS server's request lines while the Agent's own ask was open, and after it, while the checkout's ran. */
+  logOwnAsk?: string[];
+  logCheckout?: string[];
 };
 
 const states = new WeakMap<E2EWorld, LfsState>();
@@ -474,8 +476,8 @@ When(
       command: `git checkout -q --detach HEAD~1 && echo "older-$(sha256sum big.bin | cut -c1-64)"`,
     });
     s.read = { cut: (await toolResultWith(this, "older-")).match(/older-([0-9a-f]{64})/)?.[1] };
-    // From here on, each request line that the LFS server logs came after the evil branch's step began.
-    const logBefore = (await lfsServerLog()).split("\n").length - 1;
+    // The LFS server's lines are read by time: from here to the own ask's answer, and from there on.
+    const ownAskFrom = Date.now();
     // The Agent's own ask to the Custodian, as jr2's transfer agent sends one (ADR-0053), with a
     // `base` of the Agent's choice: the evil branch, whose .lfsconfig names a server that holds the
     // object. The Orchestrator must not read it.
@@ -491,6 +493,7 @@ When(
       ].join("; "),
     });
     s.asked = await toolResultWith(this, "asked-");
+    const checkoutFrom = Date.now();
     // Then a checkout of the branch, whose .lfsconfig names that server.
     await this.provider!.release("bash", {
       command: [
@@ -502,7 +505,9 @@ When(
     });
     s.said = await toolResultWith(this, "evil-rc");
     s.marks = await lfsMarks(this);
-    s.logAfter = (await lfsServerLog()).split("\n").slice(logBefore);
+    const lines = await lfsServerLogSince(ownAskFrom);
+    s.logOwnAsk = lines.filter((l) => l.at < checkoutFrom).map((l) => l.line);
+    s.logCheckout = lines.filter((l) => l.at >= checkoutFrom).map((l) => l.line);
     await this.provider!.release("finished", {});
     const settled = await settledWithin(this, 300_000);
     assert.equal(settled.status, "done", JSON.stringify(settled));
@@ -630,11 +635,17 @@ Then(
     assert.ok(lfs?.answered && lfs.error, `the cache agent answered the Agent's ask, and lacks the object: ${answer}`);
     assert.match(s.said ?? "", /evil-rc[1-9]/, `the checkout of the evil branch failed: ${s.said}`);
     assert.match(s.said ?? "", new RegExp(evil.path.replace(".", "\\.")), `git named the file: ${s.said}`);
-    // The attach's ask and the older commit's came before the evil branch's step: only a batch
-    // after it shows that the cache agent asked the Binding's base's server for the evil object.
+    // The attach's ask and the older commit's came before the evil branch's step. A batch while the
+    // Agent's own ask was open, and another while the checkout ran, show that the cache agent asked
+    // the Binding's base's server for the evil object for each of the two asks.
+    const batch = `POST /${s.name}/info/lfs/objects/batch `;
     assert.ok(
-      (s.logAfter ?? []).some((l) => l.startsWith(`POST /${s.name}/info/lfs/objects/batch `)),
-      `after the evil branch's step began, the cache agent asked the Binding's base's LFS server: ${JSON.stringify(s.logAfter)}`,
+      (s.logOwnAsk ?? []).some((l) => l.startsWith(batch)),
+      `for the Agent's own ask, the cache agent asked the Binding's base's LFS server: ${JSON.stringify(s.logOwnAsk)}`,
+    );
+    assert.ok(
+      (s.logCheckout ?? []).some((l) => l.startsWith(batch)),
+      `for the checkout's ask, the cache agent asked the Binding's base's LFS server: ${JSON.stringify(s.logCheckout)}`,
     );
     const log = (await lfsServerLog()).split("\n");
     assert.deepEqual(
