@@ -128,7 +128,9 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   to the source Harness as output frames, and the Harness pauses and resumes it as it sends on. The process opens only a
   regular file, so it does not read a FIFO, a device or a link to one. The Harness does not use the spawner's whole-file
   read for a Handoff, and it counts the bytes as they come (the bound, below). A read that an Agent's file holds ends at
-  the deadline, as git does. The deadline is 300 s, from the start of the step to its last byte.
+  the deadline, as git does. The deadline is 300 s of the step's own time, from its start to its last byte. The clock
+  stops while the Harness holds the step paused for a reader that is behind: a slow carry is not a fault of the parent's
+  files, so it never makes the cut `refused`.
 - **The answer is a stream of frames.** Each frame is one JSON line: a part's header (the bundle first, then each Git
   LFS object by its oid) with its size, `data` frames that hold the part's bytes, and one terminal frame: the end,
   "nothing to carry", `refused` with a reason, or `unknown`. The source Harness writes each frame in its own words from

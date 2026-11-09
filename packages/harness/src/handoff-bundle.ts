@@ -12,9 +12,11 @@
 //     and once, then Git LFS objects by oid, each once, then `end`. Else the stream ends `refused`.
 //   - The bytes of each part are counted, and the bundle and the objects together never pass the
 //     bound (`HANDOFF_MAX_BYTES`): at a header that would pass it, the stream ends `refused`.
-//   - The deadline (`HANDOFF_DEADLINE_MS`) counts from the start to the last byte. At it, the step's
-//     whole process group is killed (SIGKILL) and the stream ends `refused`: a FIFO that an Agent
-//     planted in the clone holds git for ever.
+//   - The deadline (`HANDOFF_DEADLINE_MS`) counts the step's own time, from the start to the last
+//     byte: the clock stops while the Harness holds the step paused for a reader that is behind,
+//     because a slow carry is not a fault of the parent's files. At the deadline, the step's whole
+//     process group is killed (SIGKILL) and the stream ends `refused`: a FIFO that an Agent planted
+//     in the clone holds git for ever.
 //   - A step that exits before its last frame ends the stream `refused`, with its last stderr line.
 //   - A step that does not start (no node, the spawner gone) ends it `unknown`: the parent's files
 //     did not cause it.
@@ -86,6 +88,9 @@ export function bundleHandoff(
 
   let proc: Spawned | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // The deadline's clock: the step's time that is left, and when the clock last started.
+  let left = deadlineMs;
+  let since = 0;
   let done = false;
   let paused = false;
   let ctrl!: ReadableStreamDefaultController<Uint8Array>;
@@ -114,10 +119,25 @@ export function bundleHandoff(
   };
   const refuse = (why: string) => finish({ refused: why.slice(0, 1024) });
 
+  /** Start the deadline's clock, with the time that is left. */
+  const runClock = (): void => {
+    since = Date.now();
+    timer = setTimeout(() => refuse(`the bundle step passed its deadline of ${deadlineMs / 1000} s`), left);
+    timer.unref?.();
+  };
+  /** Stop the clock while the step is paused: the time that the reader takes is not the step's. */
+  const stopClock = (): void => {
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+    left = Math.max(0, left - (Date.now() - since));
+  };
+
   const push = (bytes: Uint8Array): void => {
     ctrl.enqueue(bytes);
     if (!paused && (ctrl.desiredSize ?? 1) <= 0) {
       paused = true;
+      stopClock();
       proc?.pause();
     }
   };
@@ -189,11 +209,7 @@ export function bundleHandoff(
     {
       start(c) {
         ctrl = c;
-        timer = setTimeout(
-          () => refuse(`the bundle step passed its deadline of ${Math.round(deadlineMs / 1000)} s`),
-          deadlineMs,
-        );
-        timer.unref?.();
+        runClock();
         proc = children.spawner.spawn(
           {
             argv: [process.execPath, opts.entry ?? HANDOFF_BUNDLE_ENTRY, JSON.stringify(input)],
@@ -222,8 +238,9 @@ export function bundleHandoff(
         );
       },
       pull() {
-        if (paused) {
+        if (paused && !done) {
           paused = false;
+          runClock();
           proc?.resume();
         }
       },

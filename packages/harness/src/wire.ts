@@ -454,6 +454,8 @@ export const HANDOFF_CONTENT_TYPE = "application/x-jr2-handoff";
  * source Harness ends the stream `refused`. */
 export const HANDOFF_MAX_BYTES = 1024 ** 3;
 
-/** The bundle step's deadline, from its start to its last byte (ADR-0080). At it, the source Harness
- * kills the step's process group and ends the stream `refused`. The Orchestrator waits longer. */
+/** The bundle step's deadline: the step's own time, from its start to its last byte (ADR-0080). The
+ * clock stops while the source Harness holds the step paused for a reader that is behind. At the
+ * deadline, the source Harness kills the step's process group and ends the stream `refused`. The
+ * Orchestrator waits longer. */
 export const HANDOFF_DEADLINE_MS = 300_000;

@@ -11,15 +11,20 @@
 //      for a bare commit id, so the one ref names `head` there.
 //   2. The negatives: each commit that a remote-tracking ref of the clone names. A ref at an object
 //      that is not there, or that is not a commit, is left out.
-//   3. An empty range (`head --not` the negatives) is `{ nothing: true }`: git refuses an empty
-//      bundle, and the child's clone gets `head` from the remote.
-//   4. `git bundle create <file> refs/heads/handoff --not <negatives>`, in its own folder.
+//   3. An empty range (`head` and `^<negative>` for each negative) is `{ nothing: true }`: git
+//      refuses an empty bundle, and the child's clone gets `head` from the remote.
+//   4. `git bundle create <file> --stdin`, in its own folder, with `refs/heads/handoff` and a
+//      `^<negative>` line for each negative. Never a `--not` line: git takes an option on stdin
+//      only from 2.42, and the Sandbox Image's git can be older (Debian bookworm has 2.39.5:
+//      "options not supported in --stdin mode"). A `^` line is a revision, which every git takes.
 //   5. The Git LFS objects: each blob of the range that is a Git LFS pointer names an object. The
 //      object goes with the bundle when the clone's LFS store holds it as a regular file of the
 //      pointer's size. Else the child asks the node cache for it.
 //   6. The bound: the bundle and the objects together, or `{ refused }` before the first part.
 //   7. The parts: each file is opened as a regular file only (no link, no FIFO, no device), and
 //      exactly the bytes that its header says are written.
+//   8. The step removes its own folder, and only then writes the last frame (`end` or `nothing`):
+//      at the last frame, the Harness kills the step's process group.
 //
 // Each git call has the cut's pinned config (`CLEAN`, cut.ts) and a cleared env: no hook, no
 // fsmonitor, no commit-graph, no multi-pack-index, no alternate-refs command, no global or system
@@ -152,6 +157,12 @@ async function sweep(tmp: string): Promise<void> {
   }
 }
 
+/** The stdin of a git `--stdin` call for the range: `tip`, then a `^<sha>` line for each negative.
+ * No line is an option (step 4). */
+export function rangeOf(tip: string, negatives: readonly string[]): string {
+  return `${tip}\n${negatives.map((n) => `^${n}\n`).join("")}`;
+}
+
 /** The oid and size of a Git LFS pointer, or undefined. */
 export function pointerOf(text: string): { oid: string; size: number } | undefined {
   const lines = text.split("\n");
@@ -184,8 +195,9 @@ function batchBlobs(out: Buffer): Buffer[] {
   return blobs;
 }
 
-/** The step, in this process. */
-export async function bundleStep(input: BundleStepInput): Promise<void> {
+/** The step, in this process: it writes the parts, and returns the last frame, which `main`
+ * writes after the step's folder is gone. */
+export async function bundleStep(input: BundleStepInput): Promise<{ end: true } | { nothing: true }> {
   if (!COMMIT.test(input.head)) throw new Refused(`a Handoff's commit is a full commit id, not ${input.head}`);
   await sweep(input.tmp);
   const dir = await mkdtemp(join(input.tmp, `${PREFIX}${process.pid}-`));
@@ -224,6 +236,8 @@ export async function bundleStep(input: BundleStepInput): Promise<void> {
       ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
       named.map((s) => `${s}^{commit}\n`).join(""),
     );
+    if (peeled.code !== 0)
+      throw new Refused(`the parent's clone's remote-tracking refs could not be read: ${said(peeled)}`);
     const negatives = [
       ...new Set(
         peeled.out
@@ -234,14 +248,11 @@ export async function bundleStep(input: BundleStepInput): Promise<void> {
           .map(([sha]) => sha!),
       ),
     ];
-    const range = (tip: string) => `${tip}\n--not\n${negatives.map((n) => `${n}\n`).join("")}`;
+    const range = (tip: string) => rangeOf(tip, negatives);
 
     const first = await at(["rev-list", "-n", "1", "--stdin"], range(input.head));
     if (first.code !== 0) throw new Refused(`the commits of ${input.head} could not be listed: ${said(first)}`);
-    if (first.out.toString().trim() === "") {
-      await frame({ nothing: true });
-      return;
-    }
+    if (first.out.toString().trim() === "") return { nothing: true };
 
     const ref = await at(["update-ref", REF, input.head]);
     if (ref.code !== 0) throw new Refused(`the ref of ${input.head} could not be set: ${said(ref)}`);
@@ -261,6 +272,7 @@ export async function bundleStep(input: BundleStepInput): Promise<void> {
       ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
       shas.map((s) => `${s}\n`).join(""),
     );
+    if (kinds.code !== 0) throw new Refused(`the objects of ${input.head} could not be read: ${said(kinds)}`);
     const small = kinds.out
       .toString()
       .split("\n")
@@ -270,6 +282,7 @@ export async function bundleStep(input: BundleStepInput): Promise<void> {
     const pointers = new Map<string, number>();
     if (small.length > 0) {
       const blobs = await at(["cat-file", "--batch"], small.map((s) => `${s}\n`).join(""));
+      if (blobs.code !== 0) throw new Refused(`the small blobs of ${input.head} could not be read: ${said(blobs)}`);
       for (const blob of batchBlobs(blobs.out)) {
         const p = pointerOf(blob.toString("utf8"));
         if (p !== undefined) pointers.set(p.oid, p.size);
@@ -310,7 +323,7 @@ export async function bundleStep(input: BundleStepInput): Promise<void> {
         await held.fh.close();
       }
     }
-    await frame({ end: true });
+    return { end: true };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -320,7 +333,7 @@ export async function bundleStep(input: BundleStepInput): Promise<void> {
  * a non-zero exit, with the reason on stderr. */
 export async function main(argv: readonly string[]): Promise<void> {
   try {
-    await bundleStep(JSON.parse(argv[0] ?? "{}") as BundleStepInput);
+    await frame(await bundleStep(JSON.parse(argv[0] ?? "{}") as BundleStepInput));
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     if (err instanceof Refused) {

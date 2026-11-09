@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { bundleHandoff, handoffRequestFault, type BundleOptions } from "../src/handoff-bundle.ts";
-import { pointerOf } from "../src/handoff-bundle-main.ts";
+import { pointerOf, rangeOf } from "../src/handoff-bundle-main.ts";
 import { harnessApp } from "../src/app.ts";
 import { HANDOFF_CONTENT_TYPE, type HandoffFrame } from "../src/wire.ts";
 import { testChildren } from "./support/children.ts";
@@ -106,6 +106,28 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<Taken> {
 }
 
 const last = (t: Taken): HandoffFrame => t.frames.at(-1)!;
+
+/** The step's folders that are left in the domain's TMPDIR. */
+const leftIn = (children: { env: Record<string, string | undefined> }): string[] =>
+  readdirSync(children.env.TMPDIR!).filter((n) => n.startsWith("jr2-handoff-"));
+
+/** A folder with a `git` that runs `body` (sh) before the real git, which is `$REAL`. Put it first
+ * on the domain's PATH: the step's git is then this one. */
+function gitWrapper(t: TestContext, body: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "handoff-git-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  writeFileSync(join(dir, "git"), `#!/bin/sh\nREAL='${real}'\n${body}\nexec "$REAL" "$@"\n`);
+  chmodSync(join(dir, "git"), 0o755);
+  return `${dir}:${process.env.PATH ?? "/usr/bin:/bin"}`;
+}
+
+/** The world's coder Worktree, with the step's git at `path`. */
+function takeWith(t: TestContext, w: ReturnType<typeof world>, path: string, head = w.head) {
+  const children = testChildren({ work: w.work, env: { PATH: path } });
+  t.after(() => children.spawner.close());
+  return collect(bundleHandoff(children, { path: w.coder, head }, { workRoot: w.work }));
+}
 
 /** The objects that a bundle's pack holds, unbundled into a folder of the test's own whose
  * alternates are the remote's objects (the bundle's prerequisites). */
@@ -203,6 +225,67 @@ test("a remote-tracking ref of the clone at head leaves an empty range: nothing 
   assert.deepEqual((await w.take()).frames, [{ nothing: true }]);
 });
 
+test("the range on git's stdin holds no option line, so a git before 2.42 takes it", async (t) => {
+  // git before 2.42 refuses an option on stdin: "options not supported in --stdin mode". Debian
+  // bookworm's git is 2.39.5, and a Sandbox Image can have it.
+  const text = rangeOf("a".repeat(40), ["b".repeat(40), "c".repeat(40)]);
+  assert.equal(text, `${"a".repeat(40)}\n^${"b".repeat(40)}\n^${"c".repeat(40)}\n`);
+  assert.ok(
+    text.split("\n").every((l) => !l.startsWith("-")),
+    "no line is an option",
+  );
+  // The whole step, with a git that refuses an option line on stdin as git 2.39 does.
+  const w = world(t);
+  const old = gitWrapper(
+    t,
+    `for a in "$@"; do
+  if [ "$a" = --stdin ]; then
+    in=$(cat)
+    if printf '%s\\n' "$in" | grep -q '^-'; then echo "fatal: options not supported in --stdin mode" >&2; exit 128; fi
+    printf '%s\\n' "$in" | "$REAL" "$@"
+    exit $?
+  fi
+done`,
+  );
+  const lfs = lfsFile(w.clone, w.coder, "one.bin", "a large file\n");
+  const head = git(w.coder, "rev-parse", "HEAD");
+  const got = await takeWith(t, w, old, head);
+  assert.deepEqual(last(got), { end: true }, JSON.stringify(got.frames));
+  const { objects } = packOf(t, got.parts.get("bundle")!, w.remote);
+  assert.ok(objects.has(head) && !objects.has(w.base), "the range alone");
+  assert.equal(got.parts.get(lfs.oid)?.toString(), "a large file\n");
+});
+
+test("the step removes its own folder before its last frame: after `end` and after `nothing`, the domain's TMPDIR holds none", async (t) => {
+  const w = world(t);
+  assert.deepEqual(last(await w.take()), { end: true });
+  assert.deepEqual(leftIn(w.children), []);
+  git(w.clone, "update-ref", "refs/remotes/origin/feature", w.head);
+  assert.deepEqual((await w.take()).frames, [{ nothing: true }]);
+  assert.deepEqual(leftIn(w.children), []);
+});
+
+test("a git call of the step that fails is refused, and the step does not go on with what git wrote", async (t) => {
+  // Without the check, a failed read of the negatives bundles the whole history, and a failed read
+  // of the blobs leaves out the Git LFS objects that the range points to.
+  for (const [what, pattern] of [
+    ["the negatives", "--batch-check=%(objectname) %(objecttype)"],
+    ["the kinds of the range's objects", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+    ["the small blobs", "--batch"],
+  ] as const) {
+    const w = world(t);
+    lfsFile(w.clone, w.coder, "one.bin", "a large file\n");
+    const head = git(w.coder, "rev-parse", "HEAD");
+    const broken = gitWrapper(
+      t,
+      `for a in "$@"; do if [ "$a" = '${pattern}' ]; then echo "fatal: it broke" >&2; exit 1; fi; done`,
+    );
+    const got = await takeWith(t, w, broken, head);
+    assert.equal(got.frames.length, 1, `${what}: ${JSON.stringify(got.frames)}`);
+    assert.match(String((got.frames[0] as { refused?: string }).refused), /could not be read: fatal: it broke$/, what);
+  }
+});
+
 test("a remote-tracking ref of the clone at a blob or a missing object is left out, and the range stays", async (t) => {
   const w = world(t);
   const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: w.clone, input: "x\n" }).toString().trim();
@@ -221,7 +304,10 @@ test("a commit that the clone does not hold is refused, and nothing is carried",
 
 // ---- what an Agent planted -------------------------------------------------------------------------
 
-test("a config, hooks, attributes and filters that an Agent planted in the clone run nothing, and the bundle is the same", async (t) => {
+test("a config, hooks, attributes and filters that an Agent planted in the clone run nothing, and the range is bundled", async (t) => {
+  // A guard for later changes: the step's git commands today run no hook, filter, textconv or
+  // fsmonitor even without the cut's pinned config, which the FIFO tests below need. This test
+  // keeps them so when the step gets another command.
   const w = world(t);
   const marker = join(w.dir, "marker");
   const script = markerScript(w.dir, marker);
@@ -454,6 +540,43 @@ test("a step that does not start is unknown: the parent's files did not cause it
   const got = await collect(bundleHandoff(children, { path: "/work/app/coder", head: COMMIT }));
   assert.equal(got.frames.length, 1);
   assert.match(String((got.frames[0] as { unknown: string }).unknown), /^the bundle step did not run: /);
+});
+
+test("the deadline counts the step's own time: a reader that holds the step paused past the deadline gets each byte and the end", async (t) => {
+  const size = 4 << 20;
+  const children = testChildren();
+  t.after(() => children.spawner.close());
+  const entry = fakeStep(
+    t,
+    `const n = ${size}; process.stdout.write('{"bundle":' + n + '}\\n'); process.stdout.write(Buffer.alloc(n, 7)); process.stdout.write('{"end":true}\\n')`,
+  );
+  const stream = bundleHandoff(
+    children,
+    { path: "/work/app/coder", head: COMMIT },
+    { entry, highWaterMark: 64 << 10, maxBytes: size, deadlineMs: 1_500 },
+  );
+  // The reader takes the first chunk, then waits longer than the deadline: the step is paused.
+  const reader = stream.getReader();
+  const first = await reader.read();
+  await new Promise((r) => setTimeout(r, 2_500));
+  const rest = new ReadableStream<Uint8Array>({
+    start(c) {
+      if (!first.done) c.enqueue(first.value);
+    },
+    async pull(c) {
+      const next = await reader.read();
+      if (next.done) c.close();
+      else c.enqueue(next.value);
+    },
+  });
+  const got = await collect(rest);
+  assert.deepEqual(last(got), { end: true }, JSON.stringify(got.frames.slice(-2)));
+  assert.equal(got.parts.get("bundle")!.length, size);
+});
+
+test("a deadline that is not whole seconds is said as it is", async (t) => {
+  const got = await takeFake(t, `setTimeout(() => {}, 60_000)`, { deadlineMs: 1_500 });
+  assert.deepEqual(got.frames, [{ refused: "the bundle step passed its deadline of 1.5 s" }]);
 });
 
 test("a reader behind the step pauses it, and the stream still carries each byte", async (t) => {
