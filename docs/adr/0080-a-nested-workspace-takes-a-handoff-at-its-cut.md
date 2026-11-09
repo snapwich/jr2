@@ -115,15 +115,17 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
 ### The transport: a git bundle
 
 - **The parent Sandbox writes a bundle of the handed-off range**: `head` and the ancestors that the parent clone's
-  remote-tracking refs do not hold. git writes no bundle for a bare sha, so the step names `head` by a ref in a git
-  folder of its own whose alternates are the clone's objects, as the cut does (ADR-0075), and bundles that ref `--not`
-  the clone's remote-tracking refs. The source Harness writes it as the cut does: through the spawner, in the Sandbox's
-  Landlock domain (ADR-0076), with jr2's cleared env, the cut's pinned config (no hooks, no fsmonitor,
-  `core.commitGraph=false`, `core.multiPackIndex=false`, `core.alternateRefsCommand=true`, and the rest of the cut's
-  set), a deadline, and a kill of the process group at the deadline. In the domain, the step reads only what an Agent of
-  the parent can read itself. The deadline is necessary: in the spike, a FIFO that an Agent planted in the clone held
-  git for ever. The bundle is the parent domain's file, so jr2 trusts nothing in it: the child's cut takes from it only
-  what the steps below let through.
+  remote-tracking refs of `origin` do not hold. git writes no bundle for a bare sha, so the step names `head` by a ref
+  in a git folder of its own whose alternates are the clone's objects, as the cut does (ADR-0075), and bundles that ref
+  `--not` the clone's remote-tracking refs of `origin` (`refs/remotes/origin/*`). The child's clone has only `origin`,
+  so a commit that the parent fetched from another remote travels in the bundle, and does not become a prerequisite that
+  the child lacks. The source Harness writes it as the cut does: through the spawner, in the Sandbox's Landlock domain
+  (ADR-0076), with jr2's cleared env, the cut's pinned config (no hooks, no fsmonitor, `core.commitGraph=false`,
+  `core.multiPackIndex=false`, `core.alternateRefsCommand=true`, and the rest of the cut's set), a deadline, and a kill
+  of the process group at the deadline. In the domain, the step reads only what an Agent of the parent can read itself.
+  The deadline is necessary: in the spike, a FIFO that an Agent planted in the clone held git for ever. The bundle is
+  the parent domain's file, so jr2 trusts nothing in it: the child's cut takes from it only what the steps below let
+  through.
 - **The step also reads the files, as a stream.** In the same step, under the same deadline and kill, a process of the
   domain reads the bundle and each Git LFS object (below) and writes them to its stdout. The spawner sends that output
   to the source Harness as output frames, and the Harness pauses and resumes it as it sends on. The process opens only a
@@ -139,13 +141,13 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
   the step and change its output, so the Harness reads that output as the domain's data. A terminal frame can come
   between any two frames, so a refusal in the middle of a part still reaches the reader, and the parts before it are
   void.
-- **An empty range carries nothing.** When a remote-tracking ref of the parent clone already reaches `head`, git writes
-  no bundle (`Refusing to create empty bundle`). This occurs when the parent pushed the branch before the final review,
-  or when the branch has no commit of its own. The bundle step finds this before it writes a bundle, and the source
-  Harness answers "nothing to carry": no bundle and no Git LFS objects. The child's cut then takes `head` from its own
-  clone after its fetch (ADR-0075), when the clone holds it, and the node cache gives the Git LFS objects. An Agent can
-  set a remote-tracking ref of the parent clone to `head`, so the child's clone can lack `head`. The cut is then
-  `refused`, and the reason names the commit.
+- **An empty range carries nothing.** When a remote-tracking ref of `origin` in the parent clone already reaches `head`,
+  git writes no bundle (`Refusing to create empty bundle`). This occurs when the parent pushed the branch before the
+  final review, or when the branch has no commit of its own. The bundle step finds this before it writes a bundle, and
+  the source Harness answers "nothing to carry": no bundle and no Git LFS objects. The child's cut then takes `head`
+  from its own clone after its fetch (ADR-0075), when the clone holds it, and the node cache gives the Git LFS objects.
+  An Agent can set a remote-tracking ref of `origin` in the parent clone to `head`, so the child's clone can lack
+  `head`. The cut is then `refused`, and the reason names the commit.
 - **The Orchestrator carries the files, and no route faces a Sandbox.** It already talks to every Harness
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). When it runs the child's cut Effect, the Orchestrator
   checks the Handoff of that Effect's input against the ledger and records the source on that cut's intent row. Then it
@@ -217,7 +219,7 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
 
   A Git LFS object that is not a regular file in the parent clone, or whose size is not its pointer's, is left out of
   the stream, and the child asks the node cache for it, as for each object that the Handoff does not carry. A
-  remote-tracking ref of the parent clone that names no commit is left out of the range's negatives.
+  remote-tracking ref of `origin` in the parent clone that names no commit is left out of the range's negatives.
 
   When the source Harness does not answer, the cut is `unknown`, and the Machine can cut again. A connection that never
   opened, to either Harness, is tried again a few times first (for about 4 s), because no byte of the carry left. The
@@ -248,9 +250,9 @@ The child's Agents must not need to know jr2. In the child, git is ordinary:
 ### Large files
 
 - **Git LFS objects travel with the Handoff.** The bundle step also collects each Git LFS object that a bundled commit
-  points to and that the parent clone holds. A pointer is a blob of the range (a blob that the remote-tracking refs do
-  not reach) that has the form of a Git LFS pointer: the step reads no `.gitattributes`, which an Agent writes. The
-  object is the file of its oid in the clone's LFS store. The Orchestrator carries them with the bundle.
+  points to and that the parent clone holds. A pointer is a blob of the range (a blob that the remote-tracking refs of
+  `origin` do not reach) that has the form of a Git LFS pointer: the step reads no `.gitattributes`, which an Agent
+  writes. The object is the file of its oid in the clone's LFS store. The Orchestrator carries them with the bundle.
 - **The child lands an object only when a pointer names it and its bytes match.** A pointer in a commit of the
   handed-off range (the commits that the fetch brought into the clone) must name the object's oid, and the object's
   sha256 must be its oid. The cut leaves out each other object. git-lfs checks only the size of an object in the store,

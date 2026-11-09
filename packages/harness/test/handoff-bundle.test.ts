@@ -228,6 +228,28 @@ test("the bundle holds the handed-off range alone: one ref at head, the remote's
   }
 });
 
+test("a second remote's commits travel in the bundle: the negatives are origin's alone, as the child's clone has only origin", async (t) => {
+  // A coder that works as a fork's contributor does: it fetches another remote and builds on it.
+  const w = world(t);
+  const upstream = join(w.dir, "upstream.git");
+  execFileSync("git", ["clone", "-q", "--bare", w.remote, upstream], { stdio: "ignore" });
+  const side = join(w.dir, "side");
+  execFileSync("git", ["clone", "-q", upstream, side], { stdio: "ignore" });
+  const fork = commit(side, "f.txt", "fork\n", "fork");
+  git(side, "push", "-q", "origin", "HEAD:main");
+  git(w.clone, "remote", "add", "upstream", upstream);
+  git(w.clone, "fetch", "-q", "upstream");
+  const fix = join(w.work, "app", "fix");
+  git(w.clone, "worktree", "add", "-q", "-b", "fix", fix, "upstream/main");
+  const head = commit(fix, "g.txt", "fix\n", "fix");
+  const got = await collect(bundleHandoff(w.children, { path: fix, head }, { workRoot: w.work }));
+  assert.deepEqual(last(got), { end: true });
+  const { objects } = packOf(t, got.parts.get("bundle")!, w.remote);
+  assert.ok(objects.has(fork), "the fork's commit is in the bundle, not a prerequisite that the child lacks");
+  assert.ok(objects.has(head));
+  assert.ok(!objects.has(w.base), "origin's commit stays a prerequisite");
+});
+
 test("a remote-tracking ref of the clone at head leaves an empty range: nothing is carried", async (t) => {
   const w = world(t);
   git(w.clone, "update-ref", "refs/remotes/origin/feature", w.head);
@@ -281,6 +303,10 @@ test("a git call of the step that fails is refused, and the step does not go on 
     ["the negatives", "--batch-check=%(objectname) %(objecttype)"],
     ["the kinds of the range's objects", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
     ["the small blobs", "--batch"],
+    // Without the check, a failed rev-list says that the range is empty: the cut runs with no files.
+    ["the first commit of the range", "rev-list"],
+    ["the ref of head", "update-ref"],
+    ["the bundle", "bundle"],
   ] as const) {
     const w = world(t);
     lfsFile(w.clone, w.coder, "one.bin", "a large file\n");
@@ -291,7 +317,7 @@ test("a git call of the step that fails is refused, and the step does not go on 
     );
     const got = await takeWith(t, w, broken, head);
     assert.equal(got.frames.length, 1, `${what}: ${JSON.stringify(got.frames)}`);
-    assert.match(String((got.frames[0] as { refused?: string }).refused), /could not be read: fatal: it broke$/, what);
+    assert.match(String((got.frames[0] as { refused?: string }).refused), /: fatal: it broke$/, what);
   }
 });
 

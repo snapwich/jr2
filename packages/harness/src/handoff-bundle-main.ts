@@ -178,13 +178,14 @@ export async function bundleStep(input: BundleStepInput): Promise<{ end: true } 
       throw new Refused(`the parent's clone does not hold the commit ${input.head}`);
     }
 
-    // The clone's remote-tracking refs, as commits. A ref at a missing object, or at a blob, is out.
+    // The remote-tracking refs of origin, as commits: the child's clone has only origin, so a commit
+    // of another remote travels in head's closure. A ref at a missing object, or at a blob, is out.
     const refs = await git([
       "--git-dir",
       `${input.clone}/.git`,
       "for-each-ref",
       "--format=%(objectname)",
-      "refs/remotes/",
+      "refs/remotes/origin/",
     ]);
     if (refs.code !== 0)
       throw new Refused(`the parent's clone's remote-tracking refs could not be read: ${said(refs)}`);
