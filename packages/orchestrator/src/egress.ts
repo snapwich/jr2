@@ -272,13 +272,18 @@ function item(
   intercept: boolean,
   ranges: FenceRanges,
 ): EgressItem {
-  const host = rawHost.toLowerCase().replace(/\.$/, "");
+  const lower = rawHost.toLowerCase();
+  // "*." is a `*.` entry with no domain, not "*": the root's dot is removed only after this check,
+  // so that a domain that is empty (an unset variable, for example) is refused and does not permit each name.
+  if (lower === "*.") refuse("is not * and then a DNS name");
+  const host = lower.replace(/\.$/, "");
   const ports = port === undefined ? [...DEFAULT_EGRESS_PORTS] : [port];
   if (host === "*") return { at, host, match: "any", ports, intercept };
   if (host.startsWith("*.")) {
     const domain = host.slice(2);
     if (!isDnsName(domain)) refuse("is not * and then a DNS name");
-    if (ownName(domain)) refuse(`names ${JR2_NAME_DOMAIN}, the domain of jr2's own names`);
+    const why = refusedName(domain);
+    if (why !== undefined) refuse(why);
     return { at, host: domain, match: "below", ports, intercept };
   }
   if (host.includes("*")) refuse('holds a * that is not "*" alone or "*." at the start');

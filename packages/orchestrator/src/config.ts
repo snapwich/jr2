@@ -778,7 +778,9 @@ export type JR2Config = {
    * it. A host that jr2 uses with no secret needs an entry. */
   egress?: readonly EgressEntry[];
   // The two ranges of the Fence (ADR-0084): a pod's address and a placeholder address are never an
-  // address of the cluster or of a host of the author's, so an Instance can move them.
+  // address of the cluster or of a host of the author's, so an Instance can move them. loadConfig
+  // checks `fence` in the Orchestrator too, where `.env` is absent: each value must be a literal,
+  // or jr2 up and the Orchestrator read different ranges ({@link FenceConfig}).
   /** The two IPv4 ranges of the Fence. Default:
    * `{ segment: "198.19.0.0/20", placeholders: "198.18.0.0/16" }`. */
   fence?: FenceConfig;
@@ -933,7 +935,8 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
  * default, outside the addresses that the Custodian never dials (loopback, link-local and
  * `0.0.0.0/8`) and outside multicast and reserved IPv4 (`224.0.0.0/4`, `240.0.0.0/4`), and the two
  * do not overlap. The config load refuses another value:
- * `<file> at fence.<key>: <problem>`. The node prerequisite must use the same segment.
+ * `<file> at fence.<key>: <problem>`. The node prerequisite must use the same segment. The load
+ * runs in the Orchestrator too, where `.env` is absent: write each value as a literal.
  */
 export type FenceConfig = {
   /** The segment, where each Harness pod has its address. Default `"198.19.0.0/20"`; at least a /20. */

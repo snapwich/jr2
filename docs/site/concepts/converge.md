@@ -101,7 +101,9 @@ the cluster, see [Architecture](architecture.md).
 16. It removes the images that nothing uses now.
 
 `jr2 up` also refuses to converge while a host that jr2 uses with no secret has no entry on the Egress list, such as a
-model endpoint with no key or an MCP server with no token. The error prints the entry to add.
+model endpoint with no key or an MCP server with no token. A secret in the path of a url does not count, because the
+Effector holds it, not the Custodian. The error prints the entry to add. A host that no entry can name, such as
+`localhost` or an IPv6 address, is refused with the reason.
 
 `jr2 up` says `converged` only when each pod that it rolled out runs the image that it expected. The labels and the
 records that `jr2 up` writes help it to skip work. They do not prove that the cluster is correct. The pods do.

@@ -333,8 +333,10 @@ kept copy with `GET /runs/:runId/conversations`.
 - An Effect secret has 8 characters or more.
 - A Held secret needs no entry on the Egress list. The Custodian refuses a request to its host that carries no Stand-in.
 - A host with no secret needs an entry on the Egress list, also when jr2 itself uses it: a model endpoint with no key,
-  an MCP server with no token, or a url that a Sandbox Effector calls with no secret. `jr2 up` refuses to converge while
-  such a host has no entry, and it prints the entry to add.
+  an MCP server with no token, or a url that a Sandbox Effector calls with no secret. A secret in the path of a url does
+  not count, because the Effector holds it, not the Custodian. `jr2 up` refuses to converge while such a host has no
+  entry, and it prints the entry to add. A host that no entry can name, such as `localhost` or an IPv6 address, is
+  refused with the reason.
 - The name of a Held secret is an env var name. It cannot start with `JR2_`, and it cannot be a proxy or trust variable.
 - The Orchestrator can make and change a Secret, but it cannot get or list one.
 - The Custodian uses a changed value of a Held secret while the pods run. No Harness pod restarts for it.

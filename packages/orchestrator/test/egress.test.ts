@@ -106,6 +106,33 @@ test("a `*.` entry and `*` are marked TLS and HTTP only, and permit names alone"
   );
 });
 
+test('"*." is a `*.` entry with no domain and is refused, not read as "*"; a `*.` domain gets the checks of a name', () => {
+  // An entry `*.${process.env.X ?? ""}` with X unset is "*.": read as "*", it would permit each name.
+  for (const entry of ["*.", "*.:8080", { host: "*." }, { host: "*.", port: 8080 }]) {
+    assert.throws(
+      () => parseEgressList("egress", [entry]),
+      (err: Error) => {
+        assert.match(err.message, /^egress\[0\] .* is not \* and then a DNS name — /);
+        return true;
+      },
+      JSON.stringify(entry),
+    );
+  }
+  assert.deepEqual(
+    parseEgressList("egress", ["*", "*.Example.COM."]).map((i) => [i.match, i.host]),
+    [
+      ["any", "*"],
+      ["below", "example.com"],
+    ],
+  );
+  assert.throws(() => parseEgressList("egress", ["*.localhost"]), /is a loopback name/);
+  assert.throws(
+    () => parseEgressList("egress", ["*.1"]),
+    /is not an IPv4 address a\.b\.c\.d, and a name whose last label is a number/,
+  );
+  assert.throws(() => parseEgressList("egress", ["*.127.0.0.1"]), /a name whose last label is a number/);
+});
+
 test("jr2 up warns for `*` and for each `*.` entry, by its config path", () => {
   const items = parseEgressList("egress", ["github.com", "*.npmjs.org", "*"]);
   assert.deepEqual(egressWarnings(items), [
