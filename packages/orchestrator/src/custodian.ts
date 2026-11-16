@@ -318,7 +318,7 @@ const MAY_HAVE_REACHED = "did not answer; the request may have reached it";
  * the Orchestrator route's go to the Harness, which tells "never reached" from "not known"
  * (ADR-0002).
  */
-function unreachable(target: string): Json {
+export function unreachable(target: string): Json {
   return {
     mappers: [noAnswer(target, NOT_SENT_FLAGS, NOT_REACHED), noAnswer(target, MAY_HAVE_SENT_FLAGS, MAY_HAVE_REACHED)],
   };
@@ -333,7 +333,7 @@ function tunnelUnreachable(target: string): Json {
 
 /** The Orchestrator unreachable, said so the Harness can tell it from an answer and retry the
  * surface read the way ADR-0042 asks — the one route on this pod that retries. */
-const ORCHESTRATOR_UNREACHABLE: Json = {
+export const ORCHESTRATOR_UNREACHABLE: Json = {
   mappers: [
     {
       // Envoy's own answers for a stream it reset (`UPE`, `UR`, `LR`: 503, or 502 for `UPE`) are said
@@ -445,6 +445,43 @@ function isIpLiteral(host: string): boolean {
   return /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":");
 }
 
+/** One route toward the Orchestrator (ADR-0059): its name, its method, the path it takes, and
+ * which resets Envoy sends again. */
+export type ControlRoute = { name: string; method: "GET" | "POST"; regex: string; retryOn: string };
+
+/**
+ * The six routes the Custodian forwards to the Orchestrator, and no other (ADR-0059): the five agent
+ * routes, then the ask. A read retries any reset. A pick and the ask retry only a reset before they
+ * were sent: one the Orchestrator may have read is not sent twice. An outstanding pick's answer is
+ * long-polled (ADR-0024) and is a read, so an Orchestrator restart mid-poll costs a retry, not the
+ * pick. Notices marked heard twice (ADR-0062, ADR-0076) and a batch of the conversation's entries
+ * sent twice (ADR-0023) change nothing, so any reset is retried.
+ */
+export const CONTROL_ROUTES: readonly ControlRoute[] = [
+  { name: "surface", method: "GET", regex: "/agents/[^/]+/surface", retryOn: "reset,connect-failure" },
+  { name: "events", method: "POST", regex: "/agents/[^/]+/events", retryOn: "reset-before-request,connect-failure" },
+  { name: "deliveries", method: "GET", regex: "/agents/[^/]+/deliveries/[^/]+", retryOn: "reset,connect-failure" },
+  { name: "notices", method: "POST", regex: "/agents/[^/]+/notices", retryOn: "reset,connect-failure" },
+  { name: "conversation", method: "POST", regex: "/agents/[^/]+/conversation", retryOn: "reset,connect-failure" },
+  { name: "fetch", method: "POST", regex: "/fetch", retryOn: "reset-before-request,connect-failure" },
+];
+
+/** One of {@link CONTROL_ROUTES} as an Envoy route to the `orchestrator` cluster, with the role and
+ * the route name that the program reads. */
+export function controlRoute(r: ControlRoute): Json {
+  return {
+    name: r.name,
+    match: { safe_regex: { regex: r.regex }, headers: [{ name: ":method", string_match: { exact: r.method } }] },
+    route: {
+      cluster: "orchestrator",
+      timeout: "0s",
+      auto_host_rewrite: true,
+      retry_policy: { retry_on: r.retryOn, num_retries: 2 },
+    },
+    metadata: meta({ role: "control", route: r.name }),
+  };
+}
+
 /**
  * The Custodian's static bootstrap (ADR-0059): Envoy's whole configuration, rendered once per
  * converge by `jr2 up`, identical for every Harness pod of the Instance.
@@ -467,12 +504,6 @@ function isIpLiteral(host: string): boolean {
 export function custodianBootstrap(manifest: HeldManifest, orchestrator: OrchestratorAddress): Json {
   const targets = targetsOf(manifest);
   const orchestratorTarget = `${orchestrator.host}:${orchestrator.port}`;
-  const route = (name: string, method: string, regex: string, extra: Json = {}): Json => ({
-    name,
-    match: { safe_regex: { regex }, headers: [{ name: ":method", string_match: { exact: method } }] },
-    route: { cluster: "orchestrator", timeout: "0s", auto_host_rewrite: true, ...extra },
-    metadata: meta({ role: "control", route: name }),
-  });
 
   // One listener toward the Orchestrator, with its routes and the deny route after them: a route
   // of the other listener gets the deny route's 404 here.
@@ -516,39 +547,18 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
     // the control Stand-in on the Harness's next request. It cannot make a socket under `/run/jr2`.
     // Envoy removes a socket that a stopped Envoy left, before it binds. Mode 0666, because the
     // Harness runs as a uid that is not Envoy's: the folder, not the mode, keeps the domain out.
-    toOrchestrator("control", { pipe: { path: CUSTODIAN_CONTROL_SOCKET, mode: 0o666 } }, [
-      // A read retries any reset. A pick retries only a reset before it was sent: one the
-      // Orchestrator may have read is not sent twice.
-      route("surface", "GET", "/agents/[^/]+/surface", {
-        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
-      }),
-      route("events", "POST", "/agents/[^/]+/events", {
-        retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
-      }),
-      // An outstanding pick's answer, long-polled (ADR-0024): a read, so any reset is retried — an
-      // Orchestrator restart mid-poll costs a retry, not the pick.
-      route("deliveries", "GET", "/agents/[^/]+/deliveries/[^/]+", {
-        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
-      }),
-      // The acknowledgment of the notices a step boundary appended (ADR-0062, ADR-0076): marking
-      // them heard twice changes nothing, so any reset is retried.
-      route("notices", "POST", "/agents/[^/]+/notices", {
-        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
-      }),
-      // A batch of the conversation's entries (ADR-0023): the Orchestrator keeps each entry once,
-      // so a batch sent twice changes nothing, and any reset is retried.
-      route("conversation", "POST", "/agents/[^/]+/conversation", {
-        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
-      }),
-    ]),
+    toOrchestrator(
+      "control",
+      { pipe: { path: CUSTODIAN_CONTROL_SOCKET, mode: 0o666 } },
+      CONTROL_ROUTES.filter((r) => r.name !== "fetch").map(controlRoute),
+    ),
     // The ask (ADR-0053), on loopback: `jr2-upload-pack` runs in the domain, and the fetch Stand-in
-    // is public, so a process that takes this port gets nothing secret. Like a pick, it retries only
-    // a reset before it was sent.
-    toOrchestrator("fetch", { socket_address: { address: "127.0.0.1", port_value: CUSTODIAN_FETCH_PORT } }, [
-      route("fetch", "POST", "/fetch", {
-        retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
-      }),
-    ]),
+    // is public, so a process that takes this port gets nothing secret.
+    toOrchestrator(
+      "fetch",
+      { socket_address: { address: "127.0.0.1", port_value: CUSTODIAN_FETCH_PORT } },
+      CONTROL_ROUTES.filter((r) => r.name === "fetch").map(controlRoute),
+    ),
     {
       name: "health",
       address: { socket_address: { address: "0.0.0.0", port_value: CUSTODIAN_HEALTH_PORT } },
@@ -1164,3 +1174,76 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
     volumes,
   };
 }
+
+// ---- the Custodian of an Instance (ADR-0084) -----------------------------------------------------
+//
+// One Custodian pod on each Sandbox node, outside every Harness pod. `custodian-rules.ts` renders
+// what its Envoy is told; these are the fixed facts that the renderer, the control process (M5) and
+// `jr2 up` (M8) share.
+
+/** jr2's own name (ADR-0059, ADR-0084): the resolver of each slot answers it with the first address
+ * of the placeholder range, and it is an Intercepted host of every Harness pod. The control routes
+ * are HTTPS on its port 443; the fetch route is on 443 and on plain HTTP port 80. */
+export const JR2_CUSTODIAN_NAME = "custodian.jr2.internal";
+
+/** The slots of one Instance (ADR-0084): its range of VLANs. Slot 0 is the Instance Harness, slot 1
+ * the check pod, slot 2 the node probe, and slots 3–127 the Sandboxes. */
+export const FENCE_SLOTS = 128;
+/** The uplink sends the TCP of slot i to port `SLOT_LISTENER_BASE + i` and its DNS to port
+ * `SLOT_RESOLVER_BASE + i`, by one static map: the port, not a source address, names the slot. */
+export const SLOT_LISTENER_BASE = 20000;
+export const SLOT_RESOLVER_BASE = 25000;
+
+/** The Custodian pod's ports on the cluster's network: the health probe (`CUSTODIAN_HEALTH_PORT`),
+ * the Orchestrator's dial to a Harness pod (inbound), and the control process's API. Envoy's admin
+ * listener is on the pod's loopback only, which no Harness pod can reach. */
+export const CUSTODIAN_INBOUND_PORT = 18080;
+export const CUSTODIAN_CONTROL_PORT = 18081;
+export const CUSTODIAN_ADMIN_PORT = 15000;
+
+/** The headers of the Orchestrator's dial (ADR-0084): the dial token of the Instance, and the slot
+ * address and port of the Harness pod. The Custodian removes both before it dials. */
+export const DIAL_TOKEN_HEADER = "x-jr2-dial";
+export const DIAL_TARGET_HEADER = "x-jr2-target";
+/** The two ports the Orchestrator dials on a Harness pod: the Harness, and the Sandbox Effector. */
+export const DIAL_PORTS: readonly number[] = [8080, 8082];
+
+/** What the Custodian pod reads (ADR-0084). The bootstrap and the program are the same for each
+ * pod of an Instance; the state folder is an in-memory emptyDir that the control process writes and
+ * Envoy reads: the LDS and CDS files, each slot's values, leaves and Lua table, and the dial token. */
+export const CUSTODIAN_POD_CONFIG = "/etc/jr2/custodian";
+export const CUSTODIAN_POD_BOOTSTRAP = `${CUSTODIAN_POD_CONFIG}/envoy.json`;
+export const CUSTODIAN_POD_PROGRAM = `${CUSTODIAN_POD_CONFIG}/${CUSTODIAN_PROGRAM_KEY}`;
+export const CUSTODIAN_STATE = "/run/jr2-custodian";
+export const CUSTODIAN_XDS = `${CUSTODIAN_STATE}/xds`;
+export const CUSTODIAN_LDS = `${CUSTODIAN_XDS}/lds.json`;
+export const CUSTODIAN_CDS = `${CUSTODIAN_XDS}/cds.json`;
+export const CUSTODIAN_DIAL_TOKEN = `${CUSTODIAN_STATE}/dial-token`;
+
+/** The folder of slot i's own files: `values/` (each value as `<NAME>`, each secret Stand-in as
+ * `<NAME>.standin`), `tls/` (each leaf as `<stem>.crt` and `<stem>.key`, `leafStem`) and its Lua
+ * tables. */
+export function slotFolder(slot: number): string {
+  return `${CUSTODIAN_STATE}/slots/${slot}`;
+}
+
+/** Envoy's drain time in the Custodian pod (ADR-0084): when a slot's rules change, a connection on a
+ * chain that changed is closed after this time. Envoy's default is 600 s, and churn then holds memory
+ * for ten minutes. */
+export const CUSTODIAN_DRAIN_SECONDS = 60;
+
+/** Envoy's command line in the Custodian pod. Two workers, because one pod serves each Sandbox on
+ * its node; no hot restart (a pod replaces a container); the access log flushed twice a second. */
+export const CUSTODIAN_POD_ARGS: readonly string[] = [
+  "-c",
+  CUSTODIAN_POD_BOOTSTRAP,
+  "--concurrency",
+  "2",
+  "--disable-hot-restart",
+  "--drain-time-s",
+  String(CUSTODIAN_DRAIN_SECONDS),
+  "--file-flush-interval-msec",
+  "500",
+  "--log-level",
+  "warning",
+];

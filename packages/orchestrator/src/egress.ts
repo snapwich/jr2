@@ -129,6 +129,22 @@ const NOT_UNICAST: readonly string[] = ["224.0.0.0/4", "240.0.0.0/4"];
  * IPv4 prefix `a.b.c.d/n`. */
 export type FenceRanges = { segment: string; placeholders: string };
 
+/**
+ * The ranges that the Custodian never dials (ADR-0059, ADR-0084): {@link GUARDED_RANGES}, and the
+ * Fence's own ranges — the segment, the placeholder range, and 198.18.0.0/15. The Custodian has a
+ * route to each slot address on its own VLAN, so without them a permitted name that resolves to a
+ * slot address would make the Custodian dial another Harness pod.
+ */
+export function dialGuardRanges(ranges: FenceRanges): Array<readonly [string, number]> {
+  const fence = [ranges.segment, ranges.placeholders, FENCE_DEFAULT_RANGE].map((r) => {
+    const [address, prefix] = r.split("/");
+    return [address!, Number(prefix)] as const;
+  });
+  const out: Array<readonly [string, number]> = [...GUARDED_RANGES];
+  for (const r of fence) if (!out.some((o) => o[0] === r[0] && o[1] === r[1])) out.push(r);
+  return out;
+}
+
 /** The ranges an Instance uses: its `fence`, else the defaults. `checkFence` has checked them. */
 export function fenceRangesOf(fence: Partial<FenceRanges> | undefined): FenceRanges {
   return { segment: fence?.segment ?? FENCE_SEGMENT, placeholders: fence?.placeholders ?? FENCE_PLACEHOLDERS };

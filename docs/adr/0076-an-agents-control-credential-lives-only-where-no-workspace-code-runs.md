@@ -117,10 +117,10 @@ another, whatever it writes.
 - **No Harness pod reaches a cloud metadata address.** Where the metadata service of a node answers pods, it gives the
   node's cloud credential, which no `workspace()` grants. Each Harness pod, the Instance Harness and each check pod
   included, reaches no address but the Custodian (ADR-0084), and the Custodian's dial guard refuses each link-local
-  address (ADR-0059). The guard has a limit: it refuses loopback, link-local and unspecified addresses only, so Alibaba
-  Cloud's `100.100.100.200` is not in it, and a permitted name that resolves to it reaches it. So the shared-cluster
-  guide tells the admin to check the metadata address of their provider, and to give pods no node credential: Workload
-  Identity, or IMDSv2 with a hop limit of 1.
+  address (ADR-0059). The guard has a limit: it refuses loopback, link-local and unspecified addresses and the Fence's
+  own ranges only, so Alibaba Cloud's `100.100.100.200` is not in it, and a permitted name that resolves to it reaches
+  it. So the shared-cluster guide tells the admin to check the metadata address of their provider, and to give pods no
+  node credential: Workload Identity, or IMDSv2 with a hop limit of 1.
 
 - **The env of the domain is the container's own env, with the granted Stand-ins.** A program in the domain gets the env
   that the container started with: the image's `ENV`, `harness.env` and `envFrom`, and the CA variables. jr2's own

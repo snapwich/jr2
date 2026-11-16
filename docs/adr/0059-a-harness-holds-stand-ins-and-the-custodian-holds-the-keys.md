@@ -192,18 +192,23 @@ and it replaces the Adapter.
   refuses it, with a line that names the secret, when it is missing, empty, or has a byte outside `0x20`–`0x7E`. Each
   Stand-in but the fetch Stand-in is a value too: the Custodian reads it from its values, never from the table. Envoy's
   `credential_injector` is not used: it is alpha, it breaks on a secret file that ends in a newline (1.39.1), and it
-  replaces a whole header, where the swap must see the Stand-in. Values never enter a ConfigMap. Envoy runs one worker,
-  with hot restart off, and flushes its access log twice a second.
+  replaces a whole header, where the swap must see the Stand-in. Values never enter a ConfigMap. Envoy runs with hot
+  restart off, closes a connection on a chain that a change removed after a drain time of 60 seconds (ADR-0084), and
+  flushes its access log twice a second.
 - **The log is a contract.** One line per decision on stdout, with the prefix `jr2.custodian` and `key=value` pairs:
   `ready secrets=… hosts=N` (when a pod's rules are live), `action=intercept target=… secret=… method=… status=…`,
   `action=tunnel target=…`, `action=refuse target=… reason=…`. Each line also names the Sandbox, or the other Harness
   pod, that it is for (ADR-0084). Never a header value, a body, a path, a query, a value or a Stand-in.
 - **The dial guard, in two halves.** The Custodian never dials a loopback, link-local (the cloud metadata address
-  included, and AWS's `fd00:ec2::254`) or unspecified address, or an IPv4-mapped form of one; the connection is refused
-  with a `reason=guard` line. The script refuses a target that SPELLS one, and `localhost` or a `.localhost` name,
-  before anything is resolved. The Custodian then refuses a name that resolves to an address in `GUARDED_RANGES`, so a
-  name that resolves to one is refused like the literal. The address judged is the address dialed: both come from the
-  one lookup.
+  included, and AWS's `fd00:ec2::254`) or unspecified address, or an IPv4-mapped form of one. It never dials an address
+  in the Fence's own ranges either: the segment, the placeholder range and 198.18.0.0/15
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The Custodian has a route to each slot address
+  on its own VLAN, so without these ranges a permitted name that resolves to a slot address would make it dial another
+  Harness pod. A target that SPELLS such an address, or is `localhost` or a `.localhost` name, is refused before
+  anything is resolved: `jr2 up` refuses such an entry, and the Custodian dials an address only when it is an entry. The
+  Custodian then refuses a name that resolves to an address in these ranges (`dialGuardRanges`), so a name that resolves
+  to one is refused like the literal, with a `reason=guard` line. The address judged is the address dialed: each dial by
+  name goes through one of the Custodian's dial listeners, and both come from its one lookup.
 - **Health.** `0.0.0.0:15021`, `GET /healthz`. The kubelet cannot reach a loopback listener, and a distroless image has
   no shell for an exec probe. The Custodian's readiness probe is on it. A provision waits until the Custodian says that
   the Sandbox's rules are live (ADR-0084), so no Turn is admitted in a Sandbox before the Custodian serves it. A peer on

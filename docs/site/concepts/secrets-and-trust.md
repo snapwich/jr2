@@ -129,9 +129,9 @@ uses a client certificate, cannot connect to an Intercepted host.
 - **The dial guard does not refuse each metadata address.** At a metadata address of a cloud provider, the metadata
   service of a node can give the node's cloud credential to a pod. A Sandbox and the Instance Harness have no network
   but their Fence, and the Custodian refuses each address that a pod dials itself, unless the Egress list has that
-  address as an entry. When a name that the Egress list permits resolves to a loopback or link-local address, the dial
-  guard of the Custodian refuses it too. The guard does not refuse `100.100.100.200` (Alibaba Cloud), because it is not
-  link-local: a permitted name that resolves to it reaches it. See
+  address as an entry. When a name that the Egress list permits resolves to a loopback or link-local address, or to an
+  address in the Fence's own ranges, the dial guard of the Custodian refuses it too. The guard does not refuse
+  `100.100.100.200` (Alibaba Cloud), because it is not link-local: a permitted name that resolves to it reaches it. See
   [Move from kind to a shared cluster](../guides/move-from-kind-to-a-shared-cluster.md#check-the-cluster).
 - **A key that signs the request cannot be a Held secret.** A SigV4 or ADC credential signs the request, and the
   Custodian cannot put a value into a signature. Use an Effect secret for such a credential. For a model provider, use a

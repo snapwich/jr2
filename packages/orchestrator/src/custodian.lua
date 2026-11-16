@@ -16,8 +16,16 @@
 --   egress     the CONNECT listener: dial guard, then tunnel or hand to an intercept listener
 --   intercept  one bound host, TLS already ended: swap the Stand-in, strip the rest
 --   health     the kubelet's probe
+--
+-- The Custodian of an Instance (ADR-0084) runs this same program with one table for each slot, and
+-- the table names the slot's own folder of values (`HELD.values`) and its Sandbox (`HELD.sandbox`).
+-- Its listeners add three roles:
+--
+--   http       a Tunneled host's plain HTTP: the `Host` chose the route; the address must agree
+--   refuse     a refusal that a route states (`reason`, `body`), so that each one is logged alike
+--   inbound    the Orchestrator's dial to a Harness pod: the dial token, then the target check
 
-local VALUES = "/etc/jr2/custodian/values/"
+local VALUES = HELD.values or "/etc/jr2/custodian/values/"
 
 -- The value of one held secret, or its Stand-in, read once. One trailing line end is taken off,
 -- because `kubectl create secret --from-file` writes one; anything else a header cannot carry stops
@@ -89,8 +97,10 @@ local function swapped(value, standIn, secret)
 end
 
 -- One request toward a target whose secrets are `bound`: every credential header is either the
--- product of a swap or gone, and a request that swapped nothing never leaves.
-local function hold(handle, headers, bound, target, path)
+-- product of a swap or gone, and a request that swapped nothing never leaves, unless the target is
+-- `open`: an Intercepted host that no secret is bound to, or a bound host that the Egress list also
+-- names (ADR-0084). Such a request leaves with every credential header removed.
+local function hold(handle, headers, bound, target, path, open)
   local creds = credentialHeaders(bound)
   for h in pairs(creds) do
     if headers:getNumValues(h) > 1 then
@@ -125,6 +135,12 @@ local function hold(handle, headers, bound, target, path)
   end
   for h in pairs(creds) do
     if not done[h] then headers:remove(h) end
+  end
+  if #names == 0 and open then
+    tag(handle, "action", "intercept")
+    tag(handle, "secret", "")
+    tag(handle, "log", true)
+    return
   end
   if #names == 0 then
     local wanted, where = {}, {}
@@ -260,6 +276,8 @@ local function intercept(handle, headers, target)
   local want = target
   if target:sub(-4) == ":443" then
     if host == target:sub(1, -5) then host = target end
+  elseif target:sub(-3) == ":80" then
+    if host == target:sub(1, -4) then host = target end
   end
   if host ~= want then
     return refuse(handle, 421, "host", "Host does not name " .. target)
@@ -269,12 +287,16 @@ local function intercept(handle, headers, target)
     return refuse(handle, 400, "path", "an encoded / or . in the path")
   end
   for _, h in ipairs({ "te", "trailer", "keep-alive", "proxy-connection", SLOT_HEADER }) do headers:remove(h) end
-  return hold(handle, headers, HELD.targets[target], target, path)
+  local open = HELD.open ~= nil and HELD.open[target] == true
+  return hold(handle, headers, HELD.targets[target] or {}, target, path, open)
 end
 
 local function control(handle, headers, route)
   if route == "fetch" then
-    local sandbox = os.getenv("JR2_SANDBOX")
+    -- A slot's table names its Sandbox (ADR-0084): the uplink chose the slot, so the Harness pod
+    -- that sent the connection chose nothing. A table with no slot is the in-pod Custodian's.
+    local sandbox = HELD.sandbox
+    if HELD.slot == nil then sandbox = os.getenv("JR2_SANDBOX") end
     if sandbox == nil or sandbox == "" then
       tag(handle, "action", "refuse")
       tag(handle, "reason", "no-sandbox")
@@ -289,10 +311,46 @@ local function control(handle, headers, route)
   return hold(handle, headers, HELD.control, "orchestrator", headers:get(":path"))
 end
 
+-- The Orchestrator's dial to a Harness pod (ADR-0084): it names the pod by `x-jr2-target`, and it
+-- proves that it is the Orchestrator by `x-jr2-dial`, the dial token of this Instance. The token is
+-- read when the first dial comes, because the Custodian's control process writes it after Envoy
+-- starts. Neither header leaves the Custodian.
+local DIAL_HEADER = "x-jr2-dial"
+local TARGET_HEADER = "x-jr2-target"
+local DIAL_TOKEN = nil
+
+local function inbound(handle, headers)
+  if DIAL_TOKEN == nil then
+    local f = io.open(HELD.inbound.token, "rb")
+    if f ~= nil then
+      local v = f:read("*a"):gsub("\r?\n$", "", 1)
+      f:close()
+      if v ~= "" then DIAL_TOKEN = v end
+    end
+  end
+  local given = headers:get(DIAL_HEADER)
+  local count = headers:getNumValues(DIAL_HEADER)
+  headers:remove(DIAL_HEADER)
+  if DIAL_TOKEN == nil then
+    return refuse(handle, 503, "not-ready", "the Custodian has no dial token yet")
+  end
+  if count ~= 1 or given ~= DIAL_TOKEN then
+    return refuse(handle, 403, "dial", "a dial to a Harness pod needs the dial token of this Instance")
+  end
+  local target = headers:get(TARGET_HEADER)
+  if headers:getNumValues(TARGET_HEADER) ~= 1 or HELD.inbound.targets[target] ~= true then
+    return refuse(handle, 403, "target", "the target is not port 8080 or 8082 of a slot of this Instance")
+  end
+  tag(handle, "action", "inbound")
+  tag(handle, "target", target)
+  tag(handle, "log", true)
+end
+
 local READY = false
 
 -- A refusal by resolved address comes from the RBAC filter after this one: the one 403 a request
--- this script let through as a tunnel can get. It is logged as a refusal by spelling is.
+-- this script let through as a tunnel can get. It is logged as a refusal by spelling is. (A slot's
+-- chains dial through the Custodian's dial listeners, which log the guard's refusal themselves.)
 function envoy_on_response(handle)
   if handle:metadata():get("role") ~= "egress" then return end
   if handle:headers():get(":status") ~= "403" then return end
@@ -309,6 +367,22 @@ function envoy_on_request(handle)
   if role == "egress" then return egress(handle, headers) end
   if role == "intercept" then return intercept(handle, headers, meta:get("target")) end
   if role == "control" then return control(handle, headers, meta:get("route")) end
+  if role == "inbound" then return inbound(handle, headers) end
+  if role == "http" then
+    -- One HTTP chain serves port 80 of each Tunneled name of the slot: the `Host` chose the route,
+    -- and the address dialed must be that host's placeholder (ADR-0084).
+    local here = handle:streamInfo():downstreamLocalAddress()
+    if here ~= meta:get("address") then
+      return refuse(handle, 403, "host", "the Host header does not name the host of the address dialed")
+    end
+    for _, h in ipairs({ "proxy-connection", SLOT_HEADER }) do headers:remove(h) end
+    tag(handle, "action", "tunnel")
+    tag(handle, "log", true)
+    return
+  end
+  if role == "refuse" then
+    return refuse(handle, tonumber(meta:get("status")) or 403, meta:get("reason"), meta:get("body"))
+  end
   if role == "health" then
     if not READY then
       READY = true

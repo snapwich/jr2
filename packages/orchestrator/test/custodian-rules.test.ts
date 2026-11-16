@@ -1,0 +1,571 @@
+// The rules of the Custodian of an Instance (ADR-0059, ADR-0084), socket-free: what the renderer
+// tells Envoy for one slot, and the bootstrap of the Custodian pod. What only a real engine can show
+// is the Custodian suite's (`just custodian-test`): the pinned Envoy validates these files there
+// (`packages/cli/test/custodian-rules.docker.ts`), and M4 runs connections through them. What is
+// pinned here is that the rendering says what ADR-0084 decides: the dialed address and port choose a
+// chain, the TLS name or the `Host` header must agree with the name, the Custodian dials the name
+// through the dial guard, and every other connection is refused with a reason.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  CONTROL_ROUTES,
+  CUSTODIAN_DRAIN_SECONDS,
+  CUSTODIAN_POD_ARGS,
+  CUSTODIAN_PROGRAM,
+  JR2_CUSTODIAN_NAME,
+} from "../src/custodian.ts";
+import {
+  custodianPodBootstrap,
+  custodianXds,
+  renderSlot,
+  slotAddress,
+  slotVlan,
+  type SlotRules,
+} from "../src/custodian-rules.ts";
+import { fenceRangesOf, GUARDED_RANGES } from "../src/egress.ts";
+import { leafStem } from "../src/held-secrets.ts";
+import { emptyPlaceholders, withPlaceholders } from "../src/placeholders.ts";
+import {
+  INSTANCE_MANIFEST,
+  inputsOf,
+  manySlots,
+  RANGES,
+  rule,
+  SANDBOX_MANIFEST,
+  THREE_SLOTS,
+} from "./_custodian-slots.ts";
+
+type Chain = {
+  name: string;
+  filter_chain_match: Record<string, any>;
+  transport_socket?: { typed_config: Record<string, any> };
+  filters: Array<{ name: string; typed_config: Record<string, any> }>;
+};
+
+const sandbox = () => renderSlot(inputsOf(3, SANDBOX_MANIFEST, { sandbox: "ticket-a1b2c" }));
+const chainsOf = (r: SlotRules) => (r.listener as { filter_chains: Chain[] }).filter_chains;
+const chainOf = (r: SlotRules, name: string): Chain => {
+  const found = chainsOf(r).find((c) => c.name === name);
+  assert.ok(
+    found,
+    `no chain ${name}; chains: ${chainsOf(r)
+      .map((c) => c.name)
+      .join(" | ")}`,
+  );
+  return found;
+};
+const at = (address: string, port: number) => ({
+  prefix_ranges: [{ address_prefix: address, prefix_len: 32 }],
+  destination_port: port,
+});
+/** The HTTP connection manager of a chain, if it has one. */
+const manager = (c: Chain) =>
+  c.filters.find((f) => f.name === "envoy.filters.network.http_connection_manager")?.typed_config;
+const tcp = (c: Chain) => c.filters.find((f) => f.name === "envoy.filters.network.tcp_proxy")?.typed_config;
+const text = (c: Chain) => c.filters[0]!.typed_config.response?.inline_string as string | undefined;
+const isAlert = (c: Chain) => c.filters[0]!.typed_config.response?.inline_bytes === "FQMDAAICMQ==";
+
+test("a slot's listener is on 20000 + slot, reads the dialed address and the TLS name, and no chain reads a source address", () => {
+  const r = sandbox();
+  const listener = r.listener as Record<string, any>;
+  assert.equal(listener.name, "slot-3");
+  assert.deepEqual(listener.address, { socket_address: { address: "0.0.0.0", port_value: 20003 } });
+  assert.deepEqual(
+    listener.listener_filters.map((f: { name: string }) => f.name),
+    ["envoy.filters.listener.original_dst", "envoy.filters.listener.tls_inspector"],
+  );
+  assert.equal(listener.listener_filters_timeout, "2s", "a server-first protocol waits about 2 s");
+  assert.equal(listener.continue_on_listener_filters_timeout, true);
+  const json = JSON.stringify(r.listener);
+  assert.doesNotMatch(
+    json,
+    /source_prefix_ranges|source_ports|direct_source/,
+    "the port names the slot, never an address",
+  );
+  assert.match(text(listener.default_filter_chain as Chain)!, /no entry of the Egress list permits/);
+});
+
+test("a Tunneled name: its placeholder and port with its TLS name go to the dial listener as the name; another TLS name gets an alert; plain bytes on 443 get a line of text", () => {
+  const r = sandbox();
+  const p = r.resolver.names.find((n) => n.name === "github.com")!.address;
+  const tls = chainOf(r, "action=tunnel target=github.com:443");
+  assert.deepEqual(tls.filter_chain_match, { ...at(p, 443), transport_protocol: "tls", server_names: ["github.com"] });
+  assert.equal(tcp(tls)!.cluster, "dial");
+  assert.equal(
+    tcp(tls)!.tunneling_config.hostname,
+    "github.com:443",
+    "the Custodian dials the name, never the address",
+  );
+  assert.deepEqual(
+    tcp(tls)!.tunneling_config.headers_to_add.map((h: { header: { key: string; value: string } }) => h.header),
+    [
+      { key: "x-jr2-fence-slot", value: "3" },
+      { key: "x-jr2-fence-owner", value: "ticket-a1b2c" },
+    ],
+  );
+  // One chain of the port refuses another TLS name on each address whose name it checks; the chain
+  // of the name with its TLS name is as specific, and the TLS name chooses it.
+  const sni = chainOf(r, "action=refuse reason=sni port=443");
+  assert.ok(sni.filter_chain_match.prefix_ranges.some((x: { address_prefix: string }) => x.address_prefix === p));
+  assert.equal(sni.filter_chain_match.transport_protocol, "tls");
+  assert.equal(sni.filter_chain_match.server_names, undefined);
+  assert.ok(isAlert(sni));
+  const plain = chainOf(r, "action=refuse reason=not-tls port=443");
+  assert.ok(plain.filter_chain_match.prefix_ranges.some((x: { address_prefix: string }) => x.address_prefix === p));
+  assert.equal(plain.filter_chain_match.transport_protocol, undefined);
+  assert.match(text(plain)!, /^jr2 custodian: refused: this address takes TLS only on port 443/);
+});
+
+test("a protocol that sends no name (SSH on 22) is carried by its exact name's address; TLS there still needs the name", () => {
+  const r = sandbox();
+  const p = r.resolver.names.find((n) => n.name === "github.com")!.address;
+  const raw = chainOf(r, "action=tunnel target=github.com:22 transport=raw");
+  assert.deepEqual(raw.filter_chain_match, { ...at(p, 22), transport_protocol: "raw_buffer" });
+  assert.equal(tcp(raw)!.tunneling_config.hostname, "github.com:22");
+  const sni = chainOf(r, "action=refuse reason=sni port=22");
+  assert.deepEqual(sni.filter_chain_match, { ...at(p, 22), transport_protocol: "tls" });
+  assert.ok(
+    !chainsOf(r).some((c) => c.name === "action=refuse reason=not-tls port=22"),
+    "plain bytes are carried there",
+  );
+});
+
+test("port 80: one HTTP chain of the slot, whose Host chooses the name, and the program checks that the address dialed is that name's placeholder", () => {
+  const r = sandbox();
+  const p = r.resolver.names.find((n) => n.name === "github.com")!.address;
+  const c = chainOf(r, "action=tunnel port=80");
+  assert.deepEqual(c.filter_chain_match, { destination_port: 80 });
+  const hcm = manager(c)!;
+  const vhosts = hcm.route_config.virtual_hosts as Array<{ name: string; domains: string[]; routes: any[] }>;
+  const github = vhosts.find((v) => v.name === "github.com")!;
+  assert.deepEqual(github.domains, ["github.com", "github.com:80"]);
+  assert.equal(github.routes[0].route.cluster, "dial-http");
+  assert.deepEqual(github.routes[0].metadata.filter_metadata["envoy.filters.http.lua"], {
+    role: "http",
+    address: `${p}:80`,
+  });
+  assert.deepEqual(
+    github.routes[0].request_headers_to_add.map((h: { header: { key: string } }) => h.header.key),
+    ["x-jr2-fence-slot", "x-jr2-fence-owner"],
+  );
+  assert.deepEqual(
+    hcm.http_filters.map((f: { name: string }) => f.name),
+    ["envoy.filters.http.lua", "envoy.filters.http.router"],
+    "the dial guard is on the dial listener, the one place each dial by name goes through",
+  );
+  // The program refuses a Host whose placeholder is not the address dialed.
+  assert.match(CUSTODIAN_PROGRAM, /downstreamLocalAddress\(\)\n    if here ~= meta:get\("address"\)/);
+  // With no `*` rule, any other Host is refused; TLS on port 80 gets an alert.
+  const plainSlot = renderSlot(
+    inputsOf(
+      4,
+      { ...SANDBOX_MANIFEST, egress: SANDBOX_MANIFEST.egress.filter((x) => x.match !== "any") },
+      { sandbox: "x" },
+    ),
+  );
+  const each = (
+    manager(chainOf(plainSlot, "action=tunnel port=80"))!.route_config.virtual_hosts as Array<{
+      name: string;
+      routes: any[];
+    }>
+  ).find((v) => v.name === "each")!;
+  assert.equal(each.routes[0].metadata.filter_metadata["envoy.filters.http.lua"].reason, "no-entry");
+  assert.ok(isAlert(chainOf(r, "action=refuse reason=no-entry port=80 transport=tls")));
+});
+
+test("an Intercepted name: TLS ended with the slot's leaf for that host, the program, the dial guard, then the name over verified TLS", () => {
+  const r = sandbox();
+  const p = r.resolver.names.find((n) => n.name === "api.anthropic.com")!.address;
+  const c = chainOf(r, "action=intercept target=api.anthropic.com:443");
+  assert.deepEqual(c.filter_chain_match, {
+    ...at(p, 443),
+    transport_protocol: "tls",
+    server_names: ["api.anthropic.com"],
+  });
+  const stem = leafStem("api.anthropic.com", 443);
+  assert.deepEqual(c.transport_socket!.typed_config.common_tls_context, {
+    alpn_protocols: ["http/1.1"],
+    tls_certificates: [
+      {
+        certificate_chain: { filename: `/run/jr2-custodian/slots/3/tls/${stem}.crt` },
+        private_key: { filename: `/run/jr2-custodian/slots/3/tls/${stem}.key` },
+      },
+    ],
+  });
+  const hcm = manager(c)!;
+  assert.equal(hcm.path_with_escaped_slashes_action, "REJECT_REQUEST");
+  assert.equal(hcm.common_http_protocol_options.headers_with_underscores_action, "REJECT_REQUEST");
+  assert.equal(hcm.http_filters[0].typed_config.default_source_code.filename, r.lua.path);
+  const route = hcm.route_config.virtual_hosts[0].routes[0];
+  assert.equal(route.route.cluster, "dial-tls", "the dial-tls listener: the guard, then Envoy's own TLS to the name");
+  assert.deepEqual(route.metadata.filter_metadata["envoy.filters.http.lua"], {
+    role: "intercept",
+    target: "api.anthropic.com:443",
+  });
+  assert.ok(
+    chainOf(r, "action=refuse reason=sni port=443").filter_chain_match.prefix_ranges.some(
+      (x: { address_prefix: string }) => x.address_prefix === p,
+    ),
+  );
+  const bodies = hcm.local_reply_config.mappers.map(
+    (m: { body_format_override: { text_format_source: { inline_string: string } } }) =>
+      m.body_format_override.text_format_source.inline_string,
+  );
+  assert.match(bodies[0], /could not be reached/);
+  assert.match(bodies[1], /may have reached it/);
+  // An intercepted entry on port 80 is HTTP with the program, no TLS.
+  const http80 = chainOf(r, "action=intercept target=registry.npmjs.org:80");
+  assert.equal(http80.transport_socket, undefined);
+  assert.equal(manager(http80)!.route_config.virtual_hosts[0].routes[0].route.cluster, "dial-http");
+});
+
+test("an address entry is dialed as written; an Intercepted one ends TLS with the leaf of that address and checks the target's IP SAN", () => {
+  const r = sandbox();
+  const tunnel = chainOf(r, "action=tunnel target=10.0.0.5:8000");
+  assert.deepEqual(tunnel.filter_chain_match, at("10.0.0.5", 8000));
+  assert.equal(tcp(tunnel)!.cluster, "tcp|10.0.0.5|8000");
+  assert.equal(tcp(tunnel)!.tunneling_config, undefined);
+  const cluster = r.clusters.find((c) => c.name === "tcp|10.0.0.5|8000") as Record<string, any>;
+  assert.equal(cluster.type, "STATIC");
+  assert.deepEqual(cluster.load_assignment.endpoints[0].lb_endpoints[0].endpoint.address.socket_address, {
+    address: "10.0.0.5",
+    port_value: 8000,
+  });
+  const held = chainOf(r, "action=intercept target=10.0.0.7:8443");
+  assert.deepEqual(held.filter_chain_match, { ...at("10.0.0.7", 8443), transport_protocol: "tls" });
+  assert.equal(manager(held)!.route_config.virtual_hosts[0].routes[0].route.cluster, "tls|10.0.0.7|8443");
+  assert.ok(
+    !manager(held)!.http_filters.some((f: { name: string }) => f.name === "envoy.filters.http.dynamic_forward_proxy"),
+    "an address is not resolved",
+  );
+  const tls = r.clusters.find((c) => c.name === "tls|10.0.0.7|8443") as Record<string, any>;
+  assert.deepEqual(tls.transport_socket.typed_config.common_tls_context.validation_context, {
+    trusted_ca: { filename: "/etc/jr2/ca/upstream.crt" },
+    match_typed_subject_alt_names: [{ san_type: "IP_ADDRESS", matcher: { exact: "10.0.0.7" } }],
+  });
+  assert.ok(
+    !chainsOf(r).some((c) => c.name === "action=refuse reason=sni port=8443"),
+    "an address has no TLS name to check",
+  );
+});
+
+test("`*.` and `*` carry TLS and HTTP only, by the name the client sent, and never an Intercepted host or jr2's own name", () => {
+  const r = sandbox();
+  const below = r.resolver.names.find((n) => n.name === "*.githubusercontent.com")!;
+  assert.equal(below.match, "below");
+  const tls = chainOf(r, "action=tunnel target=*.githubusercontent.com:443");
+  assert.deepEqual(tls.filter_chain_match.server_names, ["*.githubusercontent.com"]);
+  assert.equal(tcp(tls)!.tunneling_config.hostname, "%REQUESTED_SERVER_NAME%:443");
+  assert.ok(
+    chainOf(r, "action=refuse reason=not-tls port=443").filter_chain_match.prefix_ranges.some(
+      (x: { address_prefix: string }) => x.address_prefix === below.address,
+    ),
+  );
+  const any = chainOf(r, "action=tunnel target=*:443");
+  assert.equal(any.filter_chain_match.server_names, undefined);
+  // Each Intercepted name of the slot, and jr2's domain, is refused on the `*` chain.
+  const refused = chainOf(r, "action=refuse reason=intercepted target=*:443");
+  assert.deepEqual(refused.filter_chain_match.server_names, [
+    "*.jr2.internal",
+    "jr2.internal",
+    "api.anthropic.com",
+    "api.github.com",
+    "registry.npmjs.org",
+  ]);
+  assert.ok(isAlert(refused));
+  // On HTTP, an address, an empty name, jr2's domain and an Intercepted host are refused by Host.
+  const http = manager(chainOf(r, "action=tunnel port=80"))!;
+  const each = (http.route_config.virtual_hosts as Array<{ name: string; routes: any[] }>).find(
+    (v) => v.name === "each",
+  )!;
+  const [addressRoute, interceptedRoute] = each.routes;
+  const addressRe = new RegExp(addressRoute.match.headers[0].string_match.safe_regex.regex);
+  for (const host of [
+    "10.0.0.9",
+    "10.0.0.9:80",
+    "[fd00::1]:80",
+    ":80",
+    "custodian.jr2.internal",
+    "x.jr2.internal:80",
+  ]) {
+    assert.match(host, addressRe, host);
+  }
+  for (const host of ["example.com", "example.com:80", "jr2.internal.example.com"]) {
+    assert.doesNotMatch(host, addressRe, host);
+  }
+  const interceptedRe = new RegExp(interceptedRoute.match.headers[0].string_match.safe_regex.regex);
+  assert.match("api.anthropic.com:80", interceptedRe);
+  assert.doesNotMatch("xapi.anthropic.com", interceptedRe);
+});
+
+test("jr2's own name: TLS with the slot's leaf on 443 and the six routes to the Orchestrator; on 80 the fetch route alone", () => {
+  const r = sandbox();
+  assert.deepEqual(r.resolver.names[0], { name: JR2_CUSTODIAN_NAME, match: "name", address: "198.18.0.1" });
+  const c = chainOf(r, `action=intercept target=${JR2_CUSTODIAN_NAME}:443`);
+  assert.deepEqual(c.filter_chain_match, {
+    ...at("198.18.0.1", 443),
+    transport_protocol: "tls",
+    server_names: [JR2_CUSTODIAN_NAME],
+  });
+  assert.match(
+    c.transport_socket!.typed_config.common_tls_context.tls_certificates[0].certificate_chain.filename,
+    new RegExp(`/slots/3/tls/${leafStem(JR2_CUSTODIAN_NAME, 443)}\\.crt$`),
+  );
+  const routes = manager(c)!.route_config.virtual_hosts[0].routes as Array<{ name: string }>;
+  assert.deepEqual(
+    routes.map((x) => x.name),
+    [...CONTROL_ROUTES.map((x) => x.name), "deny"],
+  );
+  const local = manager(c)!.local_reply_config.mappers[0];
+  assert.equal(local.headers_to_add[0].header.key, "x-jr2-custodian");
+  const plain = chainOf(r, `action=control target=${JR2_CUSTODIAN_NAME}:80`);
+  assert.deepEqual(
+    (manager(plain)!.route_config.virtual_hosts[0].routes as Array<{ name: string }>).map((x) => x.name),
+    ["fetch", "deny"],
+  );
+});
+
+test("each port that a chain names has its own refusals — TLS alert, HTTP 403 on 80, else text — and every other port is refused too", () => {
+  const r = sandbox();
+  for (const port of [22, 80, 443, 8000, 8443]) {
+    assert.ok(isAlert(chainOf(r, `action=refuse reason=no-entry port=${port} transport=tls`)));
+    if (port === 80) continue; // the slot's HTTP chain on port 80 refuses a Host that no entry permits
+    const c = chainOf(r, `action=refuse reason=no-entry port=${port}`);
+    assert.deepEqual(c.filter_chain_match, { destination_port: port });
+    assert.match(text(c)!, new RegExp(`on port ${port}`));
+  }
+  assert.ok(isAlert(chainOf(r, "action=refuse reason=no-entry transport=tls")));
+  // No two chains match alike: Envoy refuses such a listener.
+  const matches = chainsOf(r).map((c) => JSON.stringify(c.filter_chain_match));
+  assert.equal(new Set(matches).size, matches.length);
+});
+
+test("the Lua table names the slot's values folder, its Sandbox, the control credentials, the bound targets and the open ones, and never a value", () => {
+  const r = sandbox();
+  const t = r.lua.text;
+  assert.match(t, /values = "\/run\/jr2-custodian\/slots\/3\/values\/"/);
+  assert.match(t, /sandbox = "ticket-a1b2c"/);
+  assert.match(
+    t,
+    /HELD\.secrets\[1\] = \{ name = "JR2_CONTROL_TOKEN", headers = \{ "authorization" \}, paths = \{ "\/agents\/" \} \}/,
+  );
+  assert.match(t, /name = "JR2_SANDBOX_TOKEN".*standIn = "jr2-held-JR2_SANDBOX_TOKEN".*paths = \{ "\/sandboxes\/" \}/);
+  assert.match(t, /HELD\.targets\["api\.anthropic\.com:443"\] = \{ HELD\.secrets\[3\] \}/);
+  // A bound host that an entry also names, and an intercepted entry with no secret, are open.
+  assert.match(t, /HELD\.open\["api\.github\.com:443"\] = true/);
+  assert.match(t, /HELD\.open\["registry\.npmjs\.org:443"\] = true/);
+  assert.doesNotMatch(t, /HELD\.open\["api\.anthropic\.com:443"\]/, "a bound host with no entry needs its Stand-in");
+  assert.match(t, /\ndofile\("\/etc\/jr2\/custodian\/program\.lua"\)\n$/);
+  // The Instance Harness and a check pod serve no fetch.
+  const instance = renderSlot(inputsOf(0, INSTANCE_MANIFEST, { pod: "instance" }));
+  assert.doesNotMatch(instance.lua.text, /JR2_SANDBOX_TOKEN|sandbox = /);
+  // The program reads the slot's table: its values folder, its Sandbox, its open targets.
+  assert.match(CUSTODIAN_PROGRAM, /local VALUES = HELD\.values or /);
+  assert.match(CUSTODIAN_PROGRAM, /local sandbox = HELD\.sandbox/);
+  assert.match(CUSTODIAN_PROGRAM, /HELD\.open/);
+});
+
+test("the rules hold no value and no secret Stand-in: only names, paths and the public fetch Stand-in", () => {
+  const all = JSON.stringify(THREE_SLOTS.map(renderSlot));
+  assert.doesNotMatch(all, /jr2-held-(?!JR2_SANDBOX_TOKEN)[A-Z_]+/);
+  assert.doesNotMatch(all, /sk-ant|value-of/);
+});
+
+test("the same inputs give the same rules; a new Tunneled host leaves each intercept chain as it was, so its streams are not drained", () => {
+  const one = sandbox();
+  assert.deepEqual(sandbox(), one);
+  const manifest = {
+    ...SANDBOX_MANIFEST,
+    egress: [...SANDBOX_MANIFEST.egress, rule("pypi.org", 443, "name", false, "entry")],
+  };
+  const inputs = inputsOf(3, manifest, { sandbox: "ticket-a1b2c" });
+  // The table of the Sandbox is the old one with a row added.
+  inputs.placeholders = withPlaceholders(
+    withPlaceholders(emptyPlaceholders(RANGES.placeholders), SANDBOX_MANIFEST.egress),
+    manifest.egress,
+  );
+  const two = renderSlot(inputs);
+  assert.notEqual(two.version, one.version);
+  assert.equal(two.lua.path, one.lua.path, "the Lua table did not change");
+  for (const c of chainsOf(one).filter((x) => x.name.startsWith("action=intercept"))) {
+    assert.deepEqual(chainOf(two, c.name), c, c.name);
+  }
+  assert.ok(chainsOf(two).some((c) => c.name === "action=tunnel target=pypi.org:443"));
+  // Listener-level fields are the same: Envoy would drain the whole listener otherwise.
+  const { filter_chains: _a, ...restOne } = one.listener as Record<string, unknown>;
+  const { filter_chains: _b, ...restTwo } = two.listener as Record<string, unknown>;
+  assert.deepEqual(restTwo, restOne);
+  // A changed value gives a new table path, so the program reads the values again.
+  const rotated = renderSlot({ ...inputsOf(3, SANDBOX_MANIFEST, { sandbox: "ticket-a1b2c" }), valuesVersion: "2" });
+  assert.notEqual(rotated.lua.path, one.lua.path);
+  assert.equal(rotated.lua.text, one.lua.text);
+});
+
+test("the renderer refuses a slot out of range, a placeholder table of another range or with a name missing, a rule the Fence cannot carry, and an owner that is no Kubernetes name", () => {
+  const ok = inputsOf(3, SANDBOX_MANIFEST, { sandbox: "ticket-a1b2c" });
+  assert.throws(() => renderSlot({ ...ok, slot: 128 }), /slot 128 is not 0 … 127/);
+  assert.throws(() => renderSlot({ ...ok, slot: -1 }), /is not 0 … 127/);
+  assert.throws(
+    () => renderSlot({ ...ok, ranges: fenceRangesOf({ placeholders: "100.64.0.0/16" }) }),
+    /not the Instance's/,
+  );
+  assert.throws(
+    () => renderSlot({ ...ok, placeholders: emptyPlaceholders(RANGES.placeholders) }),
+    /no address for api\.anthropic\.com/,
+  );
+  const bad = { ...SANDBOX_MANIFEST, egress: [rule("127.0.0.1", 8000, "address", false, "entry")] };
+  assert.throws(() => renderSlot(inputsOf(3, bad, { sandbox: "x" })), /127\.0\.0\.1:8000 is in 127\.0\.0\.0\/8/);
+  const wild = { ...SANDBOX_MANIFEST, egress: [rule("example.com", 443, "below", true, "entry")] };
+  assert.throws(() => renderSlot(inputsOf(3, wild, { sandbox: "x" })), /a leaf names one host/);
+  assert.throws(() => renderSlot({ ...ok, owner: { sandbox: "a b%" } }), /is a Kubernetes name/);
+});
+
+test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also when `fence` moves them (ADR-0059, ADR-0084)", () => {
+  const guardOf = (hcm: Record<string, any>) =>
+    hcm.http_filters
+      .find((f: { name: string }) => f.name === "envoy.filters.http.rbac")
+      .typed_config.rules.policies.guard.permissions.map(
+        (p: { matcher: { typed_config: { upstream_ip: { address_prefix: string; prefix_len: number } } } }) =>
+          `${p.matcher.typed_config.upstream_ip.address_prefix}/${p.matcher.typed_config.upstream_ip.prefix_len}`,
+      );
+  const defaults = [...GUARDED_RANGES.map(([a, n]) => `${a}/${n}`), "198.19.0.0/20", "198.18.0.0/16", "198.18.0.0/15"];
+  const boot = custodianPodBootstrap({ orchestrator: { host: "o", port: 4000 }, range: 0, ranges: RANGES }) as any;
+  for (const name of ["dial", "dial-http", "dial-tls"]) {
+    const dial = boot.static_resources.listeners.find((l: { name: string }) => l.name === name);
+    const hcm = dial.filter_chains[0].filters[0].typed_config;
+    assert.deepEqual(guardOf(hcm), defaults, name);
+    assert.deepEqual(
+      hcm.http_filters.map((f: { name: string }) => f.name),
+      [
+        "envoy.filters.http.header_to_metadata",
+        "envoy.filters.http.dynamic_forward_proxy",
+        "envoy.filters.http.rbac",
+        "envoy.filters.http.router",
+      ],
+      `${name}: the guard judges the address that the same lookup gives the dial`,
+    );
+    assert.equal(hcm.http_filters[1].typed_config.save_upstream_address, true);
+  }
+  // Each dial by name of a slot goes through a dial listener: no slot chain dials a name itself.
+  const clustersNamed = JSON.stringify(sandbox().listener).match(/"cluster":"[^"]+"/g) ?? [];
+  for (const c of new Set(clustersNamed)) {
+    assert.match(c, /"cluster":"(dial|dial-http|dial-tls|orchestrator|tcp\|10\.0\.0\.5\|8000|tls\|10\.0\.0\.7\|8443)"/);
+  }
+  const moved = fenceRangesOf({ segment: "100.64.0.0/16", placeholders: "100.65.0.0/16" });
+  const bootMoved = custodianPodBootstrap({ orchestrator: { host: "o", port: 4000 }, range: 0, ranges: moved }) as any;
+  const dialMoved = bootMoved.static_resources.listeners.find((l: { name: string }) => l.name === "dial-tls");
+  assert.deepEqual(guardOf(dialMoved.filter_chains[0].filters[0].typed_config).slice(-3), [
+    "100.64.0.0/16",
+    "100.65.0.0/16",
+    "198.18.0.0/15",
+  ]);
+});
+
+test("the pod's bootstrap: admin on loopback, health, the Orchestrator's dial to this Instance's slots alone, the dial listener, LDS and CDS from watched files", () => {
+  const boot = custodianPodBootstrap({
+    orchestrator: { host: "jr2-orchestrator.ns.svc", port: 4000 },
+    range: 2,
+    ranges: RANGES,
+  }) as any;
+  assert.deepEqual(boot.admin.address.socket_address, { address: "127.0.0.1", port_value: 15000 });
+  const listeners = boot.static_resources.listeners as Array<Record<string, any>>;
+  assert.deepEqual(
+    listeners.map((l) => [l.name, l.address?.socket_address?.port_value ?? "internal"]),
+    [
+      ["health", 15021],
+      ["inbound", 18080],
+      ["dial", "internal"],
+      ["dial-http", "internal"],
+      ["dial-tls", "internal"],
+    ],
+    "18081 is the control process's, not Envoy's",
+  );
+  // The inbound listener's table: ports 8080 and 8082 of each slot of range 2, and of no other.
+  const inbound = listeners[1]!.filter_chains[0].filters[0].typed_config;
+  const table = inbound.http_filters[0].typed_config.default_source_code.inline_string as string;
+  const first = slotAddress(RANGES.segment, slotVlan(2, 0));
+  const last = slotAddress(RANGES.segment, slotVlan(2, 127));
+  assert.equal(first, "198.19.1.2");
+  assert.equal(last, "198.19.1.129");
+  assert.ok(table.includes(`"${first}:8080"`) && table.includes(`"${last}:8082"`));
+  assert.ok(!table.includes(`"${slotAddress(RANGES.segment, slotVlan(1, 127))}:8080"`), "another Instance's slot");
+  assert.equal((table.match(/:808[02]"/g) ?? []).length, 256);
+  assert.match(table, /token = "\/run\/jr2-custodian\/dial-token"/);
+  const route = inbound.route_config.virtual_hosts[0].routes[0];
+  assert.deepEqual(route.request_headers_to_remove, ["x-jr2-dial"]);
+  assert.deepEqual(route.response_headers_to_remove, ["x-jr2-custodian"]);
+  assert.equal(route.route.timeout, "0s");
+  assert.equal(inbound.local_reply_config.mappers[0].status_code, 503);
+  const clusters = boot.static_resources.clusters as Array<Record<string, any>>;
+  const original = clusters.find((c) => c.name === "inbound")!;
+  assert.deepEqual(original.original_dst_lb_config, { use_http_header: true, http_header_name: "x-jr2-target" });
+  // The target header goes on the cluster, after it chose the host: a route's removal runs first.
+  const upstreamFilters =
+    original.typed_extension_protocol_options["envoy.extensions.upstreams.http.v3.HttpProtocolOptions"].http_filters;
+  assert.deepEqual(upstreamFilters[0].typed_config.mutations, { request_mutations: [{ remove: "x-jr2-target" }] });
+  assert.deepEqual(
+    clusters.map((c) => c.name),
+    ["orchestrator", "inbound", "dial", "dial-http", "dial-tls", "dial-tcp", "dial-http-name", "dial-tls-name"],
+  );
+  const tls = clusters.find((c) => c.name === "dial-tls-name")!;
+  assert.deepEqual(
+    tls.typed_extension_protocol_options["envoy.extensions.upstreams.http.v3.HttpProtocolOptions"]
+      .upstream_http_protocol_options,
+    { auto_sni: true, auto_san_validation: true },
+  );
+  assert.equal(
+    tls.transport_socket.typed_config.common_tls_context.validation_context.trusted_ca.filename,
+    "/etc/jr2/ca/upstream.crt",
+  );
+  // Each name is resolved as written: no search domain of the pod.
+  assert.equal(
+    tls.cluster_type.typed_config.dns_cache_config.typed_dns_resolver_config.typed_config.dns_resolver_options
+      .no_default_search_domain,
+    true,
+  );
+  assert.deepEqual(boot.dynamic_resources.lds_config.path_config_source, {
+    path: "/run/jr2-custodian/xds/lds.json",
+    watched_directory: { path: "/run/jr2-custodian/xds" },
+  });
+  assert.equal(boot.dynamic_resources.cds_config.path_config_source.path, "/run/jr2-custodian/xds/cds.json");
+  assert.ok(CUSTODIAN_POD_ARGS.includes("--drain-time-s"));
+  assert.equal(CUSTODIAN_POD_ARGS[CUSTODIAN_POD_ARGS.indexOf("--drain-time-s") + 1], String(CUSTODIAN_DRAIN_SECONDS));
+  assert.equal(CUSTODIAN_DRAIN_SECONDS, 60);
+});
+
+test("the LDS and CDS files hold each slot's listener and each address cluster once, and refuse a cluster two slots render differently", () => {
+  const slots = THREE_SLOTS.map(renderSlot);
+  const twice = renderSlot(inputsOf(4, SANDBOX_MANIFEST, { sandbox: "ticket-z9y8x" }));
+  const { lds, cds } = custodianXds([...slots, twice]);
+  const names = (lds.resources as Array<{ name: string; "@type": string }>).map((l) => l.name);
+  assert.deepEqual(names, ["slot-0", "slot-1", "slot-3", "slot-4"]);
+  assert.equal(
+    (lds.resources as Array<{ "@type": string }>)[0]!["@type"],
+    "type.googleapis.com/envoy.config.listener.v3.Listener",
+  );
+  const clusterNames = (cds.resources as Array<{ name: string }>).map((c) => c.name);
+  assert.deepEqual(clusterNames, ["tcp|10.0.0.5|8000", "tls|10.0.0.7|8443"], "two slots name one cluster once");
+  assert.equal(lds.version_info, cds.version_info);
+  assert.equal(custodianXds([...slots, twice]).lds.version_info, lds.version_info);
+  const clash = { ...twice, clusters: [{ ...twice.clusters[0]!, connect_timeout: "1s" }] };
+  assert.throws(() => custodianXds([...slots, clash]), /render the cluster tcp\|10\.0\.0\.5\|8000 differently/);
+});
+
+test("size: 128 slots of 30 entries each, rendered into the LDS and CDS files (risk 4 of the plan)", (t) => {
+  const started = performance.now();
+  const slots = manySlots(128, 30).map(renderSlot);
+  const { lds, cds } = custodianXds(slots);
+  const ms = performance.now() - started;
+  const ldsBytes = Buffer.byteLength(JSON.stringify(lds));
+  const cdsBytes = Buffer.byteLength(JSON.stringify(cds));
+  const luaBytes = slots.reduce((n, s) => n + Buffer.byteLength(s.lua.text), 0);
+  const chains = slots.reduce((n, s) => n + chainsOf(s).length, 0);
+  const one = Buffer.byteLength(JSON.stringify(slots[5]!.listener));
+  const line = `128 slots x 30 entries: lds ${ldsBytes} bytes, cds ${cdsBytes} bytes, lua ${luaBytes} bytes, ${chains} filter chains, one listener ${one} bytes, rendered in ${Math.round(ms)} ms`;
+  t.diagnostic(line);
+  console.log(`jr2.custodian-rules size: ${line}`);
+  // A ceiling, so that a change that makes each slot much larger is seen: the Custodian pod writes
+  // this file into memory and Envoy parses it whole on each change.
+  assert.ok(ldsBytes < 24 * 1024 * 1024, `the LDS file is ${ldsBytes} bytes`);
+});

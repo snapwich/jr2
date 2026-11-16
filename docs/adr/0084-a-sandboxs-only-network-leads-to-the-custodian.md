@@ -121,7 +121,10 @@ and that holds when Workspace code is root in the Sandbox.
   `intercept: true` closes both for that host.
 - **A `*.` entry keeps a DNS channel.** When a Sandbox connects to a name below the domain, the Custodian resolves that
   name, so the domain's owner sees each label. Exact names close it.
-- **A removed entry does not cut an open connection.** The rule applies to each new connection.
+- **A removed entry cuts an open connection after about a minute.** The rule applies to each new connection at once. A
+  connection that the change no longer permits stays open for the Custodian's drain time, 60 seconds, and is then
+  closed. Envoy's default is 600 seconds, and churn then holds memory for ten minutes. A change to a Sandbox's
+  Intercepted hosts or to a held value has the same effect on that host's connections.
 - **A protocol where the server speaks first waits about 2 seconds** for each connection, because the Custodian waits
   for a TLS name on each port.
 - **A Sandbox can fill the bridge's address table.** This can stop the node's Sandboxes. It leaks nothing.
