@@ -108,13 +108,14 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Custodian's claims — the swap on
   the wire, the strip, the refusals, the dial guard, TLS verification upstream, SSE timing, abort, and a real SDK
   through the Custodian — are Envoy's behaviour under jr2's configuration, so only the pinned Envoy image can prove
-  them. `just custodian-test` runs `node --test` (`packages/cli/test/custodian.docker.ts` and
-  `custodian-rules.docker.ts`) against it under docker, with local HTTPS upstreams under their own CA (ADR-0059 says how
-  the suite stands in for the uplink); about two and a half minutes. Opt-in for the `@kind` reason — it needs docker —
-  and NOT part of `pnpm -r test`. What the default gate keeps is the rendering: `custodian-rules.test.ts` and
-  `custodian.test.ts` pin what jr2 writes for the Custodian, socket-free. The `@kind` tier then proves the Custodian in
-  a real cluster, for a Sandbox and for the Instance Harness, each behind its Fence, against a model provider that
-  refuses any request without the key.
+  them. `just custodian-test` runs `node --test` (`packages/cli/test/custodian.docker.ts`, `custodian-rules.docker.ts`
+  and `custodian-control.docker.ts`) against it under docker, with local HTTPS upstreams under their own CA (ADR-0059
+  says how the suite stands in for the uplink); about two and a half minutes. Opt-in for the `@kind` reason — it needs
+  docker — and NOT part of `pnpm -r test`. What the default gate keeps is the rendering: `custodian-rules.test.ts` and
+  `custodian.test.ts` pin what jr2 writes for the Custodian, socket-free, and `custodian-control.test.ts` runs the
+  Custodian's control process against a fake API and a fake Envoy admin. The `@kind` tier then proves the Custodian in a
+  real cluster, for a Sandbox and for the Instance Harness, each behind its Fence, against a model provider that refuses
+  any request without the key.
 - **An opt-in `@model` tier, against a real model**
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). Every tier above
   fakes the model, so none can see a change in what a model DOES with what jr2 shows it — and ADR-0029/0062 measured

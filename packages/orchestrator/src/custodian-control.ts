@@ -1,0 +1,602 @@
+// The control process of a Custodian pod (ADR-0084, ADR-0059): the `control` container, beside
+// `envoy`, on each Sandbox node, one for each Instance. It makes the rules of each slot live in its
+// own Envoy, and it says when they are:
+//
+//   read     each slot Secret (`jr2-custodian-slot-<i>`, `custodian-slot.ts`) by name, and each
+//            Secret that holds a value the slot names (a pod's literals, a user's `secretKeyRef`);
+//            the Custodian may get these names and no other Secret
+//   render   the slot's rules (`renderSlot`), with a mark of its values and leaves, so that a changed
+//            value makes a new Lua table and Envoy reads the values again
+//   write    into the in-memory state folder that Envoy reads: the slot's values, leaves and Lua
+//            table first, then the CDS file, and, when Envoy has those clusters, the LDS file. Each
+//            file whole, by a rename, because Envoy reads both files on a move in the folder
+//   wait     until Envoy's admin (loopback only) shows each changed slot's listener active with the
+//            chain that names the version of its rules (`rulesChainName`), and the slot's resolver
+//            table is of that version. Then the slot is live
+//
+// A slot whose Secret is gone, or whose rules cannot be rendered, or whose listener Envoy refuses,
+// is removed: a slot with no rules reaches nothing. A slot whose Secret cannot be read now (the API
+// does not answer) keeps the rules it has.
+//
+// It reads every slot at start and every 60 s, and one slot when the Orchestrator asks
+// (`POST /slots/<i>`) on port 18081, with the Instance's dial token. It writes the dial token to the
+// file that Envoy's inbound listener reads. It reports whether a pod answers on a slot's VLAN
+// (`present`), which the slot allocator reads before it gives a slot again.
+//
+// A log line names slots, Harness pods, secrets and reasons; never a value, a Stand-in or a token.
+
+import { createHash, timingSafeEqual } from "node:crypto";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
+import { dirname, join, relative } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import {
+  custodianXds,
+  ownerText,
+  renderSlot,
+  rulesChainName,
+  slotAddress,
+  slotVlan,
+  type ResolverTable,
+  type SlotOwner,
+  type SlotRules,
+} from "./custodian-rules.ts";
+import { readSlotSecret, type SlotFiles } from "./custodian-slot.ts";
+import {
+  CUSTODIAN_CDS,
+  CUSTODIAN_DIAL_TOKEN,
+  CUSTODIAN_LDS,
+  CUSTODIAN_STATE,
+  DIAL_PORTS,
+  DIAL_TOKEN_HEADER,
+  FENCE_SLOTS,
+  slotFolder,
+  slotInterface,
+} from "./custodian.ts";
+import type { FenceRanges } from "./egress.ts";
+import { isNotFound, SECRETS, type KubeClient, type KubeObject } from "./kube-client.ts";
+import { CUSTODIAN_DIAL_KEY, CUSTODIAN_DIAL_SECRET, custodianSlotSecret, heldSecretsSecret } from "./names.ts";
+
+/** How often the control process reads every slot again. */
+export const CUSTODIAN_RESYNC_MS = 60_000;
+/** How long one sync waits for Envoy to take the rules. */
+const LIVE_TIMEOUT_MS = 30_000;
+/** How many Secrets one sync reads at once. */
+const READS = 16;
+/** How long the `present` check waits for a slot's address to answer. */
+const PRESENT_TIMEOUT_MS = 1_500;
+/** A held secret's name: an env name, and so a file name of the slot's values. */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+/** The resolver tables of the slots, which the resolver answers from (M6). A slot is live only when
+ * its table is of the version of its rules. */
+export interface ResolverTables {
+  set(table: ResolverTable): void;
+  remove(slot: number): void;
+  get(slot: number): ResolverTable | undefined;
+}
+
+/** The tables in memory: what the resolver of this process reads. */
+export function resolverTables(): ResolverTables {
+  const tables = new Map<number, ResolverTable>();
+  return {
+    set: (t) => void tables.set(t.slot, t),
+    remove: (slot) => void tables.delete(slot),
+    get: (slot) => tables.get(slot),
+  };
+}
+
+export type CustodianControlOptions = {
+  kube: Pick<KubeClient, "get">;
+  /** The Instance's namespace: where each Secret is. */
+  namespace: string;
+  ranges: FenceRanges;
+  /** The Instance's VLAN range (`jr2-fence-range-<k>`): it gives each slot's address. */
+  range: number;
+  /** Envoy's admin: the body of a GET of `path` on its loopback listener. */
+  admin: (path: string) => Promise<string>;
+  /** Where the state folder (`CUSTODIAN_STATE`) is. Default: that folder. */
+  root?: string;
+  resolver?: ResolverTables;
+  /** Whether a pod answers at `address` on slot `slot`'s VLAN. Default: `slotPresent`. */
+  present?: (slot: number, address: string) => Promise<boolean>;
+  log?: (line: string) => void;
+  /** How long one sync waits for Envoy. Default 30 s. */
+  liveTimeoutMs?: number;
+};
+
+/** What the control process says of one slot. `version` is the version of the rules that are live,
+ * or that it waits for; `null` when the slot has none. */
+export type SlotStatus = {
+  slot: number;
+  version: string | null;
+  live: boolean;
+  /** Why the slot is not live. Names a key, a secret or a host; never a value. */
+  error?: string;
+  /** Whether a pod answers on the slot's VLAN: only on a GET. */
+  present?: boolean;
+};
+
+export type CustodianControl = {
+  /** Read every slot and make the rules of each one live. */
+  syncAll(): Promise<void>;
+  /** Read one slot and make its rules live. */
+  syncSlot(slot: number): Promise<SlotStatus>;
+  status(slot: number): SlotStatus;
+  /** True after a sync in which every slot that has rules became live or was refused. */
+  ready(): boolean;
+  /** The control API on port 18081. */
+  fetch(req: Request): Promise<Response>;
+  /** Sync at start (again every 2 s until ready), then every 60 s, until `signal` aborts. */
+  run(signal: AbortSignal): Promise<void>;
+};
+
+/** What one read of a slot gave. */
+type Wanted =
+  | { kind: "absent" }
+  /** The slot cannot be read now: it keeps what it has. */
+  | { kind: "unreadable"; error: string }
+  /** The slot's Secret is there, and its rules cannot be made: it is removed. */
+  | { kind: "refused"; owner?: SlotOwner; error: string }
+  | { kind: "ok"; slot: Slot };
+
+/** One slot's rules and what they are made of. */
+type Slot = { rules: SlotRules; owner: SlotOwner; files: SlotFiles; secrets: string[]; hosts: number };
+
+type DynamicListener = {
+  name?: string;
+  active_state?: { listener?: { filter_chains?: Array<{ name?: string }> } };
+  error_state?: { failed_configuration?: unknown; details?: string };
+};
+
+export function custodianControl(opts: CustodianControlOptions): CustodianControl {
+  const root = opts.root ?? CUSTODIAN_STATE;
+  const local = (path: string): string => join(root, relative(CUSTODIAN_STATE, path));
+  const log = opts.log ?? ((line: string) => console.log(line));
+  const resolver = opts.resolver ?? resolverTables();
+  const present = opts.present ?? slotPresent;
+  const liveTimeout = opts.liveTimeoutMs ?? LIVE_TIMEOUT_MS;
+
+  const wanted = new Map<number, Wanted>();
+  const applied = new Map<number, Slot>();
+  /** A version of a slot's rules that Envoy refused: not tried again until the version changes. */
+  const refusedByEnvoy = new Map<number, string>();
+  /** Why a slot is not live, by slot. */
+  const errors = new Map<number, { version: string | null; error: string }>();
+  let dialToken: Buffer | undefined;
+  let written = false;
+  let isReady = false;
+
+  // One sync at a time: two would write the LDS file over each other.
+  let queue: Promise<unknown> = Promise.resolve();
+  const locked = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = queue.then(fn, fn);
+    queue = next.catch(() => {});
+    return next;
+  };
+
+  const secretData = async (name: string): Promise<Record<string, string> | undefined> => {
+    const s = await opts.kube.get<KubeObject & { data?: Record<string, string> }>(SECRETS, opts.namespace, name);
+    return s === undefined ? undefined : (s.data ?? {});
+  };
+
+  /** Read the dial token, and write it where Envoy's inbound listener reads it. */
+  const readDialToken = async (): Promise<void> => {
+    let data: Record<string, string> | undefined;
+    try {
+      data = await secretData(CUSTODIAN_DIAL_SECRET);
+    } catch (e) {
+      log(`jr2.custodian control action=read secret=${CUSTODIAN_DIAL_SECRET} error=${reasonOf(e)}`);
+      return;
+    }
+    const value = data?.[CUSTODIAN_DIAL_KEY];
+    if (value === undefined) {
+      log(`jr2.custodian control action=read secret=${CUSTODIAN_DIAL_SECRET} error=no-token`);
+      return;
+    }
+    const token = Buffer.from(value, "base64");
+    if (dialToken !== undefined && token.equals(dialToken)) return;
+    await put(local(CUSTODIAN_DIAL_TOKEN), token);
+    dialToken = token;
+  };
+
+  /** One slot, as its Secrets state it now. */
+  const read = async (slot: number, cache: Map<string, Promise<Record<string, string> | undefined>>) => {
+    const get = (name: string) => {
+      if (!cache.has(name)) cache.set(name, secretData(name));
+      return cache.get(name)!;
+    };
+    let data: Record<string, string> | undefined;
+    try {
+      data = await get(custodianSlotSecret(slot));
+    } catch (e) {
+      return { kind: "unreadable", error: `the slot Secret cannot be read: ${reasonOf(e)}` } satisfies Wanted;
+    }
+    if (data === undefined) return { kind: "absent" } satisfies Wanted;
+    let parsed: ReturnType<typeof readSlotSecret>;
+    try {
+      parsed = readSlotSecret(data);
+    } catch (e) {
+      return { kind: "refused", error: (e as Error).message } satisfies Wanted;
+    }
+    const { spec, files } = parsed;
+    for (const binding of spec.manifest.secrets) {
+      if (!ENV_NAME.test(binding.name)) {
+        return { kind: "refused", owner: spec.owner, error: "a held secret's name is not an env name" } as Wanted;
+      }
+      const [secret, key] =
+        binding.source.kind === "secret"
+          ? [binding.source.secret, binding.source.key]
+          : [spec.heldPod === undefined ? undefined : heldSecretsSecret(spec.heldPod), binding.name];
+      if (secret === undefined) {
+        return { kind: "refused", owner: spec.owner, error: `no pod holds the literal ${binding.name}` } as Wanted;
+      }
+      let values: Record<string, string> | undefined;
+      try {
+        values = await get(secret);
+      } catch (e) {
+        return { kind: "unreadable", error: `the Secret ${secret} cannot be read: ${reasonOf(e)}` } as Wanted;
+      }
+      const value = values?.[key];
+      if (value === undefined) {
+        return {
+          kind: "refused",
+          owner: spec.owner,
+          error: `the value of ${binding.name} is missing: no key ${key} in the Secret ${secret}`,
+        } as Wanted;
+      }
+      files.set(`values/${binding.name}`, Buffer.from(value, "base64"));
+    }
+    try {
+      const rules = renderSlot({
+        slot,
+        owner: spec.owner,
+        manifest: spec.manifest,
+        placeholders: spec.placeholders,
+        ranges: opts.ranges,
+        valuesVersion: filesVersion(files),
+      });
+      const secrets = spec.manifest.secrets.map((x) => x.name);
+      const hosts = new Set(spec.manifest.egress.map((e) => e.host)).size;
+      return { kind: "ok", slot: { rules, owner: spec.owner, files, secrets, hosts } } satisfies Wanted;
+    } catch (e) {
+      return { kind: "refused", owner: spec.owner, error: (e as Error).message } satisfies Wanted;
+    }
+  };
+
+  const who = (slot: number, owner: SlotOwner | undefined): string => {
+    if (owner === undefined) return `slot=${slot}`;
+    try {
+      return `slot=${slot} ${ownerText(owner)}`;
+    } catch {
+      return `slot=${slot}`;
+    }
+  };
+
+  /** Make Envoy serve the rules that `wanted` states, and wait until it does. `verify` also reads
+   * each live slot back from Envoy (the full sync does; one slot's sync does not). */
+  const converge = async (verify: boolean): Promise<void> => {
+    const next = new Map<number, Slot>();
+    for (let slot = 0; slot < FENCE_SLOTS; slot++) {
+      const w = wanted.get(slot);
+      if (w?.kind === "ok" && refusedByEnvoy.get(slot) !== w.slot.rules.version) next.set(slot, w.slot);
+      if (w?.kind === "unreadable" && applied.has(slot)) next.set(slot, applied.get(slot)!);
+    }
+    // A slot whose rules Envoy no longer shows (its container started again and read an older
+    // file) is written again.
+    const lost = verify ? await lostSlots() : new Set<number>();
+    const changed = [...next.values()].filter(
+      (s) => applied.get(s.rules.slot)?.rules.version !== s.rules.version || lost.has(s.rules.slot),
+    );
+    const removed = [...applied.keys()].filter((slot) => !next.has(slot));
+    if (written && changed.length === 0 && removed.length === 0) return;
+
+    // A name of a removed slot stops answering before its listener goes.
+    for (const slot of removed) resolver.remove(slot);
+    for (const s of changed) await writeSlot(s);
+    await writeXds([...next.values()].map((s) => s.rules));
+    written = true;
+    const outcome = await settle(
+      changed.map((s) => s.rules),
+      removed,
+    );
+
+    if (outcome.refused.length > 0) {
+      for (const r of outcome.refused) {
+        refusedByEnvoy.set(r.slot, r.version);
+        next.delete(r.slot);
+      }
+      // Envoy keeps the old listener of a slot whose new one it refused: the slot is written out,
+      // so that it reaches nothing rather than what it reached before.
+      await writeXds([...next.values()].map((s) => s.rules));
+      const out = await settle(
+        [],
+        outcome.refused.map((r) => r.slot).filter((slot) => applied.has(slot)),
+      );
+      outcome.removed.push(...out.removed);
+    }
+    for (const r of outcome.live) {
+      const s = next.get(r.slot)!;
+      // The resolver answers the slot's names once Envoy carries them.
+      resolver.set(r.resolver);
+      applied.set(r.slot, s);
+      errors.delete(r.slot);
+      await removeStale(s);
+      log(
+        `jr2.custodian ready ${who(r.slot, s.owner)} version=${r.version} secrets=${s.secrets.join(",")} hosts=${s.hosts}`,
+      );
+    }
+    for (const slot of outcome.removed) {
+      const was = applied.get(slot);
+      applied.delete(slot);
+      await rm(local(slotFolder(slot)), { recursive: true, force: true });
+      log(`jr2.custodian removed ${who(slot, was?.owner)}`);
+    }
+    for (const r of outcome.refused) {
+      const s = changed.find((c) => c.rules.slot === r.slot)!;
+      if (!applied.has(r.slot)) await rm(local(slotFolder(r.slot)), { recursive: true, force: true });
+      errors.set(r.slot, { version: r.version, error: "Envoy refused the slot's rules: its own log says why" });
+      log(`jr2.custodian refuse ${who(r.slot, s.owner)} version=${r.version} reason=envoy`);
+    }
+    for (const r of outcome.waiting) {
+      errors.set(r.slot, { version: r.version, error: "Envoy did not take the slot's rules in time" });
+      log(`jr2.custodian control ${who(r.slot, next.get(r.slot)?.owner)} version=${r.version} error=envoy-timeout`);
+    }
+  };
+
+  /** The slots that `applied` holds and whose rules Envoy's active listeners no longer show. */
+  const lostSlots = async (): Promise<Set<number>> => {
+    const lost = new Set<number>();
+    if (applied.size === 0) return lost;
+    const dump = await listeners(`^slot-[0-9]*$`).catch(() => undefined);
+    if (dump === undefined) return lost;
+    for (const [slot, a] of applied) {
+      if (!activeWith(dump.get(`slot-${slot}`), a.rules.version)) lost.add(slot);
+    }
+    return lost;
+  };
+
+  /** Each file of the slot, then its Lua table. */
+  const writeSlot = async ({ rules, files }: Slot): Promise<void> => {
+    for (const [path, content] of files) await put(local(`${slotFolder(rules.slot)}/${path}`), content);
+    await put(local(rules.lua.path), Buffer.from(rules.lua.text));
+  };
+
+  /** The files of a slot that its live rules no longer name: an old Lua table, a value or a leaf. */
+  const removeStale = async ({ rules: r, files }: Slot): Promise<void> => {
+    const folder = local(slotFolder(r.slot));
+    const keep = new Set([...files.keys(), relative(slotFolder(r.slot), r.lua.path)]);
+    const entries = await readdir(folder, { recursive: true, withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (!e.isFile()) continue;
+      const path = relative(folder, join(e.parentPath, e.name));
+      if (!keep.has(path)) await rm(join(folder, path), { force: true });
+    }
+  };
+
+  /** The CDS file, and when Envoy has its clusters, the LDS file: a listener that names a cluster
+   * Envoy does not know yet is refused, and nothing reads the LDS file again until its next move. */
+  const writeXds = async (slots: SlotRules[]): Promise<void> => {
+    const { lds, cds } = custodianXds(slots.sort((a, b) => a.slot - b.slot));
+    await put(local(CUSTODIAN_CDS), Buffer.from(JSON.stringify(cds)));
+    const deadline = performance.now() + liveTimeout;
+    const want = `"${cds.version_info as string}"`;
+    for (;;) {
+      const stats = await opts.admin("/stats?filter=^cluster_manager\\.cds\\.version_text$").catch(() => "");
+      if (stats.includes(want) || performance.now() > deadline) break;
+      await sleep(10);
+    }
+    await put(local(CUSTODIAN_LDS), Buffer.from(JSON.stringify(lds)));
+  };
+
+  /** The dynamic listeners whose names match `regex`, by name. */
+  const listeners = async (regex: string): Promise<Map<string, DynamicListener>> => {
+    const text = await opts.admin(`/config_dump?resource=dynamic_listeners&name_regex=${regex}`);
+    const parsed = JSON.parse(text) as { configs?: DynamicListener[] };
+    return new Map((parsed.configs ?? []).map((c) => [c.name ?? "", c]));
+  };
+
+  /** Wait until each changed slot is live or refused, and each removed slot has no active listener. */
+  const settle = async (changed: SlotRules[], removed: number[]) => {
+    const live: SlotRules[] = [];
+    const refused: SlotRules[] = [];
+    const gone: number[] = [];
+    let waiting = [...changed];
+    let going = [...removed];
+    const deadline = performance.now() + liveTimeout;
+    while (waiting.length > 0 || going.length > 0) {
+      const names = [...waiting.map((r) => r.slot), ...going];
+      const dump = await listeners(`^slot-(${names.join("|")})$`).catch(() => undefined);
+      if (dump !== undefined) {
+        for (const r of waiting) {
+          const l = dump.get(`slot-${r.slot}`);
+          if (activeWith(l, r.version)) live.push(r);
+          else if (JSON.stringify(l?.error_state?.failed_configuration ?? "").includes(rulesChainName(r.version))) {
+            refused.push(r);
+          }
+        }
+        for (const slot of going) if (dump.get(`slot-${slot}`)?.active_state === undefined) gone.push(slot);
+        waiting = waiting.filter((r) => !live.includes(r) && !refused.includes(r));
+        going = going.filter((s) => !gone.includes(s));
+      }
+      if (waiting.length === 0 && going.length === 0) break;
+      if (performance.now() > deadline) break;
+      await sleep(20);
+    }
+    return { live, refused, removed: gone, waiting };
+  };
+
+  /** Keep what one read of a slot gave, and log a reason that is new. */
+  const record = (slot: number, w: Wanted): void => {
+    wanted.set(slot, w);
+    if (w.kind === "absent" || (w.kind === "ok" && refusedByEnvoy.get(slot) !== w.slot.rules.version)) {
+      errors.delete(slot);
+      return;
+    }
+    if (w.kind === "ok") return;
+    const known = errors.get(slot);
+    if (known?.error === w.error) return;
+    errors.set(slot, { version: null, error: w.error });
+    const line = w.error.replace(/\s+/g, " ");
+    if (w.kind === "refused") log(`jr2.custodian refuse ${who(slot, w.owner)} reason=rules why=${line}`);
+    // While the API does not answer, a line for each slot with rules; `syncAll` writes one for all.
+    else if (applied.has(slot)) log(`jr2.custodian control ${who(slot, applied.get(slot)!.owner)} error=${line}`);
+  };
+
+  const syncAll = (): Promise<void> =>
+    locked(async () => {
+      await readDialToken();
+      const cache = new Map<string, Promise<Record<string, string> | undefined>>();
+      const slots = [...Array(FENCE_SLOTS).keys()];
+      const reads: Wanted[] = new Array(FENCE_SLOTS);
+      for (let i = 0; i < slots.length; i += READS) {
+        const batch = slots.slice(i, i + READS);
+        const got = await Promise.all(batch.map((slot) => read(slot, cache)));
+        batch.forEach((slot, j) => (reads[slot] = got[j]!));
+      }
+      for (const slot of slots) record(slot, reads[slot]!);
+      const unread = slots.filter((slot) => reads[slot]!.kind === "unreadable").length;
+      if (unread > 0) log(`jr2.custodian control action=read error=unreadable slots=${unread}`);
+      await converge(true);
+      // Ready once each slot was read, and each that has rules is live or refused: a pod that starts
+      // later is live for each slot before the Orchestrator dials through it. Then it stays ready, so
+      // that a pause of the API does not take a pod that serves out of the EndpointSlice.
+      isReady ||= slots.every((slot) => {
+        const w = wanted.get(slot)!;
+        if (w.kind === "unreadable") return false;
+        if (w.kind !== "ok") return true;
+        const version = w.slot.rules.version;
+        return applied.get(slot)?.rules.version === version || refusedByEnvoy.get(slot) === version;
+      });
+    });
+
+  /** A slot is live when Envoy shows its rules active and its resolver table is of their version. */
+  const status = (slot: number): SlotStatus => {
+    const a = applied.get(slot);
+    const w = wanted.get(slot);
+    const e = errors.get(slot);
+    const wantedVersion = w?.kind === "ok" ? w.slot.rules.version : null;
+    const live =
+      a !== undefined &&
+      e === undefined &&
+      (wantedVersion === null || a.rules.version === wantedVersion) &&
+      resolver.get(slot)?.version === a.rules.version;
+    if (live) return { slot, version: a.rules.version, live: true };
+    return {
+      slot,
+      version: wantedVersion ?? e?.version ?? null,
+      live: false,
+      ...(e !== undefined ? { error: e.error } : {}),
+    };
+  };
+
+  const syncSlot = (slot: number): Promise<SlotStatus> =>
+    locked(async () => {
+      record(slot, await read(slot, new Map()));
+      await converge(false);
+      return status(slot);
+    });
+
+  const authorized = (req: Request): boolean => {
+    const given = req.headers.get(DIAL_TOKEN_HEADER);
+    if (dialToken === undefined || given === null) return false;
+    const a = createHash("sha256").update(given).digest();
+    const b = createHash("sha256").update(dialToken).digest();
+    return timingSafeEqual(a, b);
+  };
+
+  const text = (status: number, body: string): Response =>
+    new Response(`jr2 custodian: ${body}\n`, { status, headers: { "content-type": "text/plain" } });
+
+  const fetchHandler = async (req: Request): Promise<Response> => {
+    const url = new URL(req.url);
+    if (url.pathname === "/healthz") {
+      return req.method === "GET" ? (isReady ? text(200, "ok") : text(503, "not ready")) : text(405, "GET only");
+    }
+    const m = /^\/slots\/(0|[1-9][0-9]{0,2})$/.exec(url.pathname);
+    const slot = m === null ? -1 : Number(m[1]);
+    if (slot < 0 || slot >= FENCE_SLOTS) return text(404, "no such route");
+    if (!authorized(req)) {
+      log(`jr2.custodian control action=refuse slot=${slot} reason=dial`);
+      return text(401, "refused: this API takes the Instance's dial token (ADR-0084)");
+    }
+    if (req.method === "GET") {
+      const address = slotAddress(opts.ranges.segment, slotVlan(opts.range, slot));
+      return Response.json({ ...status(slot), present: await present(slot, address).catch(() => false) });
+    }
+    if (req.method === "POST") return Response.json(await syncSlot(slot));
+    return text(405, "GET or POST");
+  };
+
+  const run = async (signal: AbortSignal): Promise<void> => {
+    while (!signal.aborted) {
+      try {
+        await syncAll();
+      } catch (e) {
+        log(`jr2.custodian control action=sync error=${reasonOf(e)}`);
+      }
+      await sleep(isReady ? CUSTODIAN_RESYNC_MS : 2_000, undefined, { signal }).catch(() => {});
+    }
+  };
+
+  return { syncAll, syncSlot, status, ready: () => isReady, fetch: fetchHandler, run };
+}
+
+/** True when the listener's active state has the chain of the rules of `version`. */
+function activeWith(l: DynamicListener | undefined, version: string): boolean {
+  const mark = rulesChainName(version);
+  return (l?.active_state?.listener?.filter_chains ?? []).some((c) => (c.name ?? "").split(" ").includes(mark));
+}
+
+/** A mark of a slot's files: changes when a value, a Stand-in, a token or a leaf changes. */
+function filesVersion(files: SlotFiles): string {
+  const h = createHash("sha256");
+  for (const path of [...files.keys()].sort()) h.update(path).update("\0").update(files.get(path)!).update("\0");
+  return h.digest("hex").slice(0, 16);
+}
+
+/** Write a file whole: a temp name, then a rename. */
+async function put(path: string, content: Buffer): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(`${path}.next`, content, { mode: 0o644 });
+  await rename(`${path}.next`, path);
+}
+
+/** A reason for a log line: the error's class and status, never a body. */
+function reasonOf(e: unknown): string {
+  const err = e as { name?: string; status?: number; code?: string; message?: string };
+  if (err.status !== undefined) return `${err.name ?? "Error"}:${err.status}`;
+  return `${err.name ?? "Error"}:${(err.code ?? err.message ?? "").slice(0, 120).replace(/\s+/g, "-")}`;
+}
+
+/**
+ * Whether a pod answers at a slot's address (M11 reads it before it gives a slot again). A TCP
+ * connection to the Harness port on the slot's VLAN makes the kernel ask for the address by ARP: an
+ * answer, or a refusal, says a pod is there. Else the neighbour table says whether the address was
+ * resolved on the slot's interface. No capability: the control container has none.
+ */
+export async function slotPresent(slot: number, address: string): Promise<boolean> {
+  const answered = await new Promise<boolean | undefined>((resolve) => {
+    const socket = connect({ host: address, port: DIAL_PORTS[0]! });
+    const done = (v: boolean | undefined) => {
+      socket.destroy();
+      resolve(v);
+    };
+    socket.setTimeout(PRESENT_TIMEOUT_MS, () => done(undefined));
+    socket.once("connect", () => done(true));
+    socket.once("error", (e: NodeJS.ErrnoException) =>
+      done(e.code === "ECONNREFUSED" ? true : e.code === "EHOSTUNREACH" ? false : undefined),
+    );
+  });
+  if (answered !== undefined) return answered;
+  return neighbourResolved(await readFile("/proc/net/arp", "utf8").catch(() => ""), address, slotInterface(slot));
+}
+
+/** True when `/proc/net/arp` has `address` on `device`, resolved (flag 0x2). */
+export function neighbourResolved(table: string, address: string, device: string): boolean {
+  return table
+    .split("\n")
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/))
+    .some((cols) => cols[0] === address && cols[5] === device && (Number(cols[2]) & 0x2) !== 0);
+}

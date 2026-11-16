@@ -151,6 +151,16 @@ export const INSTANCE_CUSTODIAN_CONFIGMAP = "jr2-held-custodian";
 /** The ConfigMap with one Sandbox's Custodian's two rendered files, written by the Orchestrator at
  * provision and owned by the Sandbox CR — the `<name>-token` family: it goes with the pod. */
 export const sandboxCustodianConfigMap = (sandbox: string): string => `${sandbox}-custodian`;
+/** The Secret of one slot of the Custodian of an Instance (ADR-0084): what its control process reads
+ * to render the slot's rules (`custodian-slot.ts`). The Orchestrator writes it (for slots 0–2, `jr2
+ * up`) and never reads it; the Custodian may get each of these names, and no other Secret. */
+export function custodianSlotSecret(slot: number): string {
+  return `jr2-custodian-slot-${slot}`;
+}
+/** The Secret of the Instance's dial token (ADR-0084): the token of the Orchestrator's dial through a
+ * Custodian pod, and of the API of its control process. One key, `CUSTODIAN_DIAL_KEY`. */
+export const CUSTODIAN_DIAL_SECRET = "jr2-custodian-dial";
+export const CUSTODIAN_DIAL_KEY = "token";
 /** The Instance Harness's pod, as its held objects are keyed. A Workspace's is `ws-<digest>`
  * (`workspaceHeldPod`), so the two cannot collide. */
 export const INSTANCE_HARNESS_HELD_POD = "instance";

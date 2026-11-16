@@ -1245,6 +1245,11 @@ export function slotFolder(slot: number): string {
   return `${CUSTODIAN_STATE}/slots/${slot}`;
 }
 
+/** The uplink's VLAN interface of slot i in the Custodian pod: the only way to the slot's address. */
+export function slotInterface(slot: number): string {
+  return `v${slot}`;
+}
+
 /** Envoy's drain time in the Custodian pod (ADR-0084): when a slot's rules change, a connection on a
  * chain that changed is closed after this time. Envoy's default is 600 s, and churn then holds memory
  * for ten minutes. */

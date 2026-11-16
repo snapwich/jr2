@@ -189,16 +189,19 @@ and it replaces the Adapter.
   (`program.lua`); each Harness pod's own `custodian.lua` is a generated `HELD` table — names, headers, paths and
   targets, never a value — that ends with `dofile` of the program, so the program runs after the table it reads. The
   program reads each value of a pod's table from that pod's folder of values, takes off one trailing `\n` or `\r\n`, and
-  refuses it, with a line that names the secret, when it is missing, empty, or has a byte outside `0x20`–`0x7E`. Each
-  Stand-in but the fetch Stand-in is a value too: the Custodian reads it from its values, never from the table. Envoy's
-  `credential_injector` is not used: it is alpha, it breaks on a secret file that ends in a newline (1.39.1), and it
-  replaces a whole header, where the swap must see the Stand-in. Values never enter a ConfigMap. Envoy runs with hot
-  restart off, closes a connection on a chain that a change removed after a drain time of 60 seconds (ADR-0084), and
-  flushes its access log twice a second.
+  refuses it, with a line that names the secret, when it is missing, empty, or has a byte outside `0x20`–`0x7E`. Then
+  Envoy refuses the slot's new rules, and the Custodian's control process removes the slot, so that its Harness pod
+  reaches nothing until the value is fixed, never what the old rules permitted. Each Stand-in but the fetch Stand-in is
+  a value too: the Custodian reads it from its values, never from the table. Envoy's `credential_injector` is not used:
+  it is alpha, it breaks on a secret file that ends in a newline (1.39.1), and it replaces a whole header, where the
+  swap must see the Stand-in. Values never enter a ConfigMap. Envoy runs with hot restart off, closes a connection on a
+  chain that a change removed after a drain time of 60 seconds (ADR-0084), and flushes its access log twice a second.
 - **The log is a contract.** One line per decision on stdout, with the prefix `jr2.custodian` and `key=value` pairs:
-  `ready secrets=… hosts=N` (when a pod's rules are live), `action=intercept target=… secret=… method=… status=…`,
-  `action=tunnel target=…`, `action=refuse target=… reason=…`. Each line also names the Sandbox, or the other Harness
-  pod, that it is for (`sandbox=…` or `pod=…`, ADR-0084). A line of the Orchestrator's dial to a Harness pod
+  `ready version=… secrets=… hosts=N` (when the control process sees a slot's rules active in Envoy, at that version;
+  `removed` when a slot goes, `refuse … reason=rules` or `reason=envoy` when its rules cannot be made or Envoy refuses
+  them), `action=intercept target=… secret=… method=… status=…`, `action=tunnel target=…`,
+  `action=refuse target=… reason=…`. Each line also names the Sandbox, or the other Harness pod, that it is for
+  (`sandbox=…` or `pod=…`, ADR-0084). A line of the Orchestrator's dial to a Harness pod
   (`jr2.custodian dial action=inbound target=…`) names the slot address of a target that passed the check instead, and
   `target=-` for a refusal: the target header's value is not logged. A refusal that a slot's listener makes before a
   name is known (a TLS name that does not agree, plain bytes where only TLS is carried, a port with no entry) names the
@@ -474,8 +477,10 @@ and it replaces the Adapter.
   routes of jr2's own name and the fetch to the slot's own Sandbox, the Orchestrator's dial (the dial token, the slot
   targets, 503 with `x-jr2-custodian: unreachable`, a duplex body and SSE), the dial listener's own bound, the refusal
   of a new name while the cache of names is full, an update of one slot that does not cut a stream of another, the time
-  of one update of one slot in a pod of 128 slots of 30 entries (about 0.3 seconds), and the Anthropic SDK with no proxy
-  setting. The first SSE event arrives through the Custodian about half a millisecond later than direct.
+  of one update of one slot in a pod of 128 slots of 30 entries (about 0.3 seconds), the Anthropic SDK with no proxy
+  setting, and the control process of a Custodian pod: it makes each slot live by Envoy's own admin, takes a changed
+  value live, and removes a slot whose Secret is gone or whose rules Envoy refuses. The first SSE event arrives through
+  the Custodian about half a millisecond later than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses the Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

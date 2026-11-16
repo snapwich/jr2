@@ -466,7 +466,9 @@ function upstreamTls(san: Json, sni?: string): Json {
 
 // ---- one slot -----------------------------------------------------------------------------------
 
-function ownerText(owner: SlotOwner): string {
+/** A slot's Harness pod as each log line names it: `sandbox=<name>` or `pod=<name>`. Throws unless
+ * the name is a Kubernetes name, so a line cannot carry another key. */
+export function ownerText(owner: SlotOwner): string {
   const [key, value] = "sandbox" in owner ? ["sandbox", owner.sandbox] : ["pod", owner.pod];
   if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(value) || value.length > 253) {
     throw new Error(`the ${key} of a slot is a Kubernetes name, not ${JSON.stringify(value)}`);
@@ -1019,6 +1021,16 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
     );
   }
   chains.push(chain("action=refuse reason=no-entry transport=tls", { transport_protocol: "tls" }, [ALERT]));
+  // The version of the slot's rules, as a chain of its own, so that the control process reads from
+  // Envoy which rules are active: Envoy keeps a listener's `version_info` when an update changes only
+  // its chains. The chain refuses as the chain above does, and a change of version drains it alone.
+  chains.push(
+    chain(
+      `action=refuse reason=no-entry transport=tls ${rulesChainName(version)}`,
+      { server_names: [rulesServerName(version)], transport_protocol: "tls" },
+      [ALERT],
+    ),
+  );
 
   const listener: Json = {
     name: `slot-${slot}`,
@@ -1069,6 +1081,17 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
     lua: { path: luaPath, text: luaText },
     resolver: { slot, version, names },
   };
+}
+
+/** The part of a slot listener's chain name that states the version of its rules. A listener whose
+ * chains include one with this name has those rules active (`custodian-control.ts`). */
+export function rulesChainName(version: string): string {
+  return `rules=${version}`;
+}
+
+/** The TLS name that the version chain matches: below jr2's own domain, which no entry can name. */
+function rulesServerName(version: string): string {
+  return `${version}.rules.${JR2_NAME_DOMAIN}`;
 }
 
 // ---- the files of a Custodian pod --------------------------------------------------------------

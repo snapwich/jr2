@@ -22,6 +22,7 @@ import {
   custodianPodBootstrap,
   custodianXds,
   renderSlot,
+  rulesChainName,
   slotAddress,
   slotVlan,
   type SlotRules,
@@ -622,6 +623,26 @@ test("the same inputs give the same rules; a new Tunneled host leaves each inter
   const rotated = renderSlot({ ...inputsOf(3, SANDBOX_MANIFEST, { sandbox: "ticket-a1b2c" }), valuesVersion: "2" });
   assert.notEqual(rotated.lua.path, one.lua.path);
   assert.equal(rotated.lua.text, one.lua.text);
+});
+
+test("a chain of its own states the version of the slot's rules: it refuses as the port-less TLS chain does, and a new version changes that chain alone", () => {
+  const one = sandbox();
+  const marks = chainsOf(one).filter((c) => c.name.split(" ").includes(rulesChainName(one.version)));
+  assert.equal(marks.length, 1);
+  const portless = chainOf(one, "action=refuse reason=no-entry transport=tls");
+  assert.deepEqual(marks[0]!.filters, portless.filters);
+  assert.deepEqual(marks[0]!.filter_chain_match, {
+    server_names: [`${one.version}.rules.jr2.internal`],
+    transport_protocol: "tls",
+  });
+  const rotated = renderSlot({ ...inputsOf(3, SANDBOX_MANIFEST, { sandbox: "ticket-a1b2c" }), valuesVersion: "2" });
+  assert.notEqual(rotated.version, one.version);
+  // A chain that loads no Lua table is the same: only the version's chain changes there.
+  const plain = (r: typeof one) =>
+    chainsOf(r).filter((c) => !JSON.stringify(c).includes(".lua") && !c.name.includes("rules="));
+  assert.ok(plain(one).some((c) => c.name.startsWith("action=tunnel")));
+  assert.deepEqual(plain(rotated), plain(one), "a chain that names no Lua table does not drain for a new version");
+  assert.ok(chainsOf(rotated).some((c) => c.name.endsWith(rulesChainName(rotated.version))));
 });
 
 test("the renderer refuses a slot out of range, a placeholder table of another range or with a name missing, a rule the Fence cannot carry, and an owner that is no Kubernetes name", () => {

@@ -68,6 +68,8 @@ export * from "./git-push.ts";
 export * from "./git-clone.ts";
 export * from "./custodian.ts";
 export * from "./custodian-rules.ts";
+export * from "./custodian-slot.ts";
+export * from "./custodian-control.ts";
 export * from "./placeholders.ts";
 export * from "./harness-env.ts";
 export * from "./sandbox-kube.ts";

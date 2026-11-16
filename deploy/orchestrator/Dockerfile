@@ -73,6 +73,11 @@ FROM node:24-slim
 # The entrypoint is a zero-build `.ts` file, run by tsx as it was in the image an Instance produced.
 RUN npm install -g --no-audit --no-fund tsx@4
 
+# The Custodian pod (ADR-0084) runs this image twice more: its `uplink` init container makes the VLAN
+# interfaces of the Instance's range and loads the static rule set with `ip` and `nft`, and its
+# `control` container runs the second entrypoint, `bin/custodian-control.ts`.
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 nftables && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /instance
 ENV NODE_ENV=production
 
@@ -116,6 +121,7 @@ RUN node -e ' \
   if (bad.length) { for (const b of bad) console.error(`jr2: ${b}`); process.exit(1); }' \
  && rm -rf /tmp/tgz /tmp/closure.json package.json package-lock.json \
  && test -f node_modules/@jr2/orchestrator/bin/server.ts \
+ && test -f node_modules/@jr2/orchestrator/bin/custodian-control.ts \
  && test -f node_modules/@jr2/agent-protocol/package.json
 
 EXPOSE 4000
