@@ -6,8 +6,9 @@
 //
 // Then the pinned Envoy RUNS one slot's rules, for the claims that the shape of a file cannot show:
 // the Host's port on a wildcard, other spellings of a refused name, the headers a target gets, the
-// dial listener's log, and the Orchestrator's dial when the program fails. The Custodian suite of
-// M4 runs the rest of the new shape.
+// dial listener's log, and the Orchestrator's dial when the program fails. These need a docker
+// network of their own (port 80, and more addresses for a target); `custodian.docker.ts` runs the
+// rest of the Custodian's claims.
 //
 // Opt-in: `just custodian-test` (docker + the pinned image), beside the Custodian suite.
 

@@ -15,6 +15,7 @@ test("the slot data of the Custodian's validation is the same as the renderer's 
   assert.deepEqual(here.SANDBOX_MANIFEST, there.SANDBOX_MANIFEST);
   assert.deepEqual(here.INSTANCE_MANIFEST, there.INSTANCE_MANIFEST);
   assert.deepEqual(here.THREE_SLOTS, there.THREE_SLOTS);
+  assert.deepEqual(here.manySlots(3, 4, 2), there.manySlots(3, 4, 2));
   assert.deepEqual(
     here.rule("a.test", 8080, "below", false, "entry"),
     there.rule("a.test", 8080, "below", false, "entry"),

@@ -1,5 +1,5 @@
 // Slot inputs that use each kind of rule (ADR-0084), for the pinned Envoy's validation of what the
-// renderer writes. `packages/orchestrator/test/_custodian-slots.ts` is the same data for the unit tests.
+// renderer writes, and the many slots of the Custodian suite's update at full size. `packages/orchestrator/test/_custodian-slots.ts` is the same data for the unit tests.
 // `custodian-slots.test.ts` keeps the two copies equal.
 
 import {
@@ -103,3 +103,30 @@ export const THREE_SLOTS: SlotInputs[] = [
   inputsOf(1, { version: 1, secrets: [], egress: [] }, { pod: "check" }),
   inputsOf(3, SANDBOX_MANIFEST, { sandbox: "ticket-a1b2c" }),
 ];
+
+/** `count` slots of `entries` exact names each, for the size test. The first `intercepted` of each
+ * slot are Intercepted on 443, each with a secret bound to it; the others are Tunneled, on 443 and 80
+ * in turn. */
+export function manySlots(count: number, entries: number, intercepted = 0): SlotInputs[] {
+  const out: SlotInputs[] = [];
+  for (let slot = 0; slot < count; slot++) {
+    const egress: EgressRule[] = [];
+    const secrets: HeldManifest["secrets"] = [];
+    for (let e = 0; e < entries; e++) {
+      const host = `host-${e}.example-${slot % 7}.com`;
+      if (e < intercepted) {
+        egress.push(rule(host, 443, "name", true, "held"));
+        secrets.push({
+          name: `KEY_${e}`,
+          source: { kind: "literal" },
+          hosts: [{ host, port: 443, leaf: leafStem(host, 443) }],
+          headers: ["authorization"],
+        });
+      } else {
+        egress.push(rule(host, e % 2 === 0 ? 443 : 80, "name", false, "entry"));
+      }
+    }
+    out.push(inputsOf(slot, { version: 1, secrets, egress }, { sandbox: `ws-${slot}` }));
+  }
+  return out;
+}

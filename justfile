@@ -81,9 +81,11 @@ orchestrator-image:
 # --- the Custodian suite (ADR-0059; requires docker) ---
 #
 # The Custodian's claims that only real sockets can check, against the REAL engine: the pinned Envoy
-# image running the bootstrap and script `jr2 up` renders, local upstreams standing in for model
-# providers and the Orchestrator. Opt-in, like @kind: the default gate needs no docker (ADR-0010).
-# The container runs on the host network, on free ports, so it can share the host with anything.
+# image running the bootstrap of a Custodian pod and the rules of its slots as jr2 renders them,
+# local upstreams standing in for model providers, Harness pods and the Orchestrator. Opt-in, like
+# @kind: the default gate needs no docker (ADR-0010). The container runs on the host network, on
+# free ports and loopback addresses, or on docker networks of its own, so it can share the host with
+# anything.
 
 # run the Custodian suite against the pinned Envoy image
 custodian-test:

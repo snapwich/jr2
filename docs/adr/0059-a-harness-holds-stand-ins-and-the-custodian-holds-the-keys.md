@@ -454,18 +454,28 @@ and it replaces the Adapter.
   it ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)). The image sweep never takes it,
   because jr2 never stamped it ([ADR-0039](0039-image-garbage-collects-by-reachability.md)). A kind node pulls it from
   its registry, so the `@kind` tier needs network to `docker.io`. `just kit-push` does not seed it.
-- **Where the Custodian suite runs.** `just custodian-test`: node's test runner against the pinned image under docker,
-  on the host network with free ports, with local HTTPS upstreams under their own CA. It is opt-in, like `@kind`,
-  because it needs docker ([ADR-0010](0010-bdd-acceptance-tests.md)), and the release job runs it on every tag
+- **Where the Custodian suite runs.** `just custodian-test`: node's test runner against the pinned image under docker.
+  It runs the bootstrap of a Custodian pod and the rules of its slots as jr2 renders them, with local HTTPS upstreams
+  under their own CA. In a pod, the uplink brings each connection of a slot to the slot's listener. In the suite, a
+  client dials that listener on the host network: each address that a slot's chains name stands at a loopback address of
+  its own, and each port of a slot at a free port of the host. No connection carries a header or a preamble that the
+  listener in a pod does not read. The claims that need port 80, or a target with more than one address, run on docker
+  networks of their own. It is opt-in, like `@kind`, because it needs docker ([ADR-0010](0010-bdd-acceptance-tests.md)),
+  and the release job runs it on every tag
   ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)): the image moves only with its
-  pin, but the configuration jr2 renders moves with any release. About 100 seconds. It checks the swap, the strip, 403
-  with no Stand-in, 405 on a method, 400 on an underscore header, a header `Connection` names, two `Host` headers, idle
-  connections on the health listener, 421, 400 and 403 on paths, the tunnel, the dial guard by every spelling, by
-  resolved name and by each address of a name, 502 on an untrusted upstream, SSE timing, abort, a 302, the refusal of a
-  bad value, the log, a TLS name or a `Host` header that does not agree with the name of the address, a wildcard's
-  `Host` that names another port than the entry's, the refusal of a new name while the cache of names is full, and the
-  Anthropic SDK with no proxy setting. The first SSE event arrives through the Custodian about half a millisecond later
-  than direct.
+  pin, but the configuration jr2 renders moves with any release. About two and a half minutes. It checks the swap, the
+  strip, 403 with no Stand-in, 405 on a method, 400 on an underscore header, a header `Connection` names, two `Host`
+  headers, idle connections on the health listener, 421, 400 and 403 on paths, a secret bound to an address, the
+  Stand-ins and values of two slots kept apart, a Tunneled name, an address entry, raw TCP by name, a wildcard that
+  carries TLS and HTTP only, the dial guard by every spelling, by resolved name and by each address of a name, 502 on an
+  untrusted upstream, SSE timing, abort, a 302, the refusal of a bad value, the log, a TLS name or a `Host` header that
+  does not agree with the name of the address, another slot's placeholder, a wildcard's `Host` that names another port
+  than the entry's, a Tunneled name with an exact entry carried at its own placeholder as a wildcard permits, the six
+  routes of jr2's own name and the fetch to the slot's own Sandbox, the Orchestrator's dial (the dial token, the slot
+  targets, 503 with `x-jr2-custodian: unreachable`, a duplex body and SSE), the dial listener's own bound, the refusal
+  of a new name while the cache of names is full, an update of one slot that does not cut a stream of another, the time
+  of one update of one slot in a pod of 128 slots of 30 entries (about 0.3 seconds), and the Anthropic SDK with no proxy
+  setting. The first SSE event arrives through the Custodian about half a millisecond later than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses the Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

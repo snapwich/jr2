@@ -1,7 +1,8 @@
 // The rules of the Custodian of an Instance (ADR-0059, ADR-0084), socket-free: what the renderer
 // tells Envoy for one slot, and the bootstrap of the Custodian pod. What only a real engine can show
 // is the Custodian suite's (`just custodian-test`): the pinned Envoy validates these files there
-// (`packages/cli/test/custodian-rules.docker.ts`), and M4 runs connections through them. What is
+// (`packages/cli/test/custodian-rules.docker.ts`), and runs connections through them
+// (`packages/cli/test/custodian.docker.ts`). What is
 // pinned here is that the rendering says what ADR-0084 decides: the dialed address and port choose a
 // chain, the TLS name or the `Host` header must agree with the name, the Custodian dials the name
 // through the dial guard, and every other connection is refused with a reason.

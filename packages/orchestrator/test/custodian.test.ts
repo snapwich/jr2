@@ -1,7 +1,7 @@
 // The Custodian's configuration (ADR-0059), socket-free: what a pod's maker renders for Envoy and what a
-// Harness pod gains from it. The claims only a real engine can check — the swap on the wire, the
-// dial guard, streaming, abort — are the Custodian suite's (`packages/cli/test/custodian.docker.ts`).
-// What is pinned here is that the rendering says what that suite proves: no admin listener, the
+// Harness pod gains from it, until the Custodian of an Instance replaces it (ADR-0084). The Custodian
+// suite (`packages/cli/test/custodian.docker.ts`) runs the Custodian of an Instance, not this one; the
+// `@kind` tier runs this one in a pod. What is pinned here: no admin listener, the
 // five agent routes on the control socket and the ask on the fetch listener and nothing else, TLS ended only for bound targets, upstream verified
 // against `upstream.crt` alone, and never a value anywhere in what a ConfigMap carries.
 
