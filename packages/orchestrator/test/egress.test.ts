@@ -23,7 +23,7 @@ import {
 import { bearer, file, http, secret, text } from "../src/http-effect.ts";
 import { placementWalkOf } from "../src/assembly-checks.ts";
 import { heldSecretsOf, readHeldManifest, workspaceHeldPod } from "../src/held-secrets.ts";
-import { secretPlacementsOf, type PlacementWalk } from "../src/secret-placement.ts";
+import { refuseEffectSecrets, secretPlacementsOf, type PlacementWalk } from "../src/secret-placement.ts";
 import { workspacePodsOf, type CarriedEffect, type WorkspacePod } from "../src/parts.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
@@ -121,11 +121,11 @@ test("jr2 up warns for `*` and for each `*.` entry, by its config path", () => {
   );
   assert.deepEqual(
     out.warnings.map((w) => w.split(" permits")[0]),
-    ['egress[0] "*"', 'workflow "ticket": workspace() egress[0] "*.example.com"'],
+    ['jr2.config.ts at egress[0] "*"', 'workflow "ticket": workspace() egress[0] "*.example.com"'],
   );
 });
 
-test("an address entry needs its port; IPv6, a range, and the addresses of the guard and the Fence are refused", () => {
+test("an address entry needs its port; IPv6, a range, multicast, and the addresses of the guard and the Fence are refused", () => {
   const refused = (entry: unknown, why: RegExp) =>
     assert.throws(
       () => parseEgressList("egress", [entry]),
@@ -148,6 +148,10 @@ test("an address entry needs its port; IPv6, a range, and the addresses of the g
   refused("198.19.0.7:443", /is in 198\.19\.0\.0\/20, the Fence's segment/);
   refused("198.18.0.2:443", /is in 198\.18\.0\.0\/16, the Fence's placeholder range/);
   refused("198.19.200.1:443", /is in 198\.18\.0\.0\/15, the Fence's default ranges/);
+  // No unicast TCP connection has a multicast or a reserved address.
+  refused("224.0.0.1:80", /is in 224\.0\.0\.0\/4, which is multicast or reserved/);
+  refused("255.255.255.255:80", /is in 240\.0\.0\.0\/4, which is multicast or reserved/);
+  assert.equal(parseEgressList("egress", ["223.255.255.255:80"]).length, 1, "the last unicast /4 below them");
   refused("https://github.com", /is a URL/);
   refused("github.com/acme", /has a path/);
   refused("localhost:8000", /is a loopback name/);
@@ -172,16 +176,49 @@ test("an address entry needs its port; IPv6, a range, and the addresses of the g
   assert.equal(parseEgressList("egress", ["198.20.0.1:80"], ranges).length, 1);
 });
 
-test("the config load refuses a bad entry by its path, and checks `fence`", async () => {
+test("the config load checks only that egress is a list; jr2 up refuses a bad entry by its path, and the load checks `fence`", async () => {
   const dir = await mkdtemp(join(tmpdir(), "jr2-egress-"));
   const file = join(dir, "jr2.config.ts");
-  await writeFile(file, `export default { egress: ["github.com", "10.0.0.5"] };\n`);
-  await assert.rejects(loadConfig(dir), (err: Error) =>
-    err.message.startsWith(`${file} at egress[1] "10.0.0.5" is an address with no port`),
+  await writeFile(file, `export default { egress: "github.com" };\n`);
+  await assert.rejects(loadConfig(dir), (err: Error) => err.message.startsWith(`${file} at egress must be a list`));
+  // In-cluster `.env` is absent, so an entry that reads it is empty there: the load keeps it, and
+  // the door's walk does not parse it. Host-side, with the value unset, jr2 up refuses it.
+  const env = "JR2_EGRESS_TEST_ADDR";
+  delete process.env[env];
+  // One directory per load: the module cache keeps the first import of a file.
+  const fromEnv = async () => {
+    const d = await mkdtemp(join(tmpdir(), "jr2-egress-"));
+    await writeFile(
+      join(d, "jr2.config.ts"),
+      `export default { egress: [process.env.${env} ?? "", process.env.${env}] };\n`,
+    );
+    return (await loadConfig(d))!;
+  };
+  const unset = await fromEnv();
+  assert.deepEqual(unset.egress, ["", undefined]);
+  const w = walk({ workspaces: [ws()] });
+  assert.doesNotThrow(() => refuseEffectSecrets(unset, w, { egress: false }), "the door");
+  for (const check of [refuseEffectSecrets, secretPlacementsOf]) {
+    assert.throws(
+      () => check(unset, w),
+      (err: Error) => err.message.startsWith('jr2.config.ts at egress[0] "" is empty'),
+      check.name,
+    );
+  }
+  process.env[env] = "192.168.1.20:8000";
+  try {
+    const set = await fromEnv();
+    assert.deepEqual(set.egress, ["192.168.1.20:8000", "192.168.1.20:8000"]);
+    assert.doesNotThrow(() => refuseEffectSecrets(set, w));
+    assert.deepEqual(rulesOf(set, w)[ROOT], [rule("192.168.1.20", 8000, { match: "address" })]);
+  } finally {
+    delete process.env[env];
+  }
+  const moved: JR2Config = { fence: { segment: "10.250.0.0/20" }, egress: ["10.250.0.9:80"] };
+  assert.throws(
+    () => secretPlacementsOf(moved, w),
+    /^Error: jr2\.config\.ts at egress\[0\] "10\.250\.0\.9:80" is in 10\.250\.0\.0\/20/,
   );
-  const moved = join(await mkdtemp(join(tmpdir(), "jr2-egress-")), "jr2.config.ts");
-  await writeFile(moved, `export default { fence: { segment: "10.250.0.0/20" }, egress: ["10.250.0.9:80"] };\n`);
-  await assert.rejects(loadConfig(join(moved, "..")), /at egress\[0\] "10\.250\.0\.9:80" is in 10\.250\.0\.0\/20/);
 
   const at = "jr2.config.ts";
   assert.doesNotThrow(() => checkFence({ segment: "10.250.0.0/16", placeholders: "10.251.0.0/16" }, at));
@@ -459,6 +496,34 @@ test("an SSH Repo that the Workspace binds gets its port, 22 by default, as a Tu
   ]);
   assert.equal(sshHostOf("https://github.com/acme/app.git"), undefined);
   assert.deepEqual(sshHostOf("git+ssh://GitHub.com/acme/app"), { host: "github.com", port: 22 });
+  // git accepts `ssh+git://` beside `git+ssh://`.
+  assert.deepEqual(sshHostOf("ssh+git://git.example.com/x"), { host: "git.example.com", port: 22 });
+  // git's scp form with a host in brackets: one host, so the Fence's IPv6 reason applies to it.
+  assert.deepEqual(sshHostOf("git@[fd00::1]:acme/app.git"), { host: "fd00::1", port: 22 });
+  const v6 = uncarriedHosts("w", { held: [], effector: [], repos: [sshHostOf("git@[fd00::1]:x")!] });
+  assert.match(v6[0]!, /reaches \[fd00::1\]:22 \(it binds an SSH Repo there\).*it is an IPv6 address/);
+});
+
+test("a keyless model endpoint whose host a Held secret of the pod binds is refused with that reason", () => {
+  const config: JR2Config = {
+    secrets: [{ name: "VLLM_TOKEN", value: "a-long-enough-key", hosts: ["vllm.example.test"], headers: ["x-gw"] }],
+    harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.example.test/v1" } },
+  };
+  const w = walk({ workspaces: [ws({ secrets: ["VLLM_TOKEN"], models: ["vllm/q"] })] });
+  assert.throws(
+    () => secretPlacementsOf(config, w),
+    (err: Error) => {
+      assert.equal(
+        err.message,
+        'Workspace of workflow "ticket" reaches vllm.example.test for the "vllm/…" models (harness.provider.baseUrl, ' +
+          "with no apiKey). A Held secret of the pod is bound to that host, but this call carries no Stand-in of it, " +
+          "so only an entry permits the call, and the Instance's egress (jr2.config.ts) has none — add egress: " +
+          '["vllm.example.test"]. All code in the pod can then reach it (ADR-0084)',
+      );
+      return true;
+    },
+  );
+  assert.doesNotThrow(() => secretPlacementsOf({ ...config, egress: ["vllm.example.test"] }, w));
 });
 
 test("a held manifest carries its Egress list; one without it is malformed", async () => {

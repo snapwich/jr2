@@ -25,7 +25,7 @@ import { hookParts, isHook, kindsById } from "./hook-kinds/door.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import { assertSize, type Size } from "./size.ts";
 import { periodMs } from "./duration.ts";
-import { checkFence, fenceRangesOf, parseEgressList, type EgressEntry } from "./egress.ts";
+import { checkFence, type EgressEntry } from "./egress.ts";
 
 // ------------------------------------------------------------------------------------------------
 // `git.credentials` (ADR-0051): how the cluster authenticates to a Repo, and the fence.
@@ -923,7 +923,7 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   if (mod.default.mcp !== undefined) checkMcp(mod.default.mcp, mod.default.secrets ?? [], file);
   if (mod.default.runs !== undefined) checkRuns(mod.default.runs, file);
   if (mod.default.fence !== undefined) checkFence(mod.default.fence, file);
-  if (mod.default.egress !== undefined) checkEgress(mod.default.egress, mod.default.fence, file);
+  if (mod.default.egress !== undefined) checkEgress(mod.default.egress, file);
   return mod.default;
 }
 
@@ -943,10 +943,13 @@ export type FenceConfig = {
   placeholders?: string;
 };
 
-/** `egress`' SHAPE and its refusals (ADR-0084), the `checkGit` style: a bad entry names its path.
- * The rules are `parseEgressList`'s, which `jr2 up` runs again on a `workspace()`'s own list. */
-function checkEgress(egress: unknown, fence: FenceConfig | undefined, where: string): void {
-  parseEgressList(`${where} at egress`, egress, fenceRangesOf(fence));
+/** `egress`' SHAPE (ADR-0084): a list. Its entries are not checked here: in-cluster an entry that
+ * reads `.env` (the address of a local model) is `""` or `undefined`, because `.env` is absent, so
+ * `jr2 up` and `jr2 check` refuse a bad entry host-side (`parseEgressList`, `secretPlacementsOf`). */
+function checkEgress(egress: unknown, where: string): void {
+  if (!Array.isArray(egress)) {
+    throw new Error(`${where} at egress must be a list — egress: ["api.github.com", "*.npmjs.org"] (ADR-0084)`);
+  }
 }
 
 const RUNS_HINT = 'runs is { retain?, volume? }, such as { retain: "30d", volume: "5Gi" } (ADR-0065)';

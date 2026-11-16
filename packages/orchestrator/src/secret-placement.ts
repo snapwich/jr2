@@ -34,6 +34,7 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import {
+  parseTarget,
   providerClaims,
   sourceOf,
   workspaceHeldPod,
@@ -146,6 +147,8 @@ export type PodEgress = { list: EgressItem[]; effector: HostPort[]; repos: HostP
 
 /** The Egress parts of a pod in the door's walk, which does not derive them (`refuseEffectSecrets`). */
 const NO_EGRESS: PodEgress = { list: [], effector: [], repos: [] };
+/** The config path of the Instance's Egress list, as a refusal and a warning name it. */
+const INSTANCE_EGRESS_AT = "jr2.config.ts at egress";
 
 /** One push of a Workspace (ADR-0067, ADR-0051): its Repo Slot, whether it signs, and — for a slot the
  * Machine binds to a url — that url and the `git.credentials` entry it matches. A slot the run or a
@@ -612,7 +615,9 @@ function heldPodsOf(
   const pods: HeldPodPlan[] = [];
   const redundant: Array<{ label: string; name: string }> = [];
   const ranges = fenceRangesOf(config.fence);
-  const instanceList = parseEgressList("egress", config.egress ?? [], ranges);
+  // Parsed here, host-side, and not at the config load: in-cluster an entry that reads `.env` is
+  // empty (ADR-0084). The door (`egress` false) does not parse it.
+  const instanceList = egress ? parseEgressList(INSTANCE_EGRESS_AT, config.egress ?? [], ranges) : [];
   // The secret of each remote MCP server that the pod's Agents name (ADR-0079), with the servers:
   // the Agent claims it by naming the server, as it claims a model key by naming a model. A name
   // the `mcp` block does not declare is refused by the walk's own check (`mcpRefusals`), not here.
@@ -660,7 +665,14 @@ function heldPodsOf(
     const required = egress
       ? requiredHostsOf(config, walk.instanceHarness.models, walk.instanceHarness.servers ?? [], names)
       : [];
-    const refusal = missingEntry(label, required, instanceList, "the Instance's egress (jr2.config.ts)", ranges);
+    const refusal = missingEntry(
+      label,
+      required,
+      instanceList,
+      "the Instance's egress (jr2.config.ts)",
+      ranges,
+      boundHostsOf(config, names),
+    );
     if (refusal) throw new Error(refusal);
     const list: EgressItem[] = required.map((r) => {
       const entry = instanceList.find((i) => permits(i, r.host, r.port))!;
@@ -737,6 +749,7 @@ function workspaceEgressOf(
       ? "the Instance's egress (jr2.config.ts)"
       : "its workspace()'s egress, which replaces the Instance's,",
     ranges,
+    boundHostsOf(config, names),
   );
   if (refusal) throw new Error(refusal);
   // Each SSH Repo it binds, on the port of its url (22 by default), with no entry: the push of its
@@ -748,6 +761,23 @@ function workspaceEgressOf(
     if (ssh) add(repos, ssh);
   }
   return { list, effector, repos };
+}
+
+/** The hosts that the `hosts` of each Held secret in `names` states, for the text of a refusal. An
+ * entry that does not parse is left out: the rules of the list refuse it (`heldSecretsOf`). */
+function boundHostsOf(config: JR2Config, names: readonly string[]): HostPort[] {
+  const out: HostPort[] = [];
+  for (const e of config.secrets ?? []) {
+    if (!names.includes(e.name)) continue;
+    for (const entry of e.hosts ?? []) {
+      try {
+        out.push(parseTarget(`${e.name}.hosts`, entry));
+      } catch {
+        // Refused later, by its own rule.
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -786,9 +816,9 @@ function requiredHostsOf(
 /** The warnings of each `"*"` and `*.` entry (ADR-0084): the Instance's list, then each
  * `workspace()`'s own. */
 function egressWarningsOf(pods: readonly HeldPodPlan[], config: JR2Config): string[] {
-  const out = egressWarnings(parseEgressList("egress", config.egress ?? [], fenceRangesOf(config.fence)));
+  const out = egressWarnings(parseEgressList(INSTANCE_EGRESS_AT, config.egress ?? [], fenceRangesOf(config.fence)));
   for (const p of pods) {
-    const own = p.egress.list.filter((i) => !i.at.startsWith("egress["));
+    const own = p.egress.list.filter((i) => !i.at.startsWith(`${INSTANCE_EGRESS_AT}[`));
     for (const w of egressWarnings(own)) if (!out.includes(w)) out.push(w);
   }
   return out;

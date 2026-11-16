@@ -43,7 +43,7 @@ and that holds when Workspace code is root in the Sandbox.
   for a host that has no name, such as a model on the local network. A connection to an address that has no such entry
   is refused, because it has no name. The same applies to a placeholder address that the Sandbox did not get for that
   name. `jr2 up` refuses an entry that is an IPv6 address, a range, an address that the dial guard refuses (ADR-0059),
-  or an address in the Fence's own ranges.
+  an address in the Fence's own ranges, or a multicast or reserved address, because no TCP connection has one.
 - **The Fence has two address ranges of its own.** The segment, where each Harness pod has its address, is
   198.19.0.0/20, and the placeholder addresses are in 198.18.0.0/16. The Instance's config can move each one (`fence`)
   to a range that is at least as large and that does not overlap the other, an address that the dial guard refuses, or a

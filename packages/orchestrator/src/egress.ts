@@ -37,11 +37,14 @@ import { isIP } from "node:net";
  * The Instance Harness takes from the Instance's list only those hosts of its own Agents. `jr2 up`
  * gives a warning for `"*"` and for each `*.` entry, because each one is a channel out.
  *
- * The config load, `workspace()` and `jr2 up` refuse a bad entry:
+ * The config load checks only that `egress` is a list: in-cluster `.env` is absent, so an entry that
+ * reads it (`process.env.LOCAL_MODEL_ADDR ?? ""`) is empty there. A `workspace()` checks its own list
+ * when its module loads, in-cluster also, so an entry there is a literal.
+ * `workspace()`, `jr2 up` and `jr2 check` refuse a bad entry:
  * `<at>[<i>] "<entry>" <problem> — an entry is "host", "host:port", "*.domain", "*", "a.b.c.d:port", or { host, port?, intercept: true }`.
  * The problem is one of: an IPv6 address, a range, an address with no port, an address that the
  * Custodian never dials (loopback, link-local, `0.0.0.0`), an address in the Fence's own ranges
- * (`fence`, and 198.18.0.0/15), a URL, a name whose last label is a number (`0x7f.1`), a loopback
+ * (`fence`, and 198.18.0.0/15), a multicast or reserved address (224.0.0.0/4, 240.0.0.0/4), a URL, a name whose last label is a number (`0x7f.1`), a loopback
  * name, a name in `jr2.internal`, or `intercept` on a wildcard. A host that jr2 uses with no secret
  * and that no entry can permit (such as `localhost` or an IPv6 address) is refused with the reason.
  */
@@ -201,7 +204,7 @@ const ENTRY_FORMS =
  * Parse one Egress list, or throw the first refusal. `at` is the list's config path (`egress`,
  * `workspace(): egress`); each message names the entry by `<at>[<i>]` and says what to write. An
  * address in the Fence's own ranges (`ranges`, and 198.18.0.0/15 always), in a range that the
- * Custodian never dials, or `0.0.0.0` is refused, and so is any IPv6 address: the Fence carries
+ * Custodian never dials, in the multicast or reserved ranges, or `0.0.0.0` is refused, and so is any IPv6 address: the Fence carries
  * IPv4 alone.
  */
 export function parseEgressList(
@@ -317,14 +320,18 @@ export function uncarried(host: string, ranges: FenceRanges = fenceRangesOf(unde
   return refusedName(host);
 }
 
-/** Why an IPv4 entry is refused, or undefined: an address of the Fence, or one the Custodian never
- * dials. */
+/** Why an IPv4 entry is refused, or undefined: an address of the Fence, one the Custodian never
+ * dials, or a multicast or reserved address. */
 function refusedAddress(address: string, ranges: FenceRanges): string | undefined {
   const at = ipv4Int(address);
   if (at === 0) return "is the unspecified address";
   const guarded = guardedIpv4().find((g) => inCidr(g, at));
   if (guarded !== undefined) {
     return `is in ${intText(guarded.base)}/${guarded.prefix}, which the Custodian never dials (ADR-0059)`;
+  }
+  const notUnicast = NOT_UNICAST.find((r) => inCidr(cidrOf(r)!, at));
+  if (notUnicast !== undefined) {
+    return `is in ${notUnicast}, which is multicast or reserved: no TCP connection has such an address`;
   }
   for (const [name, range] of [
     ["the Fence's segment", ranges.segment],
@@ -382,7 +389,8 @@ export type RequiredHost = HostPort & { what: string };
  * The refusal of the first host of `required` that no item of `list` permits, or undefined. It names
  * the pod, the part of the config that uses the host, and the entry to add. `where` says which list
  * the entry goes in. A host that no entry can permit (`uncarried`) is refused with the reason, and
- * with no entry to add.
+ * with no entry to add. `bound` holds the hosts that a Held secret of the pod is bound to: such a
+ * host still needs the entry, because this call carries no Stand-in, and the refusal says so.
  */
 export function missingEntry(
   label: string,
@@ -390,6 +398,7 @@ export function missingEntry(
   list: readonly EgressItem[],
   where: string,
   ranges: FenceRanges = fenceRangesOf(undefined),
+  bound: readonly HostPort[] = [],
 ): string | undefined {
   for (const r of required) {
     const why = uncarried(r.host, ranges);
@@ -400,9 +409,13 @@ export function missingEntry(
       );
     }
     if (list.some((i) => permits(i, r.host, r.port))) continue;
+    const secret = bound.some((b) => b.host === r.host)
+      ? "A Held secret of the pod is bound to that host, but this call carries no Stand-in of it, so only an " +
+        `entry permits the call, and ${where} has none`
+      : `No secret is bound to that host, and ${where} has no entry for it`;
     return (
-      `${label} reaches ${hostText(r)} for ${r.what}. No secret is bound to that host, and ${where} has no ` +
-      `entry for it — add egress: ["${entryText(r)}"]. All code in the pod can then reach it (ADR-0084)`
+      `${label} reaches ${hostText(r)} for ${r.what}. ${secret} — add egress: ["${entryText(r)}"]. All code in ` +
+      "the pod can then reach it (ADR-0084)"
     );
   }
   return undefined;
@@ -508,14 +521,15 @@ export function egressText(rules: readonly EgressRule[]): string {
 }
 
 /**
- * The host and port of an SSH Repo url — scp-style `git@host:path`, `ssh://` or `git+ssh://` — or
- * undefined for any other url. The port of `ssh://host:2222/…` is kept; else 22.
+ * The host and port of an SSH Repo url — scp-style `git@host:path` (an IPv6 host in brackets,
+ * `git@[fd00::1]:path`), `ssh://`, `git+ssh://` or `ssh+git://` — or undefined for any other url.
+ * The port of `ssh://host:2222/…` is kept; else 22.
  */
 export function sshHostOf(url: string): HostPort | undefined {
   const raw = url.trim();
   if (!raw.includes("://")) {
-    const scp = /^(?:[^@/:]+@)?([^:/@]+):(?!\/\/)(.+)$/.exec(raw);
-    return scp ? { host: scp[1]!.toLowerCase(), port: 22 } : undefined;
+    const scp = /^(?:[^@/:[\]]+@)?(\[[^\]/@]+\]|[^:/@[\]]+):(?!\/\/)(.+)$/.exec(raw);
+    return scp ? { host: scp[1]!.toLowerCase().replace(/^\[|\]$/g, ""), port: 22 } : undefined;
   }
   let parsed: URL;
   try {
@@ -523,7 +537,7 @@ export function sshHostOf(url: string): HostPort | undefined {
   } catch {
     return undefined;
   }
-  if (parsed.protocol !== "ssh:" && parsed.protocol !== "git+ssh:") return undefined;
+  if (!["ssh:", "git+ssh:", "ssh+git:"].includes(parsed.protocol)) return undefined;
   if (parsed.hostname === "") return undefined;
   return { host: parsed.hostname.toLowerCase().replace(/^\[|\]$/g, ""), port: parsed.port ? Number(parsed.port) : 22 };
 }
