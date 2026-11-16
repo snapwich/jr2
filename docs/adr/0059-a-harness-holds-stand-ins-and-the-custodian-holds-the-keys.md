@@ -210,13 +210,14 @@ and it replaces the Adapter.
   (`jr2.custodian dns action=refuse slot=… sandbox=… name=… type=… reason=…`; `reason=no-rules` names the slot alone,
   because the slot has no rules and so no pod); a name that it answers writes no line. A slot writes at most 20 such
   lines in a second; then it writes one line with the count of the others
-  (`jr2.custodian dns action=refuse slot=… sandbox=… suppressed=N`). It prints each byte of a name outside the letters
-  of a host name as `\ddd`, so that a name cannot add a field to the line. A refusal that a slot's listener makes before
-  a name is known (a TLS name that does not agree, plain bytes where only TLS is carried, a port with no entry) names
-  the address dialed (`to=`) and the TLS name (`sni=`); the slot's resolver table gives the name of a placeholder
-  address. A tunnel whose TLS name is not a DNS name (Envoy writes it as `invalid:…`) is closed with no byte. The dial
-  listener logs it as `reason=name` with no slot, because it read no header of it, and the slot's line names the Sandbox
-  and the TLS name (`sni=invalid:…`). Never a header value, a body, a path, a query, a value or a Stand-in.
+  (`jr2.custodian dns action=refuse slot=… sandbox=… suppressed=N`; for a slot with no rules, with no `sandbox=`). It
+  prints each byte of a name outside the letters of a host name as `\ddd`, so that a name cannot add a field to the
+  line. A refusal that a slot's listener makes before a name is known (a TLS name that does not agree, plain bytes where
+  only TLS is carried, a port with no entry) names the address dialed (`to=`) and the TLS name (`sni=`); the slot's
+  resolver table gives the name of a placeholder address. A tunnel whose TLS name is not a DNS name (Envoy writes it as
+  `invalid:…`) is closed with no byte. The dial listener logs it as `reason=name` with no slot, because it read no
+  header of it, and the slot's line names the Sandbox and the TLS name (`sni=invalid:…`). Never a header value, a body,
+  a path, a query, a value or a Stand-in.
 - **The dial guard, in two halves.** The Custodian never dials a loopback, link-local (the cloud metadata address
   included, and AWS's `fd00:ec2::254`) or unspecified address, or an IPv4-mapped form of one. It never dials an address
   in the Fence's own ranges either: the segment, the placeholder range and 198.18.0.0/15

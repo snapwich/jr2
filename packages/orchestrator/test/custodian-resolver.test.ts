@@ -1,5 +1,5 @@
 // The resolver of a Custodian pod (ADR-0084), at the packet level: the answer to each query is a pure
-// function of the slot's table, and one test serves it on the loopback and asks it with Node's own
+// function of the slot's table, and some tests serve it on the loopback and ask it with Node's own
 // stub resolver (c-ares) over UDP and with framed queries over TCP.
 
 import assert from "node:assert/strict";
@@ -13,9 +13,12 @@ import {
   REFUSAL_LINES,
   refusalLog,
   resolverAnswer,
+  RESOLVER_TCP_CONNECTIONS,
+  RESOLVER_TCP_QUERIES,
   RESOLVER_UDP_SIZE,
   RULES_NAME,
   tcpFrames,
+  udpAnswer,
 } from "../src/custodian-resolver.ts";
 import { resolverTables } from "../src/custodian-control.ts";
 import { JR2_CUSTODIAN_NAME } from "../src/custodian.ts";
@@ -428,7 +431,59 @@ test("served on the loopback: Node's stub resolver gets A, NODATA for AAAA, NXDO
   }
 });
 
-test("a TCP client that reads no answer stops being read, the other slots still answer, and each query is answered once it reads", async () => {
+const framedQuery = (q: Buffer) => Buffer.concat([Buffer.from([q.length >> 8, q.length & 255]), q]);
+
+/** A TCP connection to `port` that sends `data` and reads each answer, until the connection closes
+ * or, with `want`, until it has that many answers: the answers, and how the connection ended (`end`
+ * from the server, or the error's code). */
+function tcpExchange(port: number, data: Buffer, want?: number): Promise<{ answers: Buffer[]; ended: string }> {
+  return new Promise((resolve) => {
+    const conn = connect(port, "127.0.0.1");
+    const frames = tcpFrames();
+    const answers: Buffer[] = [];
+    let ended = "close";
+    conn.on("connect", () => conn.write(data));
+    conn.on("data", (chunk: Buffer) => {
+      answers.push(...frames(chunk));
+      if (answers.length === want) conn.destroy();
+    });
+    conn.on("end", () => (ended = "end"));
+    conn.on("error", (e: NodeJS.ErrnoException) => (ended = e.code ?? "error"));
+    conn.on("close", () => resolve({ answers, ended }));
+  });
+}
+
+test("a TCP connection gets answers for RESOLVER_TCP_QUERIES queries, then the resolver closes it; a slot holds RESOLVER_TCP_CONNECTIONS connections", async () => {
+  const tables = resolverTables();
+  tables.set(TABLE);
+  const server = custodianResolver({ tables, log: () => {}, host: "127.0.0.1", slots: [3], port: () => 0 });
+  await server.listen();
+  const held: ReturnType<typeof connect>[] = [];
+  try {
+    const many = Buffer.concat(
+      Array.from({ length: RESOLVER_TCP_QUERIES + 6 }, (_, i) => framedQuery(query("github.com", { id: i }))),
+    );
+    const { answers, ended } = await tcpExchange(server.ports(3).tcp, many);
+    assert.deepEqual(
+      answers.map((a) => a.readUInt16BE(0)),
+      Array.from({ length: RESOLVER_TCP_QUERIES }, (_, i) => i),
+      "each query up to the bound is answered, in order, and no other",
+    );
+    assert.equal(ended, "end", "the resolver ends the connection after the last answer");
+
+    // The slot's connections are held: one more is closed with no answer.
+    for (let i = 0; i < RESOLVER_TCP_CONNECTIONS; i++) held.push(connect(server.ports(3).tcp, "127.0.0.1"));
+    await Promise.all(held.map((c) => new Promise((resolve) => c.once("connect", resolve))));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const more = await tcpExchange(server.ports(3).tcp, framedQuery(query("github.com")));
+    assert.equal(more.answers.length, 0, `a connection above ${RESOLVER_TCP_CONNECTIONS} gets no answer`);
+  } finally {
+    for (const c of held) c.destroy();
+    await server.close();
+  }
+});
+
+test("a TCP client that reads no answer is closed within 2 s, and the other slot and its own slot over UDP still answer", async () => {
   const tables = resolverTables();
   tables.set(TABLE);
   tables.set({ ...TABLE, slot: 4, owner: "sandbox=ws-4" });
@@ -438,25 +493,25 @@ test("a TCP client that reads no answer stops being read, the other slots still 
   try {
     await new Promise<void>((resolve, reject) => conn.once("connect", resolve).once("error", reject));
     conn.pause(); // read no answer
-    const q = query("github.com", { id: 7 });
-    const framed = Buffer.concat([Buffer.from([q.length >> 8, q.length & 255]), q]);
+    let closed: string | undefined;
+    conn.on("error", (e: NodeJS.ErrnoException) => (closed ??= e.code ?? "error"));
+    conn.on("close", () => (closed ??= "close"));
+    const framed = framedQuery(query("github.com", { id: 7 }));
     const batch = Buffer.concat(Array.from({ length: (65536 / framed.length) | 0 }, () => framed));
-    // Send until the resolver stops taking them: no 'drain' within 1.5 s. Without a bound, it
-    // takes each batch and holds each answer, so the client sends the whole 32 MB.
-    const LIMIT = 32 * 1024 * 1024;
-    let sent = 0;
-    let stalled = false;
-    while (sent < LIMIT && !stalled) {
-      sent += batch.length;
+    // Send until the connection is closed. Before the fix, the resolver kept a client that reads
+    // nothing open, with the kernel's buffers full, until the idle limit (10 s).
+    const start = Date.now();
+    while (closed === undefined && Date.now() - start < 2000) {
       if (!conn.write(batch)) {
-        stalled = !(await new Promise<boolean>((resolve) => {
-          const timer = setTimeout(() => resolve(false), 1500);
-          conn.once("drain", () => (clearTimeout(timer), resolve(true)));
-        }));
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 100);
+          conn.once("drain", () => (clearTimeout(timer), resolve()));
+        });
+      } else {
+        await new Promise((resolve) => setImmediate(resolve));
       }
     }
-    assert.ok(stalled, `the resolver took all ${sent} bytes of queries from a client that reads no answer`);
-    assert.ok(sent < LIMIT / 2, `the resolver took ${sent} bytes before it stopped`);
+    assert.ok(closed !== undefined, "the resolver keeps a connection whose client reads no answer open for 2 s");
 
     // The other slot answers, over UDP and TCP, and so does this slot over UDP.
     const other = new Resolver({ timeout: 2000, tries: 1 });
@@ -465,40 +520,43 @@ test("a TCP client that reads no answer stops being read, the other slots still 
     const same = new Resolver({ timeout: 2000, tries: 1 });
     same.setServers([`127.0.0.1:${server.ports(3).udp}`]);
     assert.deepEqual(await same.resolve4("github.com"), ["198.18.0.2"]);
-    const tcpAnswer = await new Promise<Buffer>((resolve, reject) => {
-      const c = connect(server.ports(4).tcp, "127.0.0.1");
-      const frames = tcpFrames();
-      c.on("connect", () => c.write(framed));
-      c.on("data", (chunk: Buffer) => {
-        const [a] = frames(chunk);
-        if (a) {
-          c.end();
-          resolve(a);
-        }
-      });
-      c.on("error", reject);
-    });
-    assert.equal(address(parse(tcpAnswer).answers[0]!), "198.18.0.2");
-
-    // When the client reads, the paused queries are answered, each one, in order.
-    const expected = sent / framed.length;
-    const frames = tcpFrames();
-    let got = 0;
-    await new Promise<void>((resolve, reject) => {
-      conn.on("data", (chunk: Buffer) => {
-        for (const a of frames(chunk)) {
-          assert.equal(a.readUInt16BE(0), 7);
-          if (++got === expected) resolve();
-        }
-      });
-      conn.on("error", reject);
-      conn.resume();
-    });
-    assert.equal(got, expected);
+    const { answers } = await tcpExchange(server.ports(4).tcp, framed, 1);
+    assert.equal(address(parse(answers[0]!).answers[0]!), "198.18.0.2");
   } finally {
     conn.destroy();
     await server.close();
   }
+});
+
+test("a UDP query from port 0 gets no answer, and a throw of the send or of the answer loses one answer, not the process", () => {
+  const q = query("github.com", { id: 9 });
+  const sent: { port: number; address: string }[] = [];
+  const send = (_reply: Buffer, port: number, address: string) => void sent.push({ port, address });
+  const answer = (m: Buffer) => resolverAnswer(TABLE, m, "udp").reply;
+
+  udpAnswer(answer, send, q, { port: 0, address: "127.0.0.1" });
+  assert.equal(sent.length, 0, "no answer to port 0");
+
+  // As Node's dgram does for a port it refuses.
+  const throwing = () => {
+    throw Object.assign(new RangeError("Port should be > 0 and < 65536"), { code: "ERR_SOCKET_BAD_PORT" });
+  };
+  assert.doesNotThrow(() => udpAnswer(answer, throwing, q, { port: 53, address: "127.0.0.1" }));
+  assert.doesNotThrow(() =>
+    udpAnswer(
+      () => {
+        throw new Error("a defect");
+      },
+      send,
+      q,
+      { port: 53, address: "127.0.0.1" },
+    ),
+  );
+  assert.equal(sent.length, 0);
+
+  // The next query of the slot is answered.
+  udpAnswer(answer, send, q, { port: 40000, address: "127.0.0.1" });
+  assert.deepEqual(sent, [{ port: 40000, address: "127.0.0.1" }]);
 });
 
 test("refusal lines: at most REFUSAL_LINES for each slot in one second, then one line with the count of the others", () => {

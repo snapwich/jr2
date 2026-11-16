@@ -34,9 +34,12 @@ export const RESOLVER_TTL = 60;
 export const RULES_NAME = `_rules.${JR2_CUSTODIAN_NAME}`;
 /** The largest UDP answer the resolver sends, whatever a client offers (the DNS flag day size). */
 export const RESOLVER_UDP_SIZE = 1232;
-/** The TCP connections that one slot's resolver holds at once, and how long one may be idle. */
-export const RESOLVER_TCP_CONNECTIONS = 16;
+/** The TCP connections that one slot's resolver holds at once, and how long one may be idle. A stub
+ * asks over TCP only after a truncated answer, or when it is told to, so a few are enough. */
+export const RESOLVER_TCP_CONNECTIONS = 4;
 const TCP_IDLE_MS = 10_000;
+/** The queries that one TCP connection gets answers for; then the resolver closes it. */
+export const RESOLVER_TCP_QUERIES = 64;
 /** The refusal lines that one slot writes in one second; the others are counted (`refusalLog`). */
 export const REFUSAL_LINES = 20;
 
@@ -355,10 +358,8 @@ export function custodianResolver(opts: CustodianResolverOptions): CustodianReso
   const serveUdp = (slot: number): Promise<void> =>
     new Promise((resolve, reject) => {
       const socket = createSocket("udp4");
-      socket.on("message", (msg, from) => {
-        const reply = answer(slot, msg, "udp");
-        if (reply) socket.send(reply, from.port, from.address);
-      });
+      const send = (reply: Buffer, port: number, address: string) => socket.send(reply, port, address);
+      socket.on("message", (msg, from) => udpAnswer((q) => answer(slot, q, "udp"), send, msg, from));
       socket.once("error", reject);
       socket.bind(portOf(slot), host, () => {
         socket.off("error", reject);
@@ -413,6 +414,25 @@ export function custodianResolver(opts: CustodianResolverOptions): CustodianReso
   };
 }
 
+/** One UDP query: its answer goes back to the port and address it came from. A datagram from port 0
+ * gets no answer, because no answer can reach that port (and Node's `send` throws on it). A throw of
+ * `answer` or of `send` loses this one answer and never the process, which serves each slot of the
+ * node: the client asks again. */
+export function udpAnswer(
+  answer: (query: Buffer) => Buffer | undefined,
+  send: (reply: Buffer, port: number, address: string) => void,
+  msg: Buffer,
+  from: { port: number; address: string },
+): void {
+  if (from.port === 0) return;
+  try {
+    const reply = answer(msg);
+    if (reply) send(reply, from.port, from.address);
+  } catch {
+    // One answer lost.
+  }
+}
+
 /** The refusal lines of the resolver, with a bound for each slot: at most `REFUSAL_LINES` lines in
  * one second. Each refusal above the bound is counted, and `second()` (called each second) writes one
  * line with the count (`suppressed=N`) for each slot that had one. So one Sandbox that asks for many
@@ -447,40 +467,47 @@ export function refusalLog(log: (line: string) => void): {
 }
 
 /** One TCP connection: each message has a 2-byte length (RFC 1035 4.2.2), and each query gets its
- * answer in order. A connection idle for 10 s, or one that sends a message the resolver does not
- * answer, is closed.
+ * answer in order. The resolver closes a connection (RFC 7766 permits it):
  *
- * A client that does not read its answers stops being read: when the socket's buffer is full, the
- * connection pauses, and the queries of the last chunk wait until the client reads. So one
- * connection holds at most one chunk of queries and one buffer of answers, and the kernel's window
- * stops the client's next queries. A paused connection has no activity, so the idle limit closes it. */
+ * - after it answers `RESOLVER_TCP_QUERIES` queries;
+ * - when the client does not read its answers: when the socket cannot take an answer at once, the
+ *   connection is destroyed, not paused;
+ * - when the connection is idle for 10 s, or sends a message that the resolver does not answer.
+ *
+ * The resolver reads each chunk when it comes, and keeps at most that chunk and one message that is
+ * not complete (64 KiB). So a connection never keeps the kernel's buffers full: the receive buffer is
+ * read at once, and the send buffer holds at most the answers to `RESOLVER_TCP_QUERIES` queries. A
+ * slot holds at most `RESOLVER_TCP_CONNECTIONS` connections. */
 function tcpConnection(conn: Socket, answer: (query: Buffer) => Buffer | undefined): void {
   conn.setTimeout(TCP_IDLE_MS, () => conn.destroy());
   conn.on("error", () => conn.destroy());
   const frames = tcpFrames();
-  let queries: Buffer[] = [];
-  let next = 0;
-  const pump = (): void => {
-    while (next < queries.length) {
-      const reply = answer(queries[next++]!);
+  let answered = 0;
+  conn.on("data", (chunk: Buffer) => {
+    if (conn.destroyed || conn.writableEnded) return;
+    for (const query of frames(chunk)) {
+      let reply: Buffer | undefined;
+      try {
+        reply = answer(query);
+      } catch {
+        reply = undefined;
+      }
       if (!reply) {
         conn.destroy();
         return;
       }
-      if (!conn.write(Buffer.concat([u16(reply.length), reply]))) {
-        conn.pause();
-        return; // 'drain' calls pump again
+      const framed = Buffer.concat([u16(reply.length), reply]);
+      if (++answered >= RESOLVER_TCP_QUERIES) {
+        // The last answer, then a close; the handle goes once the answer is with the kernel.
+        conn.end(framed, () => conn.destroy());
+        return;
+      }
+      if (!conn.write(framed)) {
+        conn.destroy();
+        return;
       }
     }
-    queries = [];
-    next = 0;
-    if (conn.isPaused()) conn.resume();
-  };
-  conn.on("data", (chunk: Buffer) => {
-    for (const query of frames(chunk)) queries.push(query);
-    if (!conn.writableNeedDrain) pump();
   });
-  conn.on("drain", pump);
 }
 
 /** The DNS messages in a TCP stream, chunk by chunk: each chunk gives the messages it completes. */

@@ -114,10 +114,10 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   docker — and NOT part of `pnpm -r test`. What the default gate keeps is the rendering: `custodian-rules.test.ts` and
   `custodian.test.ts` pin what jr2 writes for the Custodian, socket-free, and `custodian-control.test.ts` runs the
   Custodian's control process against a fake API and a fake Envoy admin. `custodian-resolver.test.ts` asks the
-  Custodian's resolver at the packet level, and once on the loopback with Node's own stub resolver: the resolver is
-  jr2's code, not Envoy's, so no pinned image is needed. The `@kind` tier then proves the Custodian in a real cluster,
-  for a Sandbox and for the Instance Harness, each behind its Fence, against a model provider that refuses any request
-  without the key.
+  Custodian's resolver at the packet level, and on the loopback with Node's own stub resolver: the resolver is jr2's
+  code, not Envoy's, so no pinned image is needed. The `@kind` tier then proves the Custodian in a real cluster, for a
+  Sandbox and for the Instance Harness, each behind its Fence, against a model provider that refuses any request without
+  the key.
 - **An opt-in `@model` tier, against a real model**
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). Every tier above
   fakes the model, so none can see a change in what a model DOES with what jr2 shows it — and ADR-0029/0062 measured
