@@ -61,6 +61,16 @@ type SandboxSpec struct {
 	// +optional
 	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
 
+	// Network puts the Pod on the Fence (ADR-0084): the segment is its only
+	// network, and it has no interface on the cluster's own network. The
+	// operator gives the Pod the attachment as its default network and the
+	// nameserver as its only DNS server, and, unless ReadinessProbe is set,
+	// an exec readiness probe, because no HTTP or TCP probe of the kubelet
+	// reaches a pod there. Both values are the Orchestrator's; the operator
+	// checks neither. Unset leaves the Pod on the cluster's network.
+	// +optional
+	Network *SandboxNetwork `json:"network,omitempty"`
+
 	// Sidecars are generic Kubernetes container fragments scheduled alongside
 	// the primary container. Agents live here, but the operator stays agnostic.
 	//
@@ -196,6 +206,28 @@ type SandboxSpec struct {
 	// +listMapKey=name
 	// +optional
 	GitCredentials []SandboxGitCredential `json:"gitCredentials,omitempty"`
+}
+
+// SandboxNetwork is the Pod's place on the Fence (ADR-0084).
+type SandboxNetwork struct {
+	// Attachment is the name of the NetworkAttachmentDefinition, in the
+	// Sandbox's namespace, that is the Pod's default network: the operator
+	// writes it as the `v1.multus-cni.io/default-network` annotation
+	// `<namespace>/<attachment>`, so the Pod's one interface is on its own
+	// VLAN of the segment and `status.podIP` is its slot address.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
+	Attachment string `json:"attachment"`
+
+	// Nameserver is the Pod's only DNS server, an IPv4 address: the operator
+	// sets `dnsPolicy: None` and a `dnsConfig` with this one nameserver, no
+	// search domain and `ndots:1`, because the Pod has no cluster DNS. The
+	// uplink gives each query to the Custodian's resolver, whatever server
+	// it names.
+	// +required
+	// +kubebuilder:validation:Pattern=`^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$`
+	Nameserver string `json:"nameserver"`
 }
 
 // SandboxGitCredential names one entry's push Secret, in the Sandbox's

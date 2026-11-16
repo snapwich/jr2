@@ -31,6 +31,8 @@
 // `effector harness-rules --deny <path> [--deny <path>]...` writes the rules of the Harness's domain
 // (confine.ForHarness, ADR-0076): every right on every path but the denied ones, each argument ended
 // by NUL, in confine's format.
+// `effector healthcheck <url>` is the exec readiness probe of a container on the Fence (ADR-0084):
+// one GET with a 1 s timeout, exit 0 on 200. The kubelet's HTTP and TCP probes reach no pod there.
 // `effector spawner` is the one process of that domain that the Harness talks to (package spawner,
 // ADR-0076): it starts each process that a model drives and does each file tool's I/O, over frames
 // on its stdin and stdout, which must be sockets. The Harness starts it confined:
@@ -109,6 +111,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "harness-rules" {
 		os.Exit(confine.HarnessRulesMain(os.Args[2:], os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck(os.Args[2:], os.Stderr))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "spawner" {
 		os.Exit(spawner.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))

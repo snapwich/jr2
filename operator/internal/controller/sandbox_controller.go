@@ -111,6 +111,16 @@ const (
 	// effectorGitVolume is the volume the operator makes for them when that
 	// container mounts no projected volume at effectorSecretsPath.
 	effectorGitVolume = "effector-git"
+
+	// defaultNetworkAnnotation is Multus's name for a Pod's default network
+	// (ADR-0084): with spec.network, the attachment takes the place of the
+	// cluster's network, so the Pod's one interface is on the Fence.
+	defaultNetworkAnnotation = "v1.multus-cni.io/default-network"
+	// healthcheckBinary is the Effector binary in the Harness image (and in
+	// each image that mounts /opt/jr2): its `healthcheck` subcommand is the
+	// exec readiness probe of a container on the Fence, which no HTTP or TCP
+	// probe of the kubelet reaches (ADR-0084, ADR-0063).
+	healthcheckBinary = "/opt/jr2/bin/effector"
 )
 
 // gitCredentialKeys are the keys of an entry's push Secret jr2 writes
@@ -739,14 +749,19 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 	volumes := append(append(append([]corev1.Volume{}, sandbox.Spec.Volumes...), repoVolumes...), shmVolumes...)
 	volumes, sidecars = projectGitCredentials(sandbox.Spec.GitCredentials, volumes, sidecars)
 	containers := append([]corev1.Container{primary}, sidecars...)
+	// Copied, so reconcileAsks' merge into the Pod's own map never writes
+	// through to the shared default.
+	annotations := maps.Clone(noDisruption)
+	dnsPolicy, dnsConfig := fenceDNSFor(sandbox)
+	if sandbox.Spec.Network != nil {
+		annotations[defaultNetworkAnnotation] = sandbox.Namespace + "/" + sandbox.Spec.Network.Attachment
+	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      sandbox.Name,
-			Namespace: sandbox.Namespace,
-			Labels:    sandboxLabels(sandbox),
-			// Copied, so reconcileAsks' merge into the Pod's own map never
-			// writes through to the shared default.
-			Annotations: maps.Clone(noDisruption),
+			Name:        sandbox.Name,
+			Namespace:   sandbox.Namespace,
+			Labels:      sandboxLabels(sandbox),
+			Annotations: annotations,
 		},
 		Spec: corev1.PodSpec{
 			// Bare pod, long-lived and interactive: no Deployment-style
@@ -782,7 +797,27 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			// NetworkPolicy is the next isolation layer — see ADR-0001.)
 			AutomountServiceAccountToken: ptr.To(false),
 			SecurityContext:              podSecurityContextFor(sandbox),
+			// On the Fence, the uplink's nameserver alone (fenceDNSFor);
+			// otherwise the cluster's default.
+			DNSPolicy: dnsPolicy,
+			DNSConfig: dnsConfig,
 		},
+	}
+}
+
+// fenceDNSFor is the Pod's DNS on the Fence (ADR-0084): `dnsPolicy: None`
+// and one nameserver, spec.network's, with no search domain, because the Pod
+// has no cluster DNS and a search domain would only add refused names to each
+// lookup. `ndots:1` makes a name with a dot an absolute name at once. Without
+// spec.network it is the empty policy and no config: the cluster's default.
+func fenceDNSFor(sandbox *corev1alpha1.Sandbox) (corev1.DNSPolicy, *corev1.PodDNSConfig) {
+	if sandbox.Spec.Network == nil {
+		return "", nil
+	}
+	return corev1.DNSNone, &corev1.PodDNSConfig{
+		Nameservers: []string{sandbox.Spec.Network.Nameserver},
+		Searches:    []string{},
+		Options:     []corev1.PodDNSConfigOption{{Name: "ndots", Value: ptr.To("1")}},
 	}
 }
 
@@ -945,19 +980,33 @@ func shmVolumeFor(sandbox *corev1alpha1.Sandbox) ([]corev1.Volume, []corev1.Volu
 }
 
 // readinessProbeFor returns the primary container's readiness probe: the
-// Sandbox's override when set, otherwise a GET of the Harness's own `/healthz` on the serving port
-// so phase Ready means the Harness accepts connections (not just "started").
+// Sandbox's override when set, otherwise one that asks the Harness's own
+// `/healthz` on the serving port, so phase Ready means the Harness accepts
+// connections (not just "started"). On the Fence (spec.network) it is an exec
+// probe, `effector healthcheck`, because no HTTP or TCP probe of the kubelet
+// reaches the Pod there (ADR-0084); otherwise it is the kubelet's HTTP GET.
 func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 	if sandbox.Spec.ReadinessProbe != nil {
 		return sandbox.Spec.ReadinessProbe
 	}
+	// The Harness's own route, not the port (ADR-0063): the pod has one
+	// network namespace, so a sidecar that takes the port would answer a
+	// socket probe and the pod would go Ready with no Harness in it.
+	handler := corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstrFromInt32(portFor(sandbox))},
+	}
+	var timeout int32
+	if sandbox.Spec.Network != nil {
+		handler = corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+			healthcheckBinary, "healthcheck", fmt.Sprintf("http://127.0.0.1:%d/healthz", portFor(sandbox)),
+		}}}
+		// The command bounds its GET at 1 s and must start first; the
+		// kubelet's own 1 s would count a slow start as a failure.
+		timeout = 2
+	}
 	return &corev1.Probe{
-		// The Harness's own route, not the port (ADR-0063): the pod has one
-		// network namespace, so a sidecar that takes the port would answer
-		// a socket probe and the pod would go Ready with no Harness in it.
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstrFromInt32(portFor(sandbox))},
-		},
+		ProbeHandler:   handler,
+		TimeoutSeconds: timeout,
 		// Every second, not the kubelet's 10: the default period adds up to
 		// 10s to every provision (the scaling review's R12).
 		PeriodSeconds: 1,

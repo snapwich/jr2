@@ -4,7 +4,9 @@ A `Sandbox` custom resource describes infrastructure only — a primary containe
 container specs, volumes, resources, secrets, idle timeout — and a custom operator reconciles it into one Pod — created
 once, never recreated: a pod that is gone or terminal makes the Sandbox `Lost` (ADR-0021) — and no Service: the
 Orchestrator reaches the Harness through the Custodian's uplink
-([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The pod is hardened at the host boundary:
+([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The CR names the pod's place on the Fence
+(`spec.network`: the attachment and the nameserver), and the operator makes that attachment the pod's default network
+and that nameserver its only DNS server. The pod is hardened at the host boundary:
 `automountServiceAccountToken: false`, and a `securityContext` (`runAsNonRoot`, `allowPrivilegeEscalation: false`, drop
 `ALL`, seccomp `RuntimeDefault`) on each container that jr2 owns ([ADR-0005](0005-sandbox-pod-composition.md)). The CRD
 names the Repos a Sandbox needs by identity — enough for the operator to place the pod and mount each node cache

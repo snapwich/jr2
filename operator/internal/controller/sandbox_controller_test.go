@@ -135,6 +135,41 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
 		})
 
+		It("puts the Pod on the Fence when spec.network names an attachment (ADR-0084)", func() {
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			sandbox.Spec.Network = &corev1alpha1.SandboxNetwork{Attachment: "jr2-fence-3", Nameserver: "198.19.0.1"}
+			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			Expect(pod.Annotations).To(HaveKeyWithValue("v1.multus-cni.io/default-network", "default/jr2-fence-3"))
+			Expect(pod.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
+			Expect(pod.Spec.DNSConfig.Nameservers).To(Equal([]string{"198.19.0.1"}))
+			probe := pod.Spec.Containers[0].ReadinessProbe
+			Expect(probe.HTTPGet).To(BeNil())
+			Expect(probe.Exec.Command).To(Equal([]string{
+				"/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8080/healthz"}))
+		})
+
+		It("refuses a spec.network whose nameserver is not an IPv4 address or whose attachment is not a name", func() {
+			for _, network := range []corev1alpha1.SandboxNetwork{
+				{Attachment: "jr2-fence-3", Nameserver: "fd00::1"},
+				{Attachment: "jr2-fence-3", Nameserver: "198.19.0.256"},
+				{Attachment: "other/jr2-fence-3", Nameserver: "198.19.0.1"},
+				{Attachment: "", Nameserver: "198.19.0.1"},
+			} {
+				bad := &corev1alpha1.Sandbox{
+					ObjectMeta: metav1.ObjectMeta{Name: "bad-network", Namespace: resourceNamespace},
+					Spec:       corev1alpha1.SandboxSpec{Image: "h:latest", Network: &network},
+				}
+				Expect(errors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "%+v", network)
+			}
+		})
+
 		It("reports the scheduler's own words while no node admits the Pod (ADR-0052)", func() {
 			// The Sandbox node set is empty right now — a pool scaled to zero, every node
 			// tainted — or the CR's selector admits none. Not a verdict: the set moves,

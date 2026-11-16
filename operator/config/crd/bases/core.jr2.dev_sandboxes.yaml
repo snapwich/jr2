@@ -1844,6 +1844,39 @@ spec:
                   - name
                   type: object
                 type: array
+              network:
+                description: |-
+                  Network puts the Pod on the Fence (ADR-0084): the segment is its only
+                  network, and it has no interface on the cluster's own network. The
+                  operator gives the Pod the attachment as its default network and the
+                  nameserver as its only DNS server, and, unless ReadinessProbe is set,
+                  an exec readiness probe, because no HTTP or TCP probe of the kubelet
+                  reaches a pod there. Both values are the Orchestrator's; the operator
+                  checks neither. Unset leaves the Pod on the cluster's network.
+                properties:
+                  attachment:
+                    description: |-
+                      Attachment is the name of the NetworkAttachmentDefinition, in the
+                      Sandbox's namespace, that is the Pod's default network: the operator
+                      writes it as the `v1.multus-cni.io/default-network` annotation
+                      `<namespace>/<attachment>`, so the Pod's one interface is on its own
+                      VLAN of the segment and `status.podIP` is its slot address.
+                    maxLength: 63
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  nameserver:
+                    description: |-
+                      Nameserver is the Pod's only DNS server, an IPv4 address: the operator
+                      sets `dnsPolicy: None` and a `dnsConfig` with this one nameserver, no
+                      search domain and `ndots:1`, because the Pod has no cluster DNS. The
+                      uplink gives each query to the Custodian's resolver, whatever server
+                      it names.
+                    pattern: ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$
+                    type: string
+                required:
+                - attachment
+                - nameserver
+                type: object
               nodeSelector:
                 additionalProperties:
                   type: string
