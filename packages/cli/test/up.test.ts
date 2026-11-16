@@ -6018,6 +6018,25 @@ test("the Instance Harness's held digest covers the program its custodian.lua lo
   assert.notEqual(digest(`${CUSTODIAN_PROGRAM}\n-- edited\n`), digest(), "program.lua");
 });
 
+test("the Instance Harness's held digest does not cover its Egress list, which nothing in the pod reads yet (ADR-0084)", () => {
+  const secrets: HeldManifest["secrets"] = [
+    { name: "JIRA_TOKEN", source: { kind: "literal" }, hosts: [], headers: ["authorization"] },
+  ];
+  const files = { bootstrap: '{"static_resources":{}}', script: 'HELD = {}\ndofile("program.lua")\n' };
+  const digest = (egress: HeldManifest["egress"]) => {
+    const pod = { pod: "instance", manifest: { version: 1 as const, secrets, egress }, values: { JIRA_TOKEN: "v" } };
+    return heldDigest(
+      Buffer.from("k"),
+      { pods: [pod], instance: files, leaves: {} },
+      { ...pod, custodian: files },
+      () => "d",
+    );
+  };
+  const rule = { host: "vllm.internal", port: 443, match: "name" as const, from: ["entry" as const] };
+  assert.equal(digest([{ ...rule, intercept: true }]), digest([]), "a changed Egress list does not roll the pod");
+  assert.equal(digest([{ ...rule, intercept: true }]), digest([{ ...rule, intercept: false }]));
+});
+
 test("the Orchestrator may apply a Sandbox's Custodian ConfigMap — and may not read, list or delete one (ADR-0059)", async () => {
   // It renders a Sandbox's two files at provision with a server-side apply (create + patch); the
   // CR's ownerReference takes them away with the pod, so the Orchestrator needs no delete.

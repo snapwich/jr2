@@ -63,6 +63,7 @@ import { refuseSlotActiveTwice } from "./party.ts";
 import { refuseLostOutput } from "./run-output.ts";
 import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 import type { EgressEntry } from "./egress.ts";
+import type { TextPart } from "./effector-wire.ts";
 
 // --- Repo Slots (ADR-0051) ---------------------------------------------------------------------
 // A `workspace()` names each Repo it attaches under a SLOT — the Machine's own word for it, the
@@ -585,6 +586,9 @@ export type CarriedEffect = {
         method: string;
         target?: { scheme: "http" | "https"; host: string; port: number };
         secrets: string[];
+        /** The secrets that sit in its url's path alone, never in a header or its auth. The
+         * Effector holds each, so they bind no host of the Custodian's (ADR-0068, ADR-0084). */
+        urlSecrets?: string[];
         idempotent: boolean;
         file?: true;
         open?: Array<"url" | "secret">;
@@ -984,6 +988,25 @@ export function placedEffectsOf(root: AnyStateMachine): CarriedEffect[] {
   return effects;
 }
 
+/** The secrets of an http Effect that sit in its url alone (`CarriedEffect.urlSecrets`), when any. */
+function urlSecretsOf(parts: Extract<EffectParts, { kind: "http" }>): { urlSecrets?: string[] } {
+  if (parts.url === open) return {};
+  const named = (text: readonly TextPart[]) => text.flatMap((p) => ("secret" in p ? [p.secret] : []));
+  const auth = parts.auth;
+  const elsewhere = new Set([
+    ...Object.values(parts.headers).flatMap(named),
+    ...(auth === undefined
+      ? []
+      : "bearer" in auth
+        ? [auth.bearer.secret]
+        : "basic" in auth
+          ? [...named(auth.basic.user), ...named(auth.basic.password)]
+          : named(auth.text)),
+  ]);
+  const inUrl = [...new Set(named(parts.url))].filter((s) => !elsewhere.has(s));
+  return inUrl.length ? { urlSecrets: inUrl } : {};
+}
+
 /** One Effect slot's plain data, as `jr2 up` and the placement read it. */
 export function carriedEffectOf(
   name: string,
@@ -1021,6 +1044,7 @@ export function carriedEffectOf(
       ...(parts.target === open ? {} : { target: { ...parts.target } }),
       ...(openParts.length ? { open: openParts as Array<"url" | "secret"> } : {}),
       secrets: [...parts.secrets],
+      ...urlSecretsOf(parts),
       idempotent: parts.idempotent,
       timeoutMs: parts.timeoutMs,
       ...(parts.file ? { file: true as const } : {}),

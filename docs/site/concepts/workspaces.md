@@ -277,8 +277,9 @@ ssh, jr2 permits the ssh port (22 by default) of the host of each ssh Repo that 
 you or an Agent run by hand needs an entry for its host, such as `github.com`.
 
 A host with no secret needs an entry, also when jr2 itself uses it: a model endpoint with no key, an MCP server with no
-token, or a url that the Sandbox Effector calls with no secret. `jr2 up` refuses to converge while such a host has no
-entry, and it prints the entry to add.
+token, or a url that the Sandbox Effector calls with no secret. A secret in the path of a url does not count, because
+the Effector holds it, not the Custodian. `jr2 up` refuses to converge while such a host has no entry, and it prints the
+entry to add. A host that no entry can name, such as `localhost` or an IPv6 address, is refused with the reason.
 
 The Custodian refuses with a reason, and logs each refusal with the Sandbox, the name, the port and the reason:
 

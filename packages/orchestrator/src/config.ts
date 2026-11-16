@@ -931,7 +931,8 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
  * The two IPv4 ranges of the Fence (`fence` in `jr2.config.ts`). Change one only when an address of
  * your network is in it. Each is a network address with its prefix, at least as large as its
  * default, outside the addresses that the Custodian never dials (loopback, link-local and
- * `0.0.0.0/8`), and the two do not overlap. The config load refuses another value:
+ * `0.0.0.0/8`) and outside multicast and reserved IPv4 (`224.0.0.0/4`, `240.0.0.0/4`), and the two
+ * do not overlap. The config load refuses another value:
  * `<file> at fence.<key>: <problem>`. The node prerequisite must use the same segment.
  */
 export type FenceConfig = {

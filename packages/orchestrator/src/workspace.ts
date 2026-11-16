@@ -761,7 +761,8 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
    * Default: the Instance's `egress`. The entries have the forms of the Instance's list
    * ({@link EgressEntry}): `"host"`, `"host:port"`, `"*.example.com"`, `"*"`, `"10.0.0.5:8000"`, and
    * `{ host, port?, intercept: true }`. A host that a Held secret of this pod is bound to needs no
-   * entry, and port 22 of each SSH Repo that the Workspace binds is permitted with no entry. A host
+   * entry, and each SSH Repo that the Workspace binds is permitted with no entry, on the port of its
+   * url, 22 by default. A host
    * that jr2 uses from this pod with no secret needs an entry here, because this list replaces the
    * Instance's: `jr2 up` refuses to converge without it, and prints the entry to add.
    */
@@ -923,9 +924,9 @@ export type PermissiveNoSlotWorkspaceOptions = Omit<SandboxOptions<never>, "repo
  * - a bad `egress` entry: ``workspace(): egress[<i>] "<entry>" <problem> — an entry is "host",
  *   "host:port", "*.domain", "*", "a.b.c.d:port", or { host, port?, intercept: true } (ADR-0084)``.
  *   The problem is one of: an IPv6 address, a range, an address with no port, an address that the
- *   Custodian never dials, an address in 198.18.0.0/15, a URL, a loopback name, a name in
- *   `jr2.internal`, or a wildcard with `intercept: true`. `jr2 up` checks the list again against
- *   the Instance's `fence`.
+ *   Custodian never dials, an address in 198.18.0.0/15, a URL, a name whose last label is a
+ *   number, a loopback name, a name in `jr2.internal`, or a wildcard with `intercept: true`.
+ *   `jr2 up` checks the list again against the Instance's `fence`.
  * - a `projectContext` that is not `"worktree"` or `"workspace"`: ``workspace(): `projectContext` is
  *   "worktree" or "workspace" (got <value>) (ADR-0062).``
  * - a bad `effector`: ``workspace(): `effector` is { image } — a `file:` URL to a docker context

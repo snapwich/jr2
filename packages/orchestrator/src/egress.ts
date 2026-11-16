@@ -7,8 +7,10 @@
 //                          `workspace()`'s), into items, or the first refusal
 //   egressWarnings(...)    the warning of each `"*"` and `*.` entry: each one is a channel out
 //   missingEntry(...)      the refusal of a host that jr2 itself uses, has no secret, and no entry
-//   egressRulesOf(...)     one pod's rules: its list, its bound hosts (Intercepted) and its SSH
-//                          Repos' port 22 — what its manifest (`held-<pod>.json`) carries
+//   egressRulesOf(...)     one pod's rules: its list, its bound hosts (Intercepted) and the port of
+//                          each SSH Repo's url, 22 by default — what its manifest (`held-<pod>.json`)
+//                          carries
+//   uncarriedHosts(...)    each bound or SSH Repo host that the Fence cannot carry, for a warning
 //
 // It also holds the two address ranges of the Fence: the segment, where each Harness pod has its
 // address, and the placeholder range, from which the resolver gives each name an address in each
@@ -27,8 +29,8 @@ import { isIP } from "node:net";
  * - `{ host, port?, intercept: true }`: an exact name or address that the Custodian intercepts. It
  *   ends the TLS of that host, checks the `Host` header, and removes each credential header.
  *
- * A host that a Held secret of the pod is bound to needs no entry, and port 22 of each SSH Repo that
- * the Workspace binds is permitted with no entry. A host that jr2 uses from the pod with no secret
+ * A host that a Held secret of the pod is bound to needs no entry, and each SSH Repo that the
+ * Workspace binds is permitted with no entry, on the port of its url, 22 by default. A host that jr2 uses from the pod with no secret
  * needs an entry: a model endpoint with no key, an MCP server with no `secret`, and the url of a
  * Sandbox Effector's `http` Effect with no secret. `jr2 up` refuses to converge without it:
  * `<pod> reaches <host> for <part>. No secret is bound to that host, and <list> has no entry for it — add egress: ["<entry>"]`.
@@ -39,8 +41,9 @@ import { isIP } from "node:net";
  * `<at>[<i>] "<entry>" <problem> — an entry is "host", "host:port", "*.domain", "*", "a.b.c.d:port", or { host, port?, intercept: true }`.
  * The problem is one of: an IPv6 address, a range, an address with no port, an address that the
  * Custodian never dials (loopback, link-local, `0.0.0.0`), an address in the Fence's own ranges
- * (`fence`, and 198.18.0.0/15), a URL, a loopback name, a name in `jr2.internal`, or `intercept` on
- * a wildcard.
+ * (`fence`, and 198.18.0.0/15), a URL, a name whose last label is a number (`0x7f.1`), a loopback
+ * name, a name in `jr2.internal`, or `intercept` on a wildcard. A host that jr2 uses with no secret
+ * and that no entry can permit (such as `localhost` or an IPv6 address) is refused with the reason.
  */
 export type EgressEntry = string | EgressHost;
 
@@ -116,6 +119,8 @@ export const FENCE_PLACEHOLDERS = "198.18.0.0/16";
 /** The range that holds both defaults (RFC 2544's benchmark range). No entry can name an address in
  * it, whatever the Instance's `fence` says. */
 const FENCE_DEFAULT_RANGE = "198.18.0.0/15";
+/** Multicast and reserved IPv4: no unicast TCP connection has an address in them. */
+const NOT_UNICAST: readonly string[] = ["224.0.0.0/4", "240.0.0.0/4"];
 
 /** The two ranges of the Fence (`fence` in `jr2.config.ts`): `segment` and `placeholders`, each an
  * IPv4 prefix `a.b.c.d/n`. */
@@ -128,8 +133,8 @@ export function fenceRangesOf(fence: Partial<FenceRanges> | undefined): FenceRan
 
 /**
  * `fence`'s SHAPE (the config load): an object with `segment?` and `placeholders?`, each an IPv4
- * prefix with no host bits, at least as large as its default, not inside a guarded range, and the
- * two do not overlap.
+ * prefix with no host bits, at least as large as its default, outside a guarded range and outside
+ * the multicast and reserved ranges, and the two do not overlap.
  */
 export function checkFence(fence: unknown, where: string): void {
   const hint = `fence is { segment?, placeholders? }, each an IPv4 prefix such as "${FENCE_SEGMENT}" (ADR-0084)`;
@@ -167,6 +172,13 @@ export function checkFence(fence: unknown, where: string): void {
       throw new Error(
         `${where} at fence.${key}: "${raw}" overlaps ${intText(guarded.base)}/${guarded.prefix}, which the ` +
           "Custodian never dials (ADR-0059, ADR-0084)",
+      );
+    }
+    const notUnicast = NOT_UNICAST.find((r) => overlaps(cidrOf(r)!, cidr));
+    if (notUnicast !== undefined) {
+      throw new Error(
+        `${where} at fence.${key}: "${raw}" overlaps ${notUnicast}, which is multicast or reserved: no TCP ` +
+          "connection has such an address (ADR-0084)",
       );
     }
     parsed[key] = cidr;
@@ -273,12 +285,36 @@ function item(
     if (why !== undefined) refuse(why);
     return { at, host, match: "address", ports, intercept };
   }
-  if (/^[0-9.]+$/.test(host)) refuse("is not an IPv4 address");
-  if (!isDnsName(host)) refuse("is not a DNS name or an IPv4 address");
-  if (host === "localhost" || host.endsWith(".localhost"))
-    refuse("is a loopback name, which the Custodian never dials");
-  if (ownName(host)) refuse(`names ${JR2_NAME_DOMAIN}, the domain of jr2's own names`);
+  const why = refusedName(host);
+  if (why !== undefined) refuse(why);
   return { at, host, match: "name", ports, intercept };
+}
+
+/** Why a name is refused as an entry, or undefined. A name whose last label is a number (decimal,
+ * or `0x` and hex) is an address to a URL parser and to `inet_aton` (`127.1`, `0x7f.1`,
+ * `0x7f000001`), and no top-level domain is a number, so it is refused as an address that is not
+ * written as one. */
+function refusedName(host: string): string | undefined {
+  const last = host.slice(host.lastIndexOf(".") + 1);
+  if (/^[0-9]+$/.test(last) || /^0x[0-9a-f]*$/i.test(last)) {
+    return "is not an IPv4 address a.b.c.d, and a name whose last label is a number is read as one";
+  }
+  if (!isDnsName(host)) return "is not a DNS name or an IPv4 address";
+  if (host === "localhost" || host.endsWith(".localhost")) return "is a loopback name, which the Custodian never dials";
+  if (ownName(host)) return `names ${JR2_NAME_DOMAIN}, the domain of jr2's own names`;
+  return undefined;
+}
+
+/**
+ * Why the Fence cannot carry `host`, or undefined (ADR-0084): an IPv6 address (the Fence carries
+ * IPv4 alone), an IPv4 address that no entry can name (`refusedAddress`), or a name that no entry
+ * can name. A host that jr2 derives — a model endpoint, an MCP server, a bound host, an SSH Repo —
+ * is checked with it, because no entry can permit it.
+ */
+export function uncarried(host: string, ranges: FenceRanges = fenceRangesOf(undefined)): string | undefined {
+  if (isIP(host) === 6) return "is an IPv6 address, and the Fence carries IPv4 alone";
+  if (isIP(host) === 4) return refusedAddress(host, ranges);
+  return refusedName(host);
 }
 
 /** Why an IPv4 entry is refused, or undefined: an address of the Fence, or one the Custodian never
@@ -345,15 +381,24 @@ export type RequiredHost = HostPort & { what: string };
 /**
  * The refusal of the first host of `required` that no item of `list` permits, or undefined. It names
  * the pod, the part of the config that uses the host, and the entry to add. `where` says which list
- * the entry goes in.
+ * the entry goes in. A host that no entry can permit (`uncarried`) is refused with the reason, and
+ * with no entry to add.
  */
 export function missingEntry(
   label: string,
   required: readonly RequiredHost[],
   list: readonly EgressItem[],
   where: string,
+  ranges: FenceRanges = fenceRangesOf(undefined),
 ): string | undefined {
   for (const r of required) {
+    const why = uncarried(r.host, ranges);
+    if (why !== undefined) {
+      return (
+        `${label} reaches ${hostText(r)} for ${r.what}, with no secret. The Fence cannot carry that host: it ${why}, ` +
+        "so no entry can permit it — use a host that the pod can reach through the Fence (ADR-0084)"
+      );
+    }
     if (list.some((i) => permits(i, r.host, r.port))) continue;
     return (
       `${label} reaches ${hostText(r)} for ${r.what}. No secret is bound to that host, and ${where} has no ` +
@@ -368,23 +413,28 @@ export function entryText({ host, port }: HostPort): string {
   return isIP(host) === 0 && DEFAULT_EGRESS_PORTS.includes(port) ? host : `${host}:${port}`;
 }
 
-/** `host` for 443, else `host:port`. */
+/** `host` for 443, else `host:port`; an IPv6 address in brackets. */
 export function hostText({ host, port }: HostPort): string {
-  return port === 443 ? host : `${host}:${port}`;
+  const shown = isIP(host) === 6 ? `[${host}]` : host;
+  return port === 443 ? shown : `${shown}:${port}`;
 }
 
-/**
- * One pod's rules (ADR-0084), sorted by host and port: one per item and port of its list, each bound
- * host (a Held secret's, or its Sandbox Effector's) as an Intercepted host, which needs no entry,
- * and port 22 of each SSH Repo that its Workspace binds, as a Tunneled host. A bound host that the
- * list also names stays Intercepted, and its `from` names both.
- */
-export function egressRulesOf(parts: {
+/** The parts of one pod's rules: its parsed list, and the hosts that need no entry. */
+export type EgressParts = {
   list: readonly EgressItem[];
   held: readonly HostPort[];
   effector: readonly HostPort[];
   repos: readonly HostPort[];
-}): EgressRule[] {
+};
+
+/**
+ * One pod's rules (ADR-0084), sorted by host and port: one per item and port of its list, each bound
+ * host (a Held secret's, or its Sandbox Effector's) as an Intercepted host, which needs no entry,
+ * and each SSH Repo that its Workspace binds, on the port of its url (22 by default), as a Tunneled
+ * host. A bound host that the list also names stays Intercepted, and its `from` names both. A bound
+ * or SSH Repo host that the Fence cannot carry (`uncarriedHosts`) gets no rule.
+ */
+export function egressRulesOf(parts: EgressParts, ranges: FenceRanges = fenceRangesOf(undefined)): EgressRule[] {
   const rules = new Map<string, EgressRule>();
   const add = (host: string, port: number, match: EgressMatch, intercept: boolean, from: EgressSource): void => {
     const key = JSON.stringify([match, host, port]);
@@ -399,13 +449,43 @@ export function egressRulesOf(parts: {
   };
   for (const i of parts.list) for (const port of i.ports) add(i.host, port, i.match, i.intercept, "entry");
   const exact = (host: string): EgressMatch => (isIP(host) === 0 ? "name" : "address");
-  for (const h of parts.held) add(h.host, h.port, exact(h.host), true, "held");
-  for (const h of parts.effector) add(h.host, h.port, exact(h.host), true, "effector");
-  for (const h of parts.repos) add(h.host, h.port, exact(h.host), false, "repo");
+  const carried = (h: HostPort) => uncarried(h.host, ranges) === undefined;
+  for (const h of parts.held.filter(carried)) add(h.host, h.port, exact(h.host), true, "held");
+  for (const h of parts.effector.filter(carried)) add(h.host, h.port, exact(h.host), true, "effector");
+  for (const h of parts.repos.filter(carried)) add(h.host, h.port, exact(h.host), false, "repo");
   const order: Record<EgressMatch, number> = { name: 0, address: 1, below: 2, any: 3 };
   return [...rules.values()].sort(
     (a, b) => order[a.match] - order[b.match] || a.host.localeCompare(b.host) || a.port - b.port,
   );
+}
+
+/**
+ * The warning of each bound or SSH Repo host of one pod that the Fence cannot carry (ADR-0084): an
+ * IPv6 address, or an address or name that no entry can name. It gets no rule, so the pod cannot
+ * reach it through the Fence. `label` names the pod.
+ */
+export function uncarriedHosts(
+  label: string,
+  parts: Omit<EgressParts, "list">,
+  ranges: FenceRanges = fenceRangesOf(undefined),
+): string[] {
+  const out: string[] = [];
+  const what: Record<keyof typeof parts, string> = {
+    held: "a Held secret is bound to it",
+    effector: "its Sandbox Effector uses it with a secret",
+    repos: "it binds an SSH Repo there",
+  };
+  for (const from of ["held", "effector", "repos"] as const) {
+    for (const h of parts[from]) {
+      const why = uncarried(h.host, ranges);
+      if (why === undefined) continue;
+      const line =
+        `${label} reaches ${hostText(h)} (${what[from]}), but the Fence cannot carry that host: it ${why}. ` +
+        "The pod cannot reach it through the Fence (ADR-0084)";
+      if (!out.includes(line)) out.push(line);
+    }
+  }
+  return out;
 }
 
 /** One line for a human: each rule as `host:port`, Intercepted or Tunneled, grouped. */

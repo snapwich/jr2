@@ -17,8 +17,11 @@ import {
   parseEgressList,
   permits,
   sshHostOf,
+  uncarriedHosts,
   type EgressRule,
 } from "../src/egress.ts";
+import { bearer, file, http, secret, text } from "../src/http-effect.ts";
+import { placementWalkOf } from "../src/assembly-checks.ts";
 import { heldSecretsOf, readHeldManifest, workspaceHeldPod } from "../src/held-secrets.ts";
 import { secretPlacementsOf, type PlacementWalk } from "../src/secret-placement.ts";
 import { workspacePodsOf, type CarriedEffect, type WorkspacePod } from "../src/parts.ts";
@@ -148,6 +151,12 @@ test("an address entry needs its port; IPv6, a range, and the addresses of the g
   refused("https://github.com", /is a URL/);
   refused("github.com/acme", /has a path/);
   refused("localhost:8000", /is a loopback name/);
+  // A name whose last label is a number is an address to a URL parser and to inet_aton.
+  refused("0x7f000001:80", /is not an IPv4 address a\.b\.c\.d, and a name whose last label is a number/);
+  refused("0x7f.1:80", /is not an IPv4 address a\.b\.c\.d/);
+  refused("127.1:80", /is not an IPv4 address a\.b\.c\.d/);
+  refused({ host: "0177.0.0.1", port: 80 }, /is not an IPv4 address a\.b\.c\.d/);
+  assert.equal(parseEgressList("egress", ["0x7f.example.com", "a1.example"]).length, 2, "a hex label inside a name");
   refused("custodian.jr2.internal", /names jr2\.internal, the domain of jr2's own names/);
   refused("*.jr2.internal", /names jr2\.internal/);
   refused("git*hub.com", /holds a \* that is not/);
@@ -188,6 +197,9 @@ test("the config load refuses a bad entry by its path, and checks `fence`", asyn
     /the segment 198\.18\.0\.0\/20 and the placeholders 198\.18\.0\.0\/16 overlap/,
   );
   assert.throws(() => checkFence({ segment: "169.254.0.0/16" }, at), /overlaps 169\.254\.0\.0\/16/);
+  // No unicast TCP connection has a multicast or a reserved address.
+  assert.throws(() => checkFence({ segment: "224.0.0.0/20" }, at), /overlaps 224\.0\.0\.0\/4, which is multicast/);
+  assert.throws(() => checkFence({ placeholders: "240.0.0.0/16" }, at), /overlaps 240\.0\.0\.0\/4/);
   assert.throws(() => checkFence({ ranges: [] }, at), /at fence\.ranges: not a field/);
 });
 
@@ -340,6 +352,89 @@ test("a model endpoint with no key, an MCP server with no secret, and a Sandbox 
     ],
     [rule("hooks.example.com", 443), rule("s3.example.com", 443, { intercept: true, from: ["effector"] })],
   );
+});
+
+test("a host jr2 uses with no secret that no entry can permit is refused with the reason, not with an entry to add", () => {
+  for (const [baseUrl, why] of [
+    ["http://localhost:8000/v1", /it is a loopback name/],
+    ["http://127.0.0.1:8000/v1", /it is in 127\.0\.0\.0\/8, which the Custodian never dials/],
+    ["http://198.18.0.9:8000/v1", /it is in 198\.18\.0\.0\/16, the Fence's placeholder range/],
+    ["http://[fd00::5]:8000/v1", /reaches \[fd00::5\]:8000 .*it is an IPv6 address, and the Fence carries IPv4 alone/],
+  ] as const) {
+    const config: JR2Config = { harness: { provider: { id: "vllm", api: "openai-completions", baseUrl } } };
+    assert.throws(
+      () => secretPlacementsOf(config, walk({ workspaces: [ws({ models: ["vllm/q"] })] })),
+      (err: Error) => {
+        assert.match(err.message, /The Fence cannot carry that host/, baseUrl);
+        assert.match(err.message, why, baseUrl);
+        assert.doesNotMatch(err.message, /add egress/, baseUrl);
+        return true;
+      },
+    );
+  }
+});
+
+test("a bound or SSH Repo host that the Fence cannot carry gets no rule, and a warning", () => {
+  const config: JR2Config = {
+    secrets: [{ name: "T", value: "a-long-enough-key", hosts: ["[fd00::7]:443"], headers: ["authorization"] }],
+  };
+  const w = walk({
+    workspaces: [ws({ secrets: ["T"], bindings: { app: "ssh://git@[fd00::1]:2222/x", lib: "git@github.com:a/b" } })],
+  });
+  const placements = secretPlacementsOf(config, w);
+  const { manifest } = heldSecretsOf(config, placements.claimed);
+  const plan = placements.held.find((p) => p.pod === ROOT)!;
+  const parts = { ...plan.egress, held: manifest.secrets.flatMap((b) => b.hosts) };
+  assert.deepEqual(egressRulesOf(parts), [rule("github.com", 22, { from: ["repo"] })]);
+  const warnings = uncarriedHosts(plan.label, parts);
+  assert.equal(warnings.length, 2, warnings.join("\n"));
+  assert.match(
+    warnings[0]!,
+    /reaches \[fd00::7\] \(a Held secret is bound to it\), but the Fence cannot carry that host: it is an IPv6/,
+  );
+  assert.match(
+    warnings[1]!,
+    /reaches \[fd00::1\]:2222 \(it binds an SSH Repo there\), but the Fence cannot carry that host/,
+  );
+  // A Sandbox Effector's bound host in a refused range.
+  const effector = uncarriedHosts("w", { held: [], effector: [{ host: "169.254.169.254", port: 80 }], repos: [] });
+  assert.match(effector[0]!, /\(its Sandbox Effector uses it with a secret\).*it is in 169\.254\.0\.0\/16/);
+});
+
+test("an http Effect whose secrets sit in its url alone binds no host: its target needs an entry", () => {
+  const body = (actors: Record<string, unknown>) =>
+    workspace(
+      jr2Setup({ events: [], actors: actors as never }).createMachine({ on: { "workspace.lost": {} }, id: "b" }),
+      { repos: { app: "https://example.test/app.git" } },
+    );
+  const config: JR2Config = { secrets: [{ name: "tg", value: "a-long-enough-key" }] };
+  const inUrl = http({
+    method: "POST",
+    url: text`https://api.telegram.org/bot${secret("tg")}/sendMessage`,
+    body: file("m"),
+  });
+  const w = placementWalkOf([{ name: "ticket", machine: body({ notify: inUrl }) }]);
+  assert.deepEqual(w.workspaces[0]!.pod.effects[0], { ...w.workspaces[0]!.pod.effects[0], urlSecrets: ["tg"] });
+  assert.throws(
+    () => secretPlacementsOf(config, w),
+    /reaches api\.telegram\.org for the http Effect "notify" \(a secret in its url alone\)\. .* add egress: \["api\.telegram\.org"\]/,
+  );
+  assert.deepEqual(rulesOf({ ...config, egress: ["api.telegram.org"] }, w)[ROOT], [
+    rule("api.telegram.org", 80),
+    rule("api.telegram.org", 443),
+  ]);
+  // The same secret in its auth too: the Custodian holds it, so the host is bound.
+  const both = http({
+    method: "POST",
+    url: text`https://api.telegram.org/bot${secret("tg")}/sendMessage`,
+    body: file("m"),
+    auth: bearer(secret("tg")),
+  });
+  const bound = placementWalkOf([{ name: "ticket", machine: body({ notify: both }) }]);
+  assert.equal((bound.workspaces[0]!.pod.effects[0] as { urlSecrets?: string[] }).urlSecrets, undefined);
+  assert.deepEqual(rulesOf(config, bound)[ROOT], [
+    rule("api.telegram.org", 443, { intercept: true, from: ["effector"] }),
+  ]);
 });
 
 test("an SSH Repo that the Workspace binds gets its port, 22 by default, as a Tunneled host with no entry", () => {

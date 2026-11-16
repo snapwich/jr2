@@ -46,9 +46,9 @@ and that holds when Workspace code is root in the Sandbox.
   or an address in the Fence's own ranges.
 - **The Fence has two address ranges of its own.** The segment, where each Harness pod has its address, is
   198.19.0.0/20, and the placeholder addresses are in 198.18.0.0/16. The Instance's config can move each one (`fence`)
-  to a range that is at least as large and that does not overlap the other or an address that the dial guard refuses,
-  because a network can already use those addresses. No entry can name an address in 198.18.0.0/15, whatever `fence`
-  says.
+  to a range that is at least as large and that does not overlap the other, an address that the dial guard refuses, or a
+  multicast or reserved address, because a network can already use those addresses. No entry can name an address in
+  198.18.0.0/15, whatever `fence` says.
 - **A host is an Intercepted host or a Tunneled host.** The Custodian ends the TLS of an Intercepted host, so it can
   read the request, swap a Stand-in and check the `Host` header (ADR-0059). These are each host that the Custodian holds
   a secret for, for that Sandbox's Harness or its Sandbox Effector, the name of jr2's control routes, and each host
@@ -58,8 +58,10 @@ and that holds when Workspace code is root in the Sandbox.
   Effector, is permitted for that pod, and it is an Intercepted host. The Custodian refuses a request to it that carries
   no Stand-in. So Workspace code cannot use the model's host unless its Workspace grants a secret for it.
 - **A host with no secret needs an entry, also when jr2 itself uses it.** Examples are a model endpoint with no key, an
-  MCP server with no token and the url of an Effect with no secret. `jr2 up` refuses to converge while such a host has
-  no entry, and it prints the entry to add. All code in the Sandbox can then reach that host.
+  MCP server with no token and the url of an Effect with no secret. A secret in a url's path stays in the Effector
+  (ADR-0068), so the Custodian holds no secret for that host, and it needs an entry too. `jr2 up` refuses to converge
+  while such a host has no entry, and it prints the entry to add. All code in the Sandbox can then reach that host. A
+  host that no entry can name, such as `localhost` or an IPv6 address, is refused with the reason.
 - **A Sandbox's Intercepted hosts are fixed at provision.** The certificates for them are made before the pod starts
   (ADR-0059). A new Intercepted host applies to the next Sandbox. A Tunneled host can be added while the Sandbox lives.
 - **jr2's own traffic takes the same path.** The Harness's model calls, its MCP calls, the Menu, the fetch route and the

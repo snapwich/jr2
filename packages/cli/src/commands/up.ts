@@ -118,6 +118,8 @@ import {
   memoryBytes,
   egressRulesOf,
   egressText,
+  fenceRangesOf,
+  uncarriedHosts,
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { awaitMounts, digestSecretsOf, mountedDigests, staleLine } from "../mount-wait.ts";
@@ -1644,10 +1646,14 @@ async function resolveHeld(
   // files are rendered by whoever makes the pod — here for the Instance Harness alone; the
   // Orchestrator at provision for a Sandbox, from the same manifest (ADR-0059).
   // Its Egress list (ADR-0084) joins what the placement read with the hosts its Held secrets are
-  // bound to: each is an Intercepted host, which needs no entry.
+  // bound to: each is an Intercepted host, which needs no entry. A bound or SSH Repo host that the
+  // Fence cannot carry gets no rule, and a warning.
+  const ranges = fenceRangesOf(config.fence);
   const pods: HeldPodObjects[] = opts.pods.map((plan) => {
     const secrets = manifest.secrets.filter((b) => plan.names.includes(b.name));
-    const egress = egressRulesOf({ ...plan.egress, held: secrets.flatMap((b) => b.hosts) });
+    const parts = { ...plan.egress, held: secrets.flatMap((b) => b.hosts) };
+    for (const warning of uncarriedHosts(plan.label, parts, ranges)) activity(io, `warning: ${warning}`);
+    const egress = egressRulesOf(parts, ranges);
     activity(io, `${plan.label}: Egress list ${egressText(egress)}`);
     const own: HeldManifest = { version: 1, secrets, egress };
     const literals = Object.fromEntries(
@@ -1740,7 +1746,9 @@ function instanceHeld(held: HeldObjects): HeldPodObjects & { custodian: Custodia
  * the signing key so the annotation reveals nothing about a value. Its Custodian reads each value
  * once at start, so a value edited in the user's Secret must roll it — and so must an edit to its
  * two rendered files or the program they load. `program` is the kit's program; it is an input
- * only so that its test can change it. Exported for its test alone. */
+ * only so that its test can change it. Exported for its test alone.
+ * Its Egress list is not an input: nothing in the pod reads it yet, so a change of it must not roll
+ * the pod (ADR-0084). The part of the Fence that reads it states what rolls the pod. */
 export function heldDigest(
   key: Buffer,
   all: HeldObjects,
@@ -1749,7 +1757,7 @@ export function heldDigest(
   program: string = CUSTODIAN_PROGRAM,
 ): string {
   const mac = createHmac("sha256", key);
-  mac.update(JSON.stringify(held.manifest));
+  mac.update(JSON.stringify({ version: held.manifest.version, secrets: held.manifest.secrets }));
   const stems = new Set(held.manifest.secrets.flatMap((s) => s.hosts.map((h) => h.leaf)));
   for (const stem of [...stems].sort()) mac.update(`${stem}:${fingerprint(all.leaves[stem]!.cert)}`);
   for (const name of Object.keys(held.values).sort()) mac.update(`${name}=${held.values[name]}`);

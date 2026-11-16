@@ -31,6 +31,7 @@ import type { JR2Config } from "../src/config.ts";
 import { customize } from "../src/customize.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
+import { secretPlacementsOf } from "../src/secret-placement.ts";
 
 function boxed(image: string) {
   const body = jr2Setup({
@@ -430,4 +431,41 @@ test("customize() replaces an Agent's mcp list (ADR-0054, ADR-0079)", () => {
   });
   assert.deepEqual(mcpRefusals([{ name: "ticket", machine: bound }], MCP_CONFIG), []);
   assert.deepEqual(partsOf([bound]).mcpAgents.find((a) => a.slot === "coder")?.mcp, [{ server: "slack", tools: "*" }]);
+});
+
+test("the door runs no Egress refusal: its config has no .env, so a key read from .env is absent there (ADR-0084)", async () => {
+  // The Orchestrator loads jr2.config.ts with no `.env`: `apiKey: process.env.KEY` reads undefined
+  // there, though the host read the key and `jr2 up` placed it. The door must not take the
+  // provider's host for one with no secret.
+  const body = jr2Setup({
+    events: [],
+    actors: { coder: agent({ model: "vllm/qwen", instructions: "i" }) },
+  }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
+    id: "body",
+    initial: "working",
+    states: { working: { invoke: { id: "coder", src: "coder", input: { prompt: "go", cwd: "/work" } } } },
+  });
+  const workflows = [{ name: "ticket", machine: workspace(body, { repos: { app: "https://example.test/app.git" } }) }];
+  const inCluster: JR2Config = {
+    harness: {
+      provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.example.test/v1", apiKey: undefined },
+    },
+  };
+  const lines = await assemblyRefusals({ config: inCluster, workflows });
+  assert.deepEqual(
+    lines.filter((l) => /egress|ADR-0084/.test(l)),
+    [],
+    lines.join("\n"),
+  );
+  // Host-side, a provider with no key at all and no entry is still refused, with the entry to add.
+  assert.throws(
+    () => secretPlacementsOf(inCluster, placementWalkOf(workflows)),
+    /reaches vllm\.example\.test for the "vllm\/…" models .* add egress: \["vllm\.example\.test"\]/,
+  );
+  // And with the key that `.env` gives the host, it passes.
+  const host: JR2Config = {
+    harness: { provider: { ...inCluster.harness!.provider!, apiKey: "a-long-enough-key-value" } },
+  };
+  assert.doesNotThrow(() => secretPlacementsOf(host, placementWalkOf(workflows)));
 });
