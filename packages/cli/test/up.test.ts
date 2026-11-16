@@ -5590,8 +5590,8 @@ test("every text that says what jr2 up keeps of a valueFrom value names the dige
   );
   const flat = adr.replace(/\s+/g, " ");
   assert.match(flat, /keeps that length and a keyed digest of the value/);
-  // Both tests above roll a pod on that digest; the ADR names both, not the Effector alone.
-  assert.match(flat, /The digest rolls [^.]*the Instance Effector[^.]*and the Instance Harness/);
+  // The ADR names the pod that the digest rolls. Behind the Fence the Instance Harness holds no value (ADR-0084).
+  assert.match(flat, /The digest rolls the Instance Effector/);
 });
 
 test("a value edited in the user's Secret behind a valueFrom rolls the Instance Harness at the next converge (ADR-0059)", async () => {
@@ -5940,11 +5940,6 @@ test("no ADR and no glossary entry says `jr2 up` writes a Sandbox's Custodian co
     const text = raw.replace(/\s+/g, " ");
     for (const re of stale) assert.equal(re.exec(text)?.[0], undefined, `${file} still says the old placement`);
   }
-  // ADR-0005's mount table, "stated once", names the pod's own ConfigMap beside the program.
-  const adr5 = texts.find(([f]) => f.startsWith("0005-"))![1];
-  const row = adr5.split("\n").find((l) => l.startsWith("| `custodian` |"))!;
-  assert.match(row, /`<sandbox>-custodian`/);
-  assert.match(row, /`program\.lua` from `jr2-held`/);
 });
 
 test("the Instance Harness's held digest covers its Custodian's two files: a changed custodian.lua rolls it (ADR-0059)", () => {

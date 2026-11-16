@@ -6,8 +6,9 @@
 #
 # KUBECONFIG must name the cluster's own kubeconfig file (the recipe sets it). For each node of the cluster:
 #   1. the stock CNI plugins bridge, static and tuning, v1.10.0, from the release tarball, checked by sha256;
-#   2. the bridge jr2fence0: vlan_filtering 1, vlan_default_pvid 0 (no port joins VLAN 1), no VLAN on the bridge
-#      itself, no address, IPv6 off, arp_ignore 8;
+#   2. the bridge jr2fence0: vlan_filtering 1, vlan_default_pvid 0, no VLAN on the bridge itself, no address, IPv6
+#      off, arp_ignore 8. An access port gets only its VLAN. A vlanTrunk port still gets VID 1 (PVID, untagged) from
+#      the stock bridge plugin v1.10.0, also with preserveDefaultVlan false in its NAD (seen in M1);
 #   3. the rule set, one table inet jr2_fence: frames bridged on jr2fence0 skip the node's conntrack (so no NAT of the
 #      node changes them), and nothing from jr2fence0 reaches the node's own stack or is routed off the bridge;
 #   4. the route: unreachable <segment>, so the node never sends a packet to the segment on its default route.
