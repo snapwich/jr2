@@ -251,6 +251,8 @@ to GitHub, and PyPI, which the Custodian intercepts:
 - `["*"]` permits each name, for TLS and HTTP only.
 - A `*.` entry or `["*"]` never carries an Intercepted host of the Sandbox or a name of jr2's, in any spelling of the
   name. It carries no `Host` header that names a port other than the port of the entry.
+- A name that also has an exact entry keeps the ports of a `*.` entry or `["*"]` that covers it. For example, with
+  `["*", "github.com:22"]`, `github.com` takes ssh on port 22 and TLS and HTTP on ports 443 and 80.
 - `jr2 up` gives a warning for `["*"]` and for each `*.` entry. Each one is a way for data to go out.
 - An exact IPv4 address with a port, such as `"192.168.1.20:8000"`, is an entry too, for a host that has no name. An
   IPv6 address, a range, and a loopback or link-local address are refused.
@@ -302,7 +304,9 @@ These limits follow from the Fence:
 - A protocol in which the server speaks first waits about 2 seconds for each connection.
 - When you remove an entry, the change applies to each new connection at once. A connection that is open and that the
   list no longer permits is closed after about a minute. When the value of a Held secret changes, the Sandbox's
-  connections to its Intercepted hosts and its plain HTTP connections close after about a minute too.
+  connections to its Intercepted hosts and its plain HTTP connections close after about a minute too. When you add or
+  remove a name on port 80, or an exact name that a `*.` entry or `["*"]` on port 80 covers, each open plain HTTP
+  connection of the Sandbox on port 80 closes after about a minute, also a connection to a name that did not change.
 - While the Custodian is down, no Sandbox reaches anything.
 - The Harness pods of an Instance on one node share the Custodian's cache of names and its limit of connections. A
   Sandbox that dials many new names, through a `*` or a `*.` entry, can fill the cache. Then each new name of those pods

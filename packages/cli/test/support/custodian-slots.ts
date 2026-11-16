@@ -1,5 +1,6 @@
 // Slot inputs that use each kind of rule (ADR-0084), for the pinned Envoy's validation of what the
 // renderer writes. `packages/orchestrator/test/_custodian-slots.ts` is the same data for the unit tests.
+// `custodian-slots.test.ts` keeps the two copies equal.
 
 import {
   emptyPlaceholders,

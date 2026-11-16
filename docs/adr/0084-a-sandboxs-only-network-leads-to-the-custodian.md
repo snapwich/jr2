@@ -33,8 +33,10 @@ and that holds when Workspace code is root in the Sandbox.
   start permits each name below a domain, for TLS and HTTP only, on each port of the entry. `["*"]` permits each name,
   for TLS and HTTP only too, because one placeholder address serves each name of such an entry, and only a TLS name or a
   `Host` header then says which name was meant. Such an entry never carries an Intercepted host of the Sandbox or a name
-  of jr2's, in any spelling of the name, and it carries no `Host` that names a port other than the entry's.
-  `intercept: true` takes an exact name or address, because the Custodian's leaf names one host. `jr2 up` gives a
+  of jr2's, in any spelling of the name, and it carries no `Host` that names a port other than the entry's. A Tunneled
+  name that also has an exact entry keeps, at its own placeholder, the TLS and HTTP that such an entry permits for it on
+  each port where the name has no entry of its own: one name has one placeholder, so the wildcard's address cannot serve
+  it. `intercept: true` takes an exact name or address, because the Custodian's leaf names one host. `jr2 up` gives a
   warning for `["*"]` and for each `*.` entry, because each one is a channel out (Consequences).
 - **A name decides, never an address.** The resolver answers each name on the Egress list with a placeholder address
   that stands for that name in that Sandbox, and it asks no server. It refuses each other name, also when the tool names
@@ -133,7 +135,11 @@ and that holds when Workspace code is root in the Sandbox.
   closed. Envoy's default is 600 seconds, and churn then holds memory for ten minutes. A changed held value has the same
   effect on each connection of that Sandbox that the Custodian ends: those to its Intercepted hosts, to jr2's control
   routes and plain HTTP, whose `Host` it reads. So a model stream or a long poll of the Menu that is open then closes
-  after the drain time.
+  after the drain time. A change to the names that a port of a Sandbox carries by `Host` (on port 80, each Tunneled name
+  and wildcard there; on another port, the wildcards and the exact names that they cover) also closes, after the drain
+  time, each plain HTTP connection of that Sandbox on that port, also one to a name that did not change, because one
+  HTTP chain of the port reads the `Host` of all of them. A chain for each name would make the rules of each Sandbox
+  larger, because each chain holds an HTTP manager of its own.
 - **A protocol where the server speaks first waits about 2 seconds** for each connection, because the Custodian waits
   for a TLS name on each port.
 - **A Sandbox can fill the bridge's address table.** This can stop the node's Sandboxes. It leaks nothing.

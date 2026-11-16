@@ -1,5 +1,6 @@
 // Slot inputs that use each kind of rule (ADR-0084), for the renderer's unit tests. The same data, for the
 // pinned Envoy's validation, is in `packages/cli/test/support/custodian-slots.ts`.
+// `packages/cli/test/custodian-slots.test.ts` keeps the two copies equal.
 
 import { fenceRangesOf, type EgressRule } from "../src/egress.ts";
 import { leafStem, type HeldManifest } from "../src/held-secrets.ts";

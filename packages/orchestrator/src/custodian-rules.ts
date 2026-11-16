@@ -611,7 +611,9 @@ function checkInputs(inputs: SlotInputs): void {
  *                           refused in any letter case and with a trailing dot; a `Host` that
  *                           names another port than the rule's is refused. Plain bytes go to the
  *                           slot's HTTP chain of that port; port 80 carries HTTP alone (the one
- *                           chain above)
+ *                           chain above). A Tunneled name with an exact entry, on a port of the
+ *                           wildcard where it has no rule of its own: the same TLS and HTTP, at
+ *                           the name's own placeholder, for that name alone
  *   an address              each byte to the address as written, or, Intercepted, TLS ended with
  *                           the leaf of that address
  *   `custodian.jr2.internal` 443: TLS with the leaf, the six routes to the Orchestrator; 80: the
@@ -864,6 +866,44 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
       ),
     );
     if (rule.match === "below") refuseOn(sniRefused, rule.port, address);
+  }
+
+  // A Tunneled name with an exact entry has its own placeholder, so the chains of a `*.` or `*`
+  // rule, which match that rule's placeholder, never see it. On each port of a wildcard that covers
+  // the name, where the name has no rule of its own, its placeholder gets what the wildcard carries
+  // for that name alone: TLS with its TLS name, and plain HTTP with its `Host`; no raw bytes, and no
+  // other resolver row (ADR-0084).
+  const coveredBy = new Set<string>();
+  for (const wildcard of rules) {
+    if (wildcard.match !== "any" && wildcard.match !== "below") continue;
+    const port = wildcard.port;
+    for (const exact of rules) {
+      if (exact.match !== "name" || exact.intercept || interceptedNames.includes(exact.host)) continue;
+      if (wildcard.match === "below" && !exact.host.endsWith(`.${wildcard.host}`)) continue;
+      if (rules.some((r) => r.match === "name" && r.host === exact.host && r.port === port)) continue;
+      const target = `${exact.host}:${port}`;
+      if (coveredBy.has(target)) continue;
+      coveredBy.add(target);
+      const address = placeholderOf(placeholders, exact.host)!;
+      const web = httpOn(port);
+      // The wildcard's routes, so that a `Host` with no port, or another port, is refused as there.
+      web.hosts.push({ name: exact.host, domains: [exact.host, target], routes: wildcardRoutes(wildcard, address) });
+      if (port === 80) continue;
+      web.addresses.push(address);
+      chains.push(
+        chain(
+          `action=tunnel target=${target}`,
+          {
+            prefix_ranges: ip32(address),
+            destination_port: port,
+            transport_protocol: "tls",
+            server_names: [exact.host],
+          },
+          [tunnel(slot, owner, target)],
+        ),
+      );
+      refuseOn(sniRefused, port, address);
+    }
   }
 
   // jr2's own name: the control routes on 443 with the slot's leaf, the fetch route on 443 and 80.

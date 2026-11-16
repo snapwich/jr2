@@ -942,3 +942,153 @@ test("the pinned Envoy runs two slots' rules: the Orchestrator's dial listener h
   await release();
   assert.match(await get(s4, 80, "early.test"), /^HTTP\/1\.1 200[\s\S]*port=80 /, "a slot serves again");
 });
+
+/** One Sandbox slot whose wildcard and one exact name each get an address of the Custodian: the
+ * wildcard's placeholder the address on the first network, the name's placeholder the address on
+ * the second. The slot's listener takes ports 80 and 443. The target answers each name of `names`. */
+async function wildcardAndName(
+  t: { after: (fn: () => unknown) => void },
+  prefix: string,
+  egress: ReturnType<typeof rule>[],
+  wildcard: string,
+  name: string,
+  names: string[],
+): Promise<{ wild: string; own: string; output: () => string }> {
+  const root = await mkdtemp(join(tmpdir(), `jr2-${prefix}-`));
+  const tag = `${process.pid}-${Date.now() % 100000}`;
+  const nets = ["a", "b"].map((n) => `jr2-${prefix}-${n}-${tag}`);
+  const [targetName, custodianName] = [`jr2-${prefix}-target-${tag}`, `jr2-${prefix}-custodian-${tag}`];
+  t.after(async () => {
+    await docker("rm", "-f", targetName, custodianName).catch(() => {});
+    for (const n of nets) await docker("network", "rm", n).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  const gid = String(process.getgid?.() ?? 0);
+  const user = ["--user", `65532:${gid}`, "--group-add", gid, "--read-only", "--cap-drop", "ALL"];
+  for (const n of nets) await docker("network", "create", n);
+
+  const ca = issueCa(`${prefix}-run`);
+  const targetCa = issueCa(`${prefix}-target`);
+  const targetLeaf = issueLeaf(targetCa, name);
+  await mkdir(join(root, "target"), { recursive: true });
+  await writeFile(join(root, "target", "envoy.json"), JSON.stringify(targetBootstrap()), { mode: 0o644 });
+  await writeFile(join(root, "target", "tls.crt"), targetLeaf.cert, { mode: 0o644 });
+  await writeFile(join(root, "target", "tls.key"), targetLeaf.key, { mode: 0o644 });
+  // prettier-ignore
+  await docker(
+    "run", "-d", "--name", targetName, "--network", nets[0]!, ...names.flatMap((n) => ["--network-alias", n]),
+    ...user, "-v", `${join(root, "target")}:/etc/target:ro`,
+    custodianRef(), "-c", "/etc/target/envoy.json", "--log-level", "warning",
+  );
+
+  const placeholders = withPlaceholders(emptyPlaceholders(RANGES.placeholders), egress);
+  const inputs: SlotInputs = {
+    slot: 3,
+    owner: { sandbox: "probe" },
+    manifest: { version: 1, secrets: [], egress },
+    placeholders,
+    ranges: RANGES,
+  };
+  await slotFiles(inputs, ca, root);
+  await putIn(CUSTODIAN_POD_PROGRAM, CUSTODIAN_PROGRAM, root);
+  await putIn("/etc/jr2/ca/upstream.crt", trustBundles(ca.cert, targetCa.cert).upstream, root);
+  const bootstrap = custodianPodBootstrap({
+    orchestrator: { host: "orchestrator.invalid", port: 4000 },
+    range: 0,
+    ranges: RANGES,
+  });
+  await putIn(CUSTODIAN_POD_BOOTSTRAP, JSON.stringify(bootstrap), root);
+  await putIn(CUSTODIAN_DIAL_TOKEN, "dial-token-value\n", root);
+  const empty = JSON.stringify({ version_info: "0", resources: [] });
+  await putIn(CUSTODIAN_LDS, empty, root);
+  await putIn(CUSTODIAN_CDS, empty, root);
+
+  // prettier-ignore
+  await docker(
+    "create", "--name", custodianName, "--network", nets[0]!, ...user,
+    "-v", `${join(root, "etc")}:/etc/jr2:ro`, "-v", `${join(root, "state")}:${CUSTODIAN_STATE}:ro`,
+    custodianRef(), ...CUSTODIAN_POD_ARGS,
+  );
+  await docker("network", "connect", nets[1]!, custodianName);
+  let output = "";
+  const child = spawn("docker", ["start", "-a", custodianName], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", (b: Buffer) => (output += b.toString()));
+  child.stderr.on("data", (b: Buffer) => (output += b.toString()));
+  t.after(() => void child.kill());
+
+  let custodian: Record<string, string> = {};
+  for (let i = 0; i < 100 && !nets.every((n) => custodian[n]); i++) {
+    custodian = await addresses(custodianName).catch(() => ({}));
+    await sleep(100);
+  }
+  const [wild, own] = nets.map((n) => custodian[n]!);
+  assert.ok(wild && own, `the Custodian has an address on each network: ${JSON.stringify(custodian)}`);
+
+  const moved = (text: string, from: string, to: string) =>
+    text.replaceAll(`"${from}"`, `"${to}"`).replaceAll(`"${from}:`, `"${to}:`);
+  let text = JSON.stringify(custodianXds([renderSlot(inputs)]).lds);
+  text = moved(text, placeholderOf(placeholders, wildcard)!, wild);
+  text = moved(text, placeholderOf(placeholders, name)!, own);
+  const parsed = JSON.parse(text) as { version_info: string; resources: Array<Record<string, any>> };
+  parsed.resources = [80, 443].map((port) => {
+    const listener = structuredClone(parsed.resources[0]!);
+    listener.name = `slot-3-${port}`;
+    listener.address.socket_address.port_value = port;
+    return listener;
+  });
+  parsed.version_info = "1";
+  const xds = local(CUSTODIAN_LDS, root);
+  await writeFile(`${xds}.next`, JSON.stringify(parsed), { mode: 0o644 });
+  await rename(`${xds}.next`, xds);
+
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const answer = await get(wild, 80, names[names.length - 1]!);
+    if (answer.startsWith("HTTP/1.1 200") && /port=80 /.test(answer)) break;
+    if (Date.now() > deadline || child.exitCode !== null) assert.fail(`the slot never served:\n${answer}\n${output}`);
+    await sleep(200);
+  }
+  return { wild, own, output: () => output };
+}
+
+for (const [label, wildcard, egress, name, other] of [
+  [
+    "`*`",
+    "*",
+    [rule("*", 443, "any", false, "entry"), rule("*", 80, "any", false, "entry")],
+    "github.test",
+    "other.test",
+  ],
+  [
+    "`*.corp.test`",
+    "*.corp.test",
+    [rule("corp.test", 443, "below", false, "entry"), rule("corp.test", 80, "below", false, "entry")],
+    "git.corp.test",
+    "web.corp.test",
+  ],
+] as const) {
+  test(`the pinned Envoy runs a slot's rules: a name with an exact entry on port 22 is carried at its own placeholder on 443 and 80, as ${label} permits it (ADR-0084)`, async (t) => {
+    // The rule that an SSH Repo derives: the name on port 22, Tunneled.
+    const rules = [...egress, rule(name, 22, "name", false, "repo")];
+    const { wild, own, output } = await wildcardAndName(t, "cover", rules, wildcard, name, [name, other]);
+    const status = (answer: string) => answer.split("\r\n")[0];
+    const alert = Buffer.from([0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x31]);
+
+    // C1: TLS on 443 with the name, to the name's own placeholder: the target's server hello.
+    const hello = await helloReply(own, 443, name);
+    assert.equal(hello[0], 0x16, `a server hello on 443, not ${hello.toString("hex")}:\n${output()}`);
+    // C2: plain HTTP on 80 with the name's `Host`, to its own placeholder: the target's 200.
+    for (const authority of [name, `${name}:80`]) {
+      const answer = await get(own, 80, authority);
+      assert.equal(status(answer), "HTTP/1.1 200 OK", `${authority}: ${answer}`);
+      assert.match(answer, /\r\n\r\nport=80 /, authority);
+    }
+    // The name's placeholder carries that name alone.
+    assert.deepEqual(await helloReply(own, 443, other), alert, `${other} at ${name}'s placeholder`);
+    const answer = await get(own, 80, other);
+    assert.equal(status(answer), "HTTP/1.1 403 Forbidden", answer);
+    assert.match(answer, /does not name the host of the address dialed/);
+    // The wildcard's placeholder still carries its names.
+    assert.equal((await helloReply(wild, 443, other))[0], 0x16, `${other} at the wildcard's placeholder`);
+  });
+}
