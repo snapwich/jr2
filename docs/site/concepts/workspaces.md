@@ -300,11 +300,16 @@ These limits follow from the Fence:
 - A tool that dials a fixed address fails, unless that address and its port are an entry.
 - UDP, QUIC and ICMP do not go out. A client that tries QUIC falls back to TCP.
 - A protocol in which the server speaks first waits about 2 seconds for each connection.
-- When you remove an entry, a connection that is open stays open. The change applies to each new connection.
+- When you remove an entry, the change applies to each new connection at once. A connection that is open and that the
+  list no longer permits is closed after about a minute. When the value of a Held secret changes, the Sandbox's
+  connections to its Intercepted hosts and its plain HTTP connections close after about a minute too.
 - While the Custodian is down, no Sandbox reaches anything.
 - The Harness pods of an Instance on one node share the Custodian's cache of names and its limit of connections. A
   Sandbox that dials many new names, through a `*` or a `*.` entry, can fill the cache. Then each new name of those pods
-  is refused, with the reason, for up to 5 minutes. A name that they used before still works. Nothing leaks.
+  is refused, with the reason, while the Sandbox keeps the cache full, and for up to 5 minutes after it stops. A name
+  that they used before still works. A Sandbox that holds many connections open can stop the new connections of those
+  pods. Such a connection is closed with no text and no log line, and a held connection is logged only when it closes.
+  Nothing leaks.
 
 ## The pod
 

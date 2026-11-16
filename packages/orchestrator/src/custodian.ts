@@ -1202,6 +1202,16 @@ export const SLOT_RESOLVER_BASE = 25000;
 export const CUSTODIAN_NAME_CACHE = { hosts: 64 * FENCE_SLOTS, pending: 32 * FENCE_SLOTS } as const;
 export const CUSTODIAN_NAME_TTL = "300s";
 
+/** The connection bounds of a Custodian pod (ADR-0059, ADR-0084). `pod` is Envoy's global limit:
+ * the connections of all slot listeners of the pod together. `dial` is the inbound listener's own
+ * bound, outside the global limit: the Orchestrator's dials to the pod's slots, 4 connections for
+ * each of 128 slots × 2 ports, for long polls and streams. So a peer that fills one bound does not
+ * stop the other side. */
+export const CUSTODIAN_CONNECTIONS = { pod: 16384, dial: 4 * FENCE_SLOTS * 2 } as const;
+/** How long the inbound listener keeps a connection that has no stream. A stream (a Handoff carry,
+ * a long poll) has the idle hour of every listener. */
+export const CUSTODIAN_DIAL_IDLE = "60s";
+
 /** The Custodian pod's ports on the cluster's network: the health probe (`CUSTODIAN_HEALTH_PORT`),
  * the Orchestrator's dial to a Harness pod (inbound), and the control process's API. Envoy's admin
  * listener is on the pod's loopback only, which no Harness pod can reach. */

@@ -37,6 +37,8 @@ import {
   controlRoute,
   CUSTODIAN_ADMIN_PORT,
   CUSTODIAN_CDS,
+  CUSTODIAN_CONNECTIONS,
+  CUSTODIAN_DIAL_IDLE,
   CUSTODIAN_DIAL_TOKEN,
   CUSTODIAN_INBOUND_PORT,
   CUSTODIAN_LDS,
@@ -167,6 +169,10 @@ function dialDns(ranges: FenceRanges, bounds: NameCacheBounds): Json {
 
 /** The bounds of the pod's cache of names: the names it holds, and the lookups in flight. */
 export type NameCacheBounds = { hosts: number; pending: number };
+
+/** The connection bounds of the pod: Envoy's global limit for the slot listeners, and the inbound
+ * listener's own bound (`CUSTODIAN_CONNECTIONS`). */
+export type ConnectionBounds = { pod: number; dial: number };
 
 /** What Envoy says when the cache of names holds its bound of names, or of lookups in flight. Envoy
  * sets no response flag for either. */
@@ -324,7 +330,16 @@ const FORWARD_HEADERS = ["x-forwarded-proto", "x-forwarded-for", "x-request-id",
 
 /** One HTTP connection manager of the Custodian. It adds nothing to a request or a response: no
  * `server: envoy`, no `x-request-id`, no `x-forwarded-*`, no `x-envoy-*` (ADR-0059). */
-function http(opts: { stat: string; log: Json[]; routes: Json; lua: Json; local?: Json; strictPath?: boolean }): Json {
+function http(opts: {
+  stat: string;
+  log: Json[];
+  routes: Json;
+  lua: Json;
+  local?: Json;
+  strictPath?: boolean;
+  /** How long a connection with no stream stays open: one hour when not given. */
+  idle?: string;
+}): Json {
   return {
     name: "envoy.filters.network.http_connection_manager",
     typed_config: {
@@ -339,7 +354,10 @@ function http(opts: { stat: string; log: Json[]; routes: Json; lua: Json; local?
       path_with_escaped_slashes_action: opts.strictPath ? "REJECT_REQUEST" : "KEEP_UNCHANGED",
       request_headers_timeout: "60s",
       stream_idle_timeout: "3600s",
-      common_http_protocol_options: { idle_timeout: "3600s", headers_with_underscores_action: "REJECT_REQUEST" },
+      common_http_protocol_options: {
+        idle_timeout: opts.idle ?? "3600s",
+        headers_with_underscores_action: "REJECT_REQUEST",
+      },
       access_log: opts.log,
       ...(opts.local ? { local_reply_config: opts.local } : {}),
       http_filters: [
@@ -1275,6 +1293,8 @@ export type CustodianPodOptions = {
   /** The bounds of the pod's cache of names. `CUSTODIAN_NAME_CACHE` when not given; a test sets
    * small ones. */
   nameCache?: NameCacheBounds;
+  /** The pod's connection bounds. `CUSTODIAN_CONNECTIONS` when not given; a test sets small ones. */
+  connections?: ConnectionBounds;
 };
 
 /**
@@ -1292,6 +1312,7 @@ export type CustodianPodOptions = {
 export function custodianPodBootstrap(opts: CustodianPodOptions): Json {
   const { orchestrator, range, ranges } = opts;
   const bounds = opts.nameCache ?? CUSTODIAN_NAME_CACHE;
+  const connections = opts.connections ?? CUSTODIAN_CONNECTIONS;
   const targets: string[] = [];
   for (let slot = 0; slot < FENCE_SLOTS; slot++) {
     const address = slotAddress(ranges.segment, slotVlan(range, slot));
@@ -1364,11 +1385,25 @@ export function custodianPodBootstrap(opts: CustodianPodOptions): Json {
   const inbound: Json = {
     name: "inbound",
     address: { socket_address: { address: "0.0.0.0", port_value: CUSTODIAN_INBOUND_PORT } },
+    // A pod of the cluster can reach this listener on a CNI that enforces no NetworkPolicy. So it is
+    // outside Envoy's global limit and has its own bound, and it closes a connection with no stream
+    // after a minute: a peer's idle connections here cannot stop a slot, and a Sandbox's held
+    // connections cannot stop the Orchestrator's dial. A stream keeps the idle hour.
+    ignore_global_conn_limit: true,
     filter_chains: [
       {
         filters: [
+          {
+            name: "envoy.filters.network.connection_limit",
+            typed_config: {
+              "@type": "type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit",
+              stat_prefix: "inbound",
+              max_connections: connections.dial,
+            },
+          },
           http({
             stat: "inbound",
+            idle: CUSTODIAN_DIAL_IDLE,
             log: [
               {
                 name: "envoy.access_loggers.stdout",
@@ -1533,7 +1568,7 @@ export function custodianPodBootstrap(opts: CustodianPodOptions): Json {
           typed_config: {
             "@type":
               "type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig",
-            max_active_downstream_connections: 16384,
+            max_active_downstream_connections: connections.pod,
           },
         },
       ],

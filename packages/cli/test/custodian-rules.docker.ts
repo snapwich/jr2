@@ -335,7 +335,10 @@ test("the pinned Envoy runs a slot's rules: a wildcard dials the port of its rul
   // A program that raises on the Orchestrator's dial: its target table is broken on purpose, so the
   // dial meets an error after the token check passed.
   const inbound = bootstrap.static_resources.listeners.find((l) => l.name === "inbound")!;
-  const source = inbound.filter_chains[0].filters[0].typed_config.http_filters[0].typed_config.default_source_code;
+  const manager = inbound.filter_chains[0].filters.find(
+    (f: { name: string }) => f.name === "envoy.filters.network.http_connection_manager",
+  );
+  const source = manager.typed_config.http_filters[0].typed_config.default_source_code;
   source.inline_string = (source.inline_string as string).replace("dofile(", "HELD.inbound.targets = 5\ndofile(");
   await putIn(CUSTODIAN_POD_BOOTSTRAP, JSON.stringify(bootstrap), root);
   const empty = JSON.stringify({ version_info: "0", resources: [] });
@@ -718,16 +721,20 @@ test("the pinned Envoy runs a slot's rules: the dial guard judges each address o
   }
 });
 
-test("the pinned Envoy runs two slots' rules: when one Sandbox fills the Custodian's cache of names, a new name of another slot gets jr2's refusal and a line that names that slot, on HTTP and on a tunnel; a TLS name that is not a DNS name is refused as a name (ADR-0084, ADR-0059)", async (t) => {
-  // Every slot of a Custodian pod shares one cache of names (`dialDns`). The renderer takes its
-  // bound as an option, so the cache here holds 8 names and 2 lookups in flight. Slot 3 dials names
-  // that do not resolve; slot 4 then dials names that do. The Custodian's resolver is 127.0.0.1,
-  // where nothing listens, so no lookup leaves the host; the names that resolve are in its
-  // `/etc/hosts`. Each request is an ordinary request by name.
-  const root = await mkdtemp(join(tmpdir(), "jr2-custodian-names-"));
+/** Two Sandbox slots of one Custodian pod, run by the pinned Envoy: slots 3 and 4, each with `*` on
+ * 80 and 443, each on its own docker network and its own address of the Custodian. The target is
+ * the pinned image (`targetBootstrap`) at `early.test`. The Custodian's resolver is 127.0.0.1, where
+ * nothing listens, so no lookup leaves the host; the names that resolve are in its `/etc/hosts`.
+ * The bootstrap takes `pod`, the options a test changes. It returns when slot 4 serves. */
+async function twoSlots(
+  t: { after: (fn: () => unknown) => void },
+  prefix: string,
+  pod: Pick<Parameters<typeof custodianPodBootstrap>[0], "nameCache" | "connections">,
+): Promise<{ s3: string; s4: string; output: () => string }> {
+  const root = await mkdtemp(join(tmpdir(), `jr2-${prefix}-`));
   const tag = `${process.pid}-${Date.now() % 100000}`;
-  const nets = ["a", "b"].map((n) => `jr2-cnames-${n}-${tag}`);
-  const [targetName, custodianName] = [`jr2-cnames-target-${tag}`, `jr2-cnames-custodian-${tag}`];
+  const nets = ["a", "b"].map((n) => `jr2-${prefix}-${n}-${tag}`);
+  const [targetName, custodianName] = [`jr2-${prefix}-target-${tag}`, `jr2-${prefix}-custodian-${tag}`];
   t.after(async () => {
     await docker("rm", "-f", targetName, custodianName).catch(() => {});
     for (const n of nets) await docker("network", "rm", n).catch(() => {});
@@ -737,8 +744,8 @@ test("the pinned Envoy runs two slots' rules: when one Sandbox fills the Custodi
   const user = ["--user", `65532:${gid}`, "--group-add", gid, "--read-only", "--cap-drop", "ALL"];
   for (const n of nets) await docker("network", "create", n);
 
-  const ca = issueCa("custodian-names-run");
-  const targetCa = issueCa("custodian-names-target");
+  const ca = issueCa(`${prefix}-run`);
+  const targetCa = issueCa(`${prefix}-target`);
   const targetLeaf = issueLeaf(targetCa, "early.test");
   await mkdir(join(root, "target"), { recursive: true });
   await writeFile(join(root, "target", "envoy.json"), JSON.stringify(targetBootstrap()), { mode: 0o644 });
@@ -767,9 +774,10 @@ test("the pinned Envoy runs two slots' rules: when one Sandbox fills the Custodi
     orchestrator: { host: "orchestrator.invalid", port: 4000 },
     range: 0,
     ranges: RANGES,
-    nameCache: { hosts: 8, pending: 2 },
+    ...pod,
   });
   await putIn(CUSTODIAN_POD_BOOTSTRAP, JSON.stringify(bootstrap), root);
+  await putIn(CUSTODIAN_DIAL_TOKEN, "dial-token-value\n", root);
   const empty = JSON.stringify({ version_info: "0", resources: [] });
   await putIn(CUSTODIAN_LDS, empty, root);
   await putIn(CUSTODIAN_CDS, empty, root);
@@ -820,7 +828,6 @@ test("the pinned Envoy runs two slots' rules: when one Sandbox fills the Custodi
   await writeFile(`${xds}.next`, JSON.stringify(lds), { mode: 0o644 });
   await rename(`${xds}.next`, xds);
 
-  const status = (answer: string) => answer.split("\r\n")[0];
   const deadline = Date.now() + 30_000;
   for (;;) {
     const answer = await get(s4, 80, "early.test");
@@ -828,10 +835,19 @@ test("the pinned Envoy runs two slots' rules: when one Sandbox fills the Custodi
     if (Date.now() > deadline || child.exitCode !== null) assert.fail(`the slots never served:\n${answer}\n${output}`);
     await sleep(200);
   }
+  return { s3, s4, output: () => output };
+}
+
+test("the pinned Envoy runs two slots' rules: when one Sandbox fills the Custodian's cache of names, a new name of another slot gets jr2's refusal and a line that names that slot, on HTTP and on a tunnel; a TLS name that is not a DNS name is refused as a name (ADR-0084, ADR-0059)", async (t) => {
+  // Every slot of a Custodian pod shares one cache of names (`dialDns`). The renderer takes its
+  // bound as an option, so the cache here holds 8 names and 2 lookups in flight. Slot 3 dials names
+  // that do not resolve; slot 4 then dials names that do. Each request is an ordinary request by name.
+  const { s3, s4, output: log } = await twoSlots(t, "cnames", { nameCache: { hosts: 8, pending: 2 } });
+  const status = (answer: string) => answer.split("\r\n")[0];
   const refusal = /^HTTP\/1\.1 503 [\s\S]*\r\n\r\njr2 custodian: refused: the Custodian's cache of names is full/;
   const line = async (pattern: RegExp) => {
-    for (let i = 0; i < 30 && !pattern.test(output); i++) await sleep(200);
-    assert.match(output, pattern);
+    for (let i = 0; i < 30 && !pattern.test(log()); i++) await sleep(200);
+    assert.match(log(), pattern);
   };
 
   // More lookups in flight than the bound: the ones over it get jr2's refusal.
@@ -864,5 +880,65 @@ test("the pinned Envoy runs two slots' rules: when one Sandbox fills the Custodi
   assert.equal(odd.length, 0, "a TLS name with a colon: closed with no byte");
   await line(/jr2\.custodian slot=- - action=refuse target=- reason=name method=- status=400 flags=DPE/);
   await line(/jr2\.custodian slot=3 sandbox=probe-3 action=tunnel target=\*:443 .*sni=invalid:1\.2\.3\.4_22 /);
-  assert.doesNotMatch(output, /reason=unreachable .*flags=DPE/);
+  assert.doesNotMatch(log(), /reason=unreachable .*flags=DPE/);
+});
+
+/** A connection that is held open: `request` (none when undefined) is sent, and the promise resolves
+ * when its first answer has arrived, or at once with no request. `closed` tells whether the
+ * Custodian closed it. */
+async function hold(host: string, port: number, request?: string): Promise<{ socket: Socket; closed: () => boolean }> {
+  const socket = connect(port, host);
+  let closed = false;
+  let answer = "";
+  socket.on("error", () => {});
+  socket.on("close", () => (closed = true));
+  await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
+  if (request) {
+    socket.write(request);
+    await new Promise<void>((resolve) => {
+      socket.on("data", (d: Buffer) => {
+        answer += d.toString();
+        if (answer.includes("\r\n\r\n")) resolve();
+      });
+      socket.on("close", () => resolve());
+      setTimeout(resolve, 5_000);
+    });
+  }
+  return { socket, closed: () => closed };
+}
+
+test("the pinned Envoy runs two slots' rules: the Orchestrator's dial listener has its own bound, outside the global limit of the slots, so idle connections to it do not stop a slot, and connections that a Sandbox holds do not stop the dial (ADR-0059, ADR-0084)", async (t) => {
+  // The pod's bounds are options, so here the slots hold 10 connections together and the dial
+  // listener holds 4. Each connection is an ordinary client's: idle, or one keep-alive request.
+  const { s3, s4 } = await twoSlots(t, "cconns", { connections: { pod: 10, dial: 4 } });
+  const held: Array<{ socket: Socket; closed: () => boolean }> = [];
+  const release = async () => {
+    for (const h of held.splice(0)) h.socket.destroy();
+    await sleep(500);
+  };
+  t.after(() => void release());
+  const dialRefused = /^HTTP\/1\.1 403 [\s\S]*a dial to a Harness pod needs the dial token/;
+  assert.match(await get(s3, 18080, "x"), dialRefused, "the dial listener answers under its bound");
+
+  // A peer opens as many idle connections to the dial listener as the slots' global limit. The dial
+  // listener keeps its own bound of them and closes the rest; a slot still serves.
+  for (let i = 0; i < 10; i++) held.push(await hold(s3, 18080));
+  await sleep(500);
+  assert.equal(held.filter((h) => !h.closed()).length, 4, "the dial listener holds 4 connections, its bound");
+  assert.equal(await get(s3, 18080, "x"), "", "a connection over the dial listener's bound: closed with no byte");
+  assert.match(await get(s4, 80, "early.test"), /^HTTP\/1\.1 200[\s\S]*port=80 /, "a slot serves");
+  assert.match(await get(s3, 80, "early.test"), /^HTTP\/1\.1 200[\s\S]*port=80 /, "the other slot serves");
+  await release();
+
+  // A Sandbox holds as many connections as the slots' global limit. A new slot connection is
+  // closed; the dial listener still answers.
+  for (let i = 0; i < 10; i++) {
+    held.push(await hold(s3, 80, "GET / HTTP/1.1\r\nHost: early.test\r\n\r\n"));
+  }
+  await sleep(500);
+  assert.equal(held.filter((h) => !h.closed()).length, 10, "slot 3 holds 10 connections");
+  assert.equal(await get(s4, 80, "early.test"), "", "a slot connection over the global limit: closed with no byte");
+  assert.match(await get(s3, 18080, "x"), dialRefused, "the dial listener answers at the slots' global limit");
+  await release();
+  assert.match(await get(s4, 80, "early.test"), /^HTTP\/1\.1 200[\s\S]*port=80 /, "a slot serves again");
 });

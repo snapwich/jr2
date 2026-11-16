@@ -227,7 +227,12 @@ and it replaces the Adapter.
   no shell for an exec probe. The Custodian's readiness probe is on it. A provision waits until the Custodian says that
   the Sandbox's rules are live (ADR-0084), so no Turn is admitted in a Sandbox before the Custodian serves it. A peer on
   the cluster's network can reach this listener. So it is outside Envoy's global connection limit, holds 16 connections
-  at most, and closes a connection idle for 5 seconds: a peer's idle connections cannot stop the Menu or the egress.
+  at most, and closes a connection idle for 5 seconds: a peer's idle connections cannot stop the Menu or the egress. The
+  listener of the Orchestrator's dial (`0.0.0.0:18080`, ADR-0084) has the same shape for the same reason: it is outside
+  the global limit, holds 1,024 connections at most (4 for each of the 128 slots × 2 ports), and closes a connection
+  that has no stream after 60 seconds; a stream keeps the idle hour. So the connections that a Sandbox holds do not stop
+  the Orchestrator's dial. On a CNI that enforces no NetworkPolicy, a peer that fills this bound stops only the
+  Orchestrator's dials through that Custodian pod, not a Sandbox's traffic.
 - **The config surface** (`jr2.config.ts`,
   [ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)): the top-level `secrets` list, whose
   entry is

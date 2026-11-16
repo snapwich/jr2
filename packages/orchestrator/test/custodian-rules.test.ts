@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   CONTROL_ROUTES,
+  CUSTODIAN_CONNECTIONS,
   CUSTODIAN_DRAIN_SECONDS,
   CUSTODIAN_NAME_CACHE,
   CUSTODIAN_POD_ARGS,
@@ -760,8 +761,38 @@ test("the pod's bootstrap: admin on loopback, health, the Orchestrator's dial to
     ],
     "18081 is the control process's, not Envoy's",
   );
+  // The health listener and the inbound listener are outside Envoy's global limit of the slots, and
+  // each has its own bound: a peer on the cluster's network that fills one stops no slot, and a
+  // Sandbox that fills the global limit stops neither the kubelet's probe nor the Orchestrator's dial.
+  const limitOf = (l: Record<string, any>) => {
+    const filter = l.filter_chains[0].filters[0];
+    assert.equal(filter.name, "envoy.filters.network.connection_limit", l.name);
+    return filter.typed_config.max_connections;
+  };
+  assert.equal(listeners[0]!.ignore_global_conn_limit, true);
+  assert.equal(limitOf(listeners[0]!), 16);
+  assert.equal(listeners[1]!.ignore_global_conn_limit, true);
+  assert.equal(limitOf(listeners[1]!), 1024);
+  assert.deepEqual(CUSTODIAN_CONNECTIONS, { pod: 16384, dial: 1024 });
+  assert.equal(
+    boot.overload_manager.resource_monitors[0].typed_config.max_active_downstream_connections,
+    CUSTODIAN_CONNECTIONS.pod,
+  );
+  const small = custodianPodBootstrap({
+    orchestrator: { host: "o", port: 4000 },
+    range: 2,
+    ranges: RANGES,
+    connections: { pod: 10, dial: 4 },
+  }) as any;
+  assert.equal(small.overload_manager.resource_monitors[0].typed_config.max_active_downstream_connections, 10);
+  assert.equal(limitOf(small.static_resources.listeners[1]), 4);
+  assert.equal(limitOf(small.static_resources.listeners[0]), 16);
   // The inbound listener's table: ports 8080 and 8082 of each slot of range 2, and of no other.
-  const inbound = listeners[1]!.filter_chains[0].filters[0].typed_config;
+  const inbound = listeners[1]!.filter_chains[0].filters[1].typed_config;
+  // A connection with no stream closes after a minute; a stream (a Handoff carry, a long poll) has
+  // the idle hour.
+  assert.equal(inbound.common_http_protocol_options.idle_timeout, "60s");
+  assert.equal(inbound.stream_idle_timeout, "3600s");
   const table = inbound.http_filters[0].typed_config.default_source_code.inline_string as string;
   const first = slotAddress(RANGES.segment, slotVlan(2, 0));
   const last = slotAddress(RANGES.segment, slotVlan(2, 127));
