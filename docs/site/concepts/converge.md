@@ -81,8 +81,10 @@ the cluster, see [Architecture](architecture.md).
 10. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
 11. When a Machine has a Sandbox or a Menu-only Agent, it checks each Sandbox node for the parts of the
     [Fence](../reference/glossary.md#fence) that it does not install: the second network of a pod (Multus), the bridge
-    of the node, and the rule set of the node. While a Sandbox node lacks one, the converge fails, and the error names
-    the node and the part. Then it applies the Custodian, its uplink on each Sandbox node and its resolver.
+    of the node, and the rule set of the node. First it reads Multus from the cluster. Then it applies the Custodian,
+    its uplink on each Sandbox node and its resolver. When the Custodian is ready, two short pods on each Sandbox node
+    check the bridge and the rule set. These pods have no privilege, so they see what the rule set does, not the rule
+    set itself. While a Sandbox node lacks a part, the converge fails, and the error names the node and the part.
 12. It checks each model that an Agent uses: a pod in the cluster asks the provider for one tool call for each model.
     Until each check passes, `jr2 up` writes nothing that the Instance or the operator reads. The pod has up to 5
     minutes to start, and each model has up to 6 minutes. `jr2 up` writes each model's result as it comes. With

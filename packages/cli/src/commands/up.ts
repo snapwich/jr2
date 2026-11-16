@@ -193,6 +193,7 @@ import {
   custodianValueSecrets,
 } from "../deploy.ts";
 import { claimRange } from "../fence.ts";
+import { checkFenceApi, fenceRefusal, probeFenceNodes } from "../fence-probe.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { planCallerTokens } from "../caller-tokens.ts";
 import { resolveRoot } from "../instance.ts";
@@ -1208,6 +1209,13 @@ export async function up(args: string[], io: Io): Promise<number> {
   // An Instance with a Harness pod (a Sandbox, or the Instance Harness) has it; an Instance with
   // none, such as one whose runs have no Agent, installs nothing and claims no VLAN range.
   if (carried.composesSandbox || carried.instanceHarness !== undefined) {
+    // The parts of the Fence that `jr2 up` does not install (ADR-0084): first what the API shows,
+    // because without them the Custodian's attachments cannot be applied and its pods do not start.
+    const fenceNodes = sandboxNodes(
+      nodes.length > 0 ? nodes : await kube.listJson<NodeObject>({ kind: "node", ...ctx }),
+      config.sandbox,
+    ).nodes.map((n) => n.metadata.name);
+    await checkFenceApi(kube, { nodes: fenceNodes, ...ctx });
     const range = await claimRange(kube, { namespace, ...ctx, log: (line) => activity(io, line) });
     activity(io, `custodian: converging on each Sandbox node (VLAN range ${range})`);
     await kube.apply({
@@ -1245,6 +1253,19 @@ export async function up(args: string[], io: Io): Promise<number> {
       container: "control",
       ...ctx,
     });
+    // Then what only a pod on each node shows: the bridge and the rule set.
+    const gaps = await probeFenceNodes(kube, {
+      name,
+      namespace,
+      range,
+      ranges: fenceRangesOf(config.fence),
+      image: refs.orchestrator,
+      ...(config.sandbox ? { placement: config.sandbox } : {}),
+      ...ctx,
+      log: (line) => activity(io, line),
+    });
+    if (gaps.length > 0) throw fenceRefusal(gaps);
+    activity(io, "fence: verified — the bridge and the rule set answer on each Sandbox node");
   } else if (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx })) {
     // A Custodian of a converge that had a Harness pod. Its range stays claimed until `jr2 down`
     // (ADR-0084): a pod of the Instance can still be on a VLAN of it. The Custodian goes only when no

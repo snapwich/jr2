@@ -60,6 +60,10 @@ function vlanMac(kind: number, vlan: number): string {
  * never depend on the pod. */
 export const slotMac = (vlan: number): string => vlanMac(0x13, vlan);
 
+/** The MAC of the uplink's interface for a VLAN (`UPLINK_SCRIPT` sets it): what a Harness pod's
+ * neighbour entry for the uplink holds, and what the Fence probe checks (`fence-probe.ts`). */
+export const uplinkMac = (vlan: number): string => vlanMac(0x12, vlan);
+
 function attachment(namespace: string, name: string, labels: Record<string, string>, plugins: Json[]): Json {
   return {
     apiVersion: "k8s.cni.cncf.io/v1",

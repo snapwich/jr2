@@ -330,7 +330,14 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
 
 - When a Machine has a Sandbox or a Menu-only Agent, each Sandbox node must have the parts of the Fence that `jr2 up`
   does not install: the second network of a pod (Multus), the bridge of the node, and the rule set of the node. While a
-  node lacks one, `jr2 up` refuses to converge. The error names the node and the part. See
+  node lacks one, `jr2 up` refuses to converge. The error starts with
+  `error: fence: a Sandbox node lacks a part of the Fence that jr2 up does not install (ADR-0084):`, and each next line
+  names a node, the part and what the check saw: `Multus`, `Multus or the attachment`,
+  `the bridge, its VLAN filtering, or the Custodian pod of this node`, or `the rule set`. When the probe pod on the
+  Fence got no answer from the Custodian on the bridge, `jr2 up` also replaces the Custodian pod of that node, so that
+  the pod joins the bridge again. When the cluster has no Multus, the error says
+  `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`. Give the node the
+  part, then run `jr2 up` again. See
   [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#check-the-cluster).
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See

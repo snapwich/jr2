@@ -368,6 +368,9 @@ export const KIT_POD_SIZES = {
   custodianEnvoy: { requests: { cpu: "50m", memory: "1536Mi" }, limits: { memory: "1536Mi" } },
   custodianControl: { requests: { cpu: "50m", memory: "384Mi" }, limits: { memory: "384Mi" } },
   custodianUplink: { requests: { cpu: "50m", memory: "32Mi" }, limits: { memory: "32Mi" } },
+  /** Each of the two one-shot pods that probe the Fence on a Sandbox node (`fence-probe.ts`): one
+   * Node.js process, a few sockets, for a few seconds. */
+  fenceProbe: { requests: { cpu: "50m", memory: "96Mi" }, limits: { memory: "96Mi" } },
 } as const;
 
 /** A fresh copy, so no manifest shares an object with another (or with the constant). */

@@ -107,6 +107,7 @@ class FakeCluster implements KubeAdmin {
     const refused = this.refuseApply?.(opts.manifest);
     if (refused) throw new Error(typeof refused === "string" ? refused : 'pods "x" is forbidden: exceeded quota');
     this.applied.push(opts.manifest);
+    this.runFenceProbes(opts.manifest);
     // A check pod's List is applied server-side too (ADR-0019); this records the named objects.
     const doc = opts.serverSide
       ? (JSON.parse(opts.manifest) as { kind: string; metadata?: { name: string } })
@@ -116,6 +117,34 @@ class FakeCluster implements KubeAdmin {
   async label(opts: Record<string, unknown>): Promise<void> {
     this.labeled.push(opts);
   }
+  /** The Fence's probe pods (ADR-0084): each one has ended when it is applied, with the result that
+   * `fenceProbeResults` scripts for `<node> fence|route` (default: passed). */
+  fenceProbeResults: Record<string, { ok: boolean; part?: string; why?: string }> = {};
+  /** The probe pods applied, as `<node> fence|route`. */
+  fenceProbes: string[] = [];
+  private runFenceProbes(manifest: string): void {
+    if (!manifest.includes(`"app":"jr2-fence-probe"`)) return;
+    const items = (JSON.parse(manifest) as { items: Array<Record<string, any>> }).items;
+    for (const pod of items) {
+      const node = pod.spec.nodeName as string;
+      const probe = pod.metadata.annotations["v1.multus-cni.io/default-network"] ? "fence" : "route";
+      this.fenceProbes.push(`${node} ${probe}`);
+      const result = this.fenceProbeResults[`${node} ${probe}`] ?? { ok: true };
+      const message = `jr2.fence-probe ${JSON.stringify({ probe, ...result })}`;
+      this.set(pod.metadata.namespace, "pod", pod.metadata.name, {
+        metadata: { name: pod.metadata.name },
+        spec: { nodeName: node },
+        status: {
+          phase: result.ok ? "Succeeded" : "Failed",
+          containerStatuses: [{ state: { terminated: { message, exitCode: result.ok ? 0 : 1 } } }],
+        },
+      } as Partial<KubeObject>);
+    }
+  }
+  /** Whether the cluster has Multus's CustomResourceDefinition (ADR-0084). */
+  attachmentCrd = true;
+  /** The nodes with no Ready Multus pod; each other node has one. */
+  nodesWithoutMultus = new Set<string>();
   /** Each object `create` made, as `<namespace>/<kind>/<name>` (ADR-0084's range claims). */
   created: string[] = [];
   private keyOf(manifest: string): { key: string; obj: KubeObject & { metadata: { resourceVersion?: string } } } {
@@ -231,6 +260,20 @@ class FakeCluster implements KubeAdmin {
       return (this.checkLeftovers[opts.kind] ?? []) as T[];
     }
     if (opts.kind === "node") return this.nodes as T[];
+    if (opts.kind === "customresourcedefinition") {
+      return (
+        this.attachmentCrd ? [{ metadata: { name: "network-attachment-definitions.k8s.cni.cncf.io" } }] : []
+      ) as T[];
+    }
+    if (opts.kind === "pod" && opts.selector === "app=multus") {
+      return this.nodes
+        .filter((n) => !this.nodesWithoutMultus.has(n.metadata.name))
+        .map((n) => ({
+          metadata: { name: `multus-${n.metadata.name}` },
+          spec: { nodeName: n.metadata.name },
+          status: { conditions: [{ type: "Ready", status: "True" }] },
+        })) as T[];
+    }
     // A read of one namespace by name (the range claim's holder, ADR-0084): what `set` put there.
     if (opts.kind === "namespace" && opts.fieldSelector) {
       const name = /^metadata\.name=(.+)$/.exec(opts.fieldSelector)?.[1];
@@ -276,7 +319,9 @@ class FakeCluster implements KubeAdmin {
     if (failed) return failed as T[];
     const image = this.podImages[opts.selector ?? ""] ?? this.lastAppliedImage(opts.selector ?? "");
     if (!image) return [];
-    return [{ metadata: { name: "pod-1" }, spec: { containers: [{ image }] } }] as T[];
+    return [
+      { metadata: { name: "pod-1" }, spec: { nodeName: this.nodes[0]?.metadata.name, containers: [{ image }] } },
+    ] as T[];
   }
   /** What the last apply asked this selector's Deployment to run — the honest cluster's answer. */
   private lastAppliedImage(selector: string): string | undefined {
@@ -6998,6 +7043,76 @@ test("an Instance with no Harness pod claims no range and installs no Custodian;
   assert.equal(await up(["--yes"], again.io), 0);
   assert.match(again.err.join("\n"), /custodian: converging on each Sandbox node \(VLAN range 4\)/);
   assert.ok(!again.kube.created.some((c) => c.includes("/lease/")));
+});
+
+test("after the Custodian is Ready, jr2 up probes the bridge and the rule set on each node of a Custodian pod (ADR-0084)", async () => {
+  const w = mkWorld(await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)));
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.deepEqual(w.kube.fenceProbes, ["kind-test-control-plane fence", "kind-test-control-plane route"]);
+  const err = w.err.join("\n");
+  assert.match(err, /fence: probing the bridge and the rule set on 1 Sandbox node\(s\): kind-test-control-plane/);
+  assert.match(err, /fence: verified — the bridge and the rule set answer on each Sandbox node/);
+  // The probe pods come after the Custodian's rollout, and go again.
+  const at = (needle: string) => w.kube.applied.findIndex((m) => m.includes(needle));
+  assert.ok(at(`"app":"jr2-fence-probe"`) > at(`"kind":"DaemonSet","metadata":{"name":"jr2-custodian"`));
+  // No pod of the probe has the node's network.
+  const probes = (JSON.parse(w.kube.applied[at(`"app":"jr2-fence-probe"`)]!) as { items: any[] }).items;
+  assert.ok(probes.every((p) => p.spec.hostNetwork === undefined && p.spec.nodeName === "kind-test-control-plane"));
+});
+
+test("a Sandbox node that lacks a part of the Fence refuses the converge, and names the node and the part (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  w.kube.fenceProbeResults["kind-test-control-plane route"] = {
+    ok: false,
+    part: "rule-set",
+    why: "no unreachable route for 198.19.0.0/20 on the node",
+  };
+  w.kube.fenceProbeResults["kind-test-control-plane fence"] = {
+    ok: false,
+    part: "bridge",
+    why: "no answer from the uplink at 198.19.0.1 on VLAN 2",
+  };
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (e: Error) => {
+      assert.match(e.message, /^fence: a Sandbox node lacks a part of the Fence that jr2 up does not install/);
+      assert.match(
+        e.message,
+        /\n {2}kind-test-control-plane: the rule set — no unreachable route for 198\.19\.0\.0\/20/,
+      );
+      assert.match(
+        e.message,
+        /\n {2}kind-test-control-plane: the bridge, its VLAN filtering, or the Custodian pod of this node — no answer/,
+      );
+      return true;
+    },
+  );
+  // The node's Custodian pod, whose trunk did not answer, is replaced; the Instance Harness and the
+  // rest of the converge do not run.
+  assert.ok(w.kube.deleted.includes("myinst/pod/pod-1"));
+  assert.ok(!w.kube.rollouts.includes("myinst/statefulset/jr2-instance-harness"));
+});
+
+test("without Multus's attachment definition, or with a Sandbox node that has no Ready Multus pod, jr2 up refuses before the Custodian (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const none = mkWorld(root);
+  none.kube.attachmentCrd = false;
+  await assert.rejects(() => up(["--yes"], none.io), /no CustomResourceDefinition network-attachment-definitions/);
+  assert.equal(custodianList(none), undefined);
+  assert.deepEqual(none.kube.created, [], "no range is claimed");
+
+  const gap = mkWorld(root);
+  gap.kube.nodes = [
+    { metadata: { name: "n1" }, status: { nodeInfo: { architecture: "amd64" } } },
+    { metadata: { name: "n2" }, status: { nodeInfo: { architecture: "amd64" } } },
+  ];
+  gap.kube.nodesWithoutMultus.add("n2");
+  await assert.rejects(
+    () => up(["--yes"], gap.io),
+    /\n {2}n2: Multus — no Ready Multus pod \(app=multus\) on the node/,
+  );
+  assert.equal(custodianList(gap), undefined);
 });
 
 function rangeClaim(range: number, holder: string): Partial<KubeObject> {

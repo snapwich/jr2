@@ -75,7 +75,9 @@ unchanged.
   container's peak memory: Envoy 652 MiB and the control process 260 MiB when a pod starts with each slot or takes them
   live, and Envoy 1,222 MiB and the control process 293 MiB when each slot's rules change at once (the old rules drain
   for 60 s beside the new ones). An OOM of either container cuts each connection of the Harness pods on its node.
-  Measured idle: 98 MiB and 6 millicores for the pod with no live slot, and 144 MiB and 7 millicores with 20.
+  Measured idle: 98 MiB and 6 millicores for the pod with no live slot, and 144 MiB and 7 millicores with 20. Each of
+  the two pods that probe the Fence on a Sandbox node at a converge (ADR-0084): 50m / 96Mi, for a few seconds; one
+  Node.js process, measured at a peak of 47 MiB.
 
 ## Considered options
 

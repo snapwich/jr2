@@ -131,9 +131,15 @@ SH
 )
   changed="$changed$bridge_out"
 
-  # Each listing is read whole before it is matched: with pipefail, grep -q would end the pipe early and fail it.
-  loaded=$(docker exec "$node" nft list table inet "$TABLE" 2>/dev/null || true)
-  if ! grep -qF "comment \"$RULES_ID\"" <<<"$loaded"; then
+  # The loaded table is compared rule by rule with the rule set, not by its comment alone: a rule deleted from the
+  # table leaves the comment in place. The rule set is loaded once more under a scratch name, both listings are read
+  # with no counter, and the scratch table goes again. Each listing is read whole before it is matched: with
+  # pipefail, grep -q would end the pipe early and fail it.
+  loaded=$(docker exec "$node" nft list table inet "$TABLE" 2>/dev/null | sed -e "1s/ $TABLE / T /" -e 's/ counter packets [0-9]* bytes [0-9]*/ counter/' || true)
+  printf '%s\n' "${RULES//$TABLE/${TABLE}_want}" | docker exec -i "$node" nft -f -
+  want=$(docker exec "$node" nft list table inet "${TABLE}_want" | sed -e "1s/ ${TABLE}_want / T /" -e 's/ counter packets [0-9]* bytes [0-9]*/ counter/')
+  docker exec "$node" nft delete table inet "${TABLE}_want"
+  if [ "$loaded" != "$want" ] || ! grep -qF "comment \"$RULES_ID\"" <<<"$loaded"; then
     printf '%s\n' "$RULES" | docker exec -i "$node" nft -f -
     changed="$changed rule-set"
   fi

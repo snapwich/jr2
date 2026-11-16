@@ -65,7 +65,9 @@ loudly narrated, safe to re-run:
 - **The Fence**: `up` installs the Custodian's uplink, the Custodian and its resolver
   ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). It installs none of the Fence's prerequisites —
   a second network for a pod (Multus), the bridge and the rule set on each Sandbox node — and it probes them: it refuses
-  to converge while a Sandbox node lacks one, and names the node and the part.
+  to converge while a Sandbox node lacks one, and names the node and the part. It reads Multus from the API before it
+  applies the Custodian, and probes the bridge and the rule set after the Custodian is Ready, with two one-shot pods on
+  each Sandbox node that have no privilege; ADR-0084 states what they check and what they cannot see.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep

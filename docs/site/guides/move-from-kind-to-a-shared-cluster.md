@@ -48,9 +48,12 @@ below explains one field. Set only the fields that your cluster needs.
   - One bridge on each Sandbox node.
   - The rule set of each Sandbox node, which keeps the node's own network stack off the bridge.
 
-  `jr2 up` checks each part, and refuses to converge while a Sandbox node lacks one. It names the node and the part. On
-  Cilium, the config of the node must let a different CNI plugin run (`cni-exclusive: false`). A managed cluster that
-  permits no second pod network and no rule set on its nodes cannot have the Fence.
+  `jr2 up` checks each part, and refuses to converge while a Sandbox node lacks one. It names the node and the part. The
+  check has no privilege on the node, so it sees what the rule set does, not the rule set. A node that does not change
+  the frames on the bridge today passes without the rule that keeps conntrack off the bridge. The check also cannot see
+  the default VLAN of the bridge. Make each part as this list says, also when the check passes. On Cilium, the config of
+  the node must let a different CNI plugin run (`cni-exclusive: false`). A managed cluster that permits no second pod
+  network and no rule set on its nodes cannot have the Fence.
 
 - No node credential that a pod can get. At a cloud metadata address, the metadata service of a node can give the node's
   cloud credential to a pod. A Sandbox and the Instance Harness cannot dial such an address: the Custodian refuses each
