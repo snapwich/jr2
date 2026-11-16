@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -90,6 +91,10 @@ const (
 	reasonRepoCloneFailed = "RepoCloneFailed"
 	reasonFetched         = "Fetched"
 	reasonFetchFailed     = "FetchFailed"
+	// reasonNotOnTheFence holds a Sandbox with spec.network whose Pod is
+	// Ready while Multus does not report the attachment as its default
+	// network (ADR-0084).
+	reasonNotOnTheFence = "NotOnTheFence"
 	// keepaliveAnnotation carries the owning Orchestrator's heartbeat lease
 	// (ADR-0001): an RFC3339 timestamp it PATCHes periodically. Idle GC fires
 	// only once spec.idleTimeout has elapsed since max(creation, last keepalive).
@@ -116,6 +121,10 @@ const (
 	// (ADR-0084): with spec.network, the attachment takes the place of the
 	// cluster's network, so the Pod's one interface is on the Fence.
 	defaultNetworkAnnotation = "v1.multus-cni.io/default-network"
+	// networkStatusAnnotation is where Multus reports the networks it gave
+	// the Pod. The operator reads it back, because only Multus acts on
+	// defaultNetworkAnnotation.
+	networkStatusAnnotation = "k8s.v1.cni.cncf.io/network-status"
 	// healthcheckBinary is the Effector binary in the Harness image (and in
 	// each image that mounts /opt/jr2): its `healthcheck` subcommand is the
 	// exec readiness probe of a container on the Fence, which no HTTP or TCP
@@ -722,6 +731,7 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 		EnvFrom:         sandbox.Spec.EnvFrom,
 		VolumeMounts:    append(append(append([]corev1.VolumeMount{}, sandbox.Spec.VolumeMounts...), repoMounts...), shmMounts...),
 		ReadinessProbe:  readinessProbeFor(sandbox),
+		StartupProbe:    startupProbeFor(sandbox),
 		SecurityContext: containerSecurityContextFor(sandbox),
 		// A Harness that dies says why in its log, not in a termination-log
 		// file it never writes (ADR-0063): the kubelet takes the last log
@@ -791,10 +801,10 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			// preference and these are requirements, so they never meet.
 			NodeSelector: sandbox.Spec.NodeSelector,
 			Tolerations:  sandbox.Spec.Tolerations,
-			// Isolation north star: an untrusted Agent must not reach the
-			// Kubernetes API. Don't mount the SA token, and run every jr2-owned
-			// container non-root under the default seccomp profile. (Egress
-			// NetworkPolicy is the next isolation layer — see ADR-0001.)
+			// An untrusted Agent must not reach the Kubernetes API: the SA
+			// token is not mounted, and every jr2-owned container runs non-root
+			// under the default seccomp profile. The Pod's network boundary is
+			// the Fence (spec.network, ADR-0084).
 			AutomountServiceAccountToken: ptr.To(false),
 			SecurityContext:              podSecurityContextFor(sandbox),
 			// On the Fence, the uplink's nameserver alone (fenceDNSFor);
@@ -989,28 +999,60 @@ func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 	if sandbox.Spec.ReadinessProbe != nil {
 		return sandbox.Spec.ReadinessProbe
 	}
+	if sandbox.Spec.Network != nil {
+		// Each exec probe is a process the runtime starts in the container,
+		// about ten times the CPU of an HTTP probe. The startup probe
+		// (startupProbeFor) gives the 1 s cadence until the Harness first
+		// answers; after that, readiness is checked every 10 s.
+		return &corev1.Probe{ProbeHandler: fenceHealthcheck(sandbox), TimeoutSeconds: 2, PeriodSeconds: 10}
+	}
 	// The Harness's own route, not the port (ADR-0063): the pod has one
 	// network namespace, so a sidecar that takes the port would answer a
 	// socket probe and the pod would go Ready with no Harness in it.
-	handler := corev1.ProbeHandler{
-		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstrFromInt32(portFor(sandbox))},
-	}
-	var timeout int32
-	if sandbox.Spec.Network != nil {
-		handler = corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
-			healthcheckBinary, "healthcheck", fmt.Sprintf("http://127.0.0.1:%d/healthz", portFor(sandbox)),
-		}}}
-		// The command bounds its GET at 1 s and must start first; the
-		// kubelet's own 1 s would count a slow start as a failure.
-		timeout = 2
-	}
 	return &corev1.Probe{
-		ProbeHandler:   handler,
-		TimeoutSeconds: timeout,
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstrFromInt32(portFor(sandbox))},
+		},
 		// Every second, not the kubelet's 10: the default period adds up to
 		// 10s to every provision (the scaling review's R12).
 		PeriodSeconds: 1,
 	}
+}
+
+// fenceStartupFailures is how many failed startup probes, one each second,
+// the kubelet allows before it restarts the Harness container: 10 minutes.
+// It must not be shorter than the Orchestrator's wait for a Ready pod
+// (readyTimeoutMs, 120 s by default), because a restart there counts toward
+// the crash loop that ends the provision.
+const fenceStartupFailures = 600
+
+// startupProbeFor returns the primary container's startup probe: on the
+// Fence with no readiness override, the same exec probe as readiness every
+// second, so that the pod is Ready within a second of the Harness's first
+// answer (R12) while the 10 s readiness period bounds the probes' CPU for
+// the rest of the pod's life. Otherwise none: the HTTP probe is cheap at 1 s,
+// and an override states its own timing.
+func startupProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
+	if sandbox.Spec.Network == nil || sandbox.Spec.ReadinessProbe != nil {
+		return nil
+	}
+	return &corev1.Probe{
+		ProbeHandler:     fenceHealthcheck(sandbox),
+		TimeoutSeconds:   2,
+		PeriodSeconds:    1,
+		FailureThreshold: fenceStartupFailures,
+	}
+}
+
+// fenceHealthcheck is the exec handler of a pod on the Fence: `effector
+// healthcheck` of the Harness's own /healthz from inside the container. The
+// command bounds its GET at 1 s and must start first, so each probe that uses
+// it has a timeout of 2 s; the kubelet's own 1 s would count a slow start as
+// a failure.
+func fenceHealthcheck(sandbox *corev1alpha1.Sandbox) corev1.ProbeHandler {
+	return corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+		healthcheckBinary, "healthcheck", fmt.Sprintf("http://127.0.0.1:%d/healthz", portFor(sandbox)),
+	}}}
 }
 
 // podSecurityContextFor is the pod-level context: the default seccomp profile
@@ -1127,6 +1169,17 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 			cond.Message = unscheduled.Message
 		}
 	}
+	// Only Multus acts on the default-network annotation. On a node where
+	// Multus did not act on the Pod, the Pod has the cluster's network and
+	// its exec probe of 127.0.0.1 still passes, so the Pod's Ready alone does
+	// not show that it is on the Fence (ADR-0084). Multus's own report does.
+	if ready && !onTheFence(sandbox, pod) {
+		ready = false
+		cond.Reason = reasonNotOnTheFence
+		cond.Message = fmt.Sprintf("pod reports Ready, but Multus does not report %s/%s as its default network "+
+			"(annotation %s): the pod is not on the Fence; check Multus on node %s",
+			sandbox.Namespace, sandbox.Spec.Network.Attachment, networkStatusAnnotation, pod.Spec.NodeName)
+	}
 	if ready && !admitted {
 		var reason, message string
 		ready, reason, message, fresh = reposReadiness(sandbox, pod.Spec.NodeName, repos)
@@ -1165,6 +1218,30 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 		return nil
 	}
 	return r.Status().Update(ctx, sandbox)
+}
+
+// onTheFence reports whether the Pod is where spec.network puts it: true
+// without spec.network, and otherwise only when Multus's network-status
+// annotation names `<namespace>/<attachment>` as the default network. An
+// absent or unreadable annotation is false: the check fails closed.
+func onTheFence(sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) bool {
+	if sandbox.Spec.Network == nil {
+		return true
+	}
+	var networks []struct {
+		Name    string `json:"name"`
+		Default bool   `json:"default"`
+	}
+	if err := json.Unmarshal([]byte(pod.Annotations[networkStatusAnnotation]), &networks); err != nil {
+		return false
+	}
+	want := sandbox.Namespace + "/" + sandbox.Spec.Network.Attachment
+	for _, n := range networks {
+		if n.Default {
+			return n.Name == want
+		}
+	}
+	return false
 }
 
 // endpointFor is the in-cluster Service address the Orchestrator reaches the

@@ -101,7 +101,9 @@ and that holds when Workspace code is root in the Sandbox.
   that cannot have it needs another form behind the same seam, and the rules of the Custodian do not change.
 - **`jr2 up` installs the uplink, the Custodian and the resolver, and it probes what it does not install.** The second
   network of a pod (Multus), the bridge and the node's rule set are prerequisites. `jr2 up` refuses to converge while a
-  Sandbox node lacks one, and it names the node and the part.
+  Sandbox node lacks one, and it names the node and the part. The Sandbox node set changes between converges, so the
+  operator also does not count a Sandbox Ready until Multus reports its attachment as the pod's default network: on a
+  node where Multus did not act, the pod has the cluster's network, and its exec probe passes there too.
 
 ## Considered options
 

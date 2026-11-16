@@ -10,8 +10,10 @@ import (
 	"time"
 )
 
-// The exec probe of a container on the Fence (ADR-0084): 0 only for a 200 from the url.
-func TestHealthcheckPassesOnlyOn200(t *testing.T) {
+// The exec probe of a container on the Fence (ADR-0084): 0 only for a 2xx status from the url.
+// The Harness's own /healthz answers 204 (packages/harness/src/app.ts), so 204 must pass. A
+// redirect is not followed and fails.
+func TestHealthcheckPassesOnlyOn2xx(t *testing.T) {
 	status := http.StatusOK
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/healthz" || r.Method != http.MethodGet {
@@ -29,7 +31,14 @@ func TestHealthcheckPassesOnlyOn200(t *testing.T) {
 	for _, tc := range []struct {
 		status int
 		want   int
-	}{{http.StatusOK, 0}, {http.StatusServiceUnavailable, 1}, {http.StatusNoContent, 1}, {http.StatusFound, 1}} {
+	}{
+		{http.StatusNoContent, 0}, // the Harness's answer
+		{http.StatusOK, 0},
+		{http.StatusServiceUnavailable, 1},
+		{http.StatusFound, 1},
+		{http.StatusNotFound, 1},
+		{http.StatusInternalServerError, 1},
+	} {
 		status = tc.status
 		var stderr bytes.Buffer
 		if got := healthcheck([]string{srv.URL + "/healthz"}, &stderr); got != tc.want {

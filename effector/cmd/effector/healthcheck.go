@@ -17,7 +17,8 @@ const healthcheckTimeout = time.Second
 // healthcheck is `effector healthcheck <url>`: the exec readiness probe of a container on the Fence
 // (ADR-0084, ADR-0063). No HTTP or TCP probe of the kubelet reaches a pod on the Fence, so the probe
 // asks the container's own `/healthz` from inside it. It sends one GET with a 1 s timeout and exits
-// 0 on 200; on any other status, a redirect or an error it says why on stderr and exits 1. It is a
+// 0 on a 2xx status (the Harness's `/healthz` answers 204); on any other status, a redirect or an
+// error it says why on stderr and exits 1. It is a
 // static Go binary with the standard library only, so it runs in each image that mounts /opt/jr2.
 // It dials the url directly: no proxy name in the env applies, and it follows no redirect.
 func healthcheck(args []string, stderr io.Writer) int {
@@ -49,7 +50,7 @@ func healthcheck(args []string, stderr io.Writer) int {
 		return 1
 	}
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode < 200 || res.StatusCode > 299 {
 		_, _ = fmt.Fprintf(stderr, "effector healthcheck: %s answered %s\n", target.Redacted(), res.Status)
 		return 1
 	}

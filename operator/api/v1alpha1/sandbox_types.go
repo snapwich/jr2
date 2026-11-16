@@ -56,8 +56,10 @@ type SandboxSpec struct {
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 
 	// ReadinessProbe overrides the primary container's readiness probe. When
-	// unset the operator injects a TCPSocket probe on Port so phase Ready means
-	// "the Harness accepts connections", not merely "the container started".
+	// unset the operator injects a probe of the Harness's own /healthz on Port
+	// (ADR-0063) so phase Ready means "the Harness accepts connections", not
+	// merely "the container started". When set, the operator adds no startup
+	// probe either.
 	// +optional
 	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
 
@@ -65,11 +67,13 @@ type SandboxSpec struct {
 	// network, and it has no interface on the cluster's own network. The
 	// operator gives the Pod the attachment as its default network and the
 	// nameserver as its only DNS server, and, unless ReadinessProbe is set,
-	// an exec readiness probe, because no HTTP or TCP probe of the kubelet
-	// reaches a pod there. Both values are the Orchestrator's; the operator
-	// checks neither. Unset leaves the Pod on the cluster's network.
+	// exec startup and readiness probes, because no HTTP or TCP probe of the
+	// kubelet reaches a pod there. The Sandbox is not Ready until Multus
+	// reports the attachment as the Pod's default network. Both values are the
+	// Orchestrator's; the operator checks neither. Unset leaves the Pod on the
+	// cluster's network.
 	// +optional
-	Network *SandboxNetwork `json:"network,omitempty"`
+	Network *SandboxFence `json:"network,omitempty"`
 
 	// Sidecars are generic Kubernetes container fragments scheduled alongside
 	// the primary container. Agents live here, but the operator stays agnostic.
@@ -208,8 +212,8 @@ type SandboxSpec struct {
 	GitCredentials []SandboxGitCredential `json:"gitCredentials,omitempty"`
 }
 
-// SandboxNetwork is the Pod's place on the Fence (ADR-0084).
-type SandboxNetwork struct {
+// SandboxFence is the Pod's place on the Fence (ADR-0084).
+type SandboxFence struct {
 	// Attachment is the name of the NetworkAttachmentDefinition, in the
 	// Sandbox's namespace, that is the Pod's default network: the operator
 	// writes it as the `v1.multus-cni.io/default-network` annotation

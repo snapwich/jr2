@@ -138,7 +138,7 @@ var _ = Describe("Sandbox Controller", func() {
 		It("puts the Pod on the Fence when spec.network names an attachment (ADR-0084)", func() {
 			sandbox := &corev1alpha1.Sandbox{}
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
-			sandbox.Spec.Network = &corev1alpha1.SandboxNetwork{Attachment: "jr2-fence-3", Nameserver: "198.19.0.1"}
+			sandbox.Spec.Network = &corev1alpha1.SandboxFence{Attachment: "jr2-fence-3", Nameserver: "198.19.0.1"}
 			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
@@ -149,14 +149,51 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(pod.Annotations).To(HaveKeyWithValue("v1.multus-cni.io/default-network", "default/jr2-fence-3"))
 			Expect(pod.Spec.DNSPolicy).To(Equal(corev1.DNSNone))
 			Expect(pod.Spec.DNSConfig.Nameservers).To(Equal([]string{"198.19.0.1"}))
+			healthcheck := []string{"/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8080/healthz"}
+			startup := pod.Spec.Containers[0].StartupProbe
+			Expect(startup.HTTPGet).To(BeNil())
+			Expect(startup.Exec.Command).To(Equal(healthcheck))
+			Expect(startup.PeriodSeconds).To(Equal(int32(1)))
+			Expect(startup.FailureThreshold).To(Equal(int32(600)))
 			probe := pod.Spec.Containers[0].ReadinessProbe
 			Expect(probe.HTTPGet).To(BeNil())
-			Expect(probe.Exec.Command).To(Equal([]string{
-				"/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8080/healthz"}))
+			Expect(probe.Exec.Command).To(Equal(healthcheck))
+			Expect(probe.PeriodSeconds).To(Equal(int32(10)))
+
+			By("holding Ready while Multus does not report the attachment as the default network")
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+			for _, status := range []string{"", `[{"name":"kindnet","interface":"eth0","default":true}]`} {
+				Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+				if status == "" {
+					delete(pod.Annotations, "k8s.v1.cni.cncf.io/network-status")
+				} else {
+					pod.Annotations["k8s.v1.cni.cncf.io/network-status"] = status
+				}
+				Expect(k8sClient.Update(ctx, pod)).To(Succeed())
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+				Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending), status)
+				ready := meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+				Expect(ready.Reason).To(Equal("NotOnTheFence"), status)
+				Expect(ready.Message).To(ContainSubstring("default/jr2-fence-3"))
+			}
+
+			By("going Ready once Multus reports the attachment as the default network")
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			pod.Annotations["k8s.v1.cni.cncf.io/network-status"] =
+				`[{"name":"default/jr2-fence-3","interface":"eth0","ips":["198.19.2.3"],"default":true}]`
+			Expect(k8sClient.Update(ctx, pod)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
 		})
 
 		It("refuses a spec.network whose nameserver is not an IPv4 address or whose attachment is not a name", func() {
-			for _, network := range []corev1alpha1.SandboxNetwork{
+			for _, network := range []corev1alpha1.SandboxFence{
 				{Attachment: "jr2-fence-3", Nameserver: "fd00::1"},
 				{Attachment: "jr2-fence-3", Nameserver: "198.19.0.256"},
 				{Attachment: "other/jr2-fence-3", Nameserver: "198.19.0.1"},

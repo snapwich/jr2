@@ -2128,9 +2128,11 @@ spec:
                   network, and it has no interface on the cluster's own network. The
                   operator gives the Pod the attachment as its default network and the
                   nameserver as its only DNS server, and, unless ReadinessProbe is set,
-                  an exec readiness probe, because no HTTP or TCP probe of the kubelet
-                  reaches a pod there. Both values are the Orchestrator's; the operator
-                  checks neither. Unset leaves the Pod on the cluster's network.
+                  exec startup and readiness probes, because no HTTP or TCP probe of the
+                  kubelet reaches a pod there. The Sandbox is not Ready until Multus
+                  reports the attachment as the Pod's default network. Both values are the
+                  Orchestrator's; the operator checks neither. Unset leaves the Pod on the
+                  cluster's network.
                 properties:
                   attachment:
                     description: |-
@@ -2247,8 +2249,10 @@ spec:
               readinessProbe:
                 description: |-
                   ReadinessProbe overrides the primary container's readiness probe. When
-                  unset the operator injects a TCPSocket probe on Port so phase Ready means
-                  "the Harness accepts connections", not merely "the container started".
+                  unset the operator injects a probe of the Harness's own /healthz on Port
+                  (ADR-0063) so phase Ready means "the Harness accepts connections", not
+                  merely "the container started". When set, the operator adds no startup
+                  probe either.
                 properties:
                   exec:
                     description: Exec specifies a command to execute in the container.
