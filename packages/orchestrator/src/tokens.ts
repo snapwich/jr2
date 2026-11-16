@@ -322,6 +322,16 @@ export function controlStandIn(key: Buffer, pod: string): string {
 }
 
 /**
+ * The dial token of an Instance (ADR-0084): what the Orchestrator sends in `x-jr2-dial` when it
+ * dials a Harness pod through a Custodian pod, and when it calls a Custodian pod's control process.
+ * `jr2 up` writes it in `jr2-custodian-dial`, which the Custodian reads; the Orchestrator derives it
+ * again from the kept key. Its own `custodian-dial:` domain keeps it apart from every other token.
+ */
+export function custodianDialToken(key: Buffer): string {
+  return sign(key, "custodian-dial:");
+}
+
+/**
  * The Harness bearer for one placement (ADR-0058): what the Orchestrator presents on every Harness
  * wire call — admit, stream, abort, echo — to the Harness in the pod `placement` names (a
  * Sandbox, or `jr2-instance-harness`). The same signed-name idea as the Sandbox token, turned the

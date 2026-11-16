@@ -22,6 +22,7 @@ import {
   leafStem,
   controlStandIn,
   controlToken,
+  custodianDialToken,
   heldStandIn,
   workspaceHeldPod,
   type HeldManifest,
@@ -50,6 +51,7 @@ import {
   stateVolumePlan,
   LABEL_PROVIDER_PREFLIGHT,
   PREFLIGHT_MCP_ARG,
+  custodianValueSecrets,
   type HeldObjects,
 } from "../src/deploy.ts";
 // The Harness's own result-line writer, from beside it, so the CLI's parser is held to its format.
@@ -114,8 +116,34 @@ class FakeCluster implements KubeAdmin {
   async label(opts: Record<string, unknown>): Promise<void> {
     this.labeled.push(opts);
   }
+  /** Each object `create` made, as `<namespace>/<kind>/<name>` (ADR-0084's range claims). */
+  created: string[] = [];
+  private keyOf(manifest: string): { key: string; obj: KubeObject & { metadata: { resourceVersion?: string } } } {
+    const obj = JSON.parse(manifest);
+    return { key: `${obj.metadata.namespace ?? ""}/${String(obj.kind).toLowerCase()}/${obj.metadata.name}`, obj };
+  }
+  async create(opts: { manifest: string }): Promise<"created" | "exists"> {
+    const { key, obj } = this.keyOf(opts.manifest);
+    if (this.objects.has(key)) return "exists";
+    this.objects.set(key, { ...obj, metadata: { ...obj.metadata, resourceVersion: "1" } } as KubeObject);
+    this.created.push(key);
+    return "created";
+  }
+  /** Each object `replace` wrote, as `<namespace>/<kind>/<name>`. */
+  replaced: string[] = [];
+  async replace(opts: { manifest: string }): Promise<"replaced" | "changed"> {
+    const { key, obj } = this.keyOf(opts.manifest);
+    const have = this.objects.get(key) as (KubeObject & { metadata: { resourceVersion?: string } }) | undefined;
+    if (!have || have.metadata.resourceVersion !== obj.metadata.resourceVersion) return "changed";
+    const next = String(Number(have.metadata.resourceVersion) + 1);
+    this.objects.set(key, { ...obj, metadata: { ...obj.metadata, resourceVersion: next } } as KubeObject);
+    this.replaced.push(key);
+    return "replaced";
+  }
   async deleteObject(opts: { kind: string; name: string; namespace?: string }): Promise<void> {
     this.deleted.push(`${opts.namespace ?? ""}/${opts.kind}/${opts.name}`);
+    // A range claim goes from the store, so a later converge can claim it again.
+    if (opts.kind === "lease") this.objects.delete(`${opts.namespace ?? ""}/lease/${opts.name}`);
   }
   async deleteManifest(): Promise<void> {
     this.deleted.push("(manifest)");
@@ -186,7 +214,24 @@ class FakeCluster implements KubeAdmin {
       return (this.checkLeftovers[opts.kind] ?? []) as T[];
     }
     if (opts.kind === "node") return this.nodes as T[];
+    // A read of one namespace by name (the range claim's holder, ADR-0084): what `set` put there.
+    if (opts.kind === "namespace" && opts.fieldSelector) {
+      const name = /^metadata\.name=(.+)$/.exec(opts.fieldSelector)?.[1];
+      const found = this.objects.get(`/namespace/${name}`);
+      return (found ? [found] : []) as T[];
+    }
     if (opts.kind === "namespace") return this.instanceNamespaces as T[];
+    // The range claims (ADR-0084), by label: a bare key lists each, `key=value` those that match.
+    if (opts.kind === "lease") {
+      const [key, value] = (opts.selector ?? "").split("=");
+      return [...this.objects]
+        .filter(([k]) => k.startsWith(`${opts.namespace ?? ""}/lease/`))
+        .map(([, o]) => o)
+        .filter((o) => {
+          const labels = o.metadata.labels ?? {};
+          return key! in labels && (value === undefined || labels[key!] === value);
+        }) as T[];
+    }
     if (opts.kind === "configmap") return this.imageMaps as T[];
     // The cluster-wide pod read is the sweep's; the selected one is a layer's image verification.
     // Distinguished explicitly, because falling through to the verification branch would answer a
@@ -6736,4 +6781,214 @@ test("up refuses a runs.volume smaller than the claim, and applies nothing", asy
   assert.equal(await up(["--yes"], w.io), 1);
   assert.match(w.err.join("\n"), /refusing: runs.volume is 2Gi, smaller than the state volume claim jr2-state \(5Gi\)/);
   assert.deepEqual(w.kube.applied, []);
+});
+
+// ---- the Custodian of an Instance (ADR-0084) ------------------------------------------------------
+
+/** The Custodian's List of a converge: the one with its DaemonSet. */
+function custodianList(w: World): Array<Record<string, any>> | undefined {
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"name":"jr2-custodian"`));
+  return list === undefined ? undefined : (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+}
+
+test("an Instance with a Harness pod claims a VLAN range and converges the Custodian on each Sandbox node (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  // The lowest free range, claimed by an atomic create in jr2-system, held by the namespace.
+  assert.deepEqual(w.kube.created, ["/namespace/jr2-system", "jr2-system/lease/jr2-fence-range-0"]);
+  const claim = (await w.kube.getJson({ kind: "lease", name: "jr2-fence-range-0", namespace: "jr2-system" })) as any;
+  assert.equal(claim.spec.holderIdentity, "myinst");
+  assert.match(w.err.join("\n"), /custodian: converging on each Sandbox node \(VLAN range 0\)/);
+
+  const items = custodianList(w)!;
+  const of = (kind: string) => items.filter((i) => i.kind === kind);
+  // One attachment for each slot and the trunk; nothing in the List names another namespace.
+  assert.equal(of("NetworkAttachmentDefinition").length, 129);
+  assert.ok(
+    items.every((i) => i.metadata.namespace === "myinst" && i.metadata.labels["jr2.dev/instance"] === "myinst"),
+  );
+
+  const ds = of("DaemonSet")[0]!;
+  const pod = ds.spec.template.spec;
+  assert.equal(ds.metadata.name, "jr2-custodian");
+  assert.deepEqual(ds.spec.updateStrategy, {
+    type: "RollingUpdate",
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 },
+  });
+  assert.deepEqual(JSON.parse(ds.spec.template.metadata.annotations["k8s.v1.cni.cncf.io/networks"]), [
+    { name: "jr2-fence-uplink", interface: "net1" },
+  ]);
+  assert.equal(pod.hostNetwork, undefined, "no jr2 pod has the node's network");
+  assert.equal(pod.automountServiceAccountToken, false);
+  assert.equal(pod.priorityClassName, "jr2-control");
+  assert.equal(pod.nodeSelector, undefined, "the Sandbox placement: none configured");
+  // The uplink: root with NET_ADMIN alone, in the pod's own network namespace.
+  const [uplink] = pod.initContainers;
+  assert.equal(uplink.name, "uplink");
+  assert.equal(uplink.image, imagesOf(w).orchestrator);
+  assert.deepEqual(uplink.securityContext.capabilities, { drop: ["ALL"], add: ["NET_ADMIN"] });
+  assert.equal(uplink.securityContext.allowPrivilegeEscalation, false);
+  assert.equal(uplink.securityContext.privileged, undefined);
+  assert.deepEqual(uplink.command.slice(3, 6), ["uplink", "0", "198.19.0.0/20"]);
+  // `envoy` and `control`: no capability, not root; only `control` has the API token.
+  const byName = Object.fromEntries(pod.containers.map((c: { name: string }) => [c.name, c]));
+  assert.deepEqual(Object.keys(byName), ["control", "envoy"]);
+  for (const c of Object.values(byName) as any[]) {
+    assert.deepEqual(c.securityContext.capabilities, { drop: ["ALL"] });
+    assert.equal(c.securityContext.runAsNonRoot, true);
+    assert.equal(c.securityContext.readOnlyRootFilesystem, true);
+  }
+  assert.equal(byName.envoy.image, custodianRef());
+  assert.equal(byName.control.image, imagesOf(w).orchestrator);
+  assert.deepEqual(byName.control.command, ["tsx", "node_modules/@jr2/orchestrator/bin/custodian-control.ts"]);
+  const env = Object.fromEntries(byName.control.env.map((e: { name: string }) => [e.name, e]));
+  assert.equal(env.JR2_FENCE_RANGE.value, "0");
+  assert.equal(env.JR2_FENCE_SEGMENT, undefined, "the default segment needs no variable");
+  const mounts = (c: any) => c.volumeMounts.map((m: { name: string }) => m.name);
+  assert.ok(mounts(byName.control).includes("kube-api"));
+  assert.ok(!mounts(byName.envoy).includes("kube-api"));
+  assert.deepEqual(
+    pod.volumes.find((v: { name: string }) => v.name === "state").emptyDir,
+    { medium: "Memory", sizeLimit: "64Mi" },
+    "the slots' values are in the pod's memory",
+  );
+
+  // The Role: get on a fixed list of Secret names, never `jr2-instance`.
+  const role = of("Role")[0]!;
+  assert.equal(role.rules.length, 1);
+  assert.deepEqual(role.rules[0].verbs, ["get"]);
+  const names: string[] = role.rules[0].resourceNames;
+  assert.equal(names.filter((n) => n.startsWith("jr2-custodian-slot-")).length, 128);
+  assert.ok(names.includes("jr2-custodian-dial"));
+  assert.ok(!names.includes("jr2-instance"));
+  // The dial token: the one the Orchestrator derives again from the kept key.
+  const instance = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  const key = instance.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!.stringData
+    .JR2_SIGNING_KEY;
+  const dial = of("Secret")[0]!;
+  assert.equal(dial.metadata.name, "jr2-custodian-dial");
+  assert.equal(dial.stringData.token, custodianDialToken(Buffer.from(key, "base64")));
+  // The inbound and control ports admit this Instance's Orchestrator only.
+  const policy = of("NetworkPolicy")[0]!;
+  assert.deepEqual(policy.spec.ingress[0], {
+    from: [{ podSelector: { matchLabels: { app: "jr2-orchestrator", "jr2.dev/instance": "myinst" } } }],
+    ports: [
+      { protocol: "TCP", port: 18080 },
+      { protocol: "TCP", port: 18081 },
+    ],
+  });
+  assert.deepEqual(policy.spec.ingress[1], { ports: [{ protocol: "TCP", port: 15021 }] });
+  const service = of("Service")[0]!;
+  assert.equal(service.spec.clusterIP, "None");
+  // Its bootstrap names the Orchestrator's Service; its trust is the roots, never a jr2 CA.
+  const config = of("ConfigMap")[0]!;
+  assert.match(config.data["envoy.json"], /jr2-orchestrator\.myinst\.svc/);
+  assert.equal(config.data["program.lua"], CUSTODIAN_PROGRAM);
+  assert.match(config.data["upstream.crt"], /BEGIN CERTIFICATE/);
+
+  // Applied server-side, after the Orchestrator, and waited on like each other layer.
+  const rollouts = w.kube.rollouts.filter((r) => r.startsWith("myinst/"));
+  assert.ok(rollouts.indexOf("myinst/daemonset/jr2-custodian") > rollouts.indexOf("myinst/jr2-orchestrator"));
+
+  // The Orchestrator may list and watch EndpointSlices, and still reads no Pod.
+  const orchestratorRole = instance.find((i) => i.kind === "Role" && i.metadata.name === "jr2-orchestrator")!;
+  assert.ok(
+    orchestratorRole.rules.some(
+      (r: any) => r.apiGroups.includes("discovery.k8s.io") && r.resources.includes("endpointslices"),
+    ),
+  );
+  assert.ok(!orchestratorRole.rules.some((r: any) => r.resources.some((x: string) => x.startsWith("pods"))));
+
+  // A converge again keeps its range and claims no other.
+  const again = mkWorld(root);
+  again.kube.objects = w.kube.objects;
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.deepEqual(again.kube.created, []);
+  assert.equal(
+    custodianList(again)!.find((i) => i.kind === "DaemonSet")!.spec.template.spec.initContainers[0].command[4],
+    "0",
+  );
+});
+
+test("the Custodian's pod template moves with its config, and not with a converge that changes nothing", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const template = (x: World) => custodianList(x)!.find((i) => i.kind === "DaemonSet")!.spec.template;
+  const again = mkWorld(root);
+  again.kube.objects = w.kube.objects;
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.deepEqual(template(again), template(w));
+  // Another Instance folder: a config module loads once in a process.
+  const movedRoot = await withWorkspace(
+    await mkInstance(`export default { name: "myinst", fence: { segment: "100.64.0.0/16" } };\n`),
+  );
+  const moved = mkWorld(movedRoot);
+  moved.kube.objects = w.kube.objects;
+  assert.equal(await up(["--yes"], moved.io), 0);
+  const t = template(moved);
+  assert.notEqual(
+    t.metadata.annotations["jr2.dev/custodian-config-digest"],
+    template(w).metadata.annotations["jr2.dev/custodian-config-digest"],
+  );
+  assert.ok(t.spec.containers[0].env.some((e: any) => e.name === "JR2_FENCE_SEGMENT" && e.value === "100.64.0.0/16"));
+});
+
+test("an Instance with no Harness pod claims no range and installs no Custodian; one left from before goes, with its range", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(custodianList(w), undefined);
+  assert.deepEqual(w.kube.created, []);
+  assert.ok(!w.kube.deleted.includes("(manifest)"), "nothing to delete");
+
+  const stale = mkWorld(root);
+  stale.kube.set("myinst", "daemonset", "jr2-custodian", {});
+  stale.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+  stale.kube.set("jr2-system", "lease", "jr2-fence-range-5", rangeClaim(5, "other"));
+  assert.equal(await up(["--yes"], stale.io), 0);
+  assert.ok(stale.kube.deleted.includes("(manifest)"), "the Custodian's objects are deleted");
+  assert.ok(stale.kube.deleted.includes("jr2-system/lease/jr2-fence-range-4"));
+  assert.ok(!stale.kube.deleted.includes("jr2-system/lease/jr2-fence-range-5"), "another Instance's range stays");
+  assert.match(stale.err.join("\n"), /custodian: gave back VLAN range 4/);
+});
+
+function rangeClaim(range: number, holder: string): Partial<KubeObject> {
+  return {
+    metadata: {
+      name: `jr2-fence-range-${range}`,
+      labels: { "jr2.dev/fence-range": String(range), "jr2.dev/fence-holder": holder },
+    },
+    spec: { holderIdentity: holder },
+  } as Partial<KubeObject>;
+}
+
+test("the Custodian may read each slot Secret, the dial token, each pod's literals and each Secret a held secret names, and no other", () => {
+  const binding = (name: string, source: any) =>
+    ({ name, hosts: [], header: "authorization", scheme: "Bearer", source }) as any;
+  const held: HeldObjects = {
+    pods: [
+      {
+        pod: "instance",
+        manifest: { version: 1, secrets: [binding("K", { kind: "literal" })], egress: [] },
+        values: { K: "v" },
+      },
+      {
+        pod: "ws-1",
+        manifest: {
+          version: 1,
+          secrets: [
+            binding("A", { kind: "secret", secret: "user-a", key: "k" }),
+            binding("B", { kind: "secret", secret: "user-a", key: "j" }),
+          ],
+          egress: [],
+        },
+        values: {},
+      },
+    ],
+    leaves: {},
+  };
+  assert.deepEqual(custodianValueSecrets(held), ["jr2-held-secrets-instance", "user-a"]);
 });

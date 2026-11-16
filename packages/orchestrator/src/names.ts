@@ -161,6 +161,22 @@ export function custodianSlotSecret(slot: number): string {
  * Custodian pod, and of the API of its control process. One key, `CUSTODIAN_DIAL_KEY`. */
 export const CUSTODIAN_DIAL_SECRET = "jr2-custodian-dial";
 export const CUSTODIAN_DIAL_KEY = "token";
+/** The Custodian of an Instance (ADR-0084): the name of its DaemonSet (one pod on each Sandbox node),
+ * of the headless Service whose EndpointSlices name each pod and its node, and of its
+ * ServiceAccount, Role, ConfigMap and NetworkPolicy. */
+export const CUSTODIAN_SERVICE = "jr2-custodian";
+/** The attachment of slot i (ADR-0084): a NetworkAttachmentDefinition in the Instance's namespace
+ * that puts a pod on the slot's VLAN with the slot's address. A Harness pod's only network. */
+export function fenceSlotAttachment(slot: number): string {
+  return `jr2-fence-${slot}`;
+}
+/** The attachment of the Custodian pod's trunk (ADR-0084): each VLAN of the Instance's range. */
+export const FENCE_TRUNK_ATTACHMENT = "jr2-fence-uplink";
+/** The claim of VLAN range k on the cluster (ADR-0084): a Kubernetes Lease object in `jr2-system`
+ * whose holder is the namespace of the Instance that uses the range. */
+export function fenceRangeClaim(range: number): string {
+  return `jr2-fence-range-${range}`;
+}
 /** The Instance Harness's pod, as its held objects are keyed. A Workspace's is `ws-<digest>`
  * (`workspaceHeldPod`), so the two cannot collide. */
 export const INSTANCE_HARNESS_HELD_POD = "instance";

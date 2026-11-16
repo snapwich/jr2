@@ -6,7 +6,9 @@
 // Secret (+ preflight of referenced Secrets) → the provider preflight (ADR-0019, ADR-0059: through a
 // Custodian, in pods that read their own objects) → operator → git ssh keys → apply → rollout → the cache
 // agent (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted
-// when none does) → Instance Harness (ADR-0031: converged by convention when a carried definition
+// when none does) → the Custodian (ADR-0084: one pod on each Sandbox node with its uplink and its
+// resolver, on a VLAN range the Instance claims, converged when the Instance has a Harness pod) →
+// Instance Harness (ADR-0031: converged by convention when a carried definition
 // declares `workspace: "none"`, deleted when none does) → Instance Effector → publishing the Assembly to the
 // running Orchestrator (ADR-0069) → a report of live workspaces still on an older image.
 //
@@ -120,6 +122,8 @@ import {
   egressText,
   fenceRangesOf,
   uncarriedHosts,
+  custodianDialToken,
+  CUSTODIAN_SERVICE,
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { awaitMounts, digestSecretsOf, mountedDigests, staleLine } from "../mount-wait.ts";
@@ -184,7 +188,10 @@ import {
   checkPodObjectNames,
   PROVIDER_PREFLIGHT,
   CHECK_CONTAINER,
+  custodianObjects,
+  custodianValueSecrets,
 } from "../deploy.ts";
+import { claimRange, releaseRanges } from "../fence.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { planCallerTokens } from "../caller-tokens.ts";
 import { resolveRoot } from "../instance.ts";
@@ -1193,6 +1200,71 @@ export async function up(args: string[], io: Io): Promise<number> {
     // returns here.
     for (const kind of ["daemonset", "rolebinding", "role", "serviceaccount"]) {
       await kube.deleteObject({ kind, name: REPO_CACHE, namespace, ...ctx });
+    }
+  }
+
+  // --- the Custodian (ADR-0084): its uplink and its resolver, on each Sandbox node ----------------
+  // An Instance with a Harness pod (a Sandbox, or the Instance Harness) has it; an Instance with
+  // none, such as one whose runs have no Agent, installs nothing and claims no VLAN range.
+  if (carried.composesSandbox || carried.instanceHarness !== undefined) {
+    const range = await claimRange(kube, { namespace, ...ctx, log: (line) => activity(io, line) });
+    activity(io, `custodian: converging on each Sandbox node (VLAN range ${range})`);
+    await kube.apply({
+      manifest: custodianObjects({
+        name,
+        namespace,
+        range,
+        ranges: fenceRangesOf(config.fence),
+        orchestratorImage: refs.orchestrator,
+        envoyImage: custodianImage,
+        dialToken: custodianDialToken(Buffer.from(signingKey, "base64")),
+        valueSecrets: custodianValueSecrets(held.objects),
+        upstreamTrust: trustBundles("", caPem).upstream,
+        ...(config.sandbox ? { placement: config.sandbox } : {}),
+        ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
+      }),
+      // Server-side: the ConfigMap carries every root certificate, past client-side apply's
+      // annotation.
+      serverSide: true,
+      warn: (line) => activity(io, line),
+      ...ctx,
+    });
+    await awaitRollout(kube, {
+      kind: "daemonset",
+      name: CUSTODIAN_SERVICE,
+      namespace,
+      selector: `app=${CUSTODIAN_SERVICE}`,
+      ...ctx,
+    });
+    await verifyRunningImage(io, kube, {
+      layer: "custodian",
+      namespace,
+      selector: `app=${CUSTODIAN_SERVICE}`,
+      image: refs.orchestrator,
+      container: "control",
+      ...ctx,
+    });
+  } else {
+    // A Custodian of a converge that had a Harness pod: its objects go, then its range.
+    if (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx })) {
+      activity(io, "custodian: none (no Harness pod) — deleting the Custodian");
+      await kube.deleteManifest({
+        manifest: custodianObjects({
+          name,
+          namespace,
+          range: 0,
+          ranges: fenceRangesOf(config.fence),
+          orchestratorImage: refs.orchestrator,
+          envoyImage: custodianImage,
+          dialToken: "",
+          valueSecrets: [],
+          upstreamTrust: "",
+        }),
+        ...ctx,
+      });
+    }
+    for (const range of await releaseRanges(kube, { namespace, ...ctx })) {
+      activity(io, `custodian: gave back VLAN range ${range}`);
     }
   }
 

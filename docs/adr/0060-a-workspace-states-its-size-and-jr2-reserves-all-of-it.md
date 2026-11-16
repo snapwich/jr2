@@ -68,7 +68,11 @@ unchanged.
   provisioning burst needs CPU, and no Substrate move applies to them). Orchestrator 500m / 1Gi. Instance Harness 250m /
   1Gi (it frees every conversation no live run holds — ADR-0031). Operator 50m / 256Mi (it caches every Pod in the
   cluster). Instance Effector 50m / 128Mi. Repo cache agent 50m, memory request 128Mi and limit 1Gi — the one exception,
-  since `git index-pack` spikes and its OOM costs only a refetch.
+  since `git index-pack` spikes and its OOM costs only a refetch. The Custodian pod on each Sandbox node
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)): Envoy 50m / 256Mi, the control process 50m /
+  256Mi, and the uplink, which runs once at the pod's start, 50m / 32Mi. Measured idle on kind: 98 MiB and 6 millicores
+  for the pod with no live slot, and 144 MiB and 7 millicores with 20; Envoy allocates 121 MiB at 128 slots of 30
+  entries each, the size of a full range.
 
 ## Considered options
 
@@ -105,7 +109,7 @@ unchanged.
 - `jr2 up` warns — never refuses — when no current Sandbox node could hold a Workspace's Size (the ADR-0052 stance: the
   node set moves).
 - GLOSSARY.md gains **Size**.
-- The kit-sized control pods ask a node for about 900m a scenario before any Sandbox, so the `@kind` tier on a 4-vCPU
-  hosted runner runs two workers, not the profile's four (`just e2e-kind 2` in the release job). v0.4.0's release run
-  measured the alternative: four workers left every Sandbox Pending on `Insufficient cpu`. The requests are the kit's
-  and are not lowered for a runner.
+- The kit-sized control pods ask a node for about 900m a scenario before any Sandbox, and the Custodian pod asks each
+  Sandbox node for 100m more, so the `@kind` tier on a 4-vCPU hosted runner runs two workers, not the profile's four
+  (`just e2e-kind 2` in the release job). v0.4.0's release run measured the alternative: four workers left every Sandbox
+  Pending on `Insufficient cpu`. The requests are the kit's and are not lowered for a runner.

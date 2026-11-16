@@ -24,6 +24,7 @@
 import { basename } from "node:path";
 import { loadConfig } from "@jr2/orchestrator/internal";
 import { pnpmDockerBuild } from "../build.ts";
+import { releaseRanges } from "../fence.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import { kubectlAdmin } from "../kube.ts";
@@ -68,6 +69,11 @@ export async function down(args: string[], io: Io): Promise<number> {
 
   activity(io, `deleting namespace "${namespace}" (runs, store, and Sandboxes go with it)`);
   await kube.deleteObject({ kind: "Namespace", name: namespace, ...ctx });
+  // After the namespace is gone (the delete waits), so that no pod of it is still on a VLAN of its
+  // range when another Instance claims the range (ADR-0084).
+  for (const range of await releaseRanges(kube, { namespace, ...ctx })) {
+    activity(io, `gave back VLAN range ${range} of the Fence`);
+  }
 
   // BEFORE the sweep, not after: while the operator Deployment stands, its pod is a live root and
   // the operator image would survive its own uninstall.

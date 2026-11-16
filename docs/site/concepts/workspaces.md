@@ -309,7 +309,8 @@ These limits follow from the Fence:
   connections to its Intercepted hosts and its plain HTTP connections close after about a minute too. When you add or
   remove a name on port 80, or an exact name that a `*.` entry or `["*"]` on port 80 covers, each open plain HTTP
   connection of the Sandbox on port 80 closes after about a minute, also a connection to a name that did not change.
-- While the Custodian is down, no Sandbox reaches anything.
+- The Custodian runs as one pod on each Sandbox node. While that pod is down, no Sandbox on its node reaches anything. A
+  new version of jr2 replaces the pod of each node in turn, and closes the open connections of that node's Sandboxes.
 - The Harness pods of an Instance on one node share the Custodian's cache of names and its limit of connections. A
   Sandbox that dials many new names, through a `*` or a `*.` entry, can fill the cache. Then each new name of those pods
   is refused, with the reason, while the Sandbox keeps the cache full, and for up to 5 minutes after it stops. A name

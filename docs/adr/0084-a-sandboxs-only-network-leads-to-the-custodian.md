@@ -20,13 +20,23 @@ and that holds when Workspace code is root in the Sandbox.
   trunk. The Sandbox cannot choose its VLAN, so the uplink knows which Sandbox sent a frame. Nothing is written when a
   pod starts, so nothing is lost when a pod, the kubelet or the container runtime starts again, and there is no window
   at a pod's start. Nothing in the pod is part of the Fence.
+- **Instances share a node's bridge by VLAN ranges.** Each Instance with a Harness pod claims a range of 128 VLANs on
+  the cluster: `jr2 up` creates the Kubernetes Lease object `jr2-fence-range-<k>` in `jr2-system`, which names the
+  Instance's namespace, and a create of a name that exists fails, so two Instances cannot claim one range. The range is
+  the same on every node, because a pod's VLAN is chosen before the scheduler picks its node. Slot i of range k is VLAN
+  2 + 128k + i, and its address is that VLAN's address on the segment. The uplink of an Instance has the trunk of its
+  own range only, and no port of the bridge is a member of VLAN 1, so a frame of one Instance never reaches the uplink
+  or a Harness pod of another. `jr2 down` gives the range back. `jr2 up` takes a range again only when the namespace
+  that holds it is NotFound: while that namespace is Terminating, a pod of it can still be on a VLAN of the range.
 - **The uplink gives all traffic to the Custodian.** It sends each TCP connection to the Custodian and each DNS query to
   the Custodian's resolver, whatever address the Sandbox dialed. It drops all else: UDP, QUIC, ICMP, IPv6 and frames of
   another type. No tool needs a proxy setting, and `HTTPS_PROXY` is not set.
 - **There is one Custodian for each Instance, outside every Sandbox**
-  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). It has one set of rules for each
-  Sandbox, which the Orchestrator writes at provision and can change while the Sandbox lives, with no restart. A
-  provision waits until the Custodian says that the Sandbox's rules are live. A Sandbox with no rules reaches nothing.
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). It runs as one pod on each Sandbox
+  node, which holds that node's uplink, the Custodian and its resolver, and each pod holds the rules of each Sandbox of
+  the Instance. It has one set of rules for each Sandbox, which the Orchestrator writes at provision and can change
+  while the Sandbox lives, with no restart. A provision waits until the Custodian says that the Sandbox's rules are
+  live. A Sandbox with no rules reaches nothing.
 - **The Egress list states what a Sandbox may reach, and all else is refused.** The Instance's config holds the default
   list (`egress`), and a `workspace()` that states its own list replaces it for that Workspace. An entry is
   `"host[:port]"` or `{ host, port?, intercept: true }`. With no port, the entry permits ports 443 and 80. `*.` at the
@@ -78,9 +88,12 @@ and that holds when Workspace code is root in the Sandbox.
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
 - **The Orchestrator reaches a Harness pod through the uplink, and nothing else does.** A pod behind a Fence has no
   Service and no pod address, so the Orchestrator's dial to a Harness or to a Sandbox Effector goes to the uplink, which
-  carries it to that pod. The uplink accepts such a dial from the Orchestrator only, and the bearer check stays as the
-  second control ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). The kubelet's probes of the pod's
-  containers are exec probes.
+  carries it to that pod. The uplink accepts such a dial from the Orchestrator only. A NetworkPolicy admits the
+  Instance's Orchestrator alone to the Custodian pod's dial port and to the port of its control process, and each dial
+  carries the Instance's dial token, which the Custodian checks also on a cluster whose network enforces no policy. The
+  bearer check stays as the second control ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). The
+  Orchestrator finds the Custodian pod on a Harness pod's node from the EndpointSlices of the Custodian's headless
+  Service. The kubelet's probes of the pod's containers are exec probes.
 - **A refusal has a reason, and each one is logged.** A refused name gets a DNS refusal at once. A permitted name has
   only its placeholder address, so a query for another record of it, such as an IPv6 address, gets an empty answer at
   once, and a client that asks for both does not wait. A refused connection gets a TLS alert, an HTTP 403 or a line of
@@ -168,8 +181,13 @@ and that holds when Workspace code is root in the Sandbox.
   only. A Sandbox that holds its 4 connections stops only its own lookups over TCP. While the process is down, each
   Harness pod of the Instance on that node gets no answer to a lookup, and no Sandbox there becomes live. It fails
   closed.
-- **The Custodian is one point for all Sandboxes of an Instance.** While it is down, no Sandbox reaches anything, and no
-  Turn makes a model call. It fails closed.
+- **The Custodian pod of a node is one point for all Harness pods of its Instance on that node.** While it is down, no
+  Harness pod there reaches anything, and no Turn there makes a model call. It fails closed. A roll of the Custodian (a
+  new Kit version, a changed `fence` or `caBundle`) replaces the pod of each node in turn, and cuts each open connection
+  of that node's Harness pods. So a Harness pod's rules change through the Custodian's control process, never through
+  its pod template.
+- **A cluster has 31 VLAN ranges.** So at most 31 Instances with a Harness pod share a cluster, and an Instance has at
+  most 128 Harness pods at once. Each Custodian pod of an Instance holds the VLAN interfaces of its whole range.
 - **The cluster needs a second pod network and a rule set on each Sandbox node.** On Cilium, the node's config must let
   another CNI plugin run. A managed cluster that permits neither cannot have the segment.
 - **An Instance with no Workspace needs the Fence too,** because its Instance Harness is behind one. So the first model

@@ -138,6 +138,14 @@ export type KubeAdmin = {
     serverSide?: boolean;
     warn?: (line: string) => void;
   }): Promise<void>;
+  /** `kubectl create -f -` of one object: `created`, or `exists` when an object of that name is
+   * there already (AlreadyExists). The atomic claim of a name (ADR-0084's range claim). THROWS on
+   * any other failure. */
+  create(opts: { manifest: string; context?: string }): Promise<"created" | "exists">;
+  /** `kubectl replace -f -` of one object that names the `metadata.resourceVersion` that was read:
+   * `replaced`, or `changed` when the object changed or went since that version (Conflict,
+   * NotFound). THROWS on any other failure. */
+  replace(opts: { manifest: string; context?: string }): Promise<"replaced" | "changed">;
   /** `kubectl label --overwrite`. */
   label(opts: {
     kind: string;
@@ -532,6 +540,26 @@ export const kubectlAdmin: KubeAdmin = {
     }
     if (rest !== undefined) {
       await execStdin(["kubectl", ...ctxArgs(context), "apply", ...(serverSide ? SERVER_SIDE : []), "-f", "-"], rest);
+    }
+  },
+
+  async create({ manifest, context }) {
+    try {
+      await execStdin(["kubectl", ...ctxArgs(context), "create", "-f", "-"], manifest);
+      return "created";
+    } catch (err) {
+      if (/\(AlreadyExists\)/.test((err as Error).message)) return "exists";
+      throw err;
+    }
+  },
+
+  async replace({ manifest, context }) {
+    try {
+      await execStdin(["kubectl", ...ctxArgs(context), "replace", "-f", "-"], manifest);
+      return "replaced";
+    } catch (err) {
+      if (/\((Conflict|NotFound)\)/.test((err as Error).message)) return "changed";
+      throw err;
     }
   },
 

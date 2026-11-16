@@ -1138,8 +1138,9 @@ export function custodianXds(slots: readonly SlotRules[]): { lds: Json; cds: Jso
 
 // ---- the pod's bootstrap ------------------------------------------------------------------------
 
-/** The highest VLAN range: its last slot is VLAN 4094, the highest VLAN there is. */
-const FENCE_LAST_RANGE = Math.floor((4094 - 2 - (FENCE_SLOTS - 1)) / FENCE_SLOTS);
+/** The highest VLAN range: its last slot is VLAN 4094, the highest VLAN there is. So a cluster has
+ * ranges 0 … 30, one for each Instance whose Harness pods are behind the Fence. */
+export const FENCE_LAST_RANGE = Math.floor((4094 - 2 - (FENCE_SLOTS - 1)) / FENCE_SLOTS);
 
 /** The VLAN of slot `slot` of range `range` (ADR-0084): `2 + 128 × range + slot`, from 2 to 4094.
  * Any other range or slot is a program error: its address would be outside the segment, and the

@@ -5,6 +5,7 @@
 
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CALLER_DIGESTS_KEY,
@@ -81,7 +82,26 @@ import {
   markHarnessEnv,
   type PriorityClasses,
   type SandboxPlacement,
+  CUSTODIAN_CONTROL_PORT,
+  CUSTODIAN_DIAL_KEY,
+  CUSTODIAN_DIAL_SECRET,
+  CUSTODIAN_HEALTH_PORT,
+  CUSTODIAN_INBOUND_PORT,
+  CUSTODIAN_POD_ARGS,
+  CUSTODIAN_POD_BOOTSTRAP,
+  CUSTODIAN_POD_CONFIG,
+  CUSTODIAN_POD_PROGRAM,
+  CUSTODIAN_SERVICE,
+  CUSTODIAN_STATE,
+  custodianPodBootstrap,
+  custodianSlotSecret,
+  FENCE_PLACEHOLDERS,
+  FENCE_SEGMENT,
+  FENCE_SLOTS,
+  FENCE_TRUNK_ATTACHMENT,
+  type FenceRanges,
 } from "@jr2/orchestrator/internal";
+import { fenceAttachments, FENCE_TRUNK_INTERFACE, UPLINK_SCRIPT, uplinkArgs } from "./fence.ts";
 import type { Pem } from "./held-pki.ts";
 
 export {
@@ -335,6 +355,14 @@ export const KIT_POD_SIZES = {
   instanceEffector: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "128Mi" } },
   /** The provider preflight's check container (ADR-0019): one Node.js process, pi-ai, one call at a time. */
   checkContainer: { requests: { cpu: "100m", memory: "512Mi" }, limits: { memory: "512Mi" } },
+  /** The Custodian pod of a Sandbox node (ADR-0084): its Envoy holds the rules of each slot of the
+   * Instance, and its control process holds each slot's Secrets, its files in the pod's memory and
+   * the resolver. Measured idle on kind: the pod 98 MiB and 6 millicores with no live slot, 144 MiB
+   * and 7 millicores with 20 (Envoy 56 MiB, the control process 88 MiB); Envoy allocates 121 MiB at
+   * 128 slots × 30 entries. The `uplink` init container runs `ip` and `nft` once. */
+  custodianEnvoy: { requests: { cpu: "50m", memory: "256Mi" }, limits: { memory: "256Mi" } },
+  custodianControl: { requests: { cpu: "50m", memory: "256Mi" }, limits: { memory: "256Mi" } },
+  custodianUplink: { requests: { cpu: "50m", memory: "32Mi" }, limits: { memory: "32Mi" } },
 } as const;
 
 /** A fresh copy, so no manifest shares an object with another (or with the constant). */
@@ -576,6 +604,10 @@ export function instanceObjects(opts: {
         // A Sandbox Effector's headless Service, written at provision beside its key (ADR-0068): how
         // this process reaches the pod's own address. Owned by the CR, like the ConfigMap.
         { apiGroups: [""], resources: ["services"], verbs: ["create", "patch"] },
+        // The Custodian's pods and their nodes (ADR-0084): the EndpointSlices of its headless
+        // Service, so that the Orchestrator dials a Harness pod through the Custodian pod on that
+        // pod's node. Still no read of a Pod.
+        { apiGroups: ["discovery.k8s.io"], resources: ["endpointslices"], verbs: ["list", "watch"] },
       ],
     },
     {
@@ -1025,6 +1057,334 @@ function repoCacheObjects(opts: {
       },
     },
   ];
+}
+
+/** The uid and the group of the Custodian pod's `envoy` and `control` containers. The group owns the
+ * pod's state folder, so that `control` writes each file there and `envoy` reads it. */
+export const CUSTODIAN_POD_USER = 65532;
+
+/** The annotation on the Custodian pod template: the digest of its ConfigMap. Envoy reads its
+ * bootstrap once, at start, so a changed bootstrap, program or trust must replace the pods. */
+export const ANNOTATION_CUSTODIAN_CONFIG_DIGEST = "jr2.dev/custodian-config-digest";
+
+/**
+ * Each Secret that the Custodian's control process may read, other than the slot Secrets and the
+ * dial token (ADR-0084): each pod's `jr2-held-secrets-<pod>` that holds a literal, and each Secret of
+ * the user's that a held secret's `secretKeyRef` names. Sorted, once each. Its Role names these and
+ * no other Secret, so it cannot read `jr2-instance`, the signing key.
+ */
+export function custodianValueSecrets(held: HeldObjects): string[] {
+  const names = new Set<string>();
+  for (const pod of held.pods) {
+    if (Object.keys(pod.values).length > 0) names.add(heldSecretsSecret(pod.pod));
+    for (const binding of pod.manifest.secrets) {
+      if (binding.source.kind === "secret") names.add(binding.source.secret);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * The Custodian of an Instance (ADR-0084), as one List: one pod on each Sandbox node, outside every
+ * Harness pod. An Instance with a Harness pod (a Sandbox or the Instance Harness) has it.
+ *
+ * - The attachments: one for each slot of the Instance's VLAN range, and the trunk.
+ * - The DaemonSet `jr2-custodian`, with the Sandbox placement, so that a Custodian pod is on each
+ *   node where a Harness pod can be. Its pod has three containers:
+ *   - `uplink` (init; the Orchestrator image, root with `NET_ADMIN` alone, in the pod's own network
+ *     namespace): the VLAN interfaces of the range and the static rule set (`UPLINK_SCRIPT`);
+ *   - `envoy` (the pinned image, no capability): a listener for each slot with rules, the inbound
+ *     listener of the Orchestrator's dial, and the health listener;
+ *   - `control` (the Orchestrator image, no capability): reads the slot Secrets, makes each slot's
+ *     rules live in Envoy, and serves the resolver of each slot and its own API. It is the one
+ *     container with a ServiceAccount token.
+ * - The headless Service `jr2-custodian`: no address routes to it; its EndpointSlices name each
+ *   ready Custodian pod and its node, which is how the Orchestrator finds the pod on a Harness pod's
+ *   node.
+ * - The Role: `get` on a fixed list of Secret names (each slot Secret, the dial token, and
+ *   `valueSecrets`), and nothing else.
+ * - The NetworkPolicy: the inbound and control ports admit this Instance's Orchestrator only. The
+ *   dial token is the control that holds on a CNI that enforces no policy, and the Harness's bearer
+ *   is the second one (ADR-0058).
+ * - The dial token's Secret and the ConfigMap of Envoy's bootstrap, the Custodian's program and its
+ *   upstream trust (the roots and the user's `caBundle`, never a jr2 CA).
+ *
+ * The pod template changes only with the images, the range, the ranges, the placement and the
+ * ConfigMap's digest: a Harness pod's rules change through `control`, never through the template,
+ * because each roll cuts every connection of that node's Harness pods.
+ */
+export function custodianObjects(opts: {
+  name: string;
+  namespace: string;
+  /** The Instance's VLAN range (`claimRange`). */
+  range: number;
+  /** The Instance's two Fence ranges (`fenceRangesOf(config.fence)`). */
+  ranges: FenceRanges;
+  /** The Orchestrator Kit image: the `uplink` and `control` containers. */
+  orchestratorImage: string;
+  /** The pinned Envoy (`custodianRef`). */
+  envoyImage: string;
+  /** The Instance's dial token (`custodianDialToken`). */
+  dialToken: string;
+  /** The Secrets of held values that the control process may read (`custodianValueSecrets`). */
+  valueSecrets: readonly string[];
+  /** The user's `caBundle` (ADR-0020), trusted upstream beside the roots. */
+  upstreamTrust: string;
+  placement?: SandboxPlacement;
+  priorityClasses?: PriorityClasses;
+}): string {
+  const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
+  const meta = (name: string): KubeManifest => ({ name, namespace: opts.namespace, labels: { ...labels } });
+  const app = { app: CUSTODIAN_SERVICE };
+  const config = {
+    "envoy.json": JSON.stringify(
+      custodianPodBootstrap({
+        orchestrator: { host: `${ORCHESTRATOR_SERVICE}.${opts.namespace}.svc`, port: ORCHESTRATOR_PORT },
+        range: opts.range,
+        ranges: opts.ranges,
+      }),
+    ),
+    [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
+    "upstream.crt": opts.upstreamTrust,
+  };
+  const digest = createHash("sha256");
+  for (const [k, v] of Object.entries(config)) digest.update(k).update("\0").update(v).update("\0");
+  const secretNames = [
+    ...Array.from({ length: FENCE_SLOTS }, (_, i) => custodianSlotSecret(i)),
+    CUSTODIAN_DIAL_SECRET,
+    ...opts.valueSecrets,
+  ];
+  const security = {
+    runAsUser: CUSTODIAN_POD_USER,
+    runAsGroup: CUSTODIAN_POD_USER,
+    runAsNonRoot: true,
+    readOnlyRootFilesystem: true,
+    allowPrivilegeEscalation: false,
+    capabilities: { drop: ["ALL"] },
+    seccompProfile: { type: "RuntimeDefault" },
+  };
+  const serviceAccountDir = posix.dirname(SERVICE_ACCOUNT_CA);
+  const moved = [
+    ...(opts.ranges.segment !== FENCE_SEGMENT ? [{ name: "JR2_FENCE_SEGMENT", value: opts.ranges.segment }] : []),
+    ...(opts.ranges.placeholders !== FENCE_PLACEHOLDERS
+      ? [{ name: "JR2_FENCE_PLACEHOLDERS", value: opts.ranges.placeholders }]
+      : []),
+  ];
+
+  const items: KubeManifest[] = [
+    ...fenceAttachments({ namespace: opts.namespace, labels, range: opts.range, ranges: opts.ranges }),
+    {
+      apiVersion: "v1",
+      kind: "ServiceAccount",
+      metadata: meta(CUSTODIAN_SERVICE),
+      automountServiceAccountToken: false,
+    },
+    {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "Role",
+      metadata: meta(CUSTODIAN_SERVICE),
+      rules: [{ apiGroups: [""], resources: ["secrets"], verbs: ["get"], resourceNames: secretNames }],
+    },
+    {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "RoleBinding",
+      metadata: meta(CUSTODIAN_SERVICE),
+      roleRef: { apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: CUSTODIAN_SERVICE },
+      subjects: [{ kind: "ServiceAccount", name: CUSTODIAN_SERVICE, namespace: opts.namespace }],
+    },
+    {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: meta(CUSTODIAN_DIAL_SECRET),
+      type: "Opaque",
+      stringData: { [CUSTODIAN_DIAL_KEY]: opts.dialToken },
+    },
+    { apiVersion: "v1", kind: "ConfigMap", metadata: meta(CUSTODIAN_SERVICE), data: config },
+    {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: meta(CUSTODIAN_SERVICE),
+      spec: {
+        clusterIP: "None",
+        selector: app,
+        ports: [
+          { name: "inbound", port: CUSTODIAN_INBOUND_PORT, targetPort: CUSTODIAN_INBOUND_PORT },
+          { name: "control", port: CUSTODIAN_CONTROL_PORT, targetPort: CUSTODIAN_CONTROL_PORT },
+        ],
+      },
+    },
+    {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: meta(CUSTODIAN_SERVICE),
+      spec: {
+        podSelector: { matchLabels: app },
+        policyTypes: ["Ingress"],
+        ingress: [
+          {
+            from: [{ podSelector: { matchLabels: { app: ORCHESTRATOR_SERVICE, [LABEL_INSTANCE]: opts.name } } }],
+            ports: [
+              { protocol: "TCP", port: CUSTODIAN_INBOUND_PORT },
+              { protocol: "TCP", port: CUSTODIAN_CONTROL_PORT },
+            ],
+          },
+          // The health listener answers 200 and nothing else, to any peer.
+          { ports: [{ protocol: "TCP", port: CUSTODIAN_HEALTH_PORT }] },
+        ],
+      },
+    },
+    {
+      apiVersion: "apps/v1",
+      kind: "DaemonSet",
+      metadata: { ...meta(CUSTODIAN_SERVICE), labels: { ...labels, [LABEL_VERSION]: KIT_VERSION } },
+      spec: {
+        selector: { matchLabels: app },
+        // One pod of a node at a time, and never two at once on a node: the VLAN interfaces of
+        // each pod have the same fixed MACs, and two pods on one bridge would share them.
+        updateStrategy: { type: "RollingUpdate", rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
+        template: {
+          metadata: {
+            labels: { ...labels, ...app },
+            annotations: {
+              "k8s.v1.cni.cncf.io/networks": JSON.stringify([
+                { name: FENCE_TRUNK_ATTACHMENT, interface: FENCE_TRUNK_INTERFACE },
+              ]),
+              [ANNOTATION_CUSTODIAN_CONFIG_DIGEST]: digest.digest("hex"),
+            },
+          },
+          spec: {
+            serviceAccountName: CUSTODIAN_SERVICE,
+            // Only `control` gets a token, through its own projected volume.
+            automountServiceAccountToken: false,
+            enableServiceLinks: false,
+            // Control tier (ADR-0060): every Harness pod on the node needs it.
+            priorityClassName: priorityClassNames(opts.priorityClasses).control,
+            // On each node where a Harness pod can be (ADR-0052): the Sandbox placement, as the
+            // cache agent has it.
+            ...(opts.placement?.nodeSelector ? { nodeSelector: opts.placement.nodeSelector } : {}),
+            ...(opts.placement?.tolerations?.length ? { tolerations: opts.placement.tolerations } : {}),
+            securityContext: { fsGroup: CUSTODIAN_POD_USER, seccompProfile: { type: "RuntimeDefault" } },
+            initContainers: [
+              {
+                name: "uplink",
+                image: opts.orchestratorImage,
+                imagePullPolicy: "IfNotPresent",
+                command: [
+                  "sh",
+                  "-c",
+                  UPLINK_SCRIPT,
+                  ...uplinkArgs({
+                    range: opts.range,
+                    ranges: opts.ranges,
+                    state: CUSTODIAN_STATE,
+                    group: CUSTODIAN_POD_USER,
+                  }),
+                ],
+                terminationMessagePolicy: "FallbackToLogsOnError",
+                volumeMounts: [{ name: "state", mountPath: CUSTODIAN_STATE }],
+                resources: sized(KIT_POD_SIZES.custodianUplink),
+                // Root in the pod's own network namespace, with NET_ADMIN and no other capability.
+                securityContext: {
+                  runAsUser: 0,
+                  runAsGroup: 0,
+                  runAsNonRoot: false,
+                  readOnlyRootFilesystem: true,
+                  allowPrivilegeEscalation: false,
+                  capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
+                  seccompProfile: { type: "RuntimeDefault" },
+                },
+              },
+            ],
+            containers: [
+              {
+                name: "control",
+                image: opts.orchestratorImage,
+                imagePullPolicy: "IfNotPresent",
+                command: ["tsx", "node_modules/@jr2/orchestrator/bin/custodian-control.ts"],
+                env: [
+                  { name: "JR2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
+                  { name: "JR2_FENCE_RANGE", value: String(opts.range) },
+                  ...moved,
+                  // The API server's trust: the client is built-in `fetch` (ADR-0063).
+                  { name: "NODE_EXTRA_CA_CERTS", value: SERVICE_ACCOUNT_CA },
+                ],
+                ports: [{ name: "control", containerPort: CUSTODIAN_CONTROL_PORT }],
+                volumeMounts: [
+                  { name: "state", mountPath: CUSTODIAN_STATE },
+                  { name: "kube-api", mountPath: serviceAccountDir, readOnly: true },
+                  { name: "tmp", mountPath: "/tmp" },
+                ],
+                // Ready once each slot that has rules is live in Envoy, and sticky after that.
+                readinessProbe: {
+                  httpGet: { path: "/healthz", port: CUSTODIAN_CONTROL_PORT },
+                  initialDelaySeconds: 1,
+                  periodSeconds: 2,
+                  failureThreshold: 15,
+                },
+                resources: sized(KIT_POD_SIZES.custodianControl),
+                securityContext: security,
+              },
+              {
+                name: "envoy",
+                image: opts.envoyImage,
+                imagePullPolicy: "IfNotPresent",
+                args: [...CUSTODIAN_POD_ARGS],
+                ports: [
+                  { name: "health", containerPort: CUSTODIAN_HEALTH_PORT },
+                  { name: "inbound", containerPort: CUSTODIAN_INBOUND_PORT },
+                ],
+                volumeMounts: [
+                  { name: "config", mountPath: CUSTODIAN_POD_CONFIG, readOnly: true },
+                  { name: "trust", mountPath: CA_MOUNT, readOnly: true },
+                  { name: "state", mountPath: CUSTODIAN_STATE, readOnly: true },
+                ],
+                readinessProbe: {
+                  httpGet: { path: "/healthz", port: CUSTODIAN_HEALTH_PORT },
+                  initialDelaySeconds: 1,
+                  periodSeconds: 2,
+                  failureThreshold: 15,
+                },
+                resources: sized(KIT_POD_SIZES.custodianEnvoy),
+                securityContext: security,
+              },
+            ],
+            volumes: [
+              {
+                name: "config",
+                configMap: {
+                  name: CUSTODIAN_SERVICE,
+                  items: [
+                    { key: "envoy.json", path: posix.basename(CUSTODIAN_POD_BOOTSTRAP) },
+                    { key: CUSTODIAN_PROGRAM_KEY, path: posix.basename(CUSTODIAN_POD_PROGRAM) },
+                  ],
+                },
+              },
+              {
+                name: "trust",
+                configMap: { name: CUSTODIAN_SERVICE, items: [{ key: "upstream.crt", path: "upstream.crt" }] },
+              },
+              // The LDS and CDS files and each slot's values, leaves and Lua tables: in the pod's
+              // memory, never on the node's disk.
+              { name: "state", emptyDir: { medium: "Memory", sizeLimit: "64Mi" } },
+              // tsx's cache of the control process's compiled files.
+              { name: "tmp", emptyDir: { sizeLimit: "64Mi" } },
+              {
+                name: "kube-api",
+                projected: {
+                  sources: [
+                    { serviceAccountToken: { path: "token", expirationSeconds: 3607 } },
+                    { configMap: { name: "kube-root-ca.crt", items: [{ key: "ca.crt", path: "ca.crt" }] } },
+                    { downwardAPI: { items: [{ path: "namespace", fieldRef: { fieldPath: "metadata.namespace" } }] } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  ];
+  return JSON.stringify({ apiVersion: "v1", kind: "List", items });
 }
 
 /** The label on each pod's `jr2-held-secrets-<pod>` Secret: its pod, so `jr2 up` finds and deletes

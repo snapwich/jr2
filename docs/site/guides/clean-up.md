@@ -74,9 +74,12 @@ Run `jr2 down` in the Instance folder:
 jr2 down
 ```
 
+<!-- output: not run -->
+
 ```text
 remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance")? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
+gave back VLAN range 0 of the Fence
 swept 2 image(s) (317.0 MB)
 removed
 ```
@@ -91,7 +94,9 @@ waits until the namespace is gone. These things go with the namespace:
   example for [`harness.envFrom`](../reference/config.md#harness-envfrom), for a `valueFrom` in
   [`secrets`](../reference/config.md#secrets) and for the git ssh key.
 
-Then `jr2 down` removes the images that nothing uses now. The Instance folder does not change.
+When the namespace is gone, `jr2 down` gives back the range of VLANs that the [Fence](../reference/glossary.md#fence) of
+the Instance used, so that another Instance can use it. Then `jr2 down` removes the images that nothing uses now. The
+Instance folder does not change.
 
 To put the Instance on the cluster again, make your Secrets again first. Then run `jr2 up`. When `jr2 up` makes a new
 deploy key for git, it is a new key. Register its public key again. See

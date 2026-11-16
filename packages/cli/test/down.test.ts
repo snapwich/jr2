@@ -71,6 +71,8 @@ function mkKube(
     awaitPodEnd: async () => assert.fail("down runs no check pod") as never,
     serverVersion: async () => assert.fail("down reads no version") as never,
     dryRunCreate: async () => assert.fail("down dry-runs nothing") as never,
+    create: async () => assert.fail("down creates nothing") as never,
+    replace: async () => assert.fail("down replaces nothing") as never,
   };
   return fake;
 }
@@ -178,6 +180,28 @@ test("down deletes the instance's namespace; --all takes the operator too, BEFOR
   assert.equal(await down(["--all"], w2.io), 0);
   assert.deepEqual(kube2.deleted, ["/Namespace/myinst", "(operator manifest)"]);
   assert.deepEqual(sweep.listed, ["host", "node test"], "the stores are read only once both roots are gone");
+});
+
+test("down gives back the Instance's VLAN range of the Fence, after its namespace is gone, and no other (ADR-0084)", async () => {
+  const kube = mkKube(ownNs);
+  const listJson = kube.listJson.bind(kube);
+  const claim = (range: number, holder: string) => ({
+    metadata: { name: `jr2-fence-range-${range}`, labels: { "jr2.dev/fence-holder": holder } },
+    spec: { holderIdentity: holder },
+  });
+  const selectors: string[] = [];
+  kube.listJson = async <T>(o: { kind: string; selector?: string; namespace?: string }): Promise<T[]> => {
+    if (o.kind !== "lease") return listJson(o);
+    assert.equal(o.namespace, "jr2-system");
+    selectors.push(o.selector ?? "");
+    // The label selects; the holder in the spec decides.
+    return [claim(3, "myinst"), claim(9, "intruder")] as T[];
+  };
+  const w = await mkWorld(kube, true);
+  assert.equal(await down([], w.io), 0);
+  assert.deepEqual(selectors, ["jr2.dev/fence-holder=myinst"]);
+  assert.deepEqual(kube.deleted, ["/Namespace/myinst", "jr2-system/lease/jr2-fence-range-3"]);
+  assert.match(w.err.join("\n"), /gave back VLAN range 3 of the Fence/);
 });
 
 test("--all takes the Sandbox CRD with the operator, and the sweep still collects", async () => {

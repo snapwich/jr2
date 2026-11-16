@@ -171,13 +171,15 @@ executes no code in it. It does three things:
 
 The Custodian has one set of rules for each Sandbox. The Orchestrator writes them when it makes the Sandbox, and the
 Custodian loads them with no restart. `jr2 up` writes the rules of the Instance Harness. A Sandbox starts its work only
-when its rules are live. A Sandbox with no rules reaches nothing. While the Custodian is down, no Sandbox reaches
-anything, and no Turn can call its model.
+when its rules are live. A Sandbox with no rules reaches nothing. The Custodian runs as one pod on each Sandbox node.
+While the pod of a node is down, no Sandbox on that node reaches anything, and no Turn there can call its model.
 
 The Custodian runs Envoy, from a [Pinned image](../reference/glossary.md#pinned-image). The Fence of each Sandbox node
 ends at the uplink of the Custodian on that node. The uplink gives each connection to the Custodian and each DNS query
-to its resolver, and it drops all other traffic. `jr2 up` converges the Custodian, the uplink and the resolver.
-[Secrets and trust](secrets-and-trust.md) tells how the Custodian holds a credential.
+to its resolver, and it drops all other traffic. `jr2 up` converges the Custodian, the uplink and the resolver. Each
+Instance has a range of 128 VLANs on the bridge of each node, which `jr2 up` claims and `jr2 down` gives back, so the
+Sandboxes of two Instances cannot reach each other. [Secrets and trust](secrets-and-trust.md) tells how the Custodian
+holds a credential.
 
 ## The Effector
 
