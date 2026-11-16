@@ -137,6 +137,12 @@ and that holds when Workspace code is root in the Sandbox.
 - **A protocol where the server speaks first waits about 2 seconds** for each connection, because the Custodian waits
   for a TLS name on each port.
 - **A Sandbox can fill the bridge's address table.** This can stop the node's Sandboxes. It leaks nothing.
+- **The Harness pods of an Instance on a node share the Custodian pod's cache of names and its connection limit.** The
+  cache holds 8,192 names and 4,096 lookups in flight, and the pod holds 16,384 connections, for all its slots; no slot
+  has a bound of its own. A Sandbox that dials many names, through a `*` entry or a `*.` entry whose names it can make
+  up, can fill the cache. Then each new name of those Harness pods is refused with jr2's reason (`reason=name-cache`)
+  until names that no dial used for 5 minutes leave the cache. A name in the cache still works. A Sandbox that holds
+  many connections open can stop the new connections of those pods in the same way. It leaks nothing.
 - **The Custodian is one point for all Sandboxes of an Instance.** While it is down, no Sandbox reaches anything, and no
   Turn makes a model call. It fails closed.
 - **The cluster needs a second pod network and a rule set on each Sandbox node.** On Cilium, the node's config must let

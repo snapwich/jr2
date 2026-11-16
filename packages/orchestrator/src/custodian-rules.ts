@@ -40,6 +40,8 @@ import {
   CUSTODIAN_DIAL_TOKEN,
   CUSTODIAN_INBOUND_PORT,
   CUSTODIAN_LDS,
+  CUSTODIAN_NAME_CACHE,
+  CUSTODIAN_NAME_TTL,
   CUSTODIAN_POD_PROGRAM,
   CUSTODIAN_XDS,
   DIAL_PORTS,
@@ -67,7 +69,13 @@ import {
   type HeldManifest,
 } from "./held-secrets.ts";
 import { CUSTODIAN_HEALTH_PORT } from "./names.ts";
-import { jr2NameAddress, placeholderName, placeholderOf, type PlaceholderTable } from "./placeholders.ts";
+import {
+  checkAppendOnly,
+  jr2NameAddress,
+  placeholderName,
+  placeholderOf,
+  type PlaceholderTable,
+} from "./placeholders.ts";
 
 type Json = Record<string, unknown>;
 
@@ -135,11 +143,15 @@ const TLS_ALERT = Buffer.from([0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x31]).toStri
  * any dial can use it: Envoy connects to each address of a name in turn, so each one is judged. A
  * name with no address left is refused. One cache, shared by each dial listener and its cluster.
  * Each name is resolved as written, with no search domain of the Custodian's pod: a search domain
- * would let a Service of the cluster answer for a public name. */
-function dialDns(ranges: FenceRanges): Json {
+ * would let a Service of the cluster answer for a public name. The cache's bounds are the pod's, not
+ * a slot's: while it is full, a new name of each slot is refused (`NAME_CACHE_FULL`). */
+function dialDns(ranges: FenceRanges, bounds: NameCacheBounds): Json {
   return {
     name: "dial",
     dns_lookup_family: "V4_PREFERRED",
+    max_hosts: bounds.hosts,
+    host_ttl: CUSTODIAN_NAME_TTL,
+    dns_cache_circuit_breaker: { max_pending_requests: bounds.pending },
     typed_dns_resolver_config: {
       name: "envoy.network.dns_resolver.cares",
       typed_config: {
@@ -149,6 +161,38 @@ function dialDns(ranges: FenceRanges): Json {
     },
     resolved_address_filter: {
       ranges: dialGuardRanges(ranges).map(([address_prefix, prefix_len]) => ({ address_prefix, prefix_len })),
+    },
+  };
+}
+
+/** The bounds of the pod's cache of names: the names it holds, and the lookups in flight. */
+export type NameCacheBounds = { hosts: number; pending: number };
+
+/** What Envoy says when the cache of names holds its bound of names, or of lookups in flight. Envoy
+ * sets no response flag for either. */
+const NAME_CACHE_FULL =
+  "response.code_details == 'dns_cache_overflow' || " +
+  "response.code_details == 'dynamic_forward_proxy_pending_request_overflow'";
+
+/** The refusal of a name while the cache of names is full (ADR-0084). */
+function nameCacheReply(): Json {
+  return {
+    filter: {
+      extension_filter: {
+        name: "envoy.access_loggers.extension_filters.cel",
+        typed_config: {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter",
+          expression: NAME_CACHE_FULL,
+        },
+      },
+    },
+    status_code: 503,
+    body_format_override: {
+      text_format_source: {
+        inline_string:
+          "jr2 custodian: refused: the Custodian's cache of names is full, so it cannot look up " +
+          "%REQ(:AUTHORITY)% now (ADR-0084)\n",
+      },
     },
   };
 }
@@ -241,12 +285,12 @@ function httpLog(who: string, target: string): Json[] {
 
 /** The dynamic forward filter of a dial listener: it resolves the name through the one DNS cache,
  * whose lookup drops each guarded address (`dialDns`). */
-function dialFilter(ranges: FenceRanges): Json {
+function dialFilter(ranges: FenceRanges, bounds: NameCacheBounds): Json {
   return {
     name: "envoy.filters.http.dynamic_forward_proxy",
     typed_config: {
       "@type": "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
-      dns_cache_config: dialDns(ranges),
+      dns_cache_config: dialDns(ranges, bounds),
     },
   };
 }
@@ -489,7 +533,8 @@ function slotLua(inputs: SlotInputs, rules: readonly EgressRule[]): string {
 }
 
 /** Throws unless the slot's inputs can be rendered: a slot number in range, a placeholder table of
- * the Instance's range with a row for each name, no rule that the Fence cannot carry, and each
+ * the Instance's range that `checkAppendOnly` accepts (each name and each address once, in the
+ * range, none on jr2's own address) with a row for each name, no rule that the Fence cannot carry, and each
  * rule once. Envoy refuses a listener with two chains that match alike, so a rule twice, or one
  * name and port both Tunneled and Intercepted, would leave the slot with no listener. */
 function checkInputs(inputs: SlotInputs): void {
@@ -501,6 +546,11 @@ function checkInputs(inputs: SlotInputs): void {
     throw new Error(
       `slot ${slot}: its placeholder table is of ${placeholders.range}, not the Instance's ${ranges.placeholders} (ADR-0084)`,
     );
+  }
+  try {
+    checkAppendOnly(undefined, placeholders);
+  } catch (e) {
+    throw new Error(`slot ${slot}: ${(e as Error).message}`);
   }
   const seen = new Set<string>();
   for (const r of manifest.egress) {
@@ -1051,7 +1101,7 @@ const INBOUND_UNREACHABLE: Json = {
   ],
 };
 
-function dfpCluster(ranges: FenceRanges, name: string, extra: Json = {}, plain = false): Json {
+function dfpCluster(ranges: FenceRanges, bounds: NameCacheBounds, name: string, extra: Json = {}, plain = false): Json {
   return {
     name,
     lb_policy: "CLUSTER_PROVIDED",
@@ -1060,7 +1110,7 @@ function dfpCluster(ranges: FenceRanges, name: string, extra: Json = {}, plain =
       name: "envoy.clusters.dynamic_forward_proxy",
       typed_config: {
         "@type": "type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig",
-        dns_cache_config: dialDns(ranges),
+        dns_cache_config: dialDns(ranges, bounds),
         // Plain HTTP has no TLS name to set or check.
         ...(plain ? { allow_insecure_cluster_options: true } : {}),
       },
@@ -1069,9 +1119,15 @@ function dfpCluster(ranges: FenceRanges, name: string, extra: Json = {}, plain =
   };
 }
 
+/** What Envoy says when a dial listener's HTTP/1 codec refuses a request (`DPE`). */
+const CODEC_REFUSED = "response.code_details.startsWith('http1.')";
+
 /** A dial listener's log (ADR-0059): one line for a refusal by the dial guard, one for a name that it
- * refuses, one for a target that gave no answer, each with the slot and its Harness pod that the
- * slot's chain named. */
+ * refuses, one for a name refused while the cache of names is full, one for a target that gave no
+ * answer, each with the slot and its Harness pod that the slot's chain named. A CONNECT that the
+ * listener's codec refuses (a TLS name that is not a DNS name, which Envoy writes as `invalid:…`)
+ * is a name refused; no header of it was read, so its line names no slot, and the slot's own line
+ * names the Sandbox and the TLS name. */
 function dialLog(): Json[] {
   const line = (reason: string, expression: string): Json => ({
     name: "envoy.access_loggers.stdout",
@@ -1097,11 +1153,13 @@ function dialLog(): Json[] {
   });
   return [
     line("guard", GUARDED),
-    line("name", "response.code_details == 'direct_response' && response.code == 403"),
+    line("name", `(response.code_details == 'direct_response' && response.code == 403) || ${CODEC_REFUSED}`),
+    line("name-cache", NAME_CACHE_FULL),
     // A flag on an answer of the target, or on a tunnel that its client closed (`DC`), is no refusal.
     line(
       "unreachable",
-      `response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream' && !(${GUARDED})`,
+      `response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream' && ` +
+        `!(${GUARDED}) && !${CODEC_REFUSED}`,
     ),
   ];
 }
@@ -1116,7 +1174,7 @@ function dialLog(): Json[] {
  *   dial-http  a Tunneled host's plain HTTP, or an Intercepted host on port 80: plain HTTP
  *   dial-tls   an Intercepted host after the swap: Envoy's own TLS, the name verified
  */
-function dialListener(name: "dial" | "dial-http" | "dial-tls", ranges: FenceRanges): Json {
+function dialListener(name: "dial" | "dial-http" | "dial-tls", ranges: FenceRanges, bounds: NameCacheBounds): Json {
   const connect = name === "dial";
   const fenceMetadata = {
     name: "envoy.filters.http.header_to_metadata",
@@ -1175,12 +1233,16 @@ function dialListener(name: "dial" | "dial-http" | "dial-tls", ranges: FenceRang
                 ? {}
                 : {
                     local_reply_config: {
-                      mappers: [guardReply(), ...(unreachable("%REQ(:AUTHORITY)%").mappers as Json[])],
+                      mappers: [
+                        guardReply(),
+                        nameCacheReply(),
+                        ...(unreachable("%REQ(:AUTHORITY)%").mappers as Json[]),
+                      ],
                     },
                   }),
               http_filters: [
                 fenceMetadata,
-                dialFilter(ranges),
+                dialFilter(ranges, bounds),
                 {
                   name: "envoy.filters.http.router",
                   typed_config: {
@@ -1210,6 +1272,9 @@ export type CustodianPodOptions = {
   range: number;
   /** The Instance's two Fence ranges. */
   ranges: FenceRanges;
+  /** The bounds of the pod's cache of names. `CUSTODIAN_NAME_CACHE` when not given; a test sets
+   * small ones. */
+  nameCache?: NameCacheBounds;
 };
 
 /**
@@ -1226,6 +1291,7 @@ export type CustodianPodOptions = {
  */
 export function custodianPodBootstrap(opts: CustodianPodOptions): Json {
   const { orchestrator, range, ranges } = opts;
+  const bounds = opts.nameCache ?? CUSTODIAN_NAME_CACHE;
   const targets: string[] = [];
   for (let slot = 0; slot < FENCE_SLOTS; slot++) {
     const address = slotAddress(ranges.segment, slotVlan(range, slot));
@@ -1353,7 +1419,7 @@ export function custodianPodBootstrap(opts: CustodianPodOptions): Json {
     ],
   };
 
-  const dials = [dialListener("dial", ranges), dialListener("dial-http", ranges), dialListener("dial-tls", ranges)];
+  const dials = (["dial", "dial-http", "dial-tls"] as const).map((name) => dialListener(name, ranges, bounds));
 
   const clusters: Json[] = [
     {
@@ -1426,9 +1492,9 @@ export function custodianPodBootstrap(opts: CustodianPodOptions): Json {
       },
       typed_extension_protocol_options: HTTP1,
     })),
-    dfpCluster(ranges, "dial-tcp"),
-    dfpCluster(ranges, "dial-http-name", { typed_extension_protocol_options: HTTP1 }, true),
-    dfpCluster(ranges, "dial-tls-name", {
+    dfpCluster(ranges, bounds, "dial-tcp"),
+    dfpCluster(ranges, bounds, "dial-http-name", { typed_extension_protocol_options: HTTP1 }, true),
+    dfpCluster(ranges, bounds, "dial-tls-name", {
       typed_extension_protocol_options: {
         "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
           "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",

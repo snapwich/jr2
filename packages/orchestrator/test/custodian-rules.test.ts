@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   CONTROL_ROUTES,
   CUSTODIAN_DRAIN_SECONDS,
+  CUSTODIAN_NAME_CACHE,
   CUSTODIAN_POD_ARGS,
   CUSTODIAN_PROGRAM,
   JR2_CUSTODIAN_NAME,
@@ -560,6 +561,27 @@ test("the renderer refuses a slot out of range, a placeholder table of another r
   // A name and the wildcard of its domain, or one name on two ports, are two rules.
   twice([rule("d.test", 443, "name", false, "entry"), rule("d.test", 443, "below", false, "entry")])();
   twice([rule("a.test", 443, "name", false, "entry"), rule("a.test", 80, "name", false, "entry")])();
+  // A placeholder table that `checkAppendOnly` refuses: two names on one address would give two
+  // chains that match alike (no listener for the slot), and a name on jr2's own address or outside
+  // the placeholder range would be dialed at an address that is not its own.
+  const two = [rule("a.test", 443, "name", false, "entry"), rule("b.test", 443, "name", false, "entry")];
+  const table = (a: string, b: string) => ({
+    ...inputsOf(3, { version: 1, secrets: [], egress: two }, { sandbox: "x" }),
+    placeholders: {
+      range: RANGES.placeholders,
+      rows: [
+        { name: "a.test", address: a },
+        { name: "b.test", address: b },
+      ],
+    },
+  });
+  renderSlot(table("198.18.0.5", "198.18.0.6"));
+  assert.throws(() => renderSlot(table("198.18.0.5", "198.18.0.5")), /^Error: slot 3: .*gives 198\.18\.0\.5 twice/);
+  assert.throws(() => renderSlot(table("198.18.0.1", "198.18.0.6")), /^Error: slot 3: .*gives 198\.18\.0\.1 twice/);
+  assert.throws(
+    () => renderSlot(table("198.19.0.9", "198.18.0.6")),
+    /^Error: slot 3: .*198\.19\.0\.9 of a\.test is not in/,
+  );
 });
 
 test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also when `fence` moves them, and judges each address of a name (ADR-0059, ADR-0084)", () => {
@@ -597,13 +619,27 @@ test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also whe
       guard.filter.extension_filter.typed_config.expression,
       "response.code_details.contains('address_denied')",
     );
-    const unreachable = hcm.access_log.find((l: any) =>
-      (l.typed_config.log_format.text_format_source.inline_string as string).includes("reason=unreachable"),
+    const lineOf = (reason: string) =>
+      hcm.access_log.find((l: any) =>
+        (l.typed_config.log_format.text_format_source.inline_string as string).includes(`reason=${reason} `),
+      ).filter.extension_filter.typed_config.expression as string;
+    // A target that gave no answer: not the guard's refusal, and not a request that the codec
+    // refused (`DPE`: a TLS name that is not a DNS name), which is a name refused.
+    assert.equal(
+      lineOf("unreachable"),
+      "response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream' && " +
+        "!(response.code_details.contains('address_denied')) && !response.code_details.startsWith('http1.')",
     );
-    assert.match(
-      unreachable.filter.extension_filter.typed_config.expression,
-      /!\(response\.code_details\.contains\('address_denied'\)\)$/,
+    assert.equal(
+      lineOf("name"),
+      "(response.code_details == 'direct_response' && response.code == 403) || " +
+        "response.code_details.startsWith('http1.')",
     );
+    // The cache of names is full: Envoy sets no response flag, so the details say it.
+    const full =
+      "response.code_details == 'dns_cache_overflow' || " +
+      "response.code_details == 'dynamic_forward_proxy_pending_request_overflow'";
+    assert.equal(lineOf("name-cache"), full);
     if (name !== "dial") {
       const [mapper] = hcm.local_reply_config.mappers;
       assert.equal(mapper.status_code, 403, name);
@@ -612,6 +648,13 @@ test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also whe
         guard.filter.extension_filter.typed_config.expression,
       );
       assert.match(mapper.body_format_override.text_format_source.inline_string, /never dials/);
+      const cacheMapper = hcm.local_reply_config.mappers[1];
+      assert.equal(cacheMapper.status_code, 503, name);
+      assert.equal(cacheMapper.filter.extension_filter.typed_config.expression, full);
+      assert.match(
+        cacheMapper.body_format_override.text_format_source.inline_string,
+        /^jr2 custodian: refused: the Custodian's cache of names is full/,
+      );
     }
     // This manager adds `x-forwarded-proto`; no target gets it, nor the other forwarding headers.
     assert.deepEqual(hcm.route_config.request_headers_to_remove, [
@@ -661,6 +704,34 @@ test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also whe
     caches.push(cacheOf(cluster.cluster_type.typed_config));
   }
   for (const cache of caches) assert.deepEqual(cache, caches[0]);
+  // The cache's bounds are the pod's, for all its slots: Envoy's defaults (1,024 names, 1,024
+  // lookups in flight) are 8 names for each slot of a full range.
+  const bounds = caches[0] as Record<string, any>;
+  assert.equal(bounds.max_hosts, 8192);
+  assert.equal(bounds.dns_cache_circuit_breaker.max_pending_requests, 4096);
+  assert.equal(bounds.host_ttl, "300s");
+  assert.deepEqual(CUSTODIAN_NAME_CACHE, { hosts: 8192, pending: 4096 });
+  const small = custodianPodBootstrap({
+    orchestrator: { host: "o", port: 4000 },
+    range: 0,
+    ranges: RANGES,
+    nameCache: { hosts: 8, pending: 2 },
+  }) as any;
+  const smallCaches = [
+    ...["dial", "dial-http", "dial-tls"].map(
+      (name) =>
+        small.static_resources.listeners.find((l: { name: string }) => l.name === name).filter_chains[0].filters[0]
+          .typed_config.http_filters[1].typed_config.dns_cache_config,
+    ),
+    ...["dial-tcp", "dial-http-name", "dial-tls-name"].map(
+      (name) =>
+        small.static_resources.clusters.find((c: { name: string }) => c.name === name).cluster_type.typed_config
+          .dns_cache_config,
+    ),
+  ];
+  for (const cache of smallCaches) {
+    assert.deepEqual(cache, { ...bounds, max_hosts: 8, dns_cache_circuit_breaker: { max_pending_requests: 2 } });
+  }
   const moved = fenceRangesOf({ segment: "100.64.0.0/16", placeholders: "100.65.0.0/16" });
   const bootMoved = custodianPodBootstrap({ orchestrator: { host: "o", port: 4000 }, range: 0, ranges: moved }) as any;
   const dialMoved = bootMoved.static_resources.listeners.find((l: { name: string }) => l.name === "dial-tls");

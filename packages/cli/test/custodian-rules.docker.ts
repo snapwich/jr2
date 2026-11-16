@@ -717,3 +717,152 @@ test("the pinned Envoy runs a slot's rules: the dial guard judges each address o
     assert.match(output, line);
   }
 });
+
+test("the pinned Envoy runs two slots' rules: when one Sandbox fills the Custodian's cache of names, a new name of another slot gets jr2's refusal and a line that names that slot, on HTTP and on a tunnel; a TLS name that is not a DNS name is refused as a name (ADR-0084, ADR-0059)", async (t) => {
+  // Every slot of a Custodian pod shares one cache of names (`dialDns`). The renderer takes its
+  // bound as an option, so the cache here holds 8 names and 2 lookups in flight. Slot 3 dials names
+  // that do not resolve; slot 4 then dials names that do. The Custodian's resolver is 127.0.0.1,
+  // where nothing listens, so no lookup leaves the host; the names that resolve are in its
+  // `/etc/hosts`. Each request is an ordinary request by name.
+  const root = await mkdtemp(join(tmpdir(), "jr2-custodian-names-"));
+  const tag = `${process.pid}-${Date.now() % 100000}`;
+  const nets = ["a", "b"].map((n) => `jr2-cnames-${n}-${tag}`);
+  const [targetName, custodianName] = [`jr2-cnames-target-${tag}`, `jr2-cnames-custodian-${tag}`];
+  t.after(async () => {
+    await docker("rm", "-f", targetName, custodianName).catch(() => {});
+    for (const n of nets) await docker("network", "rm", n).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  const gid = String(process.getgid?.() ?? 0);
+  const user = ["--user", `65532:${gid}`, "--group-add", gid, "--read-only", "--cap-drop", "ALL"];
+  for (const n of nets) await docker("network", "create", n);
+
+  const ca = issueCa("custodian-names-run");
+  const targetCa = issueCa("custodian-names-target");
+  const targetLeaf = issueLeaf(targetCa, "early.test");
+  await mkdir(join(root, "target"), { recursive: true });
+  await writeFile(join(root, "target", "envoy.json"), JSON.stringify(targetBootstrap()), { mode: 0o644 });
+  await writeFile(join(root, "target", "tls.crt"), targetLeaf.cert, { mode: 0o644 });
+  await writeFile(join(root, "target", "tls.key"), targetLeaf.key, { mode: 0o644 });
+  // prettier-ignore
+  await docker(
+    "run", "-d", "--name", targetName, "--network", nets[0]!, ...user,
+    "-v", `${join(root, "target")}:/etc/target:ro`,
+    custodianRef(), "-c", "/etc/target/envoy.json", "--log-level", "warning",
+  );
+  const target = (await addresses(targetName))[nets[0]!]!;
+
+  const egress = [rule("*", 80, "any", false, "entry"), rule("*", 443, "any", false, "entry")];
+  const slots: SlotInputs[] = [3, 4].map((slot) => ({
+    slot,
+    owner: { sandbox: `probe-${slot}` },
+    manifest: { version: 1, secrets: [], egress },
+    placeholders: withPlaceholders(emptyPlaceholders(RANGES.placeholders), egress),
+    ranges: RANGES,
+  }));
+  for (const s of slots) await slotFiles(s, ca, root);
+  await putIn(CUSTODIAN_POD_PROGRAM, CUSTODIAN_PROGRAM, root);
+  await putIn("/etc/jr2/ca/upstream.crt", trustBundles(ca.cert, targetCa.cert).upstream, root);
+  const bootstrap = custodianPodBootstrap({
+    orchestrator: { host: "orchestrator.invalid", port: 4000 },
+    range: 0,
+    ranges: RANGES,
+    nameCache: { hosts: 8, pending: 2 },
+  });
+  await putIn(CUSTODIAN_POD_BOOTSTRAP, JSON.stringify(bootstrap), root);
+  const empty = JSON.stringify({ version_info: "0", resources: [] });
+  await putIn(CUSTODIAN_LDS, empty, root);
+  await putIn(CUSTODIAN_CDS, empty, root);
+  const hosts = ["127.0.0.1 localhost", `${target} early.test late.test late2.test`, ""].join("\n");
+  await writeFile(join(root, "hosts"), hosts, { mode: 0o644 });
+  await writeFile(join(root, "resolv.conf"), "nameserver 127.0.0.1\noptions timeout:1 attempts:1\n", { mode: 0o644 });
+
+  // prettier-ignore
+  await docker(
+    "create", "--name", custodianName, "--network", nets[0]!, ...user,
+    "-v", `${join(root, "etc")}:/etc/jr2:ro`, "-v", `${join(root, "state")}:${CUSTODIAN_STATE}:ro`,
+    "-v", `${join(root, "hosts")}:/etc/hosts:ro`, "-v", `${join(root, "resolv.conf")}:/etc/resolv.conf:ro`,
+    custodianRef(), ...CUSTODIAN_POD_ARGS,
+  );
+  await docker("network", "connect", nets[1]!, custodianName);
+  let output = "";
+  const child = spawn("docker", ["start", "-a", custodianName], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", (b: Buffer) => (output += b.toString()));
+  child.stderr.on("data", (b: Buffer) => (output += b.toString()));
+  t.after(() => void child.kill());
+
+  let custodian: Record<string, string> = {};
+  for (let i = 0; i < 100 && !nets.every((n) => custodian[n]); i++) {
+    custodian = await addresses(custodianName).catch(() => ({}));
+    await sleep(100);
+  }
+  const [s3, s4] = nets.map((n) => custodian[n]!);
+  assert.ok(s3 && s4, `the Custodian has an address on each network: ${JSON.stringify(custodian)}`);
+
+  // Each slot's listener takes ports 80 and 443 of its own address of the Custodian, and the
+  // placeholder of `*` becomes that address.
+  const parsed = custodianXds(slots.map(renderSlot)).lds as { resources: Array<Record<string, any>> };
+  const lds = {
+    version_info: "1",
+    resources: parsed.resources.flatMap((listener, i) =>
+      [80, 443].map((port) => {
+        const at = i === 0 ? s3 : s4;
+        const from = placeholderOf(slots[i]!.placeholders, "*")!;
+        const text = JSON.stringify(listener).replaceAll(`"${from}"`, `"${at}"`).replaceAll(`"${from}:`, `"${at}:`);
+        const moved = JSON.parse(text);
+        moved.name = `${moved.name}-${port}`;
+        moved.address.socket_address = { address: at, port_value: port };
+        return moved;
+      }),
+    ),
+  };
+  const xds = local(CUSTODIAN_LDS, root);
+  await writeFile(`${xds}.next`, JSON.stringify(lds), { mode: 0o644 });
+  await rename(`${xds}.next`, xds);
+
+  const status = (answer: string) => answer.split("\r\n")[0];
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const answer = await get(s4, 80, "early.test");
+    if (answer.startsWith("HTTP/1.1 200") && /port=80 /.test(answer)) break;
+    if (Date.now() > deadline || child.exitCode !== null) assert.fail(`the slots never served:\n${answer}\n${output}`);
+    await sleep(200);
+  }
+  const refusal = /^HTTP\/1\.1 503 [\s\S]*\r\n\r\njr2 custodian: refused: the Custodian's cache of names is full/;
+  const line = async (pattern: RegExp) => {
+    for (let i = 0; i < 30 && !pattern.test(output); i++) await sleep(200);
+    assert.match(output, pattern);
+  };
+
+  // More lookups in flight than the bound: the ones over it get jr2's refusal.
+  const burst = await Promise.all(Array.from({ length: 20 }, (_, i) => get(s3, 80, `c${i}.fill.test`)));
+  assert.ok(
+    burst.some((a) => refusal.test(a)),
+    `a lookup over the bound is refused by jr2:\n${burst.map(status).join("\n")}`,
+  );
+  await line(/jr2\.custodian slot=3 sandbox=probe-3 action=refuse target=c\d+\.fill\.test reason=name-cache /);
+
+  // Slot 3 fills the cache with names that do not resolve.
+  for (let i = 0; i < 12; i++) await get(s3, 80, `n${i}.fill.test`);
+
+  // Slot 4: a new name over HTTP gets jr2's refusal and its line.
+  const late = await get(s4, 80, "late.test");
+  assert.match(late, refusal, late);
+  await line(
+    /jr2\.custodian slot=4 sandbox=probe-4 action=refuse target=late\.test reason=name-cache method=GET status=503 /,
+  );
+  // A new name through a tunnel is closed with no byte, and its line names the slot.
+  const reply = await helloReply(s4, 443, "late2.test");
+  assert.equal(reply.length, 0, "late2.test on 443: closed with no byte");
+  await line(/jr2\.custodian slot=4 sandbox=probe-4 action=refuse target=late2\.test:443 reason=name-cache /);
+  // A name in the cache still works.
+  assert.match(await get(s4, 80, "early.test"), /^HTTP\/1\.1 200[\s\S]*port=80 /);
+
+  // A TLS name that is not a DNS name: the tunnel's CONNECT is refused by the dial listener's codec,
+  // which logs it as a name refused, not as a target that gave no answer.
+  const odd = await helloReply(s3, 443, "1.2.3.4:22");
+  assert.equal(odd.length, 0, "a TLS name with a colon: closed with no byte");
+  await line(/jr2\.custodian slot=- - action=refuse target=- reason=name method=- status=400 flags=DPE/);
+  await line(/jr2\.custodian slot=3 sandbox=probe-3 action=tunnel target=\*:443 .*sni=invalid:1\.2\.3\.4_22 /);
+  assert.doesNotMatch(output, /reason=unreachable .*flags=DPE/);
+});

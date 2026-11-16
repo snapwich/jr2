@@ -1194,6 +1194,14 @@ export const FENCE_SLOTS = 128;
 export const SLOT_LISTENER_BASE = 20000;
 export const SLOT_RESOLVER_BASE = 25000;
 
+/** The bounds of the Custodian pod's one cache of names, which every slot of the pod shares
+ * (ADR-0084): the names it holds, and the lookups in flight. Envoy's defaults (1,024 of each) are 8
+ * names for each slot of a full range; these are 64 names and 32 lookups for each slot. A name that
+ * no dial used for `CUSTODIAN_NAME_TTL` leaves the cache. While the cache is full, a new name of each
+ * slot is refused with jr2's reason (`reason=name-cache`). */
+export const CUSTODIAN_NAME_CACHE = { hosts: 64 * FENCE_SLOTS, pending: 32 * FENCE_SLOTS } as const;
+export const CUSTODIAN_NAME_TTL = "300s";
+
 /** The Custodian pod's ports on the cluster's network: the health probe (`CUSTODIAN_HEALTH_PORT`),
  * the Orchestrator's dial to a Harness pod (inbound), and the control process's API. Envoy's admin
  * listener is on the pod's loopback only, which no Harness pod can reach. */

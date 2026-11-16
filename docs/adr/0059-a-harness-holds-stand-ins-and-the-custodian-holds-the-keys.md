@@ -202,8 +202,10 @@ and it replaces the Adapter.
   (`jr2.custodian dial action=inbound target=…`) names the slot address of a target that passed the check instead, and
   `target=-` for a refusal: the target header's value is not logged. A refusal that a slot's listener makes before a
   name is known (a TLS name that does not agree, plain bytes where only TLS is carried, a port with no entry) names the
-  address dialed (`to=`) and the TLS name (`sni=`); the slot's resolver table gives the name of a placeholder address.
-  Never a header value, a body, a path, a query, a value or a Stand-in.
+  address dialed (`to=`) and the TLS name (`sni=`); the slot's resolver table gives the name of a placeholder address. A
+  tunnel whose TLS name is not a DNS name (Envoy writes it as `invalid:…`) is closed with no byte. The dial listener
+  logs it as `reason=name` with no slot, because it read no header of it, and the slot's line names the Sandbox and the
+  TLS name (`sni=invalid:…`). Never a header value, a body, a path, a query, a value or a Stand-in.
 - **The dial guard, in two halves.** The Custodian never dials a loopback, link-local (the cloud metadata address
   included, and AWS's `fd00:ec2::254`) or unspecified address, or an IPv4-mapped form of one. It never dials an address
   in the Fence's own ranges either: the segment, the placeholder range and 198.18.0.0/15
@@ -451,13 +453,14 @@ and it replaces the Adapter.
   on the host network with free ports, with local HTTPS upstreams under their own CA. It is opt-in, like `@kind`,
   because it needs docker ([ADR-0010](0010-bdd-acceptance-tests.md)), and the release job runs it on every tag
   ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)): the image moves only with its
-  pin, but the configuration jr2 renders moves with any release. About 95 seconds. It checks the swap, the strip, 403
+  pin, but the configuration jr2 renders moves with any release. About 100 seconds. It checks the swap, the strip, 403
   with no Stand-in, 405 on a method, 400 on an underscore header, a header `Connection` names, two `Host` headers, idle
   connections on the health listener, 421, 400 and 403 on paths, the tunnel, the dial guard by every spelling, by
   resolved name and by each address of a name, 502 on an untrusted upstream, SSE timing, abort, a 302, the refusal of a
   bad value, the log, a TLS name or a `Host` header that does not agree with the name of the address, a wildcard's
-  `Host` that names another port than the entry's, and the Anthropic SDK with no proxy setting. The first SSE event
-  arrives through the Custodian about half a millisecond later than direct.
+  `Host` that names another port than the entry's, the refusal of a new name while the cache of names is full, and the
+  Anthropic SDK with no proxy setting. The first SSE event arrives through the Custodian about half a millisecond later
+  than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses the Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

@@ -302,6 +302,9 @@ These limits follow from the Fence:
 - A protocol in which the server speaks first waits about 2 seconds for each connection.
 - When you remove an entry, a connection that is open stays open. The change applies to each new connection.
 - While the Custodian is down, no Sandbox reaches anything.
+- The Harness pods of an Instance on one node share the Custodian's cache of names and its limit of connections. A
+  Sandbox that dials many new names, through a `*` or a `*.` entry, can fill the cache. Then each new name of those pods
+  is refused, with the reason, for up to 5 minutes. A name that they used before still works. Nothing leaks.
 
 ## The pod
 
