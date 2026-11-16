@@ -26,8 +26,15 @@ and that holds when Workspace code is root in the Sandbox.
   the same on every node, because a pod's VLAN is chosen before the scheduler picks its node. Slot i of range k is VLAN
   2 + 128k + i, and its address is that VLAN's address on the segment. The uplink of an Instance has the trunk of its
   own range only, and no port of the bridge is a member of VLAN 1, so a frame of one Instance never reaches the uplink
-  or a Harness pod of another. `jr2 down` gives the range back. `jr2 up` takes a range again only when the namespace
-  that holds it is NotFound: while that namespace is Terminating, a pod of it can still be on a VLAN of the range.
+  or a Harness pod of another. An Instance keeps its range until `jr2 down`, also while it has no Harness pod, because a
+  pod of it can still be on a VLAN of the range: a held run's Sandbox
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), or an Instance Harness
+  pod that drains. For the same reason, `jr2 up` deletes the Custodian of an Instance with no Harness pod only when its
+  namespace has no Sandbox and no Instance Harness pod left. `jr2 down` gives the range back when the namespace is
+  NotFound, and only the claim that it read: a claim that another Instance took in the meantime stays. `jr2 up` takes a
+  range again only when the namespace that holds it is NotFound: while that namespace is Terminating, a pod of it can
+  still be on a VLAN of the range. The claims are in `jr2-system`, which goes with the operator, so `jr2 down --all`
+  refuses while another namespace on the cluster holds a range.
 - **The uplink gives all traffic to the Custodian.** It sends each TCP connection to the Custodian and each DNS query to
   the Custodian's resolver, whatever address the Sandbox dialed. It drops all else: UDP, QUIC, ICMP, IPv6 and frames of
   another type. No tool needs a proxy setting, and `HTTPS_PROXY` is not set.
@@ -183,11 +190,14 @@ and that holds when Workspace code is root in the Sandbox.
   closed.
 - **The Custodian pod of a node is one point for all Harness pods of its Instance on that node.** While it is down, no
   Harness pod there reaches anything, and no Turn there makes a model call. It fails closed. A roll of the Custodian (a
-  new Kit version, a changed `fence` or `caBundle`) replaces the pod of each node in turn, and cuts each open connection
-  of that node's Harness pods. So a Harness pod's rules change through the Custodian's control process, never through
-  its pod template.
+  new Kit version, a changed `fence` or `caBundle`, or a `jr2 up` from a host whose Node.js has other root certificates,
+  because the Custodian trusts upstream the roots of the Node.js that runs `jr2 up`) replaces the pod of each node in
+  turn, and cuts each open connection of that node's Harness pods. So a Harness pod's rules change through the
+  Custodian's control process, never through its pod template.
 - **A cluster has 31 VLAN ranges.** So at most 31 Instances with a Harness pod share a cluster, and an Instance has at
-  most 128 Harness pods at once. Each Custodian pod of an Instance holds the VLAN interfaces of its whole range.
+  most 128 Harness pods at once. Each Custodian pod of an Instance holds the VLAN interfaces of its whole range and the
+  rules of each of its slots, so it is sized for a full range: about 1.9 GiB of memory on each Sandbox node for each
+  Instance ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
 - **The cluster needs a second pod network and a rule set on each Sandbox node.** On Cilium, the node's config must let
   another CNI plugin run. A managed cluster that permits neither cannot have the segment.
 - **An Instance with no Workspace needs the Fence too,** because its Instance Harness is behind one. So the first model

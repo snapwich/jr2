@@ -111,8 +111,10 @@ records that `jr2 up` writes help it to skip work. They do not prove that the cl
 The Machines decide some parts. When no registered Machine makes a Sandbox, `jr2 up` builds no Sandbox Image and runs no
 Repo cache. When no Agent has `workspace: "none"`, there is no Instance Harness. The Instance Harness is behind a Fence,
 as a Sandbox is, so `jr2 up` checks no node for the Fence only when the Instance has neither. When the Machines stop
-using the Repo cache or the Instance Harness, `jr2 up` removes it from the namespace. The image sweep removes a Sandbox
-Image that nothing names.
+using the Repo cache or the Instance Harness, `jr2 up` removes it from the namespace. The Custodian follows a rule of
+its own: when the Instance has no Harness pod, `jr2 up` removes the Custodian only after the last Sandbox and the
+Instance Harness pod are gone, because a run that still runs keeps its Sandbox. The Instance keeps its range of VLANs
+until `jr2 down`. The image sweep removes a Sandbox Image that nothing names.
 
 ## The images
 

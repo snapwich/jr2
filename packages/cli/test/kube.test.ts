@@ -86,6 +86,7 @@ function mkKube(opts: {
     dryRunCreate: async () => assert.fail("a diagnosis dry-runs nothing") as never,
     create: async () => assert.fail("unused") as never,
     replace: async () => assert.fail("unused") as never,
+    deleteIf: async () => assert.fail("unused") as never,
     getJson: async <T>(o: { kind: string; name: string }): Promise<T | undefined> => {
       assert.equal(o.kind, "node");
       const architecture = opts.arch?.[o.name];

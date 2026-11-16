@@ -125,7 +125,10 @@ class FakeCluster implements KubeAdmin {
   async create(opts: { manifest: string }): Promise<"created" | "exists"> {
     const { key, obj } = this.keyOf(opts.manifest);
     if (this.objects.has(key)) return "exists";
-    this.objects.set(key, { ...obj, metadata: { ...obj.metadata, resourceVersion: "1" } } as KubeObject);
+    this.objects.set(key, {
+      ...obj,
+      metadata: { ...obj.metadata, resourceVersion: "1", uid: `uid-${obj.metadata.name}` },
+    } as KubeObject);
     this.created.push(key);
     return "created";
   }
@@ -139,6 +142,20 @@ class FakeCluster implements KubeAdmin {
     this.objects.set(key, { ...obj, metadata: { ...obj.metadata, resourceVersion: next } } as KubeObject);
     this.replaced.push(key);
     return "replaced";
+  }
+  /** A delete on the claim that was read (ADR-0084): `changed` when its uid or version moved. */
+  async deleteIf(opts: { apiPath: string; uid: string; resourceVersion: string }): Promise<"deleted" | "changed"> {
+    const m = /^\/apis\/coordination\.k8s\.io\/v1\/namespaces\/([^/]+)\/leases\/([^/]+)$/.exec(opts.apiPath)!;
+    const key = `${m[1]}/lease/${m[2]}`;
+    const have = this.objects.get(key) as
+      | (KubeObject & { metadata: { uid?: string; resourceVersion?: string } })
+      | undefined;
+    if (!have || have.metadata.uid !== opts.uid || have.metadata.resourceVersion !== opts.resourceVersion) {
+      return "changed";
+    }
+    this.objects.delete(key);
+    this.deleted.push(key);
+    return "deleted";
   }
   async deleteObject(opts: { kind: string; name: string; namespace?: string }): Promise<void> {
     this.deleted.push(`${opts.namespace ?? ""}/${opts.kind}/${opts.name}`);
@@ -6936,7 +6953,7 @@ test("the Custodian's pod template moves with its config, and not with a converg
   assert.ok(t.spec.containers[0].env.some((e: any) => e.name === "JR2_FENCE_SEGMENT" && e.value === "100.64.0.0/16"));
 });
 
-test("an Instance with no Harness pod claims no range and installs no Custodian; one left from before goes, with its range", async () => {
+test("an Instance with no Harness pod claims no range and installs no Custodian; one left from before goes once no Harness pod is left, and its range stays claimed until jr2 down", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
@@ -6944,21 +6961,51 @@ test("an Instance with no Harness pod claims no range and installs no Custodian;
   assert.deepEqual(w.kube.created, []);
   assert.ok(!w.kube.deleted.includes("(manifest)"), "nothing to delete");
 
-  const stale = mkWorld(root);
-  stale.kube.set("myinst", "daemonset", "jr2-custodian", {});
-  stale.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
-  stale.kube.set("jr2-system", "lease", "jr2-fence-range-5", rangeClaim(5, "other"));
-  assert.equal(await up(["--yes"], stale.io), 0);
-  assert.ok(stale.kube.deleted.includes("(manifest)"), "the Custodian's objects are deleted");
-  assert.ok(stale.kube.deleted.includes("jr2-system/lease/jr2-fence-range-4"));
-  assert.ok(!stale.kube.deleted.includes("jr2-system/lease/jr2-fence-range-5"), "another Instance's range stays");
-  assert.match(stale.err.join("\n"), /custodian: gave back VLAN range 4/);
+  // A Custodian from a converge that had a Harness pod. A pod of the Instance can still be on a VLAN
+  // of its range: a held run's Sandbox (ADR-0069), or the Instance Harness pod, which drains.
+  const stale = () => {
+    const s = mkWorld(root);
+    s.kube.set("myinst", "daemonset", "jr2-custodian", {});
+    s.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+    s.kube.set("jr2-system", "lease", "jr2-fence-range-5", rangeClaim(5, "other"));
+    return s;
+  };
+  const held = stale();
+  held.kube.sandboxes = [{ metadata: { name: "ticket-a1b2c", namespace: "myinst" } }];
+  assert.equal(await up(["--yes"], held.io), 0);
+  assert.ok(!held.kube.deleted.includes("(manifest)"), "a held run's Sandbox keeps the Custodian");
+  assert.match(held.err.join("\n"), /custodian: kept — 1 Sandbox still on the Fence; a later `jr2 up` deletes it/);
+  const draining = stale();
+  draining.kube.podImages["app=jr2-instance-harness"] = "jr2-harness:old";
+  assert.equal(await up(["--yes"], draining.io), 0);
+  assert.ok(!draining.kube.deleted.includes("(manifest)"), "a draining Instance Harness pod keeps the Custodian");
+  assert.match(draining.err.join("\n"), /custodian: kept — the Instance Harness pod still on the Fence/);
+
+  const gone = stale();
+  assert.equal(await up(["--yes"], gone.io), 0);
+  assert.ok(gone.kube.deleted.includes("(manifest)"), "with no Harness pod left, the Custodian's objects go");
+  assert.match(gone.err.join("\n"), /custodian: none \(no Harness pod\) — deleting the Custodian/);
+  for (const s of [held, draining, gone]) {
+    assert.ok(
+      !s.kube.deleted.some((d) => d.includes("/lease/")),
+      "`jr2 up` gives no range back: the claim stays until `jr2 down`",
+    );
+    assert.doesNotMatch(s.err.join("\n"), /gave back/);
+  }
+  // A Harness pod again: the Instance keeps the range it held, and claims no other.
+  const again = mkWorld(await withWorkspace(root));
+  again.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.match(again.err.join("\n"), /custodian: converging on each Sandbox node \(VLAN range 4\)/);
+  assert.ok(!again.kube.created.some((c) => c.includes("/lease/")));
 });
 
 function rangeClaim(range: number, holder: string): Partial<KubeObject> {
   return {
     metadata: {
       name: `jr2-fence-range-${range}`,
+      uid: `uid-${range}`,
+      resourceVersion: "3",
       labels: { "jr2.dev/fence-range": String(range), "jr2.dev/fence-holder": holder },
     },
     spec: { holderIdentity: holder },

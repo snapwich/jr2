@@ -117,9 +117,12 @@ Instance, run `jr2 down --all` in place of `jr2 down`:
 jr2 down --all
 ```
 
+<!-- output: not run -->
+
 ```text
 remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator)? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
+gave back VLAN range 0 of the Fence
 uninstalling the operator (jr2-system)
 swept 2 image(s) (259.1 MB)
 removed
@@ -128,7 +131,9 @@ removed
 ::: danger
 
 Use `--all` only when no other Instance is on the cluster. `--all` deletes the Sandbox and Repo resource types. Thus the
-Sandboxes and the Repo resources of each Instance on the cluster go with them.
+Sandboxes and the Repo resources of each Instance on the cluster go with them. The namespace `jr2-system` also holds the
+claim of each Instance's range of VLANs, and it goes with the operator. Thus `jr2 down --all` refuses while another
+Instance on the cluster holds a range. It cannot see an Instance that holds no range.
 
 :::
 
@@ -170,6 +175,10 @@ build cache of docker.
   stays.
 - `jr2 down` refuses a namespace that belongs to a different Instance, and exits with the code 1:
   `refusing: namespace "<namespace>" on <context> belongs to another instance ("<owner>")`
+- `jr2 down --all` refuses while the namespace of another Instance is on the cluster and holds a range of VLANs of the
+  Fence. It changes nothing, and exits with the code 1:
+  `refusing --all: the Instances in namespace "<namespace>" still hold a VLAN range of the Fence, …`. Remove those
+  Instances with `jr2 down` first, or run `jr2 down` without `--all`.
 - When you do not type `y` or `yes`, `jr2 down` changes nothing, and exits with the code 1:
   `aborted — nothing was changed`
 - When no terminal is attached, `jr2 down` cannot ask, so it changes nothing. It prints

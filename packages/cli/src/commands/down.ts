@@ -2,8 +2,9 @@
 // cluster — its namespace and everything `jr2 up` converged into it. Confirms unless `--yes`
 // (deleting a namespace takes the runs, the store PVC, the Instance Harness's conversations PVC
 // (ADR-0031), and every live Sandbox with it). `--all` also uninstalls the
-// per-cluster operator — only sane when this was the cluster's last instance, which is the
-// caller's judgment, not derivable here.
+// per-cluster operator — only sane when this was the cluster's last instance. That is the caller's
+// judgment, except for an Instance that holds a VLAN range of the Fence (ADR-0084): its claim is in
+// `jr2-system`, so `--all` refuses while another namespace that is still there holds one.
 //
 // It also sweeps IMAGES — on the host daemon that built them and, on kind, on every node (ADR-0039).
 // Content addressing means ten Dockerfile iterations leave ten full images per store — invisible to
@@ -24,7 +25,7 @@
 import { basename } from "node:path";
 import { loadConfig } from "@jr2/orchestrator/internal";
 import { pnpmDockerBuild } from "../build.ts";
-import { releaseRanges } from "../fence.ts";
+import { otherHolders, releaseRanges } from "../fence.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import { kubectlAdmin } from "../kube.ts";
@@ -53,6 +54,24 @@ export async function down(args: string[], io: Io): Promise<number> {
   if (owner !== name) {
     activity(io, `refusing: namespace "${namespace}" on ${context} belongs to another instance ("${owner}")`);
     return 1;
+  }
+
+  // The Fence's range claims are in `jr2-system`, and `--all` deletes it with the operator. Another
+  // Instance that holds a range would keep its Custodian and its pods on that range, and the next
+  // `jr2 up` of a third could claim it (ADR-0084). An Instance with no claim is the caller's
+  // judgment, as before: nothing here can see it.
+  if (values.all) {
+    const holders = await otherHolders(kube, { namespace, ...ctx });
+    if (holders.length > 0) {
+      activity(
+        io,
+        `refusing --all: the Instances in namespace${holders.length === 1 ? "" : "s"} ` +
+          `${holders.map((h) => `"${h}"`).join(", ")} still hold a VLAN range of the Fence, and its claim in ` +
+          `jr2-system would go with the operator (ADR-0084). Remove ${holders.length === 1 ? "it" : "them"} ` +
+          "with `jr2 down` first, or run `jr2 down` without --all",
+      );
+      return 1;
+    }
   }
 
   const scope = values.all ? " AND the per-cluster operator" : "";

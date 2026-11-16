@@ -73,6 +73,11 @@ function mkKube(
     dryRunCreate: async () => assert.fail("down dry-runs nothing") as never,
     create: async () => assert.fail("down creates nothing") as never,
     replace: async () => assert.fail("down replaces nothing") as never,
+    // A claim's delete is conditional (ADR-0084); this one always finds the claim it read.
+    deleteIf: async (o: { apiPath: string }) => {
+      fake.deleted.push(`jr2-system/lease/${o.apiPath.split("/").at(-1)}`);
+      return "deleted" as const;
+    },
   };
   return fake;
 }
@@ -186,7 +191,12 @@ test("down gives back the Instance's VLAN range of the Fence, after its namespac
   const kube = mkKube(ownNs);
   const listJson = kube.listJson.bind(kube);
   const claim = (range: number, holder: string) => ({
-    metadata: { name: `jr2-fence-range-${range}`, labels: { "jr2.dev/fence-holder": holder } },
+    metadata: {
+      name: `jr2-fence-range-${range}`,
+      uid: `u${range}`,
+      resourceVersion: "5",
+      labels: { "jr2.dev/fence-holder": holder },
+    },
     spec: { holderIdentity: holder },
   });
   const selectors: string[] = [];
@@ -202,6 +212,38 @@ test("down gives back the Instance's VLAN range of the Fence, after its namespac
   assert.deepEqual(selectors, ["jr2.dev/fence-holder=myinst"]);
   assert.deepEqual(kube.deleted, ["/Namespace/myinst", "jr2-system/lease/jr2-fence-range-3"]);
   assert.match(w.err.join("\n"), /gave back VLAN range 3 of the Fence/);
+});
+
+test("--all refuses while another Instance that is still there holds a VLAN range, and names it (ADR-0084)", async () => {
+  const claims = [
+    { metadata: { name: "jr2-fence-range-0" }, spec: { holderIdentity: "myinst" } },
+    { metadata: { name: "jr2-fence-range-1" }, spec: { holderIdentity: "team-b" } },
+    { metadata: { name: "jr2-fence-range-2" }, spec: { holderIdentity: "gone" } },
+  ];
+  const live = (alive: string[]) => {
+    const kube = mkKube(ownNs);
+    const listJson = kube.listJson.bind(kube);
+    kube.listJson = async <T>(o: { kind: string; selector?: string; fieldSelector?: string }): Promise<T[]> => {
+      if (o.kind === "lease") return (o.selector === "jr2.dev/fence-range" ? claims : []) as T[];
+      if (o.kind === "namespace" && o.fieldSelector !== undefined) {
+        const name = o.fieldSelector.replace("metadata.name=", "");
+        return (alive.includes(name) ? [{ metadata: { name } }] : []) as T[];
+      }
+      return listJson(o);
+    };
+    return kube;
+  };
+  const held = live(["myinst", "team-b"]);
+  const w = await mkWorld(held, true);
+  assert.equal(await down(["--all"], w.io), 1);
+  assert.deepEqual(held.deleted, [], "nothing is deleted");
+  assert.match(w.err.join("\n"), /refusing --all: the Instances in namespace "team-b" still hold a VLAN range/);
+  // A plain `jr2 down` is not refused, and with no other holder there (a claim whose namespace is
+  // NotFound does not count) `--all` goes on.
+  assert.equal(await down([], (await mkWorld(live(["myinst", "team-b"]), true)).io), 0);
+  const alone = live(["myinst"]);
+  assert.equal(await down(["--all"], (await mkWorld(alone, true)).io), 0);
+  assert.ok(alone.deleted.includes("(operator manifest)"));
 });
 
 test("--all takes the Sandbox CRD with the operator, and the sweep still collects", async () => {

@@ -13,6 +13,7 @@ import { custodianXds, fenceRangesOf, FENCE_LAST_RANGE } from "@jr2/orchestrator
 import {
   claimRange,
   FENCE_CLAIM_NAMESPACE,
+  otherHolders,
   fenceAttachments,
   rangeClaimObject,
   releaseRanges,
@@ -23,7 +24,7 @@ import {
   type ClaimKube,
 } from "../src/fence.ts";
 import { OPERATOR_NAMESPACE } from "../src/deploy.ts";
-import type { KubeObject } from "../src/kube.ts";
+import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -31,21 +32,29 @@ after(async () => {
   for (const r of roots) await rm(r, { recursive: true, force: true });
 });
 
-type Claim = KubeObject & { metadata: { resourceVersion?: string }; spec?: { holderIdentity?: string } };
+type Claim = KubeObject & {
+  metadata: { resourceVersion?: string; uid?: string };
+  spec?: { holderIdentity?: string };
+};
 
 /** A cluster of range claims and namespaces. `alive` is each namespace that a read by name finds
- * (a Terminating one is found too). Each write is recorded. */
-function claimsKube(opts: { claims?: Array<[number, string]>; alive?: string[] } = {}) {
+ * (a Terminating one is found too). `claimsNamespace` says whether `jr2-system` is there. Each
+ * write is recorded. */
+function claimsKube(opts: { claims?: Array<[number, string]>; alive?: string[]; claimsNamespace?: boolean } = {}) {
   const claims = new Map<string, Claim>();
+  const withUid = (o: Claim): Claim => ({ ...o, metadata: { ...o.metadata, uid: `uid-${o.metadata.name}` } });
   for (const [range, holder] of opts.claims ?? []) {
-    const o = rangeClaimObject(range, holder, "7") as Claim;
+    const o = withUid(rangeClaimObject(range, holder, "7") as Claim);
     claims.set(o.metadata.name, o);
   }
   const alive = new Set(opts.alive ?? []);
   const log = { created: [] as string[], replaced: [] as string[], deleted: [] as string[], namespaces: 0 };
   /** Called before each create of a claim: a converge of another Instance that comes first. */
   let race: ((name: string) => void) | undefined;
-  const kube: ClaimKube = {
+  /** Called before each replace and each conditional delete of a claim: another converge that
+   * comes first. */
+  let raceWrite: ((name: string) => void) | undefined;
+  const kube: ClaimKube & Pick<KubeAdmin, "deleteIf"> = {
     async listJson<T>(o: { kind: string; selector?: string; fieldSelector?: string; namespace?: string }) {
       if (o.kind === "namespace") {
         const name = /^metadata\.name=(.+)$/.exec(o.fieldSelector ?? "")?.[1];
@@ -59,7 +68,11 @@ function claimsKube(opts: { claims?: Array<[number, string]>; alive?: string[] }
         return key! in labels && (value === undefined || labels[key!] === value);
       }) as T[];
     },
-    async getJson<T>(o: { name: string }) {
+    async getJson<T>(o: { kind: string; name: string }) {
+      if (o.kind === "namespace") {
+        assert.equal(o.name, FENCE_CLAIM_NAMESPACE);
+        return (opts.claimsNamespace ? { metadata: { name: o.name } } : undefined) as T | undefined;
+      }
       return claims.get(o.name) as T | undefined;
     },
     async create(o: { manifest: string }) {
@@ -70,22 +83,31 @@ function claimsKube(opts: { claims?: Array<[number, string]>; alive?: string[] }
       }
       race?.(obj.metadata.name);
       if (claims.has(obj.metadata.name)) return "exists";
-      claims.set(obj.metadata.name, { ...obj, metadata: { ...obj.metadata, resourceVersion: "1" } });
+      claims.set(obj.metadata.name, withUid({ ...obj, metadata: { ...obj.metadata, resourceVersion: "1" } }));
       log.created.push(obj.metadata.name);
       return "created";
     },
     async replace(o: { manifest: string }) {
       const obj = JSON.parse(o.manifest) as Claim;
+      raceWrite?.(obj.metadata.name);
       const have = claims.get(obj.metadata.name);
       if (!have || have.metadata.resourceVersion !== obj.metadata.resourceVersion) return "changed";
-      claims.set(obj.metadata.name, { ...obj, metadata: { ...obj.metadata, resourceVersion: "8" } });
+      claims.set(obj.metadata.name, {
+        ...obj,
+        metadata: { ...obj.metadata, resourceVersion: "8", uid: have.metadata.uid! },
+      });
       log.replaced.push(obj.metadata.name);
       return "replaced";
     },
-    async deleteObject(o: { kind: string; name: string; namespace?: string }) {
-      assert.equal(o.kind, "lease");
-      claims.delete(o.name);
-      log.deleted.push(o.name);
+    async deleteIf(o: { apiPath: string; uid: string; resourceVersion: string }) {
+      const name = /^\/apis\/coordination\.k8s\.io\/v1\/namespaces\/jr2-system\/leases\/([^/]+)$/.exec(o.apiPath)?.[1];
+      assert.ok(name, o.apiPath);
+      raceWrite?.(name);
+      const have = claims.get(name);
+      if (!have || have.metadata.uid !== o.uid || have.metadata.resourceVersion !== o.resourceVersion) return "changed";
+      claims.delete(name);
+      log.deleted.push(name);
+      return "deleted";
     },
   };
   return {
@@ -95,6 +117,9 @@ function claimsKube(opts: { claims?: Array<[number, string]>; alive?: string[] }
     alive,
     setRace: (fn: (name: string) => void) => {
       race = fn;
+    },
+    setRaceWrite: (fn: (name: string) => void) => {
+      raceWrite = fn;
     },
   };
 }
@@ -127,6 +152,11 @@ test("a new Instance creates the lowest free range, and a converge again keeps t
   assert.equal(await claimRange(c.kube, { namespace: "b", log }), 1);
   assert.deepEqual(c.log.created, ["jr2-fence-range-1"]);
   assert.equal(c.log.namespaces, 1, "it makes sure the claims' namespace exists");
+  // When `jr2-system` is there, the claim creates no namespace: a user who may write claims there
+  // and may not create a namespace gets Forbidden from a create, also when the namespace exists.
+  const there = claimsKube({ claimsNamespace: true });
+  assert.equal(await claimRange(there.kube, { namespace: "b", log }), 0);
+  assert.equal(there.log.namespaces, 0);
   assert.equal(holder(c.claims.get("jr2-fence-range-1")), "b");
   assert.equal(await claimRange(c.kube, { namespace: "b", log }), 1);
   assert.equal(await claimRange(c.kube, { namespace: "a", log }), 0);
@@ -169,6 +199,24 @@ test("two converges at once: a lost create or a lost replace goes on to the next
   assert.deepEqual(c.log.replaced, [], "the replace at the old version lost");
 });
 
+test("a lost replace to a converge of the same namespace keeps that range, and claims no second one", async () => {
+  const c = claimsKube({ claims: [[0, "gone"]] });
+  // A second `jr2 up` of namespace "a" takes range 0 between this converge's read and its replace.
+  c.setRaceWrite((name) => {
+    const have = c.claims.get(name)!;
+    if (holder(have) === "gone") {
+      c.claims.set(name, {
+        ...have,
+        metadata: { ...have.metadata, resourceVersion: "9" },
+        spec: { holderIdentity: "a" },
+      });
+    }
+  });
+  assert.equal(await claimRange(c.kube, { namespace: "a", log }), 0);
+  assert.deepEqual(c.log.created, [], "no claim of range 1");
+  assert.deepEqual(c.log.replaced, []);
+});
+
 test("a namespace that holds two claims keeps the lowest and gives back the other", async () => {
   const c = claimsKube({
     claims: [
@@ -203,6 +251,53 @@ test("a release gives back the namespace's own claims and no other", async () =>
   assert.deepEqual(await releaseRanges(c.kube, { namespace: "a" }), [0, 2]);
   assert.deepEqual([...c.claims.keys()], ["jr2-fence-range-1"]);
   assert.deepEqual(await releaseRanges(c.kube, { namespace: "a" }), []);
+});
+
+test("a release deletes only the claim it read: a claim that another Instance took in the meantime stays", async () => {
+  const c = claimsKube({ claims: [[3, "gone"]] });
+  // Between the release's list and its delete, a converge of "next" takes range 3 (its holder's
+  // namespace is NotFound).
+  c.setRaceWrite((name) => {
+    c.setRaceWrite(() => {});
+    const have = c.claims.get(name)!;
+    c.claims.set(name, {
+      ...have,
+      metadata: { ...have.metadata, resourceVersion: "8" },
+      spec: { holderIdentity: "next" },
+    });
+  });
+  assert.deepEqual(await releaseRanges(c.kube, { namespace: "gone" }), []);
+  assert.equal(holder(c.claims.get("jr2-fence-range-3")), "next", "the new holder's claim stays");
+  assert.deepEqual(c.log.deleted, []);
+  // A claim that changed and is still the namespace's (a label written, say) is read again and goes.
+  const d = claimsKube({ claims: [[4, "gone"]] });
+  d.setRaceWrite((name) => {
+    d.setRaceWrite(() => {});
+    const have = d.claims.get(name)!;
+    d.claims.set(name, { ...have, metadata: { ...have.metadata, resourceVersion: "8" } });
+  });
+  assert.deepEqual(await releaseRanges(d.kube, { namespace: "gone" }), [4]);
+});
+
+test("the holders that jr2 down --all must not strand: other namespaces with a claim that are still there", async () => {
+  const c = claimsKube({
+    claims: [
+      [0, "me"],
+      [1, "b"],
+      [2, "gone"],
+      [3, "a"],
+    ],
+    alive: ["me", "a", "b"],
+  });
+  assert.deepEqual(await otherHolders(c.kube, { namespace: "me" }), ["a", "b"]);
+  const alone = claimsKube({
+    claims: [
+      [0, "me"],
+      [2, "gone"],
+    ],
+    alive: ["me"],
+  });
+  assert.deepEqual(await otherHolders(alone.kube, { namespace: "me" }), []);
 });
 
 test("a slot's attachment: an isolated access port of its VLAN, with its fixed MAC, its address and one route to the uplink", () => {
@@ -266,7 +361,12 @@ test("the uplink script makes the range's VLAN interfaces and the static rule se
   await mkdir(bin);
   await mkdir(state);
   // `ip -batch -` and `nft -f -` read their commands on stdin; these keep them.
-  await writeFile(join(bin, "ip"), `#!/bin/sh\n[ "$*" = "-batch -" ] || exit 9\ncat > "${root}/ip.txt"\n`);
+  // The first `ip` call deletes the interfaces of a run before (none here: each delete fails, and the
+  // script goes on); the second makes them.
+  await writeFile(
+    join(bin, "ip"),
+    `#!/bin/sh\ncase "$*" in\n"-force -batch -") cat > "${root}/ip-stale.txt"; exit 1;;\n"-batch -") cat > "${root}/ip.txt";;\n*) exit 9;;\nesac\n`,
+  );
   await writeFile(join(bin, "nft"), `#!/bin/sh\n[ "$*" = "-f -" ] || exit 9\ncat > "${root}/nft.txt"\n`);
   await chmod(join(bin, "ip"), 0o755);
   await chmod(join(bin, "nft"), 0o755);
@@ -298,7 +398,18 @@ test("the uplink script makes the range's VLAN interfaces and the static rule se
   assert.equal(ip.at(-4), "link add link net1 name v127 address 02:00:c6:12:02:01 type vlan id 513");
   assert.equal(ip.at(-1), "route add 198.19.2.1/32 dev v127");
 
+  const stale = (await readFile(join(root, "ip-stale.txt"), "utf8")).trim().split("\n");
+  assert.equal(stale.length, 128);
+  assert.equal(stale[0], "link del v0");
+  assert.equal(stale.at(-1), "link del v127");
+
   const nft = await readFile(join(root, "nft.txt"), "utf8");
+  // Each table goes first (its declaration makes it if it is not there), so a run again in the same
+  // network namespace loads the same rule set, not a second copy of it.
+  assert.match(
+    nft,
+    /^table netdev jr2_uplink_l2\ndelete table netdev jr2_uplink_l2\ntable inet jr2_uplink\ndelete table inet jr2_uplink\ntable arp jr2_uplink\ndelete table arp jr2_uplink\n/,
+  );
   assert.match(nft, /elements = \{ "v0" \. 198\.19\.1\.130, "v1" \. 198\.19\.1\.131, /);
   assert.match(nft, /"v127" \. 198\.19\.2\.1 \}/);
   assert.match(nft, /elements = \{ "v0" : 20000, "v1" : 20001, .*"v127" : 20127 \}/);

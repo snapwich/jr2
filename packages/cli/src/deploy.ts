@@ -357,11 +357,16 @@ export const KIT_POD_SIZES = {
   checkContainer: { requests: { cpu: "100m", memory: "512Mi" }, limits: { memory: "512Mi" } },
   /** The Custodian pod of a Sandbox node (ADR-0084): its Envoy holds the rules of each slot of the
    * Instance, and its control process holds each slot's Secrets, its files in the pod's memory and
-   * the resolver. Measured idle on kind: the pod 98 MiB and 6 millicores with no live slot, 144 MiB
-   * and 7 millicores with 20 (Envoy 56 MiB, the control process 88 MiB); Envoy allocates 121 MiB at
-   * 128 slots × 30 entries. The `uplink` init container runs `ip` and `nft` once. */
-  custodianEnvoy: { requests: { cpu: "50m", memory: "256Mi" }, limits: { memory: "256Mi" } },
-  custodianControl: { requests: { cpu: "50m", memory: "256Mi" }, limits: { memory: "256Mi" } },
+   * the resolver. Sized for a full range, because each pod holds each slot of the Instance. Measured
+   * on kind as each container's cgroup `memory.peak`, at 128 slots of 30 entries each (5 of them
+   * Intercepted, with a secret and a leaf): Envoy 652 MiB and the control process 260 MiB when a pod
+   * starts with every slot or takes them live; when each slot's rules change at once, the old
+   * listeners drain for 60 s beside the new ones, and Envoy reached 1,222 MiB and the control
+   * process 293 MiB. Idle: the pod 98 MiB and 6 millicores with no live slot, 144 MiB and 7
+   * millicores with 20. An OOM of either container cuts each connection of that node's Harness
+   * pods. The `uplink` init container runs `ip` and `nft` once. */
+  custodianEnvoy: { requests: { cpu: "50m", memory: "1536Mi" }, limits: { memory: "1536Mi" } },
+  custodianControl: { requests: { cpu: "50m", memory: "384Mi" }, limits: { memory: "384Mi" } },
   custodianUplink: { requests: { cpu: "50m", memory: "32Mi" }, limits: { memory: "32Mi" } },
 } as const;
 

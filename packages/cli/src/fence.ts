@@ -172,7 +172,8 @@ export function fenceAttachments(opts: {
  * resolver. Nothing is forwarded. Then it writes Envoy's LDS and CDS files with no slot, when they are
  * not there yet, because Envoy does not start without them; the folder is for the pod's group, so
  * that the control process can replace each file. Nothing here changes while the pod lives: a
- * Harness pod's start writes nothing.
+ * Harness pod's start writes nothing. A run again in the same network namespace first deletes what a
+ * run before made, so a start again after a failure does not fail on it.
  */
 export const UPLINK_SCRIPT = `set -eu
 K=$1 SEGMENT=$2 STATE=$3 GROUP=$4 LDS=$5 CDS=$6
@@ -186,6 +187,18 @@ o1=\${base%%.*}; r=\${base#*.}; o2=\${r%%.*}; r=\${r#*.}; o3=\${r%%.*}; o4=\${r#
 BASE=$(( (o1 << 24) | (o2 << 16) | (o3 << 8) | o4 ))
 addr() { n=$((BASE + $1)); echo "$(( (n >> 24) & 255 )).$(( (n >> 16) & 255 )).$(( (n >> 8) & 255 )).$(( n & 255 ))"; }
 UPLINK=$(addr 1)
+
+# A run again in the same network namespace (the kubelet starts a failed init container again in
+# the same pod) finds the interfaces and the tables of the run before: they go first, so that the
+# script ends in the same state from each start.
+stale() {
+  i=0
+  while [ $i -lt $SLOTS ]; do
+    echo "link del v$i"
+    i=$((i + 1))
+  done
+}
+stale | ip -force -batch - 2>/dev/null || true
 
 links() {
   echo "link set $TRUNK up"
@@ -217,6 +230,12 @@ elements() {
 IDS=$(elements identity)
 
 nft -f - <<NFT
+table netdev jr2_uplink_l2
+delete table netdev jr2_uplink_l2
+table inet jr2_uplink
+delete table inet jr2_uplink
+table arp jr2_uplink
+delete table arp jr2_uplink
 table netdev jr2_uplink_l2 {
   chain trunk {
     type filter hook ingress device "$TRUNK" priority -500; policy accept;
@@ -300,12 +319,26 @@ export function uplinkArgs(opts: { range: number; ranges: FenceRanges; state: st
 // ---- the claim of a VLAN range --------------------------------------------------------------------
 
 /** What the claim needs of the converge's KubeAdmin. */
-export type ClaimKube = Pick<KubeAdmin, "listJson" | "getJson" | "create" | "replace" | "deleteObject">;
+export type ClaimKube = Pick<KubeAdmin, "listJson" | "getJson" | "create" | "replace" | "deleteIf">;
 
 type ClaimObject = KubeObject & {
-  metadata: KubeObject["metadata"] & { resourceVersion?: string };
+  metadata: KubeObject["metadata"] & { resourceVersion?: string; uid?: string };
   spec?: { holderIdentity?: string };
 };
+
+/** The API path of the claim of range k, for a delete with preconditions. */
+const claimPath = (name: string) => `/apis/coordination.k8s.io/v1/namespaces/${FENCE_CLAIM_NAMESPACE}/leases/${name}`;
+
+/**
+ * Delete a claim on the condition that it is still the claim that was read (its uid and
+ * resourceVersion). A delete by name alone could remove a claim that another Instance took between
+ * the read and the delete. True when it went; false when it changed or went first.
+ */
+async function deleteClaim(kube: Pick<KubeAdmin, "deleteIf">, claim: ClaimObject, ctx: { context?: string }) {
+  const { uid, resourceVersion } = claim.metadata;
+  if (uid === undefined || resourceVersion === undefined) return false;
+  return (await kube.deleteIf({ apiPath: claimPath(claim.metadata.name), uid, resourceVersion, ...ctx })) === "deleted";
+}
 
 /** The claim of range k by the Instance in `holder`: a Kubernetes Lease object. */
 export function rangeClaimObject(range: number, holder: string, resourceVersion?: string): Json {
@@ -356,29 +389,33 @@ export async function claimRange(
     .sort((a, b) => rangeOf(a)! - rangeOf(b)!);
   if (mine.length > 0) {
     for (const extra of mine.slice(1)) {
-      await kube.deleteObject({ kind: "lease", name: extra.metadata.name, namespace: FENCE_CLAIM_NAMESPACE, ...ctx });
-      opts.log(`fence: gave back the second claim ${extra.metadata.name}`);
+      if (await deleteClaim(kube, extra, ctx)) opts.log(`fence: gave back the second claim ${extra.metadata.name}`);
     }
     return rangeOf(mine[0]!)!;
   }
   // The claims live in the operator's namespace, which an Instance whose operator is not managed by
-  // jr2 may not have yet.
-  await kube.create({
-    manifest: JSON.stringify({ apiVersion: "v1", kind: "Namespace", metadata: { name: FENCE_CLAIM_NAMESPACE } }),
-    ...ctx,
-  });
+  // jr2 may not have yet. A read first: a user who may write claims there but may not create a
+  // namespace gets Forbidden from a create, also when the namespace exists.
+  if ((await kube.getJson({ kind: "namespace", name: FENCE_CLAIM_NAMESPACE, ...ctx })) === undefined) {
+    await kube.create({
+      manifest: JSON.stringify({ apiVersion: "v1", kind: "Namespace", metadata: { name: FENCE_CLAIM_NAMESPACE } }),
+      ...ctx,
+    });
+  }
+  const read = (range: number) =>
+    kube.getJson<ClaimObject>({
+      kind: "lease",
+      name: fenceRangeClaim(range),
+      namespace: FENCE_CLAIM_NAMESPACE,
+      ...ctx,
+    });
   const held: string[] = [];
   for (let range = 0; range <= FENCE_LAST_RANGE; range++) {
     let claim = claims.find((c) => rangeOf(c) === range);
     if (claim === undefined) {
       const made = await kube.create({ manifest: JSON.stringify(rangeClaimObject(range, opts.namespace)), ...ctx });
       if (made === "created") return range;
-      claim = await kube.getJson<ClaimObject>({
-        kind: "lease",
-        name: fenceRangeClaim(range),
-        namespace: FENCE_CLAIM_NAMESPACE,
-        ...ctx,
-      });
+      claim = await read(range);
       if (claim === undefined) continue;
     }
     const holder = holderOf(claim);
@@ -399,6 +436,9 @@ export async function claimRange(
       opts.log(`fence: took range ${range} again: its holder, namespace "${holder ?? "(none)"}", is gone`);
       return range;
     }
+    // Another converge came first. It may be a converge of this same namespace: then this range is
+    // the namespace's, and a second claim would split the Instance over two ranges.
+    if ((await read(range))?.spec?.holderIdentity === opts.namespace) return range;
   }
   throw new Error(
     `no VLAN range is free on this cluster: each of the ${FENCE_LAST_RANGE + 1} ranges is held, ` +
@@ -407,10 +447,14 @@ export async function claimRange(
   );
 }
 
-/** Give back each range that the Instance in `namespace` holds (`jr2 down`, or an Instance with no
- * Harness pod). The ranges given back. */
+/**
+ * Give back each range that the Instance in `namespace` holds. Only `jr2 down` calls it, after the
+ * namespace is NotFound (ADR-0084): while a pod of the namespace can still be on a VLAN of the range,
+ * no other Instance may claim it. Each delete is conditional on the claim that was read, so a claim
+ * that another Instance took in the meantime stays. The ranges given back.
+ */
 export async function releaseRanges(
-  kube: Pick<KubeAdmin, "listJson" | "deleteObject">,
+  kube: Pick<KubeAdmin, "listJson" | "getJson" | "deleteIf">,
   opts: { namespace: string; context?: string },
 ): Promise<number[]> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
@@ -421,11 +465,50 @@ export async function releaseRanges(
     ...ctx,
   });
   const given: number[] = [];
-  for (const claim of claims) {
-    if (claim.spec?.holderIdentity !== opts.namespace) continue;
-    await kube.deleteObject({ kind: "lease", name: claim.metadata.name, namespace: FENCE_CLAIM_NAMESPACE, ...ctx });
-    const range = rangeOf(claim);
-    if (range !== undefined) given.push(range);
+  for (const listed of claims) {
+    // A claim that changed but is still this namespace's is read again and given back; one that
+    // another Instance took stays with it.
+    let claim: ClaimObject | undefined = listed;
+    for (let tries = 0; tries < 3 && claim?.spec?.holderIdentity === opts.namespace; tries++) {
+      if (await deleteClaim(kube, claim, ctx)) {
+        const range = rangeOf(claim);
+        if (range !== undefined) given.push(range);
+        break;
+      }
+      claim = await kube.getJson<ClaimObject>({
+        kind: "lease",
+        name: listed.metadata.name,
+        namespace: FENCE_CLAIM_NAMESPACE,
+        ...ctx,
+      });
+    }
   }
   return given;
+}
+
+/**
+ * The namespaces other than `namespace` that hold a range and are still on the cluster (a read by
+ * name finds a Terminating one too). `jr2 down --all` refuses while one exists: the claims are in
+ * `jr2-system`, which goes with the operator, and another Instance's next `jr2 up` would then claim
+ * a range that a live Instance still uses (ADR-0084).
+ */
+export async function otherHolders(
+  kube: Pick<KubeAdmin, "listJson">,
+  opts: { namespace: string; context?: string },
+): Promise<string[]> {
+  const ctx = opts.context !== undefined ? { context: opts.context } : {};
+  const claims = await kube.listJson<ClaimObject>({
+    kind: "lease",
+    selector: LABEL_FENCE_RANGE,
+    namespace: FENCE_CLAIM_NAMESPACE,
+    ...ctx,
+  });
+  const holders = new Set<string>();
+  for (const claim of claims) {
+    const holder = claim.spec?.holderIdentity;
+    if (holder === undefined || holder === "" || holder === opts.namespace) continue;
+    const alive = await kube.listJson({ kind: "namespace", fieldSelector: `metadata.name=${holder}`, ...ctx });
+    if (alive.length > 0) holders.add(holder);
+  }
+  return [...holders].sort();
 }

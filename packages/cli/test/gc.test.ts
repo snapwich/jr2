@@ -57,6 +57,7 @@ function mkKube(listing: Listing = {}, context = "kind-jr2"): KubeAdmin & { dele
     dryRunCreate: async () => assert.fail("gc dry-runs nothing") as never,
     create: async () => assert.fail("unused") as never,
     replace: async () => assert.fail("unused") as never,
+    deleteIf: async () => assert.fail("unused") as never,
     listJson: async <T>(o: { kind: string; namespace?: string }): Promise<T[]> => {
       if (listing.fails) throw new Error("Unable to connect to the server");
       if (o.kind.startsWith("sandboxes") && listing.noSandboxCrd) {

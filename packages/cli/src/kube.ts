@@ -146,6 +146,16 @@ export type KubeAdmin = {
    * `replaced`, or `changed` when the object changed or went since that version (Conflict,
    * NotFound). THROWS on any other failure. */
   replace(opts: { manifest: string; context?: string }): Promise<"replaced" | "changed">;
+  /** A delete of one object on the condition that it is still the object that was read: the API's
+   * preconditions on its `uid` and `resourceVersion` (`kubectl delete --raw` with a body).
+   * `deleted`, or `changed` when the object changed or went since that read (Conflict, NotFound).
+   * `apiPath` is the object's path on the API server. THROWS on any other failure. */
+  deleteIf(opts: {
+    apiPath: string;
+    uid: string;
+    resourceVersion: string;
+    context?: string;
+  }): Promise<"deleted" | "changed">;
   /** `kubectl label --overwrite`. */
   label(opts: {
     kind: string;
@@ -557,6 +567,17 @@ export const kubectlAdmin: KubeAdmin = {
     try {
       await execStdin(["kubectl", ...ctxArgs(context), "replace", "-f", "-"], manifest);
       return "replaced";
+    } catch (err) {
+      if (/\((Conflict|NotFound)\)/.test((err as Error).message)) return "changed";
+      throw err;
+    }
+  },
+
+  async deleteIf({ apiPath, uid, resourceVersion, context }) {
+    const body = { kind: "DeleteOptions", apiVersion: "v1", preconditions: { uid, resourceVersion } };
+    try {
+      await execStdin(["kubectl", ...ctxArgs(context), "delete", "--raw", apiPath, "-f", "-"], JSON.stringify(body));
+      return "deleted";
     } catch (err) {
       if (/\((Conflict|NotFound)\)/.test((err as Error).message)) return "changed";
       throw err;

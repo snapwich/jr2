@@ -7,7 +7,8 @@
 // Custodian, in pods that read their own objects) → operator → git ssh keys → apply → rollout → the cache
 // agent (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted
 // when none does) → the Custodian (ADR-0084: one pod on each Sandbox node with its uplink and its
-// resolver, on a VLAN range the Instance claims, converged when the Instance has a Harness pod) →
+// resolver, on a VLAN range the Instance claims, converged when the Instance has a Harness pod, and
+// deleted when no Harness pod of the namespace is left; the range stays claimed until `jr2 down`) →
 // Instance Harness (ADR-0031: converged by convention when a carried definition
 // declares `workspace: "none"`, deleted when none does) → Instance Effector → publishing the Assembly to the
 // running Orchestrator (ADR-0069) → a report of live workspaces still on an older image.
@@ -191,7 +192,7 @@ import {
   custodianObjects,
   custodianValueSecrets,
 } from "../deploy.ts";
-import { claimRange, releaseRanges } from "../fence.ts";
+import { claimRange } from "../fence.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { planCallerTokens } from "../caller-tokens.ts";
 import { resolveRoot } from "../instance.ts";
@@ -1244,9 +1245,16 @@ export async function up(args: string[], io: Io): Promise<number> {
       container: "control",
       ...ctx,
     });
-  } else {
-    // A Custodian of a converge that had a Harness pod: its objects go, then its range.
-    if (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx })) {
+  } else if (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx })) {
+    // A Custodian of a converge that had a Harness pod. Its range stays claimed until `jr2 down`
+    // (ADR-0084): a pod of the Instance can still be on a VLAN of it. The Custodian goes only when no
+    // Harness pod of the namespace is left: no Sandbox (a held run keeps its own, ADR-0069) and no
+    // Instance Harness pod (its layer below deletes it, and it drains). Else a later converge
+    // deletes it.
+    const left = await harnessPodsLeft(kube, namespace, ctx);
+    if (left !== undefined) {
+      activity(io, `custodian: kept — ${left} still on the Fence; a later \`jr2 up\` deletes it`);
+    } else {
       activity(io, "custodian: none (no Harness pod) — deleting the Custodian");
       await kube.deleteManifest({
         manifest: custodianObjects({
@@ -1262,9 +1270,6 @@ export async function up(args: string[], io: Io): Promise<number> {
         }),
         ...ctx,
       });
-    }
-    for (const range of await releaseRanges(kube, { namespace, ...ctx })) {
-      activity(io, `custodian: gave back VLAN range ${range}`);
     }
   }
 
@@ -1849,6 +1854,30 @@ function undeliverable(context: string): Error {
     `context ${context} is not a kind cluster and no \`registry\` is configured — ` +
       `set \`registry\` in jr2.config.ts (from env) so the image can be pushed (ADR-0019)`,
   );
+}
+
+/**
+ * What still runs on the Fence in `namespace` with no Harness pod in the walk (ADR-0084): the count
+ * of its Sandboxes and whether its Instance Harness pod is there, as words, or `undefined` when
+ * neither is. A Sandbox kind that the cluster does not know counts as no Sandbox.
+ */
+async function harnessPodsLeft(
+  kube: KubeAdmin,
+  namespace: string,
+  ctx: { context?: string },
+): Promise<string | undefined> {
+  let sandboxes = 0;
+  try {
+    sandboxes = (await kube.listJson({ kind: "sandboxes.core.jr2.dev", namespace, ...ctx })).length;
+  } catch (err) {
+    if (!/doesn't have a resource type/.test((err as Error).message)) throw err;
+  }
+  const harness = await kube.listJson({ kind: "pod", selector: `app=${INSTANCE_HARNESS_SERVICE}`, namespace, ...ctx });
+  const parts = [
+    ...(sandboxes > 0 ? [`${sandboxes} Sandbox${sandboxes === 1 ? "" : "es"}`] : []),
+    ...(harness.length > 0 ? ["the Instance Harness pod"] : []),
+  ];
+  return parts.length > 0 ? parts.join(" and ") : undefined;
 }
 
 /**
