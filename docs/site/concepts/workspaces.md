@@ -288,7 +288,8 @@ The Custodian refuses with a reason, and logs each refusal with the Sandbox, the
 - A name that the list does not permit gets a DNS refusal at once.
 - A connection that the list does not permit gets a TLS alert, an HTTP 403 or a line of text.
 - A TLS connection to a permitted name that resolves to an address that the Custodian never dials is closed with no
-  text. Only the log line gives the reason.
+  text. Only the log line gives the reason. When the name also has other addresses, the Custodian connects only to
+  those.
 - A connection to an IP address that is not an entry, such as `curl https://1.2.3.4`, is refused, because it has no
   name.
 

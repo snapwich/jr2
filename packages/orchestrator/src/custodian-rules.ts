@@ -18,8 +18,8 @@
 // reason. Then the Custodian dials the NAME, never the address that the pod dialed:
 //
 //   Tunneled host   the bytes go to the internal `dial` listener as an HTTP CONNECT for
-//                   `name:port`, where the dial guard judges the address that the name resolves
-//                   to, and the same lookup gives the address dialed; plain HTTP on port 80 goes
+//                   `name:port`, where the dial guard judges each address that the name
+//                   resolves to, and the dial connects only to one it kept; plain HTTP on port 80 goes
 //                   to the `dial-http` listener, where the same guard is
 //   Intercepted     TLS ended with the slot's leaf for that host, the program's checks and swap,
 //                   then the `dial-tls` listener: the same dial guard, Envoy's own verified TLS
@@ -130,20 +130,28 @@ const HTTP1: Json = {
 /** A TLS alert record: fatal, `access_denied` (49). The answer to TLS that no entry permits. */
 const TLS_ALERT = Buffer.from([0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x31]).toString("base64");
 
-/** The DNS cache of every dial by name. One cache, so the dial guard judges the address that the
- * dial then uses. Each name is resolved as written, with no search domain of the Custodian's pod: a
- * search domain would let a Service of the cluster answer for a public name. */
-const DIAL_DNS: Json = {
-  name: "dial",
-  dns_lookup_family: "V4_PREFERRED",
-  typed_dns_resolver_config: {
-    name: "envoy.network.dns_resolver.cares",
-    typed_config: {
-      "@type": "type.googleapis.com/envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig",
-      dns_resolver_options: { no_default_search_domain: true },
+/** The DNS cache of every dial by name, and the dial guard's second half (ADR-0059). A lookup
+ * drops each address of the answer that is in a guarded range or in the Fence's own ranges, before
+ * any dial can use it: Envoy connects to each address of a name in turn, so each one is judged. A
+ * name with no address left is refused. One cache, shared by each dial listener and its cluster.
+ * Each name is resolved as written, with no search domain of the Custodian's pod: a search domain
+ * would let a Service of the cluster answer for a public name. */
+function dialDns(ranges: FenceRanges): Json {
+  return {
+    name: "dial",
+    dns_lookup_family: "V4_PREFERRED",
+    typed_dns_resolver_config: {
+      name: "envoy.network.dns_resolver.cares",
+      typed_config: {
+        "@type": "type.googleapis.com/envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig",
+        dns_resolver_options: { no_default_search_domain: true },
+      },
     },
-  },
-};
+    resolved_address_filter: {
+      ranges: dialGuardRanges(ranges).map(([address_prefix, prefix_len]) => ({ address_prefix, prefix_len })),
+    },
+  };
+}
 
 /** The headers that the Custodian adds to the CONNECT of a tunnel, toward its own dial listener, so
  * that the dial listener's log names the slot and its Harness pod (`sandbox=<name>` or
@@ -169,6 +177,9 @@ const REFUSED_CONNECT = `(?i)^(\\[.*|(-|[0-9.]*|(.*\\.)?${literal(JR2_NAME_DOMAI
 function namesRegex(names: readonly string[]): string {
   return `(?i)^(${names.map(literal).join("|")})\\.?(:[0-9]+)?$`;
 }
+
+/** An `:authority` whose name ends in a dot, with or without a port. */
+const TRAILING_DOT_AUTHORITY = "^[^:]*\\.(:[0-9]*)?$";
 
 /** An `:authority` with no port, or with port 80: what a wildcard on port 80 carries. The Custodian
  * dials the port of the `Host`, so each other port is refused. */
@@ -226,56 +237,34 @@ function httpLog(who: string, target: string): Json[] {
   ];
 }
 
-/** The dial guard, by resolved address (ADR-0059): an RBAC filter after the dynamic forward filter,
- * on the address that filter saved. Its policy is named `guard`, and the program reads that name. */
-function guardFilter(ranges: FenceRanges): Json {
+/** The dynamic forward filter of a dial listener: it resolves the name through the one DNS cache,
+ * whose lookup drops each guarded address (`dialDns`). */
+function dialFilter(ranges: FenceRanges): Json {
   return {
-    name: "envoy.filters.http.rbac",
+    name: "envoy.filters.http.dynamic_forward_proxy",
     typed_config: {
-      "@type": "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
-      rules: {
-        action: "DENY",
-        policies: {
-          guard: {
-            permissions: dialGuardRanges(ranges).map(([address_prefix, prefix_len]) => ({
-              matcher: {
-                name: "envoy.rbac.matchers.upstream_ip_port",
-                typed_config: {
-                  "@type":
-                    "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
-                  upstream_ip: { address_prefix, prefix_len },
-                },
-              },
-            })),
-            principals: [{ any: true }],
-          },
-        },
-      },
+      "@type": "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
+      dns_cache_config: dialDns(ranges),
     },
   };
 }
 
-function dialFilters(ranges: FenceRanges): Json[] {
-  return [
-    {
-      name: "envoy.filters.http.dynamic_forward_proxy",
-      typed_config: {
-        "@type": "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
-        dns_cache_config: DIAL_DNS,
-        save_upstream_address: true,
-      },
-    },
-    guardFilter(ranges),
-  ];
-}
+/** What Envoy says when the dial guard dropped each address of a name (`dialDns`). */
+const GUARDED = "response.code_details.contains('address_denied')";
 
-/** The guard's refusal (ADR-0059). On a dial listener, the one 403 that Envoy itself makes is the
- * RBAC filter's: the slot's chains checked the name before. */
+/** The guard's refusal (ADR-0059): a name whose every address the guard dropped. */
 function guardReply(): Json {
   return {
     filter: {
-      status_code_filter: { comparison: { op: "EQ", value: { default_value: 403, runtime_key: "jr2.guard" } } },
+      extension_filter: {
+        name: "envoy.access_loggers.extension_filters.cel",
+        typed_config: {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter",
+          expression: GUARDED,
+        },
+      },
     },
+    status_code: 403,
     body_format_override: {
       text_format_source: {
         inline_string: "jr2 custodian: %REQ(:AUTHORITY)% resolves to an address that the Custodian never dials\n",
@@ -716,6 +705,11 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
                 }),
               ]
             : []),
+          // A tunnel dials a name in one spelling only, as the `dial` listener does (`REFUSED_CONNECT`).
+          refuseRoute("host", "the Host header ends in a dot: a wildcard carries a name without one", {
+            prefix: "/",
+            headers: [{ name: ":authority", string_match: { safe_regex: { regex: TRAILING_DOT_AUTHORITY } } }],
+          }),
           // The Custodian dials the port that the `Host` names: a wildcard on port 80 carries port 80
           // alone (ADR-0084: an entry permits its ports).
           {
@@ -941,6 +935,12 @@ const CLUSTER_TYPE = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
  * `version_info` is a hash of the slots' versions.
  */
 export function custodianXds(slots: readonly SlotRules[]): { lds: Json; cds: Json } {
+  const seen = new Set<number>();
+  for (const s of slots) {
+    // Envoy refuses an update with two listeners of one name, so one doubled slot stops every slot.
+    if (seen.has(s.slot)) throw new Error(`slot ${s.slot} is rendered twice`);
+    seen.add(s.slot);
+  }
   const versionInfo = hash(slots.map((s) => [s.slot, s.version]));
   const clusters = new Map<string, Json>();
   for (const s of slots) {
@@ -967,8 +967,19 @@ export function custodianXds(slots: readonly SlotRules[]): { lds: Json; cds: Jso
 
 // ---- the pod's bootstrap ------------------------------------------------------------------------
 
-/** The VLAN of slot `slot` of range `range` (ADR-0084): `2 + 128 × range + slot`. */
+/** The highest VLAN range: its last slot is VLAN 4094, the highest VLAN there is. */
+const FENCE_LAST_RANGE = Math.floor((4094 - 2 - (FENCE_SLOTS - 1)) / FENCE_SLOTS);
+
+/** The VLAN of slot `slot` of range `range` (ADR-0084): `2 + 128 × range + slot`, from 2 to 4094.
+ * Any other range or slot is a program error: its address would be outside the segment, and the
+ * inbound listener's target table would name addresses of no slot. */
 export function slotVlan(range: number, slot: number): number {
+  if (!Number.isInteger(range) || range < 0 || range > FENCE_LAST_RANGE) {
+    throw new Error(`VLAN range ${range} is not 0 … ${FENCE_LAST_RANGE} (ADR-0084)`);
+  }
+  if (!Number.isInteger(slot) || slot < 0 || slot >= FENCE_SLOTS) {
+    throw new Error(`slot ${slot} is not 0 … ${FENCE_SLOTS - 1} (ADR-0084)`);
+  }
   return 2 + FENCE_SLOTS * range + slot;
 }
 
@@ -1001,7 +1012,7 @@ const INBOUND_UNREACHABLE: Json = {
   ],
 };
 
-function dfpCluster(name: string, extra: Json = {}, plain = false): Json {
+function dfpCluster(ranges: FenceRanges, name: string, extra: Json = {}, plain = false): Json {
   return {
     name,
     lb_policy: "CLUSTER_PROVIDED",
@@ -1010,7 +1021,7 @@ function dfpCluster(name: string, extra: Json = {}, plain = false): Json {
       name: "envoy.clusters.dynamic_forward_proxy",
       typed_config: {
         "@type": "type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig",
-        dns_cache_config: DIAL_DNS,
+        dns_cache_config: dialDns(ranges),
         // Plain HTTP has no TLS name to set or check.
         ...(plain ? { allow_insecure_cluster_options: true } : {}),
       },
@@ -1046,17 +1057,21 @@ function dialLog(): Json[] {
     },
   });
   return [
-    line("guard", "response.code_details.startsWith('rbac_access_denied')"),
+    line("guard", GUARDED),
     line("name", "response.code_details == 'direct_response' && response.code == 403"),
     // A flag on an answer of the target, or on a tunnel that its client closed (`DC`), is no refusal.
-    line("unreachable", "response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream'"),
+    line(
+      "unreachable",
+      `response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream' && !(${GUARDED})`,
+    ),
   ];
 }
 
 /**
  * One internal dial listener of the Custodian pod (ADR-0059, ADR-0084). Every dial by name goes
- * through one, so the dial guard is in one place and judges the address that the same lookup gives
- * the dial: the RBAC filter refuses an address in a guarded range or in the Fence's own ranges.
+ * through one, so the dial guard is in one place: the one DNS cache drops each address of a name in
+ * a guarded range or in the Fence's own ranges, so the dial can connect only to an address that
+ * the guard judged, and a name with no address left gets the guard's refusal.
  *
  *   dial       the CONNECT of a tunnel (a TLS name, or a protocol that sends no name): TCP
  *   dial-http  a Tunneled host's plain HTTP, or an Intercepted host on port 80: plain HTTP
@@ -1126,7 +1141,7 @@ function dialListener(name: "dial" | "dial-http" | "dial-tls", ranges: FenceRang
                   }),
               http_filters: [
                 fenceMetadata,
-                ...dialFilters(ranges),
+                dialFilter(ranges),
                 {
                   name: "envoy.filters.http.router",
                   typed_config: {
@@ -1372,9 +1387,9 @@ export function custodianPodBootstrap(opts: CustodianPodOptions): Json {
       },
       typed_extension_protocol_options: HTTP1,
     })),
-    dfpCluster("dial-tcp"),
-    dfpCluster("dial-http-name", { typed_extension_protocol_options: HTTP1 }, true),
-    dfpCluster("dial-tls-name", {
+    dfpCluster(ranges, "dial-tcp"),
+    dfpCluster(ranges, "dial-http-name", { typed_extension_protocol_options: HTTP1 }, true),
+    dfpCluster(ranges, "dial-tls-name", {
       typed_extension_protocol_options: {
         "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
           "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",

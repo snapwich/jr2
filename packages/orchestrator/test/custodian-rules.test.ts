@@ -283,7 +283,7 @@ test("`*.` and `*` carry TLS and HTTP only, by the name the client sent, and nev
   const each = (http.route_config.virtual_hosts as Array<{ name: string; routes: any[] }>).find(
     (v) => v.name === "each",
   )!;
-  const [addressRoute, interceptedRoute, tunnelRoute, portRoute] = each.routes;
+  const [addressRoute, interceptedRoute, dotRoute, tunnelRoute, portRoute] = each.routes;
   const addressRe = re2(addressRoute.match.headers[0].string_match.safe_regex.regex);
   for (const host of [
     "10.0.0.9",
@@ -306,6 +306,15 @@ test("`*.` and `*` carry TLS and HTTP only, by the name the client sent, and nev
     assert.match(host, interceptedRe, host);
   }
   assert.doesNotMatch("xapi.anthropic.com", interceptedRe);
+  // A name with a trailing dot is refused, as the CONNECT of a tunnel refuses it: a wildcard dials
+  // a name in one spelling only.
+  assert.equal(dotRoute.metadata.filter_metadata["envoy.filters.http.lua"].reason, "host");
+  assert.deepEqual(dotRoute.direct_response, { status: 403 });
+  const dotRe = re2(dotRoute.match.headers[0].string_match.safe_regex.regex);
+  for (const host of ["other.test.", "OTHER.TEST.", "other.test.:80", "other.test.:6379", "a."]) {
+    assert.match(host, dotRe, host);
+  }
+  for (const host of ["other.test", "other.test:80", "OTHER.TEST", "a.b"]) assert.doesNotMatch(host, dotRe, host);
   assert.equal(tunnelRoute.route.cluster, "dial-http");
   const portRe = re2(tunnelRoute.match.headers[0].string_match.safe_regex.regex);
   for (const host of ["example.com", "example.com:80"]) assert.match(host, portRe, host);
@@ -320,7 +329,7 @@ test("`*.` and `*` carry TLS and HTTP only, by the name the client sent, and nev
   )!;
   assert.deepEqual(
     below80.routes.map((x) => x.metadata.filter_metadata["envoy.filters.http.lua"].reason ?? "tunnel"),
-    ["host", "tunnel", "port"],
+    ["host", "host", "tunnel", "port"],
   );
 });
 
@@ -446,31 +455,57 @@ test("the renderer refuses a slot out of range, a placeholder table of another r
   assert.throws(() => renderSlot({ ...ok, owner: { sandbox: "a b%" } }), /is a Kubernetes name/);
 });
 
-test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also when `fence` moves them (ADR-0059, ADR-0084)", () => {
-  const guardOf = (hcm: Record<string, any>) =>
-    hcm.http_filters
-      .find((f: { name: string }) => f.name === "envoy.filters.http.rbac")
-      .typed_config.rules.policies.guard.permissions.map(
-        (p: { matcher: { typed_config: { upstream_ip: { address_prefix: string; prefix_len: number } } } }) =>
-          `${p.matcher.typed_config.upstream_ip.address_prefix}/${p.matcher.typed_config.upstream_ip.prefix_len}`,
-      );
+test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also when `fence` moves them, and judges each address of a name (ADR-0059, ADR-0084)", () => {
+  // The one DNS cache of each dial drops each guarded address of an answer: Envoy connects to each
+  // address of a name in turn, so a guard that judged one address only would let a second one pass.
+  const cacheOf = (config: Record<string, any>) => config.dns_cache_config;
+  const rangesOf = (cache: Record<string, any>) =>
+    cache.resolved_address_filter.ranges.map(
+      (r: { address_prefix: string; prefix_len: number }) => `${r.address_prefix}/${r.prefix_len}`,
+    );
   const defaults = [...GUARDED_RANGES.map(([a, n]) => `${a}/${n}`), "198.19.0.0/20", "198.18.0.0/16", "198.18.0.0/15"];
   const boot = custodianPodBootstrap({ orchestrator: { host: "o", port: 4000 }, range: 0, ranges: RANGES }) as any;
+  const caches: unknown[] = [];
   for (const name of ["dial", "dial-http", "dial-tls"]) {
     const dial = boot.static_resources.listeners.find((l: { name: string }) => l.name === name);
     const hcm = dial.filter_chains[0].filters[0].typed_config;
-    assert.deepEqual(guardOf(hcm), defaults, name);
     assert.deepEqual(
       hcm.http_filters.map((f: { name: string }) => f.name),
       [
         "envoy.filters.http.header_to_metadata",
         "envoy.filters.http.dynamic_forward_proxy",
-        "envoy.filters.http.rbac",
         "envoy.filters.http.router",
       ],
-      `${name}: the guard judges the address that the same lookup gives the dial`,
+      name,
     );
-    assert.equal(hcm.http_filters[1].typed_config.save_upstream_address, true);
+    const cache = cacheOf(hcm.http_filters[1].typed_config);
+    assert.deepEqual(rangesOf(cache), defaults, name);
+    assert.equal(cache.resolved_address_filter.invert_match, undefined, `${name}: the ranges are dropped, not kept`);
+    caches.push(cache);
+    // A name with no address left gets the guard's refusal: 403 on HTTP, a `reason=guard` line.
+    const guard = hcm.access_log.find((l: any) =>
+      (l.typed_config.log_format.text_format_source.inline_string as string).includes("reason=guard"),
+    );
+    assert.equal(
+      guard.filter.extension_filter.typed_config.expression,
+      "response.code_details.contains('address_denied')",
+    );
+    const unreachable = hcm.access_log.find((l: any) =>
+      (l.typed_config.log_format.text_format_source.inline_string as string).includes("reason=unreachable"),
+    );
+    assert.match(
+      unreachable.filter.extension_filter.typed_config.expression,
+      /!\(response\.code_details\.contains\('address_denied'\)\)$/,
+    );
+    if (name !== "dial") {
+      const [mapper] = hcm.local_reply_config.mappers;
+      assert.equal(mapper.status_code, 403, name);
+      assert.equal(
+        mapper.filter.extension_filter.typed_config.expression,
+        guard.filter.extension_filter.typed_config.expression,
+      );
+      assert.match(mapper.body_format_override.text_format_source.inline_string, /never dials/);
+    }
     // This manager adds `x-forwarded-proto`; no target gets it, nor the other forwarding headers.
     assert.deepEqual(hcm.route_config.request_headers_to_remove, [
       "x-forwarded-proto",
@@ -512,14 +547,20 @@ test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also whe
   for (const c of new Set(clustersNamed)) {
     assert.match(c, /"cluster":"(dial|dial-http|dial-tls|orchestrator|tcp\|10\.0\.0\.5\|8000|tls\|10\.0\.0\.7\|8443)"/);
   }
+  // The clusters of the dial listeners use the same cache: Envoy needs one config for one cache name,
+  // and the cluster connects only to an address that this cache kept.
+  for (const name of ["dial-tcp", "dial-http-name", "dial-tls-name"]) {
+    const cluster = boot.static_resources.clusters.find((c: { name: string }) => c.name === name);
+    caches.push(cacheOf(cluster.cluster_type.typed_config));
+  }
+  for (const cache of caches) assert.deepEqual(cache, caches[0]);
   const moved = fenceRangesOf({ segment: "100.64.0.0/16", placeholders: "100.65.0.0/16" });
   const bootMoved = custodianPodBootstrap({ orchestrator: { host: "o", port: 4000 }, range: 0, ranges: moved }) as any;
   const dialMoved = bootMoved.static_resources.listeners.find((l: { name: string }) => l.name === "dial-tls");
-  assert.deepEqual(guardOf(dialMoved.filter_chains[0].filters[0].typed_config).slice(-3), [
-    "100.64.0.0/16",
-    "100.65.0.0/16",
-    "198.18.0.0/15",
-  ]);
+  assert.deepEqual(
+    rangesOf(cacheOf(dialMoved.filter_chains[0].filters[0].typed_config.http_filters[1].typed_config)).slice(-3),
+    ["100.64.0.0/16", "100.65.0.0/16", "198.18.0.0/15"],
+  );
 });
 
 test("the pod's bootstrap: admin on loopback, health, the Orchestrator's dial to this Instance's slots alone, the dial listener, LDS and CDS from watched files", () => {
@@ -624,6 +665,27 @@ test("the LDS and CDS files hold each slot's listener and each address cluster o
   assert.equal(custodianXds([...slots, twice]).lds.version_info, lds.version_info);
   const clash = { ...twice, clusters: [{ ...twice.clusters[0]!, connect_timeout: "1s" }] };
   assert.throws(() => custodianXds([...slots, clash]), /render the cluster tcp\|10\.0\.0\.5\|8000 differently/);
+  // Two listeners of one name make Envoy refuse the whole update, so every slot would fail.
+  const again = renderSlot(inputsOf(4, SANDBOX_MANIFEST, { sandbox: "other-a1b2c" }));
+  assert.throws(() => custodianXds([...slots, twice, again]), /slot 4 is rendered twice/);
+});
+
+test("a VLAN range is 0 … 30: each of its 128 slots has a VLAN from 2 to 4094 and an address in the segment", () => {
+  assert.equal(slotVlan(0, 0), 2);
+  assert.equal(slotVlan(30, 127), 3969);
+  assert.equal(slotAddress(RANGES.segment, slotVlan(30, 127)), "198.19.15.129");
+  for (const range of [31, -1, 1000, 1.5, Number.NaN]) {
+    assert.throws(() => slotVlan(range, 0), /VLAN range .* is not 0 … 30/, String(range));
+    assert.throws(
+      () => custodianPodBootstrap({ orchestrator: { host: "o", port: 4000 }, range, ranges: RANGES }),
+      /VLAN range .* is not 0 … 30/,
+      String(range),
+    );
+  }
+  for (const slot of [-1, 128, 0.5]) assert.throws(() => slotVlan(0, slot), /slot .* is not 0 … 127/, String(slot));
+  assert.doesNotThrow(() =>
+    custodianPodBootstrap({ orchestrator: { host: "o", port: 4000 }, range: 30, ranges: RANGES }),
+  );
 });
 
 test("size: 128 slots of 30 entries each, rendered into the LDS and CDS files, with no Intercepted host and with 5 of 30 (risk 4 of the plan)", (t) => {

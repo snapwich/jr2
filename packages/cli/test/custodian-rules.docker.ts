@@ -412,6 +412,13 @@ test("the pinned Envoy runs a slot's rules: a wildcard on port 80 dials port 80 
     assert.doesNotMatch(answer, /port=6379|port=8080/);
   }
 
+  // A name with a trailing dot is refused on port 80, as the CONNECT of a tunnel refuses it.
+  for (const authority of ["other.test.", "OTHER.TEST.", "other.test.:80"]) {
+    const answer = await get(any, 80, authority);
+    assert.equal(status(answer), "HTTP/1.1 403 Forbidden", `${authority}: ${answer}`);
+    assert.match(body(answer), /ends in a dot/, authority);
+  }
+
   // Finding 2: an Intercepted host and jr2's name are refused in any letter case, and with a dot.
   for (const authority of ["secure.test", "SECURE.TEST", "Secure.Test:80", "secure.test."]) {
     const answer = await get(any, 80, authority);
@@ -485,4 +492,211 @@ test("the pinned Envoy runs a slot's rules: a wildcard on port 80 dials port 80 
   assert.match(body(answer), /could not decide this request/);
   assert.doesNotMatch(answer, /port=80/);
   assert.match(output, /jr2\.custodian dial action=refuse target=- reason=error /);
+});
+
+test("the pinned Envoy runs a slot's rules: the dial guard judges each address of a name, so a name whose second address is guarded never reaches it, on each dial path (ADR-0059, ADR-0084)", async (t) => {
+  // A name can have more addresses than one, and Envoy connects to the next one when a connection to
+  // one fails. Each name below has a first address that answers nothing and a second one that the
+  // guard refuses: a slot address of the segment, or the cloud metadata address. The target listens
+  // on that second address. Names resolve through the Custodian container's `/etc/hosts`, as a DNS
+  // record that Workspace code's author controls could answer. No two lines share an address or a
+  // name, so the resolver adds no address to a name.
+  const root = await mkdtemp(join(tmpdir(), "jr2-custodian-guard-"));
+  const tag = `${process.pid}-${Date.now() % 100000}`;
+  const nets = ["a", "b", "c"].map((n) => `jr2-cguard-${n}-${tag}`);
+  // One network for each guarded address of the target: a container has one address on a network.
+  const guardedNets = [
+    ["198.19.0.0/26", "198.19.0.5"],
+    ["198.19.0.64/26", "198.19.0.69"],
+    ["198.19.0.128/26", "198.19.0.133"],
+    ["198.19.0.192/26", "198.19.0.197"],
+    ["169.254.169.0/24", "169.254.169.254"],
+  ].map(([subnet, address], i) => ({ net: `jr2-cguard-g${i}-${tag}`, subnet: subnet!, address: address! }));
+  const [targetName, custodianName] = [`jr2-cguard-target-${tag}`, `jr2-cguard-custodian-${tag}`];
+  t.after(async () => {
+    await docker("rm", "-f", targetName, custodianName).catch(() => {});
+    for (const n of [...nets, ...guardedNets.map((g) => g.net)]) await docker("network", "rm", n).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  const gid = String(process.getgid?.() ?? 0);
+  const user = ["--user", `65532:${gid}`, "--group-add", gid, "--read-only", "--cap-drop", "ALL"];
+  for (const n of nets) await docker("network", "create", n);
+  for (const g of guardedNets) await docker("network", "create", "--subnet", g.subnet, g.net);
+
+  const ca = issueCa("custodian-guard-run");
+  const targetCa = issueCa("custodian-guard-target");
+  const targetLeaf = issueLeaf(targetCa, "secure.test");
+  await mkdir(join(root, "target"), { recursive: true });
+  await writeFile(join(root, "target", "envoy.json"), JSON.stringify(targetBootstrap()), { mode: 0o644 });
+  await writeFile(join(root, "target", "tls.crt"), targetLeaf.cert, { mode: 0o644 });
+  await writeFile(join(root, "target", "tls.key"), targetLeaf.key, { mode: 0o644 });
+  // prettier-ignore
+  await docker(
+    "run", "-d", "--name", targetName, "--network", nets[0]!, ...user,
+    "-v", `${join(root, "target")}:/etc/target:ro`,
+    custodianRef(), "-c", "/etc/target/envoy.json", "--log-level", "warning",
+  );
+  for (const g of guardedNets) await docker("network", "connect", "--ip", g.address, g.net, targetName);
+  const target = (await addresses(targetName))[nets[0]!]!;
+  // Addresses of the target's first network that no container holds: a connection to one fails.
+  const nobody = (n: number) => target.replace(/\.\d+$/, `.${200 + n}`);
+  const [seg1, seg2, seg3, segOnly, metadata] = guardedNets.map((g) => g.address);
+
+  // One Sandbox slot: `*` on 443 and 80, `secure.test:443` Intercepted with no secret, and a raw
+  // name on 6379.
+  const egress = [
+    rule("*", 443, "any", false, "entry"),
+    rule("*", 80, "any", false, "entry"),
+    rule("secure.test", 443, "name", true, "entry"),
+    rule("raw.test", 6379, "name", false, "entry"),
+  ];
+  const placeholders = withPlaceholders(emptyPlaceholders(RANGES.placeholders), egress);
+  const inputs: SlotInputs = {
+    slot: 3,
+    owner: { sandbox: "probe" },
+    manifest: { version: 1, secrets: [], egress },
+    placeholders,
+    ranges: RANGES,
+  };
+  const slot = renderSlot(inputs);
+  await slotFiles(inputs, ca, root);
+  await putIn(CUSTODIAN_POD_PROGRAM, CUSTODIAN_PROGRAM, root);
+  await putIn("/etc/jr2/ca/upstream.crt", trustBundles(ca.cert, targetCa.cert).upstream, root);
+  const bootstrap = custodianPodBootstrap({
+    orchestrator: { host: "orchestrator.invalid", port: 4000 },
+    range: 0,
+    ranges: RANGES,
+  });
+  await putIn(CUSTODIAN_POD_BOOTSTRAP, JSON.stringify(bootstrap), root);
+  const empty = JSON.stringify({ version_info: "0", resources: [] });
+  await putIn(CUSTODIAN_LDS, empty, root);
+  await putIn(CUSTODIAN_CDS, empty, root);
+  const hosts = [
+    "127.0.0.1 localhost",
+    `${target} other.test`,
+    `${nobody(1)} multi.test`,
+    `${seg1} multi.test`,
+    `${nobody(2)} secure.test`,
+    `${seg2} secure.test`,
+    `${nobody(3)} raw.test`,
+    `${seg3} raw.test`,
+    `${nobody(4)} meta.test`,
+    `${metadata} meta.test`,
+    `${segOnly} seg.test`,
+    "",
+  ].join("\n");
+  await writeFile(join(root, "hosts"), hosts, { mode: 0o644 });
+
+  // prettier-ignore
+  await docker(
+    "create", "--name", custodianName, "--network", nets[0]!, ...user,
+    "-v", `${join(root, "etc")}:/etc/jr2:ro`, "-v", `${join(root, "state")}:${CUSTODIAN_STATE}:ro`,
+    "-v", `${join(root, "hosts")}:/etc/hosts:ro`,
+    custodianRef(), ...CUSTODIAN_POD_ARGS,
+  );
+  for (const n of [...nets.slice(1), ...guardedNets.map((g) => g.net)]) {
+    await docker("network", "connect", n, custodianName);
+  }
+  let output = "";
+  const child = spawn("docker", ["start", "-a", custodianName], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", (b: Buffer) => (output += b.toString()));
+  child.stderr.on("data", (b: Buffer) => (output += b.toString()));
+  t.after(() => void child.kill());
+
+  let custodian: Record<string, string> = {};
+  for (let i = 0; i < 100 && !nets.every((n) => custodian[n]); i++) {
+    custodian = await addresses(custodianName).catch(() => ({}));
+    await sleep(100);
+  }
+  const [any, secure, raw] = nets.map((n) => custodian[n]!);
+  assert.ok(any && secure && raw, `the Custodian has an address on each network: ${JSON.stringify(custodian)}`);
+
+  // As in the test above: the slot's listener takes ports 80, 443 and 6379 of the Custodian, and the
+  // placeholders of `*`, `secure.test` and `raw.test` become its three addresses.
+  const moved = (text: string, from: string, to: string) =>
+    text.replaceAll(`"${from}"`, `"${to}"`).replaceAll(`"${from}:`, `"${to}:`);
+  let lds = JSON.stringify(custodianXds([slot]).lds);
+  lds = moved(lds, placeholderOf(placeholders, "*")!, any);
+  lds = moved(lds, placeholderOf(placeholders, "secure.test")!, secure);
+  lds = moved(lds, placeholderOf(placeholders, "raw.test")!, raw);
+  const parsed = JSON.parse(lds) as { version_info: string; resources: Array<Record<string, any>> };
+  parsed.resources = [80, 443, 6379].map((port) => {
+    const listener = structuredClone(parsed.resources[0]!);
+    listener.name = `slot-3-${port}`;
+    listener.address.socket_address.port_value = port;
+    return listener;
+  });
+  parsed.version_info = "1";
+  const xds = local(CUSTODIAN_LDS, root);
+  await writeFile(`${xds}.next`, JSON.stringify(parsed), { mode: 0o644 });
+  await rename(`${xds}.next`, xds);
+
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const answer = await get(any, 80, "other.test");
+    if (answer.startsWith("HTTP/1.1 200") && /port=80 /.test(answer)) break;
+    if (Date.now() > deadline || child.exitCode !== null) assert.fail(`the slot never served:\n${answer}\n${output}`);
+    await sleep(200);
+  }
+  // The target is reachable on each guarded address, so a miss below is the guard's, not the rig's.
+  for (const address of [seg1, seg2, seg3, segOnly, metadata]) {
+    assert.match(await get(address!, 80, "x"), /^HTTP\/1\.1 200[\s\S]*port=80 /, `the target answers on ${address}`);
+  }
+  const status = (answer: string) => answer.split("\r\n")[0];
+  const fromTarget = /port=(80|443|6379) /;
+
+  // Plain HTTP through `*` on port 80 (the `dial-http` listener): the slot address, and the cloud
+  // metadata address, behind a first address that fails.
+  for (const host of ["multi.test", "meta.test"]) {
+    for (let i = 0; i < 2; i++) {
+      const answer = await get(any, 80, host);
+      assert.doesNotMatch(answer, fromTarget, `${host}: no byte of the target\n${answer}`);
+      assert.notEqual(status(answer), "HTTP/1.1 200 OK", `${host}: ${answer}`);
+    }
+  }
+  // A TLS tunnel through `*` on port 443 (the `dial` listener): no server hello of the target.
+  for (let i = 0; i < 2; i++) {
+    const reply = await helloReply(any, 443, "multi.test");
+    assert.notEqual(reply[0], 0x16, "multi.test on 443: no server hello of the target");
+  }
+  // An Intercepted host (the `dial-tls` listener): the Custodian's own TLS to the target, refused.
+  for (let i = 0; i < 2; i++) {
+    const intercepted = await new Promise<string>((resolve) => {
+      const s = tlsConnect({ host: secure, port: 443, servername: "secure.test", rejectUnauthorized: false }, () =>
+        s.write("GET / HTTP/1.1\r\nHost: secure.test\r\nConnection: close\r\n\r\n"),
+      );
+      let text = "";
+      s.setTimeout(10_000, () => s.destroy());
+      s.on("data", (d: Buffer) => (text += d.toString()));
+      s.on("error", () => resolve(text));
+      s.on("close", () => resolve(text));
+    });
+    assert.doesNotMatch(intercepted, fromTarget, `secure.test: no byte of the target\n${intercepted}`);
+    assert.notEqual(status(intercepted), "HTTP/1.1 200 OK", intercepted);
+  }
+  // A raw name on port 6379 (the `dial` listener): the target would answer HTTP on 6379.
+  for (let i = 0; i < 2; i++) {
+    const answer = await rawHttp(raw, 6379, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert.doesNotMatch(answer, fromTarget, `raw.test:6379: no byte of the target\n${answer}`);
+  }
+  // No line of a dial says that one of these names was carried.
+  assert.doesNotMatch(output, /target=(multi|meta|secure|raw)\.test\S* .*status=200/);
+
+  // A name with no address left (a slot address alone, or `localhost`): the guard's refusal, and
+  // its line.
+  for (const host of ["seg.test", "localhost"]) {
+    const answer = await get(any, 80, host);
+    assert.equal(status(answer), "HTTP/1.1 403 Forbidden", `${host}: ${answer}`);
+    assert.match(answer, /resolves to an address that the Custodian never dials/, host);
+  }
+  const reply = await helloReply(any, 443, "seg.test");
+  assert.equal(reply.length, 0, "seg.test on 443: closed with no byte");
+  for (const line of [
+    /jr2\.custodian slot=3 sandbox=probe action=refuse target=seg\.test reason=guard /,
+    /jr2\.custodian slot=3 sandbox=probe action=refuse target=seg\.test:443 reason=guard /,
+    /jr2\.custodian slot=3 sandbox=probe action=refuse target=localhost reason=guard /,
+  ]) {
+    for (let i = 0; i < 30 && !line.test(output); i++) await sleep(200);
+    assert.match(output, line);
+  }
 });

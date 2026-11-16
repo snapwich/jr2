@@ -209,9 +209,11 @@ and it replaces the Adapter.
   on its own VLAN, so without these ranges a permitted name that resolves to a slot address would make it dial another
   Harness pod. A target that SPELLS such an address, or is `localhost` or a `.localhost` name, is refused before
   anything is resolved: `jr2 up` refuses such an entry, and the Custodian dials an address only when it is an entry. The
-  Custodian then refuses a name that resolves to an address in these ranges (`dialGuardRanges`), so a name that resolves
-  to one is refused like the literal, with a `reason=guard` line. The address judged is the address dialed: each dial by
-  name goes through one of the Custodian's dial listeners, and both come from its one lookup.
+  Custodian's lookup of a name then drops each address of the answer that is in these ranges (`dialGuardRanges`), before
+  a dial can use it. A name can have more than one address, and Envoy connects to the next one when a connection to one
+  fails, so each address is judged. A name with no address left is refused like the literal, with a `reason=guard` line;
+  a name with an address left is dialed at the addresses left only. The address judged is the address dialed: each dial
+  by name goes through one of the Custodian's dial listeners, and each listener and its cluster share that one lookup.
 - **Health.** `0.0.0.0:15021`, `GET /healthz`. The kubelet cannot reach a loopback listener, and a distroless image has
   no shell for an exec probe. The Custodian's readiness probe is on it. A provision waits until the Custodian says that
   the Sandbox's rules are live (ADR-0084), so no Turn is admitted in a Sandbox before the Custodian serves it. A peer on
@@ -440,10 +442,11 @@ and it replaces the Adapter.
   ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)): the image moves only with its
   pin, but the configuration jr2 renders moves with any release. About 35 seconds. It checks the swap, the strip, 403
   with no Stand-in, 405 on a method, 400 on an underscore header, a header `Connection` names, two `Host` headers, idle
-  connections on the health listener, 421, 400 and 403 on paths, the tunnel, the dial guard by every spelling and by
-  resolved name, 502 on an untrusted upstream, SSE timing, abort, a 302, the refusal of a bad value, the log, a TLS name
-  or a `Host` header that does not agree with the name of the address, and the Anthropic SDK with no proxy setting. The
-  first SSE event arrives through the Custodian about half a millisecond later than direct.
+  connections on the health listener, 421, 400 and 403 on paths, the tunnel, the dial guard by every spelling, by
+  resolved name and by each address of a name, 502 on an untrusted upstream, SSE timing, abort, a 302, the refusal of a
+  bad value, the log, a TLS name or a `Host` header that does not agree with the name of the address, and the Anthropic
+  SDK with no proxy setting. The first SSE event arrives through the Custodian about half a millisecond later than
+  direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses the Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.
