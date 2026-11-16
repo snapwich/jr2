@@ -37,6 +37,29 @@ kind-up:
 kind-down:
     kind delete cluster --name {{ cluster }}
 
+# --- the Fence on kind (ADR-0084; requires docker + kind, and network on the first run) ---
+#
+# A kind cluster with three nodes and the Fence's node prerequisites: the second pod network (Multus),
+# the stock bridge plugins, the bridge, the rule set and the route (deploy/fence/node-prep.sh). The
+# prerequisites are this repo's kind recipe, not jr2 code: `jr2 up` probes them and installs none.
+# Each command names the cluster's own kubeconfig file, never the shell's current context.
+
+# create the three-node kind cluster for the Fence and prepare its nodes (a second run changes nothing)
+fence-kind-up:
+    mkdir -p features/.tmp
+    kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind-fence.yaml --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+    kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+    just cluster={{ cluster }} fence-node-prep
+
+# prepare each node of the cluster for the Fence (idempotent); segment = the Fence's IPv4 prefix
+fence-node-prep segment="198.19.0.0/20":
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} deploy/fence/node-prep.sh {{ cluster }} {{ segment }}
+
+# delete the Fence's kind cluster
+fence-kind-down:
+    kind delete cluster --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+
 # --- kit images (docker) — SHORTCUTS for building one image by hand (ADR-0038) ---
 #
 # None of these is a prerequisite of anything. `jr2 up` run from this checkout builds every image it
