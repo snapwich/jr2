@@ -3120,7 +3120,7 @@ test("R14: a held secret of the user's own whose name is a key of an envFrom Sec
 
 test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a missing file fails loudly", async () => {
   const config =
-    `export default { name: "myinst", harness: { caBundle: "ca.crt", ` +
+    `export default { name: "myinst", egress: ["vllm.internal"], harness: { caBundle: "ca.crt", ` +
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.internal/v1" } } };\n`;
   const pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
 
@@ -3151,6 +3151,46 @@ test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a m
 
   const missing = mkWorld(await mkInstance(config, "missing"));
   await assert.rejects(() => up(["--yes"], missing.io), /caBundle.*relative to the instance folder/s);
+});
+
+test("egress (ADR-0084): each pod's held manifest carries its Egress list, reported per pod; a keyless endpoint with no entry refuses", async () => {
+  const provider = `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" }`;
+  const config = `export default { name: "myinst", egress: ["github.com", "10.0.0.5:8000"], harness: { ${provider} } };\n`;
+  const root = await mkInstance(config, "myinst", { coder: { model: "vllm/qwen-x", workspace: "none" } });
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0, w.err.join("\n"));
+  // The Instance Harness takes no entry of the author's: only the host it needs, from the list.
+  assert.match(w.err.join("\n"), /the Instance Harness: Egress list Tunneled 10\.0\.0\.5:8000/);
+  const items = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  const heldCm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+  assert.deepEqual((JSON.parse(heldCm.data["held-instance.json"]) as HeldManifest).egress, [
+    { host: "10.0.0.5", port: 8000, match: "address", intercept: false, from: ["entry"] },
+  ]);
+  // A check pod reaches what each pod of its class reaches: the rules of both, once.
+  const rules = (pod: string, host: string) => ({
+    ...heldPod(pod, []),
+    manifest: {
+      version: 1 as const,
+      secrets: [],
+      egress: [{ host, port: 443, match: "name" as const, intercept: false, from: ["entry" as const] }],
+    },
+  });
+  const [check] = checkPodsOf({}, walkOf(["openai/gpt-x"], ["openai/gpt-x"]), [
+    rules(WS_POD, "github.com"),
+    rules("instance", "api.openai.com"),
+  ]);
+  assert.deepEqual(
+    check?.manifest.egress.map((r) => r.host),
+    ["github.com", "api.openai.com"],
+  );
+
+  const bare = `export default { name: "myinst", harness: { ${provider} } };\n`;
+  const refused = mkWorld(await mkInstance(bare, "myinst", { coder: { model: "vllm/qwen-x", workspace: "none" } }));
+  await assert.rejects(
+    () => up(["--yes"], refused.io),
+    /the Instance Harness reaches 10\.0\.0\.5:8000 for the "vllm\/…" models .* add egress: \["10\.0\.0\.5:8000"\]/,
+  );
+  assert.ok(!refused.kube.applied.some(isInstanceList), "nothing of the Instance is applied");
 });
 
 test("no caBundle and nothing held → no jr2-ca ConfigMap", async () => {
@@ -3304,6 +3344,7 @@ function heldPod(pod: string, names: string[], hosts: Record<string, string> = {
     pod,
     manifest: {
       version: 1 as const,
+      egress: [],
       secrets: names.map((name) => ({
         name,
         source: { kind: "literal" as const },
@@ -3468,7 +3509,7 @@ test("checkPodObjects: the check pod takes its placement, and labels that select
       run: "ab12cd34",
       harnessImage: "h",
       custodianImage: "c",
-      held: { version: 1, secrets: [] },
+      held: { version: 1, egress: [], secrets: [] },
       values: {},
       leaves: {},
       trust: {},
@@ -5759,6 +5800,7 @@ test("hosts alone places nothing: an Effect secret with hosts that no workspace(
 function wsManifest(i: number): HeldManifest {
   return {
     version: 1,
+    egress: [],
     secrets: [
       {
         name: "ANTHROPIC_API_KEY",
@@ -5946,6 +5988,7 @@ test("the Instance Harness's held digest covers its Custodian's two files: a cha
   // A literal bound to no target, so the digest reads no leaf: what moves it here is the files.
   const manifest: HeldManifest = {
     version: 1,
+    egress: [],
     secrets: [{ name: "JIRA_TOKEN", source: { kind: "literal" }, hosts: [], headers: ["authorization"] }],
   };
   const pod = { pod: "instance", manifest, values: { JIRA_TOKEN: "jira-value-0" } };
@@ -5962,6 +6005,7 @@ test("the Instance Harness's held digest covers its Custodian's two files: a cha
 test("the Instance Harness's held digest covers the program its custodian.lua loads: a changed program.lua rolls it (ADR-0059)", () => {
   const manifest: HeldManifest = {
     version: 1,
+    egress: [],
     secrets: [{ name: "JIRA_TOKEN", source: { kind: "literal" }, hosts: [], headers: ["authorization"] }],
   };
   const pod = { pod: "instance", manifest, values: { JIRA_TOKEN: "jira-value-0" } };

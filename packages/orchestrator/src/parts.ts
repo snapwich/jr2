@@ -62,6 +62,7 @@ import { refuseUnroutedAgentFault } from "./mechanism-routes.ts";
 import { refuseSlotActiveTwice } from "./party.ts";
 import { refuseLostOutput } from "./run-output.ts";
 import { userSeatOf, type Size, type UserContainer } from "./size.ts";
+import type { EgressEntry } from "./egress.ts";
 
 // --- Repo Slots (ADR-0051) ---------------------------------------------------------------------
 // A `workspace()` names each Repo it attaches under a SLOT — the Machine's own word for it, the
@@ -265,6 +266,8 @@ export type SandboxParts = {
   /** The Held secrets this Workspace's pod gets beside its Agents' model keys (ADR-0059): names of
    * the `secrets` list. Naming is placement — no other pod gets a name for being listed here. */
   secrets?: string[];
+  /** The Egress list the `workspace()` states (ADR-0084), as written. Absent → the Instance's. */
+  egress?: EgressEntry[];
   /** The Sandbox Effector's image (ADR-0068). Absent → the Sandbox Image. */
   effector?: { image: string };
   /** How far up an Agent's context files are read (ADR-0062). Absent → `"worktree"`. */
@@ -1098,6 +1101,8 @@ export type WorkspacePod = {
   route: PlacementRoute;
   /** The `workspace()`'s own `secrets: [...]`, as written. */
   secrets: string[];
+  /** The `workspace()`'s own `egress`, as written (ADR-0084). Absent → the Instance's list. */
+  egress?: EgressEntry[];
   /** The model of every bound Agent whose Turn runs in this pod: each Agent below the
    * `workspace()` that is not `workspace: "none"` (those run at the Instance Harness, ADR-0031),
    * down to the next `workspace()`, which is a pod of its own, and every model an Open body below
@@ -1207,6 +1212,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
         path,
         route,
         secrets: [...(parts.secrets ?? [])],
+        ...(parts.egress !== undefined ? { egress: [...parts.egress] } : {}),
         models: [...models].sort(),
         effects: [...effects.values()],
         ...(cuts.size ? { cuts: [...cuts] } : {}),

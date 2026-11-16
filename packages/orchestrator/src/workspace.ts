@@ -75,6 +75,7 @@ import {
 } from "./parts.ts";
 import { actorPath, runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { assertSize, assertUserSeat, userSeatOf, type Size, type UserContainer } from "./size.ts";
+import { parseEgressList, type EgressEntry } from "./egress.ts";
 import {
   attachInputSchema,
   declaresRunInput,
@@ -752,6 +753,19 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
    * call the model itself: such a call is outside the Turn's usage record. Each name once.
    */
   secrets?: readonly string[];
+  // ADR-0084: the Workspace's own list replaces the Instance's, whole. Not a seat of `customize()`:
+  // what a Workspace's code may reach is the Machine author's fact, as its `secrets` are.
+  /**
+   * The Egress list of this Sandbox: the names, and the exact addresses, that its code may reach.
+   * It replaces the Instance's `egress` for this Workspace, whole: an empty list permits no entry.
+   * Default: the Instance's `egress`. The entries have the forms of the Instance's list
+   * ({@link EgressEntry}): `"host"`, `"host:port"`, `"*.example.com"`, `"*"`, `"10.0.0.5:8000"`, and
+   * `{ host, port?, intercept: true }`. A host that a Held secret of this pod is bound to needs no
+   * entry, and port 22 of each SSH Repo that the Workspace binds is permitted with no entry. A host
+   * that jr2 uses from this pod with no secret needs an entry here, because this list replaces the
+   * Instance's: `jr2 up` refuses to converge without it, and prints the entry to add.
+   */
+  egress?: readonly EgressEntry[];
   // The container exists only when an Effect below this `workspace()` is placed there (ADR-0068,
   // ADR-0005). It runs as its own `USER`.
   /**
@@ -906,6 +920,12 @@ export type PermissiveNoSlotWorkspaceOptions = Omit<SandboxOptions<never>, "repo
  * - a `workGroup` that is not a gid: ``workspace(): `workGroup` must be a gid (got <value>)``
  * - a bad `secrets` list: ``workspace(): `secrets` must be a list of distinct names from
  *   jr2.config.ts's `secrets` list (got <value>) — secrets: ["JIRA_TOKEN"] (ADR-0059).``
+ * - a bad `egress` entry: ``workspace(): egress[<i>] "<entry>" <problem> — an entry is "host",
+ *   "host:port", "*.domain", "*", "a.b.c.d:port", or { host, port?, intercept: true } (ADR-0084)``.
+ *   The problem is one of: an IPv6 address, a range, an address with no port, an address that the
+ *   Custodian never dials, an address in 198.18.0.0/15, a URL, a loopback name, a name in
+ *   `jr2.internal`, or a wildcard with `intercept: true`. `jr2 up` checks the list again against
+ *   the Instance's `fence`.
  * - a `projectContext` that is not `"worktree"` or `"workspace"`: ``workspace(): `projectContext` is
  *   "worktree" or "workspace" (got <value>) (ADR-0062).``
  * - a bad `effector`: ``workspace(): `effector` is { image } — a `file:` URL to a docker context
@@ -1186,6 +1206,10 @@ export function workspace(
       );
     }
   }
+  // The Egress list it states (ADR-0084), checked NOW against the Fence's default ranges; `jr2 up`
+  // checks it again against the Instance's own `fence`.
+  const egress = options.egress;
+  if (egress !== undefined) parseEgressList("workspace(): egress", egress);
   const effector = options.effector;
   if (
     effector !== undefined &&
@@ -1226,6 +1250,7 @@ export function workspace(
     ...(options.resources !== undefined ? { resources: options.resources } : {}),
     ...(workGroup !== undefined ? { workGroup } : {}),
     ...(secrets !== undefined ? { secrets: [...secrets] } : {}),
+    ...(egress !== undefined ? { egress: [...egress] } : {}),
     ...(effector !== undefined ? { effector: { image: effector.image } } : {}),
     ...(projectContext !== undefined ? { projectContext } : {}),
   });

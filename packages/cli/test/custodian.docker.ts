@@ -62,6 +62,7 @@ before(async () => {
   orchestrator = await startFakeOrchestrator();
   const manifest: HeldManifest = {
     version: 1,
+    egress: [],
     secrets: [
       { name: "ANTHROPIC_API_KEY", source: { kind: "literal" }, hosts: [bound(a)], headers: ["x-api-key"] },
       { name: "GATEWAY_TOKEN", source: { kind: "literal" }, hosts: [bound(a)], headers: ["authorization"] },
@@ -638,7 +639,7 @@ describe("the Instance Harness's shape (ADR-0076): the control token alone, no f
   before(async () => {
     orch = await startFakeOrchestrator();
     instance = await startCustodian({
-      manifest: { version: 1, secrets: [] },
+      manifest: { version: 1, egress: [], secrets: [] },
       values: {},
       upstreamCas: [],
       orchestrator: { host: lanAddress(), port: orch.port },
@@ -691,7 +692,7 @@ describe("a restart in the same pod (ADR-0076): the socket's folder outlives the
   test("a Custodian that starts where a stopped one left its socket binds the path again and serves", async () => {
     const start = (dir?: string) =>
       startCustodian({
-        manifest: { version: 1, secrets: [] },
+        manifest: { version: 1, egress: [], secrets: [] },
         values: {},
         upstreamCas: [],
         orchestrator: { host: lanAddress(), port: orch.port },
@@ -761,6 +762,7 @@ describe("start-up and the log", () => {
     const bad = await startCustodian({
       manifest: {
         version: 1,
+        egress: [],
         secrets: [{ name: "BROKEN_KEY", source: { kind: "literal" }, hosts: [bound(a)], headers: ["x-api-key"] }],
       },
       values: { BROKEN_KEY: "abc\rdef" },

@@ -1304,6 +1304,7 @@ test("a CR apply that fails writes no token Secret (ADR-0001)", async () => {
 test("a Sandbox's Custodian files are rendered at provision, AFTER the CR, owned by it, and never hold a value (ADR-0059)", async () => {
   const manifest: HeldManifest = {
     version: 1,
+    egress: [],
     secrets: [
       {
         name: "JIRA_TOKEN",
@@ -1629,6 +1630,7 @@ test("a token Secret that fails after its CR fails the provision, and the CR is 
 test("a Workspace's Custodian holds its own pod's Held secrets, found by its workflow and its route (ADR-0059)", async () => {
   const jira: HeldManifest = {
     version: 1,
+    egress: [],
     secrets: [
       {
         name: "JIRA_TOKEN",
@@ -1692,6 +1694,7 @@ test("a Workspace's Custodian holds its own pod's Held secrets, found by its wor
 test("a held secret: the Harness gets Stand-in files and the proxy, the Custodian alone mounts values and leaves (ADR-0059, ADR-0076)", async () => {
   const manifest: HeldManifest = {
     version: 1,
+    egress: [],
     secrets: [
       {
         name: "ANTHROPIC_API_KEY",
@@ -2901,6 +2904,7 @@ function unclassified(mounts: readonly Mount[], home: string | undefined): Mount
 test("each mount of the Harness container is read-only, under /run/jr2, or the Workspace's own (ADR-0076)", async () => {
   const manifest: HeldManifest = {
     version: 1,
+    egress: [],
     secrets: [
       {
         name: "ANTHROPIC_API_KEY",

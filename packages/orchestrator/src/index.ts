@@ -87,4 +87,5 @@ export { chartSchema, chartSchemaFor } from "./chart.ts";
 
 // Config: `jr2.config.ts`, the deployment facts a Machine cannot carry (ADR-0050).
 export { defineConfig } from "./config.ts";
-export type { JR2Config, McpRemoteServer, McpServer, McpStdioServer, RunsConfig } from "./config.ts";
+export type { FenceConfig, JR2Config, McpRemoteServer, McpServer, McpStdioServer, RunsConfig } from "./config.ts";
+export type { EgressEntry, EgressHost } from "./egress.ts";

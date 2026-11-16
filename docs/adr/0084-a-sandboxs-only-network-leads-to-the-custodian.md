@@ -30,16 +30,25 @@ and that holds when Workspace code is root in the Sandbox.
 - **The Egress list states what a Sandbox may reach, and all else is refused.** The Instance's config holds the default
   list (`egress`), and a `workspace()` that states its own list replaces it for that Workspace. An entry is
   `"host[:port]"` or `{ host, port?, intercept: true }`. With no port, the entry permits ports 443 and 80. `*.` at the
-  start permits each name below a domain, for TLS and HTTP only. `["*"]` permits each name. `jr2 up` gives a warning for
-  `["*"]` and for each `*.` entry, because each one is a channel out (Consequences).
+  start permits each name below a domain, for TLS and HTTP only. `["*"]` permits each name, for TLS and HTTP only too,
+  because one placeholder address serves each name of such an entry, and only a TLS name or a `Host` header then says
+  which name was meant. `intercept: true` takes an exact name or address, because the Custodian's leaf names one host.
+  `jr2 up` gives a warning for `["*"]` and for each `*.` entry, because each one is a channel out (Consequences).
 - **A name decides, never an address.** The resolver answers each name on the Egress list with a placeholder address
   that stands for that name in that Sandbox, and it asks no server. It refuses each other name, also when the tool names
   its own DNS server. The Custodian reads the name from the placeholder address, checks that the TLS name or the `Host`
   header agrees, and dials the real name itself. So one rule serves each port and each protocol: TLS, HTTP, SSH, a
   database. An entry for a protocol that has no name in its first bytes must be an exact name.
-- **An address is permitted only as an entry that the author wrote.** An entry can be an exact address with a port, for
-  a host that has no name, such as a model on the local network. A connection to an address that has no such entry is
-  refused, because it has no name. The same applies to a placeholder address that the Sandbox did not get for that name.
+- **An address is permitted only as an entry that the author wrote.** An entry can be an exact IPv4 address with a port,
+  for a host that has no name, such as a model on the local network. A connection to an address that has no such entry
+  is refused, because it has no name. The same applies to a placeholder address that the Sandbox did not get for that
+  name. `jr2 up` refuses an entry that is an IPv6 address, a range, an address that the dial guard refuses (ADR-0059),
+  or an address in the Fence's own ranges.
+- **The Fence has two address ranges of its own.** The segment, where each Harness pod has its address, is
+  198.19.0.0/20, and the placeholder addresses are in 198.18.0.0/16. The Instance's config can move each one (`fence`)
+  to a range that is at least as large and that does not overlap the other or an address that the dial guard refuses,
+  because a network can already use those addresses. No entry can name an address in 198.18.0.0/15, whatever `fence`
+  says.
 - **A host is an Intercepted host or a Tunneled host.** The Custodian ends the TLS of an Intercepted host, so it can
   read the request, swap a Stand-in and check the `Host` header (ADR-0059). These are each host that the Custodian holds
   a secret for, for that Sandbox's Harness or its Sandbox Effector, the name of jr2's control routes, and each host
@@ -56,8 +65,9 @@ and that holds when Workspace code is root in the Sandbox.
 - **jr2's own traffic takes the same path.** The Harness's model calls, its MCP calls, the Menu, the fetch route and the
   Sandbox Effector's calls go through the Fence to the Custodian, as a tool's traffic does. The control routes are a
   name of jr2's own that the resolver answers, and it is an Intercepted host. The push of a Sandbox Effector over SSH is
-  a Tunneled host: jr2 permits port 22 of the host of each SSH Repo that the Workspace binds, and the push key stays in
-  the Effector's container ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
+  a Tunneled host: jr2 permits the port of the url (22 by default) of each SSH Repo that the Workspace binds, and the
+  push key stays in the Effector's container
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
 - **The Orchestrator reaches a Harness pod through the uplink, and nothing else does.** A pod behind a Fence has no
   Service and no pod address, so the Orchestrator's dial to a Harness or to a Sandbox Effector goes to the uplink, which
   carries it to that pod. The uplink accepts such a dial from the Orchestrator only, and the bearer check stays as the

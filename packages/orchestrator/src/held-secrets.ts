@@ -41,6 +41,7 @@ import {
 } from "./names.ts";
 import type { PlacementRoute } from "./parts.ts";
 import { sign } from "./tokens.ts";
+import type { EgressRule } from "./egress.ts";
 
 /** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, each
  * pod's literal held values, the leaves, the CA, and every Effector's (ADR-0068) — the Instance
@@ -169,8 +170,9 @@ export const MECHANISM_ENV: readonly string[] = [
 ];
 
 /** What `jr2 up` placed in one pod; what its composition reads (`held-<pod>.json` in the `jr2-held`
- * ConfigMap). Values never appear here. */
-export type HeldManifest = { version: 1; secrets: HeldBinding[] };
+ * ConfigMap): its Held secrets, and its derived Egress list (ADR-0084), one rule per host and port.
+ * Values never appear here. */
+export type HeldManifest = { version: 1; secrets: HeldBinding[]; egress: EgressRule[] };
 
 /** One held secret, normalized. */
 export type HeldBinding = {
@@ -188,7 +190,7 @@ export type HeldBinding = {
 export type HeldHost = { host: string; port: number; leaf: string };
 
 /** The manifest with nothing held — what `jr2 up` writes when the config holds no secret. */
-export const EMPTY_HELD: HeldManifest = { version: 1, secrets: [] };
+export const EMPTY_HELD: HeldManifest = { version: 1, secrets: [], egress: [] };
 
 /**
  * The file stem of one bound `host:port`'s leaf certificate: 16 hex characters of its sha-256.
@@ -576,7 +578,8 @@ export function heldSecretsOf(
     }
   }
 
-  return { manifest: { version: 1, secrets }, values, warnings };
+  // The Egress list is each pod's own (`egressRulesOf`): the caller derives it per pod.
+  return { manifest: { version: 1, secrets, egress: [] }, values, warnings };
 }
 
 /** R4 and R10: exactly one source, and a literal that can ride a header. */
@@ -790,11 +793,16 @@ export async function readHeldManifest(path: string): Promise<HeldManifest> {
     return bad(`not JSON (${err instanceof Error ? err.message : err})`);
   }
   const manifest = parsed as Partial<HeldManifest>;
-  if (manifest?.version !== 1 || !Array.isArray(manifest.secrets))
-    return bad("expected { version: 1, secrets: [...] }");
+  if (manifest?.version !== 1 || !Array.isArray(manifest.secrets) || !Array.isArray(manifest.egress))
+    return bad("expected { version: 1, secrets: [...], egress: [...] }");
   for (const s of manifest.secrets) {
     if (typeof s?.name !== "string" || !Array.isArray(s.hosts) || !Array.isArray(s.headers)) {
       bad(`an entry is not { name, source, hosts, headers } (got ${JSON.stringify(s)})`);
+    }
+  }
+  for (const r of manifest.egress) {
+    if (typeof r?.host !== "string" || typeof r.port !== "number" || typeof r.intercept !== "boolean") {
+      bad(`an egress rule is not { host, port, match, intercept, from } (got ${JSON.stringify(r)})`);
     }
   }
   return manifest as HeldManifest;

@@ -43,6 +43,13 @@ export default defineConfig({
   // the server is plain HTTP and has no secret, which a server with no `secret` may be. In-cluster
   // the url reads empty, which is safe: the Harness reads what `jr2 up` resolved.
   mcp: { orders: { url: process.env.JR2_FAKE_MCP_URL ?? "" } },
+  // The hosts jr2 reaches with no secret (ADR-0084): each needs an entry, else `jr2 up` refuses.
+  // The endpoint of a profile with no key, by its name, and the fake MCP server, by its address and
+  // its port, which it has no name for. In-cluster the url reads empty, and the entry is left out.
+  egress: [
+    ...(profile.key === undefined ? [new URL(profile.baseUrl).host] : []),
+    ...(process.env.JR2_FAKE_MCP_URL ? [new URL(process.env.JR2_FAKE_MCP_URL).host] : []),
+  ],
   // The key is a Held secret either way (ADR-0059). A catalog provider (`profile.key`) reads a known
   // model key, so the key goes in `secrets` under that name, exactly as a user's instance holds it;
   // a custom provider's key is its `apiKey`.

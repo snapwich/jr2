@@ -116,6 +116,8 @@ import {
   workspaceHeldPod,
   type JR2Config,
   memoryBytes,
+  egressRulesOf,
+  egressText,
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { awaitMounts, digestSecretsOf, mountedDigests, staleLine } from "../mount-wait.ts";
@@ -1641,8 +1643,13 @@ async function resolveHeld(
   // Each pod's own: the bindings of the names it holds and their literal values. Its Custodian's
   // files are rendered by whoever makes the pod — here for the Instance Harness alone; the
   // Orchestrator at provision for a Sandbox, from the same manifest (ADR-0059).
+  // Its Egress list (ADR-0084) joins what the placement read with the hosts its Held secrets are
+  // bound to: each is an Intercepted host, which needs no entry.
   const pods: HeldPodObjects[] = opts.pods.map((plan) => {
-    const own: HeldManifest = { version: 1, secrets: manifest.secrets.filter((b) => plan.names.includes(b.name)) };
+    const secrets = manifest.secrets.filter((b) => plan.names.includes(b.name));
+    const egress = egressRulesOf({ ...plan.egress, held: secrets.flatMap((b) => b.hosts) });
+    activity(io, `${plan.label}: Egress list ${egressText(egress)}`);
+    const own: HeldManifest = { version: 1, secrets, egress };
     const literals = Object.fromEntries(
       own.secrets.filter((b) => b.source.kind === "literal").map((b) => [b.name, values[b.name] as string]),
     );
@@ -2507,7 +2514,24 @@ type Seat = {
   models: readonly string[];
   servers: readonly string[];
   held: HeldManifest["secrets"];
+  egress: HeldManifest["egress"];
 };
+
+/** Each rule of the pods of one class, once, in the order of the pods (ADR-0084). A rule two pods
+ * share with two marks is Intercepted when either intercepts it. */
+function egressOfClass(seats: readonly Seat[]): HeldManifest["egress"] {
+  const out: HeldManifest["egress"] = [];
+  for (const rule of seats.flatMap((s) => s.egress)) {
+    const known = out.find((r) => r.host === rule.host && r.port === rule.port && r.match === rule.match);
+    if (!known) {
+      out.push({ ...rule, from: [...rule.from] });
+      continue;
+    }
+    known.intercept ||= rule.intercept;
+    for (const f of rule.from) if (!known.from.includes(f)) known.from.push(f);
+  }
+  return out;
+}
 
 /**
  * Which providers the preflight checks, and in which pod (ADR-0019, ADR-0059). Every carried model
@@ -2526,11 +2550,12 @@ type Seat = {
 export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readonly HeldPodObjects[]): CheckPod[] {
   const custom = config.harness?.provider;
   const heldOf = (pod: string) => pods.find((p) => p.pod === pod)?.manifest.secrets ?? [];
+  const egressOf = (pod: string) => pods.find((p) => p.pod === pod)?.manifest.egress ?? [];
   const seats: Seat[] = [
     ...walk.workspaces.map((ws) => {
       const pod = workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route });
       const servers = (ws.pod.mcp ?? []).map((m) => m.entry.server);
-      return { pod, sandbox: true, models: ws.pod.models, servers, held: heldOf(pod) };
+      return { pod, sandbox: true, models: ws.pod.models, servers, held: heldOf(pod), egress: egressOf(pod) };
     }),
     ...(walk.instanceHarness
       ? [
@@ -2540,6 +2565,7 @@ export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readon
             models: walk.instanceHarness.models,
             servers: walk.instanceHarness.servers ?? [],
             held: heldOf(INSTANCE_HARNESS_HELD_POD),
+            egress: egressOf(INSTANCE_HARNESS_HELD_POD),
           },
         ]
       : []),
@@ -2576,7 +2602,9 @@ export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readon
       ...(group.placement ? { placement: group.placement } : {}),
       // A class that holds a secret: the first pod's own held set, so the check pod's env (the proxy, the
       // Stand-ins) is that of a pod of the class; the keys the class's other pods hold join it below.
-      manifest: { version: 1, secrets: [...group.seats[0]!.held] },
+      // The Egress list of the class: each rule of a pod of it, so the check reaches what a Turn
+      // there reaches (ADR-0084).
+      manifest: { version: 1, secrets: [...group.seats[0]!.held], egress: egressOfClass(group.seats) },
       providers: [],
       mcp: [],
     };

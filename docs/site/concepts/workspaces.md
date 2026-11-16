@@ -247,12 +247,13 @@ to GitHub, and PyPI, which the Custodian intercepts:
 
 - An entry with no port permits ports 443 and 80.
 - `*.` at the start of a host, such as `*.example.com`, permits each name below that domain, for TLS and HTTP only.
-- `["*"]` permits each name.
+- `["*"]` permits each name, for TLS and HTTP only.
 - `jr2 up` gives a warning for `["*"]` and for each `*.` entry. Each one is a way for data to go out.
-- An exact IP address with a port, such as `"192.168.1.20:8000"`, is an entry too, for a host that has no name.
-- `intercept: true` makes the host an [Intercepted host](../reference/glossary.md#intercepted-host): the Custodian ends
-  its TLS, reads each request and checks its `Host` header. When the Custodian holds no secret for the host, it removes
-  each credential header from the request. A client must trust the CA of the Sandbox to connect to it.
+- An exact IPv4 address with a port, such as `"192.168.1.20:8000"`, is an entry too, for a host that has no name. An
+  IPv6 address, a range, and a loopback or link-local address are refused.
+- `intercept: true` makes an exact name or address an [Intercepted host](../reference/glossary.md#intercepted-host): the
+  Custodian ends its TLS, reads each request and checks its `Host` header. When the Custodian holds no secret for the
+  host, it removes each credential header from the request. A client must trust the CA of the Sandbox to connect to it.
 
 A name decides, and an address only as an entry of its own. The Sandbox asks the Custodian's resolver for each name. The
 resolver answers a permitted name with an address that stands for that name in that Sandbox, and it asks no server. It
@@ -272,8 +273,8 @@ while the Sandbox lives.
 
 jr2's own traffic goes through the Fence too: the Harness's calls to the model, to an MCP server and to the
 Orchestrator, the fetch of a Repo, and the calls of the Sandbox Effector. jr2 permits its own routes. For a `push` over
-ssh, jr2 permits port 22 of the host of each ssh Repo that the Workspace binds. A `git push` that you or an Agent run by
-hand needs an entry for its host, such as `github.com`.
+ssh, jr2 permits the ssh port (22 by default) of the host of each ssh Repo that the Workspace binds. A `git push` that
+you or an Agent run by hand needs an entry for its host, such as `github.com`.
 
 A host with no secret needs an entry, also when jr2 itself uses it: a model endpoint with no key, an MCP server with no
 token, or a url that the Sandbox Effector calls with no secret. `jr2 up` refuses to converge while such a host has no

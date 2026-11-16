@@ -18,6 +18,11 @@
 //   - the Orchestrator gets only the sha-256 digest of the secret of each Hook with a `token`
 //     verifier, in `jr2-hook-digests`, and never the value (ADR-0078).
 //
+// Each Harness pod's Egress list is read here too (ADR-0084), from the same walk: its own or the
+// Instance's `egress`, the hosts its Sandbox Effector sends a secret to, and its SSH Repos. A host
+// that jr2 reaches from the pod with no secret and that the list does not permit is refused here,
+// with the entry to add. The hosts of its Held secrets join the list in `egressRulesOf`.
+//
 // `hosts`, `headers` and `paths` are an entry's BINDING — where a Custodian may put the value — and
 // never its placement. Both is both, and `jr2 up` reports it per pod; an entry nothing names goes
 // nowhere, and `jr2 up` warns.
@@ -27,6 +32,7 @@
 // replaces every match of a secret in what it returns, and a short one would match ordinary text.
 
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import {
   providerClaims,
   sourceOf,
@@ -40,6 +46,19 @@ import { hookParts } from "./hook-kinds/door.ts";
 import { needsASlot } from "./effect.ts";
 import { declaredPushKinds, pushRefusal } from "./git-push.ts";
 import { INSTANCE_HARNESS_HELD_POD } from "./names.ts";
+import { MODEL_KEYS } from "./model-keys.ts";
+import {
+  egressWarnings,
+  fenceRangesOf,
+  httpHostOf,
+  missingEntry,
+  parseEgressList,
+  permits,
+  sshHostOf,
+  type EgressItem,
+  type HostPort,
+  type RequiredHost,
+} from "./egress.ts";
 import { routeText, type CarriedEffect, type WorkspacePod } from "./parts.ts";
 
 /** The shortest Effect secret jr2 accepts (ADR-0068) — the Effector refuses a shorter file at start. */
@@ -108,7 +127,22 @@ export type HeldPodPlan = {
   /** Of `names`, the secrets of the MCP servers its Agents name (ADR-0079), each with those
    * servers. Absent when there is none. */
   byServer?: Record<string, string[]>;
+  /** What its Egress list is made of (ADR-0084), beside the hosts its Held secrets are bound to,
+   * which `heldSecretsOf` resolves: `egressRulesOf` joins the two. */
+  egress: PodEgress;
 };
+
+/**
+ * One Harness pod's Egress list before its Held secrets are resolved (ADR-0084):
+ *
+ * - `list`: the entries it may reach. A Workspace's own `egress`, else the Instance's. The Instance
+ *   Harness has no entry of the author's: it gets the Instance's entries for the hosts that `jr2 up`
+ *   requires, narrowed to each one.
+ * - `effector`: the hosts to which its Sandbox Effector sends a secret: each `http` Effect's target
+ *   that names one, and the host of each HTTPS push. Each is an Intercepted host and needs no entry.
+ * - `repos`: the host and port of each SSH Repo that its Workspace binds, a Tunneled host.
+ */
+export type PodEgress = { list: EgressItem[]; effector: HostPort[]; repos: HostPort[] };
 
 /** One push of a Workspace (ADR-0067, ADR-0051): its Repo Slot, whether it signs, and — for a slot the
  * Machine binds to a url — that url and the `git.credentials` entry it matches. A slot the run or a
@@ -284,6 +318,7 @@ export function secretPlacementsOf(
   for (const { label, name } of redundant) {
     report.push(`${label}: secrets lists ${name}, which its Agents' provider claims already — redundant`);
   }
+  warnings.push(...egressWarningsOf(pods, config));
 
   const instanceSecrets = new Set([
     ...instancePlaced.flatMap((p) => effectSecretsOf(config, p.effect)),
@@ -565,6 +600,8 @@ function heldPodsOf(
   };
   const pods: HeldPodPlan[] = [];
   const redundant: Array<{ label: string; name: string }> = [];
+  const ranges = fenceRangesOf(config.fence);
+  const instanceList = parseEgressList("egress", config.egress ?? [], ranges);
   // The secret of each remote MCP server that the pod's Agents name (ADR-0079), with the servers:
   // the Agent claims it by naming the server, as it claims a model key by naming a model. A name
   // the `mcp` block does not declare is refused by the walk's own check (`mcpRefusals`), not here.
@@ -590,12 +627,14 @@ function heldPodsOf(
     const byProvider = providerClaims(config, ws.pod.models);
     for (const name of ws.pod.secrets) if (byProvider.includes(name)) redundant.push({ label, name });
     const byServer = serverClaims((ws.pod.mcp ?? []).map((m) => m.entry.server));
+    const names = ordered([...ws.pod.secrets, ...byProvider, ...Object.keys(byServer)]);
     const plan: HeldPodPlan = {
       pod: workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route }),
       label,
-      names: ordered([...ws.pod.secrets, ...byProvider, ...Object.keys(byServer)]),
+      names,
       byProvider: ordered(byProvider),
       ...(Object.keys(byServer).length ? { byServer } : {}),
+      egress: workspaceEgressOf(config, ws, label, names, instanceList, ranges),
     };
     if (pods.some((p) => p.pod === plan.pod)) throw sharedPodKey(plan.pod, label);
     pods.push(plan);
@@ -603,15 +642,137 @@ function heldPodsOf(
   if (walk.instanceHarness) {
     const byProvider = ordered(providerClaims(config, walk.instanceHarness.models));
     const byServer = serverClaims(walk.instanceHarness.servers ?? []);
+    const names = ordered([...byProvider, ...Object.keys(byServer)]);
+    const label = "the Instance Harness";
+    // No entry of the author's (ADR-0084): only the hosts it must reach with no secret, each
+    // narrowed from the Instance's entry that permits it.
+    const required = requiredHostsOf(config, walk.instanceHarness.models, walk.instanceHarness.servers ?? [], names);
+    const refusal = missingEntry(label, required, instanceList, "the Instance's egress (jr2.config.ts)");
+    if (refusal) throw new Error(refusal);
+    const list: EgressItem[] = required.map((r) => {
+      const entry = instanceList.find((i) => permits(i, r.host, r.port))!;
+      const exact = entry.match === "name" || entry.match === "address";
+      const match = isIP(r.host) === 0 ? ("name" as const) : ("address" as const);
+      return { at: entry.at, host: r.host, match, ports: [r.port], intercept: exact && entry.intercept };
+    });
     pods.push({
       pod: INSTANCE_HARNESS_HELD_POD,
-      label: "the Instance Harness",
-      names: ordered([...byProvider, ...Object.keys(byServer)]),
+      label,
+      names,
       byProvider,
       ...(Object.keys(byServer).length ? { byServer } : {}),
+      egress: { list, effector: [], repos: [] },
     });
   }
   return { pods, redundant };
+}
+
+/**
+ * A Workspace's Egress list before its Held secrets are resolved (ADR-0084), or the refusal of a
+ * host that it must reach with no secret and that the list does not permit. Its own `egress`
+ * replaces the Instance's whole; it is checked here against the Instance's `fence`.
+ */
+function workspaceEgressOf(
+  config: JR2Config,
+  ws: PlacedWorkspace,
+  label: string,
+  names: readonly string[],
+  instanceList: readonly EgressItem[],
+  ranges: ReturnType<typeof fenceRangesOf>,
+): PodEgress {
+  const own = ws.pod.egress;
+  const list =
+    own === undefined
+      ? [...instanceList]
+      : parseEgressList(`workflow "${ws.workflow}": workspace() egress`, own, ranges);
+  const required = requiredHostsOf(
+    config,
+    ws.pod.models,
+    (ws.pod.mcp ?? []).map((m) => m.entry.server),
+    names,
+  );
+  const effector: HostPort[] = [];
+  const add = (into: HostPort[], h: HostPort) => {
+    if (!into.some((x) => x.host === h.host && x.port === h.port)) into.push(h);
+  };
+  const slots = Object.keys(ws.pod.bindings);
+  for (const effect of ws.pod.effects) {
+    if (effect.kind === "http" && effect.target !== undefined) {
+      const target = { host: effect.target.host, port: effect.target.port };
+      // A target whose Effect names a secret is a bound host of the Sandbox Effector; one with no
+      // secret is a host jr2 uses with none, and needs an entry.
+      if (effect.secrets.length > 0) add(effector, target);
+      else required.push({ ...target, what: `the http Effect "${effect.name}" (no secret)` });
+    }
+    if (effect.kind === "push") {
+      const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
+      const url = slot === undefined ? undefined : ws.pod.bindings[slot];
+      const https = url !== undefined && /^https:\/\//i.test(url) ? httpHostOf(url) : undefined;
+      if (https) add(effector, https);
+    }
+  }
+  const refusal = missingEntry(
+    label,
+    required,
+    list,
+    own === undefined
+      ? "the Instance's egress (jr2.config.ts)"
+      : "its workspace()'s egress, which replaces the Instance's,",
+  );
+  if (refusal) throw new Error(refusal);
+  // Port 22 of each SSH Repo it binds, with no entry: the push of its Sandbox Effector over SSH is
+  // a Tunneled host, and the push key stays in the Effector (ADR-0068, ADR-0084). A slot the run or
+  // a `customize()` binds has no url here.
+  const repos: HostPort[] = [];
+  for (const url of Object.values(ws.pod.bindings)) {
+    const ssh = url === undefined ? undefined : sshHostOf(url);
+    if (ssh) add(repos, ssh);
+  }
+  return { list, effector, repos };
+}
+
+/**
+ * The hosts that jr2 itself reaches from a pod with no secret (ADR-0084): the custom provider's
+ * endpoint when it has no `apiKey`, a `harness.catalog` endpoint when the pod holds no key of that
+ * provider, for a provider that an Agent there names; and the url of each remote MCP server with no
+ * `secret` that an Agent there names. Each needs an entry.
+ */
+function requiredHostsOf(
+  config: JR2Config,
+  models: readonly string[],
+  servers: readonly string[],
+  names: readonly string[],
+): RequiredHost[] {
+  const out: RequiredHost[] = [];
+  const providers = new Set(models.map((m) => m.split("/")[0] ?? ""));
+  const custom = config.harness?.provider;
+  if (custom && providers.has(custom.id) && !custom.apiKey) {
+    const h = httpHostOf(custom.baseUrl);
+    if (h) out.push({ ...h, what: `the "${custom.id}/…" models (harness.provider.baseUrl, with no apiKey)` });
+  }
+  for (const [id, reach] of Object.entries(config.harness?.catalog ?? {})) {
+    if (!providers.has(id) || names.some((n) => MODEL_KEYS[n]?.providers.includes(id))) continue;
+    const h = httpHostOf(reach.baseUrl);
+    if (h) out.push({ ...h, what: `the "${id}/…" models (harness.catalog.${id}.baseUrl, with no key held)` });
+  }
+  for (const server of [...new Set(servers)].sort()) {
+    const declared = config.mcp?.[server];
+    if (declared === undefined || isStdioServer(declared) || declared.secret !== undefined) continue;
+    const h = httpHostOf(declared.url);
+    if (h) out.push({ ...h, what: `the MCP server "${server}" (mcp.${server}.url, with no secret)` });
+  }
+  return out;
+}
+
+/** The warnings of each `"*"` and `*.` entry (ADR-0084): the Instance's list, then each
+ * `workspace()`'s own. */
+function egressWarningsOf(pods: readonly HeldPodPlan[], config: JR2Config): string[] {
+  const out = egressWarnings(parseEgressList("egress", config.egress ?? [], fenceRangesOf(config.fence)));
+  for (const p of pods) {
+    const own = p.egress.list.filter((i) => !i.at.startsWith("egress["));
+    for (const w of egressWarnings(own)) if (!out.includes(w)) out.push(w);
+  }
+  return out;
 }
 
 /** The list by name, refused when a name is listed twice; which Effects name which secret, refused

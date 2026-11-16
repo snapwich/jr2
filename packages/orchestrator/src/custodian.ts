@@ -30,6 +30,7 @@
 import { readFileSync } from "node:fs";
 import type { HarnessEnvVar } from "./config.ts";
 import type { ResourceRequirements } from "./size.ts";
+import { GUARDED_RANGES } from "./egress.ts";
 import {
   CONTROL_TOKEN_NAME,
   CREDENTIAL_HEADERS,
@@ -354,24 +355,6 @@ const ORCHESTRATOR_UNREACHABLE: Json = {
     },
   ],
 };
-
-/**
- * The addresses a tunnel never reaches (ADR-0059's dial guard): loopback, unspecified, link-local
- * (the cloud metadata address among it, and AWS's IPv6 one), and the IPv4-mapped spelling of each.
- * The script refuses a target that SPELLS one; this list refuses a name that RESOLVES to one.
- */
-export const GUARDED_RANGES: ReadonlyArray<readonly [string, number]> = [
-  ["127.0.0.0", 8],
-  ["0.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["::1", 128],
-  ["::", 128],
-  ["fe80::", 10],
-  ["fd00:ec2::254", 128],
-  ["::ffff:127.0.0.0", 104],
-  ["::ffff:0.0.0.0", 104],
-  ["::ffff:169.254.0.0", 112],
-];
 
 /** The dial guard, by resolved address: an RBAC filter after the dynamic forward proxy, on the
  * address that filter saved. A bound target never resolves here, so it never matches. */

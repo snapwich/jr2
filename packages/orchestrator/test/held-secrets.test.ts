@@ -57,6 +57,7 @@ test("a literal is normalized: hosts parsed, the leaf stem derived, default head
   const { manifest, values, warnings } = rules(held({ paths: ["/v1/messages"] }));
   assert.deepEqual(manifest, {
     version: 1,
+    egress: [],
     secrets: [
       {
         name: "GATEWAY_KEY",

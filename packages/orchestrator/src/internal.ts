@@ -33,6 +33,7 @@ export * from "./size.ts";
 export * from "./customize.ts";
 export * from "./ambient.ts";
 export * from "./config.ts";
+export * from "./egress.ts";
 export * from "./repo-identity.ts";
 export * from "./pool.ts";
 export * from "./setup.ts";

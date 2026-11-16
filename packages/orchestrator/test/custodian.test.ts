@@ -24,6 +24,7 @@ const ORCH = { host: "jr2-orchestrator.ns.svc", port: 4000 };
 
 const TWO: HeldManifest = {
   version: 1,
+  egress: [],
   secrets: [
     {
       name: "ANTHROPIC_API_KEY",
@@ -358,7 +359,7 @@ test("a pod's Harness gets a Stand-in file for its own manifest's names only, an
   // provider's finds that provider's key absent, in a Workspace and the Instance Harness alike —
   // never a Stand-in that fails with 401. And no Stand-in rides env at all: a child's env is the
   // Harness's to build (ADR-0076).
-  const anthropicOnly: HeldManifest = { version: 1, secrets: [TWO.secrets[0]!] };
+  const anthropicOnly: HeldManifest = { version: 1, egress: [], secrets: [TWO.secrets[0]!] };
   for (const pod of [
     { pod: "ws-0123456789abcdef", config: "ws-1-custodian", credentials: { secret: "ws-1-token" }, sandbox: "ws-1" },
     { pod: "instance", config: "jr2-held-custodian", credentials: { secret: "jr2-instance-harness-credentials" } },
@@ -396,7 +397,7 @@ test("the granted secrets ride the Harness env by name, and only names its manif
 
 test("reads: a Custodian reads the Instance's objects by default, and the check pod's own copies by name", () => {
   const literal = (name: string) => ({ ...TWO.secrets[0]!, name, source: { kind: "literal" as const } });
-  const held: HeldManifest = { version: 1, secrets: [literal("ANTHROPIC_API_KEY")] };
+  const held: HeldManifest = { version: 1, egress: [], secrets: [literal("ANTHROPIC_API_KEY")] };
   const opts = { image: "envoy:c1", caBundle: false, pod: "instance", config: "c", credentials: { secret: "t" } };
   const names = (c: ReturnType<typeof custodianComposition>) =>
     JSON.stringify(c.volumes)
