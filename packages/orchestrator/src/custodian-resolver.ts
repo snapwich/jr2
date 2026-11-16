@@ -38,6 +38,9 @@ export const RESOLVER_UDP_SIZE = 1232;
  * asks over TCP only after a truncated answer, or when it is told to, so a few are enough. */
 export const RESOLVER_TCP_CONNECTIONS = 4;
 const TCP_IDLE_MS = 10_000;
+/** How long a connection stays after its last answer and FIN, for the client to read them; then the
+ * resolver resets it. */
+const TCP_LAST_ANSWER_MS = 1_000;
 /** The queries that one TCP connection gets answers for; then the resolver closes it. */
 export const RESOLVER_TCP_QUERIES = 64;
 /** The refusal lines that one slot writes in one second; the others are counted (`refusalLog`). */
@@ -372,7 +375,8 @@ export function custodianResolver(opts: CustodianResolverOptions): CustodianReso
 
   const serveTcp = (slot: number): Promise<void> =>
     new Promise((resolve, reject) => {
-      const server = createServer((conn) => {
+      // Half-open: a client's FIN does not close the socket, so tcpConnection closes it with a reset.
+      const server = createServer({ allowHalfOpen: true }, (conn) => {
         open.add(conn);
         conn.once("close", () => open.delete(conn));
         tcpConnection(conn, (q) => answer(slot, q, "tcp"));
@@ -381,6 +385,9 @@ export function custodianResolver(opts: CustodianResolverOptions): CustodianReso
       server.once("error", reject);
       server.listen(portOf(slot), host, () => {
         server.off("error", reject);
+        // A failed accept loses that connection only, as a failed send of the UDP socket does: with
+        // no listener, an `error` ends the process, which serves each slot of the node.
+        server.on("error", () => {});
         tcp.set(slot, server);
         resolve();
       });
@@ -466,21 +473,40 @@ export function refusalLog(log: (line: string) => void): {
   };
 }
 
+/** The part of a `net.Socket` that `tcpConnection` uses, so that a test can give it a fake. */
+export type ResolverConn = Pick<
+  Socket,
+  "setTimeout" | "on" | "write" | "end" | "resetAndDestroy" | "destroyed" | "writableEnded" | "writableLength"
+>;
+
 /** One TCP connection: each message has a 2-byte length (RFC 1035 4.2.2), and each query gets its
- * answer in order. The resolver closes a connection (RFC 7766 permits it):
+ * answer in order. The server is half-open (`allowHalfOpen`), so each close is this function's.
  *
- * - after it answers `RESOLVER_TCP_QUERIES` queries;
- * - when the client does not read its answers: when the socket cannot take an answer at once, the
- *   connection is destroyed, not paused;
- * - when the connection is idle for 10 s, or sends a message that the resolver does not answer.
+ * The resolver closes a connection with a reset (`resetAndDestroy`, SO_LINGER 0), never with a plain
+ * close. A plain close leaves each answer that the client has not taken, and the FIN, with the
+ * kernel, in a socket that no process owns and that is charged to the memory of the `control`
+ * container. A client that keeps its end open and reads nothing keeps that socket for minutes, and
+ * the bound on connections does not count it. A reset drops the answers that the kernel holds. The
+ * resolver resets a connection (RFC 7766 permits a close):
+ *
+ * - at once when the kernel does not take an answer: the client does not read;
+ * - `TCP_LAST_ANSWER_MS` after the answer to the `RESOLVER_TCP_QUERIES`-th query, which goes with a
+ *   FIN, so a client that reads gets each answer and the end first;
+ * - when the client sends its FIN, when the connection is idle for 10 s, and when the client sends
+ *   a message that the resolver does not answer.
  *
  * The resolver reads each chunk when it comes, and keeps at most that chunk and one message that is
- * not complete (64 KiB). So a connection never keeps the kernel's buffers full: the receive buffer is
- * read at once, and the send buffer holds at most the answers to `RESOLVER_TCP_QUERIES` queries. A
- * slot holds at most `RESOLVER_TCP_CONNECTIONS` connections. */
-function tcpConnection(conn: Socket, answer: (query: Buffer) => Buffer | undefined): void {
-  conn.setTimeout(TCP_IDLE_MS, () => conn.destroy());
-  conn.on("error", () => conn.destroy());
+ * not complete (64 KiB). So the receive buffer is read at once; the kernel holds answers only for a
+ * connection that is open; and a slot holds at most `RESOLVER_TCP_CONNECTIONS` connections, each
+ * counted until its reset. */
+export function tcpConnection(conn: ResolverConn, answer: (query: Buffer) => Buffer | undefined): void {
+  const reset = () => {
+    if (!conn.destroyed) conn.resetAndDestroy();
+  };
+  conn.setTimeout(TCP_IDLE_MS, reset);
+  conn.on("end", reset);
+  // The socket is broken: nothing is left to send.
+  conn.on("error", reset);
   const frames = tcpFrames();
   let answered = 0;
   conn.on("data", (chunk: Buffer) => {
@@ -493,17 +519,18 @@ function tcpConnection(conn: Socket, answer: (query: Buffer) => Buffer | undefin
         reply = undefined;
       }
       if (!reply) {
-        conn.destroy();
+        reset();
         return;
       }
       const framed = Buffer.concat([u16(reply.length), reply]);
       if (++answered >= RESOLVER_TCP_QUERIES) {
-        // The last answer, then a close; the handle goes once the answer is with the kernel.
-        conn.end(framed, () => conn.destroy());
+        conn.end(framed);
+        setTimeout(reset, TCP_LAST_ANSWER_MS).unref();
         return;
       }
-      if (!conn.write(framed)) {
-        conn.destroy();
+      conn.write(framed);
+      if (conn.writableLength > 0) {
+        reset();
         return;
       }
     }

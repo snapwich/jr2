@@ -317,9 +317,9 @@ These limits follow from the Fence:
   pods. Such a connection is closed with no text and no log line, and a held connection is logged only when it closes.
   Nothing leaks.
 - The Harness pods of an Instance on one node also share the Custodian's resolver. A Sandbox can have at most 4 DNS
-  connections over TCP open to it. The resolver closes a connection after 64 answers, and at once when the client does
-  not read its answer. A DNS client asks over TCP only after a truncated answer, so an ordinary tool does not see these
-  bounds.
+  connections over TCP open to it. The resolver closes a connection with a reset after 64 answers, after 10 seconds with
+  no message, and at once when the client does not read its answers. A DNS client asks over TCP only after a truncated
+  answer, so an ordinary tool does not see these bounds.
 
 ## The pod
 

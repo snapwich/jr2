@@ -158,11 +158,14 @@ and that holds when Workspace code is root in the Sandbox.
   has its own bound and is not stopped (ADR-0059). It leaks nothing.
 - **The Harness pods of an Instance on a node share the resolver.** One process of the Custodian pod serves the resolver
   of each slot on the node and makes each slot's rules live. So each part of the resolver that a Sandbox can fill has a
-  bound for each slot: a slot holds at most 4 TCP connections; the resolver closes a connection after 64 answers, and at
-  once when its client does not read an answer, so that no connection keeps the kernel's buffers of the process full; a
-  UDP query from port 0 gets no answer; and a failed answer loses that answer only. A Sandbox that holds its 4
-  connections stops only its own lookups over TCP. While the process is down, each Harness pod of the Instance on that
-  node gets no answer to a lookup, and no Sandbox there becomes live. It fails closed.
+  bound for each slot: a slot holds at most 4 TCP connections; the resolver closes a connection with a reset 1 s after
+  the 64th answer (which goes with a FIN), after 10 s with no message, when the client sends its FIN, and at once when
+  the kernel does not take an answer, so that a closed connection leaves no answer with the kernel (after a plain close,
+  a client that does not read keeps those answers in the memory of the process, and the bound of 4 does not count them);
+  a UDP query from port 0 gets no answer; and a failed answer or a failed accept loses that answer or that connection
+  only. A Sandbox that holds its 4 connections stops only its own lookups over TCP. While the process is down, each
+  Harness pod of the Instance on that node gets no answer to a lookup, and no Sandbox there becomes live. It fails
+  closed.
 - **The Custodian is one point for all Sandboxes of an Instance.** While it is down, no Sandbox reaches anything, and no
   Turn makes a model call. It fails closed.
 - **The cluster needs a second pod network and a rule set on each Sandbox node.** On Cilium, the node's config must let

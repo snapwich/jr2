@@ -4,7 +4,8 @@
 
 import assert from "node:assert/strict";
 import { Resolver } from "node:dns/promises";
-import { connect } from "node:net";
+import { EventEmitter } from "node:events";
+import { connect, Server } from "node:net";
 import { test } from "node:test";
 import { renderSlot, type ResolverTable } from "../src/custodian-rules.ts";
 import {
@@ -17,8 +18,10 @@ import {
   RESOLVER_TCP_QUERIES,
   RESOLVER_UDP_SIZE,
   RULES_NAME,
+  tcpConnection,
   tcpFrames,
   udpAnswer,
+  type ResolverConn,
 } from "../src/custodian-resolver.ts";
 import { resolverTables } from "../src/custodian-control.ts";
 import { JR2_CUSTODIAN_NAME } from "../src/custodian.ts";
@@ -483,7 +486,7 @@ test("a TCP connection gets answers for RESOLVER_TCP_QUERIES queries, then the r
   }
 });
 
-test("a TCP client that reads no answer is closed within 2 s, and the other slot and its own slot over UDP still answer", async () => {
+test("a TCP client that reads no answer is reset after RESOLVER_TCP_QUERIES answers, within 2 s, and the other slot and its own slot over UDP still answer", async () => {
   const tables = resolverTables();
   tables.set(TABLE);
   tables.set({ ...TABLE, slot: 4, owner: "sandbox=ws-4" });
@@ -498,8 +501,9 @@ test("a TCP client that reads no answer is closed within 2 s, and the other slot
     conn.on("close", () => (closed ??= "close"));
     const framed = framedQuery(query("github.com", { id: 7 }));
     const batch = Buffer.concat(Array.from({ length: (65536 / framed.length) | 0 }, () => framed));
-    // Send until the connection is closed. Before the fix, the resolver kept a client that reads
-    // nothing open, with the kernel's buffers full, until the idle limit (10 s).
+    // Send until the connection is closed. On the loopback the kernel takes each answer, so the
+    // close is the reset after the answer to the RESOLVER_TCP_QUERIES-th query. The fake socket's
+    // test below shows the reset when the kernel does not take an answer.
     const start = Date.now();
     while (closed === undefined && Date.now() - start < 2000) {
       if (!conn.write(batch)) {
@@ -524,6 +528,151 @@ test("a TCP client that reads no answer is closed within 2 s, and the other slot
     assert.equal(address(parse(answers[0]!).answers[0]!), "198.18.0.2");
   } finally {
     conn.destroy();
+    await server.close();
+  }
+});
+
+/** A fake of the part of a socket that `tcpConnection` uses: it records each write, end and close.
+ * `untaken` is what `writableLength` says after a write: the bytes that the kernel did not take. */
+class FakeConn extends EventEmitter {
+  destroyed = false;
+  writableEnded = false;
+  writableLength = 0;
+  untaken = 0;
+  idle?: () => void;
+  calls: string[] = [];
+  written: Buffer[] = [];
+  setTimeout(_ms: number, cb?: () => void) {
+    this.idle = cb;
+    return this;
+  }
+  write(chunk: Buffer) {
+    this.written.push(chunk);
+    this.calls.push("write");
+    this.writableLength = this.untaken;
+    return true;
+  }
+  end(chunk?: Buffer) {
+    if (chunk) this.written.push(chunk);
+    this.calls.push("end");
+    this.writableEnded = true;
+    return this;
+  }
+  resetAndDestroy() {
+    this.calls.push("reset");
+    this.destroyed = true;
+    return this;
+  }
+  destroy() {
+    this.calls.push("destroy");
+    this.destroyed = true;
+    return this;
+  }
+}
+
+/** A fake connection served by `tcpConnection` with TABLE. */
+function fakeConn(): FakeConn {
+  const conn = new FakeConn();
+  tcpConnection(conn as unknown as ResolverConn, (q) => resolverAnswer(TABLE, q, "tcp").reply);
+  return conn;
+}
+
+test("each close of a TCP connection is a reset, so the kernel keeps no answer of a closed connection: idle, the client's FIN, a message with no answer, an answer the kernel does not take", () => {
+  const framed = framedQuery(query("github.com", { id: 1 }));
+
+  const idle = fakeConn();
+  idle.idle!();
+  assert.deepEqual(idle.calls, ["reset"], "the idle limit resets");
+
+  const fin = fakeConn();
+  fin.emit("data", framed);
+  fin.emit("end");
+  assert.deepEqual(fin.calls, ["write", "reset"], "the client's FIN resets, after the answer");
+
+  const broken = fakeConn();
+  broken.emit("data", Buffer.concat([framed, framedQuery(Buffer.alloc(3)), framed]));
+  assert.deepEqual(broken.calls, ["write", "reset"], "a message with no answer resets, and nothing after it is read");
+
+  // The kernel does not take the first answer: the client does not read. Before this reset, such a
+  // connection stayed until the 64th answer or the idle limit.
+  const full = fakeConn();
+  full.untaken = 10;
+  full.emit("data", Buffer.concat(Array.from({ length: 5 }, () => framed)));
+  assert.deepEqual(full.calls, ["write", "reset"], "an answer the kernel does not take resets at once");
+  full.emit("data", framed);
+  assert.deepEqual(full.calls, ["write", "reset"], "a reset connection answers nothing more");
+
+  const err = fakeConn();
+  err.emit("error", new Error("EPIPE"));
+  assert.deepEqual(err.calls, ["reset"]);
+});
+
+test("the answer to the RESOLVER_TCP_QUERIES-th query goes with a FIN, and the connection is reset 1 s later if the client keeps it", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const conn = fakeConn();
+  const many = Buffer.concat(
+    Array.from({ length: RESOLVER_TCP_QUERIES + 3 }, (_, i) => framedQuery(query("github.com", { id: i }))),
+  );
+  conn.emit("data", many);
+  assert.deepEqual(conn.calls, [...Array<string>(RESOLVER_TCP_QUERIES - 1).fill("write"), "end"]);
+  assert.deepEqual(
+    conn.written.map((w) => w.readUInt16BE(2)),
+    Array.from({ length: RESOLVER_TCP_QUERIES }, (_, i) => i),
+    "each answer up to the bound, in order, the last one with the FIN",
+  );
+  t.mock.timers.tick(999);
+  assert.equal(conn.calls.at(-1), "end", "the client has 1 s to read the last answers");
+  t.mock.timers.tick(1);
+  assert.equal(conn.calls.at(-1), "reset", "then the kernel keeps nothing of the connection");
+  assert.equal(conn.calls.includes("destroy"), false, "no plain close");
+});
+
+test("a TCP client that sends its queries and its FIN gets each answer before the reset", async () => {
+  const tables = resolverTables();
+  tables.set(TABLE);
+  const server = custodianResolver({ tables, log: () => {}, host: "127.0.0.1", slots: [3], port: () => 0 });
+  await server.listen();
+  try {
+    const answers = await new Promise<Buffer[]>((resolve) => {
+      const conn = connect({ port: server.ports(3).tcp, host: "127.0.0.1", allowHalfOpen: true });
+      const frames = tcpFrames();
+      const got: Buffer[] = [];
+      conn.on("connect", () =>
+        conn.end(Buffer.concat([1, 2, 3].map((id) => framedQuery(query("github.com", { id }))))),
+      );
+      conn.on("data", (chunk: Buffer) => got.push(...frames(chunk)));
+      conn.on("error", () => {});
+      conn.on("close", () => resolve(got));
+    });
+    assert.deepEqual(
+      answers.map((a) => a.readUInt16BE(0)),
+      [1, 2, 3],
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("an error of a slot's TCP server (a failed accept) does not end the process, and the slot still answers", async (t) => {
+  const servers: Server[] = [];
+  const listen = Server.prototype.listen;
+  t.mock.method(Server.prototype, "listen", function (this: Server, ...args: unknown[]) {
+    servers.push(this);
+    return (listen as (...a: unknown[]) => Server).apply(this, args);
+  });
+  const tables = resolverTables();
+  tables.set(TABLE);
+  const server = custodianResolver({ tables, log: () => {}, host: "127.0.0.1", slots: [3], port: () => 0 });
+  await server.listen();
+  t.mock.restoreAll();
+  try {
+    assert.equal(servers.length, 1);
+    assert.doesNotThrow(() =>
+      servers[0]!.emit("error", Object.assign(new Error("accept EPROTO"), { code: "EPROTO", syscall: "accept" })),
+    );
+    const { answers } = await tcpExchange(server.ports(3).tcp, framedQuery(query("github.com", { id: 4 })), 1);
+    assert.equal(address(parse(answers[0]!).answers[0]!), "198.18.0.2");
+  } finally {
     await server.close();
   }
 });
