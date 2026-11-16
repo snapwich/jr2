@@ -19,7 +19,8 @@
 // answered (version 0, no option); another version gets BADVERS.
 //
 // It asks no server: nothing in this module sends a query on. A log line names the slot, the Harness
-// pod, the name (each byte outside a host name's letters printed as `\ddd`) and the reason.
+// pod, the name (each byte outside a host name's letters printed as `\ddd`) and the reason. A slot
+// writes at most `REFUSAL_LINES` such lines a second, and then one line with the count of the others.
 
 import { createSocket, type Socket as UdpSocket } from "node:dgram";
 import { createServer, type Server, type Socket } from "node:net";
@@ -36,6 +37,8 @@ export const RESOLVER_UDP_SIZE = 1232;
 /** The TCP connections that one slot's resolver holds at once, and how long one may be idle. */
 export const RESOLVER_TCP_CONNECTIONS = 16;
 const TCP_IDLE_MS = 10_000;
+/** The refusal lines that one slot writes in one second; the others are counted (`refusalLog`). */
+export const REFUSAL_LINES = 20;
 
 /** The resolver tables that it answers from: the control process's (`resolverTables`). */
 export type ResolverSource = { get(slot: number): ResolverTable | undefined };
@@ -336,14 +339,15 @@ export function custodianResolver(opts: CustodianResolverOptions): CustodianReso
   const udp = new Map<number, UdpSocket>();
   const tcp = new Map<number, Server>();
   const open = new Set<Socket>();
+  const refusals = refusalLog(log);
+  let second: ReturnType<typeof setInterval> | undefined;
 
   const answer = (slot: number, query: Buffer, transport: "udp" | "tcp"): Buffer | undefined => {
     const table = opts.tables.get(slot);
     const a = resolverAnswer(table, query, transport);
     if (a.refusal) {
-      const who = table ? ` ${table.owner}` : "";
       const r = a.refusal;
-      log(`jr2.custodian dns action=refuse slot=${slot}${who} name=${r.name} type=${r.type} reason=${r.reason}`);
+      refusals.refuse(slot, table?.owner, `name=${r.name} type=${r.type} reason=${r.reason}`);
     }
     return a.reply;
   };
@@ -387,6 +391,8 @@ export function custodianResolver(opts: CustodianResolverOptions): CustodianReso
         await serveUdp(slot);
         await serveTcp(slot);
       }
+      second = setInterval(() => refusals.second(), 1000);
+      second.unref();
     },
     ports(slot) {
       const u = udp.get(slot)?.address();
@@ -395,6 +401,8 @@ export function custodianResolver(opts: CustodianResolverOptions): CustodianReso
       return { udp: u.port, tcp: t.port };
     },
     async close() {
+      clearInterval(second);
+      refusals.second();
       for (const s of udp.values()) s.close();
       const closed = [...tcp.values()].map((s) => new Promise<void>((resolve) => s.close(() => resolve())));
       for (const conn of open) conn.destroy();
@@ -405,23 +413,74 @@ export function custodianResolver(opts: CustodianResolverOptions): CustodianReso
   };
 }
 
+/** The refusal lines of the resolver, with a bound for each slot: at most `REFUSAL_LINES` lines in
+ * one second. Each refusal above the bound is counted, and `second()` (called each second) writes one
+ * line with the count (`suppressed=N`) for each slot that had one. So one Sandbox that asks for many
+ * names fills the log with at most `REFUSAL_LINES + 1` lines a second, and the lines of the other
+ * slots and of the control process stay in it. */
+export function refusalLog(log: (line: string) => void): {
+  refuse(slot: number, owner: string | undefined, fields: string): void;
+  second(): void;
+} {
+  const slots = new Map<number, { lines: number; suppressed: number; owner: string | undefined }>();
+  const head = (slot: number, owner: string | undefined) =>
+    `jr2.custodian dns action=refuse slot=${slot}${owner ? ` ${owner}` : ""}`;
+  return {
+    refuse(slot, owner, fields) {
+      let s = slots.get(slot);
+      if (!s) slots.set(slot, (s = { lines: 0, suppressed: 0, owner }));
+      s.owner = owner;
+      if (s.lines < REFUSAL_LINES) {
+        s.lines++;
+        log(`${head(slot, owner)} ${fields}`);
+      } else {
+        s.suppressed++;
+      }
+    },
+    second() {
+      for (const [slot, s] of slots) {
+        if (s.suppressed > 0) log(`${head(slot, s.owner)} suppressed=${s.suppressed}`);
+      }
+      slots.clear();
+    },
+  };
+}
+
 /** One TCP connection: each message has a 2-byte length (RFC 1035 4.2.2), and each query gets its
  * answer in order. A connection idle for 10 s, or one that sends a message the resolver does not
- * answer, is closed. */
+ * answer, is closed.
+ *
+ * A client that does not read its answers stops being read: when the socket's buffer is full, the
+ * connection pauses, and the queries of the last chunk wait until the client reads. So one
+ * connection holds at most one chunk of queries and one buffer of answers, and the kernel's window
+ * stops the client's next queries. A paused connection has no activity, so the idle limit closes it. */
 function tcpConnection(conn: Socket, answer: (query: Buffer) => Buffer | undefined): void {
   conn.setTimeout(TCP_IDLE_MS, () => conn.destroy());
   conn.on("error", () => conn.destroy());
   const frames = tcpFrames();
-  conn.on("data", (chunk: Buffer) => {
-    for (const query of frames(chunk)) {
-      const reply = answer(query);
+  let queries: Buffer[] = [];
+  let next = 0;
+  const pump = (): void => {
+    while (next < queries.length) {
+      const reply = answer(queries[next++]!);
       if (!reply) {
         conn.destroy();
         return;
       }
-      conn.write(Buffer.concat([u16(reply.length), reply]));
+      if (!conn.write(Buffer.concat([u16(reply.length), reply]))) {
+        conn.pause();
+        return; // 'drain' calls pump again
+      }
     }
+    queries = [];
+    next = 0;
+    if (conn.isPaused()) conn.resume();
+  };
+  conn.on("data", (chunk: Buffer) => {
+    for (const query of frames(chunk)) queries.push(query);
+    if (!conn.writableNeedDrain) pump();
   });
+  conn.on("drain", pump);
 }
 
 /** The DNS messages in a TCP stream, chunk by chunk: each chunk gives the messages it completes. */

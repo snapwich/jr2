@@ -10,6 +10,8 @@ import { renderSlot, type ResolverTable } from "../src/custodian-rules.ts";
 import {
   custodianResolver,
   nameText,
+  REFUSAL_LINES,
+  refusalLog,
   resolverAnswer,
   RESOLVER_UDP_SIZE,
   RULES_NAME,
@@ -424,4 +426,98 @@ test("served on the loopback: Node's stub resolver gets A, NODATA for AAAA, NXDO
   } finally {
     await server.close();
   }
+});
+
+test("a TCP client that reads no answer stops being read, the other slots still answer, and each query is answered once it reads", async () => {
+  const tables = resolverTables();
+  tables.set(TABLE);
+  tables.set({ ...TABLE, slot: 4, owner: "sandbox=ws-4" });
+  const server = custodianResolver({ tables, log: () => {}, host: "127.0.0.1", slots: [3, 4], port: () => 0 });
+  await server.listen();
+  const conn = connect(server.ports(3).tcp, "127.0.0.1");
+  try {
+    await new Promise<void>((resolve, reject) => conn.once("connect", resolve).once("error", reject));
+    conn.pause(); // read no answer
+    const q = query("github.com", { id: 7 });
+    const framed = Buffer.concat([Buffer.from([q.length >> 8, q.length & 255]), q]);
+    const batch = Buffer.concat(Array.from({ length: (65536 / framed.length) | 0 }, () => framed));
+    // Send until the resolver stops taking them: no 'drain' within 1.5 s. Without a bound, it
+    // takes each batch and holds each answer, so the client sends the whole 32 MB.
+    const LIMIT = 32 * 1024 * 1024;
+    let sent = 0;
+    let stalled = false;
+    while (sent < LIMIT && !stalled) {
+      sent += batch.length;
+      if (!conn.write(batch)) {
+        stalled = !(await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), 1500);
+          conn.once("drain", () => (clearTimeout(timer), resolve(true)));
+        }));
+      }
+    }
+    assert.ok(stalled, `the resolver took all ${sent} bytes of queries from a client that reads no answer`);
+    assert.ok(sent < LIMIT / 2, `the resolver took ${sent} bytes before it stopped`);
+
+    // The other slot answers, over UDP and TCP, and so does this slot over UDP.
+    const other = new Resolver({ timeout: 2000, tries: 1 });
+    other.setServers([`127.0.0.1:${server.ports(4).udp}`]);
+    assert.deepEqual(await other.resolve4("github.com"), ["198.18.0.2"]);
+    const same = new Resolver({ timeout: 2000, tries: 1 });
+    same.setServers([`127.0.0.1:${server.ports(3).udp}`]);
+    assert.deepEqual(await same.resolve4("github.com"), ["198.18.0.2"]);
+    const tcpAnswer = await new Promise<Buffer>((resolve, reject) => {
+      const c = connect(server.ports(4).tcp, "127.0.0.1");
+      const frames = tcpFrames();
+      c.on("connect", () => c.write(framed));
+      c.on("data", (chunk: Buffer) => {
+        const [a] = frames(chunk);
+        if (a) {
+          c.end();
+          resolve(a);
+        }
+      });
+      c.on("error", reject);
+    });
+    assert.equal(address(parse(tcpAnswer).answers[0]!), "198.18.0.2");
+
+    // When the client reads, the paused queries are answered, each one, in order.
+    const expected = sent / framed.length;
+    const frames = tcpFrames();
+    let got = 0;
+    await new Promise<void>((resolve, reject) => {
+      conn.on("data", (chunk: Buffer) => {
+        for (const a of frames(chunk)) {
+          assert.equal(a.readUInt16BE(0), 7);
+          if (++got === expected) resolve();
+        }
+      });
+      conn.on("error", reject);
+      conn.resume();
+    });
+    assert.equal(got, expected);
+  } finally {
+    conn.destroy();
+    await server.close();
+  }
+});
+
+test("refusal lines: at most REFUSAL_LINES for each slot in one second, then one line with the count of the others", () => {
+  const lines: string[] = [];
+  const log = refusalLog((l) => lines.push(l));
+  for (let i = 0; i < REFUSAL_LINES + 5; i++) log.refuse(3, "sandbox=ws-3", `name=n${i}.test type=A reason=no-entry`);
+  log.refuse(4, undefined, "name=x.test type=A reason=no-rules");
+  assert.equal(lines.length, REFUSAL_LINES + 1);
+  assert.equal(lines[0], "jr2.custodian dns action=refuse slot=3 sandbox=ws-3 name=n0.test type=A reason=no-entry");
+  assert.equal(lines.at(-1), "jr2.custodian dns action=refuse slot=4 name=x.test type=A reason=no-rules");
+  log.second();
+  assert.equal(lines.at(-1), "jr2.custodian dns action=refuse slot=3 sandbox=ws-3 suppressed=5");
+  assert.equal(lines.length, REFUSAL_LINES + 2, "a slot under the bound writes no count line");
+  // A new second: the bound starts again, and a second with nothing suppressed writes no count.
+  log.refuse(3, "sandbox=ws-3", "name=again.test type=A reason=no-entry");
+  log.second();
+  assert.equal(
+    lines.at(-1),
+    "jr2.custodian dns action=refuse slot=3 sandbox=ws-3 name=again.test type=A reason=no-entry",
+  );
+  assert.equal(lines.length, REFUSAL_LINES + 3);
 });

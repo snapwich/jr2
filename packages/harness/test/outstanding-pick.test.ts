@@ -677,11 +677,15 @@ test("over a real socket: a refused connection never reached the Orchestrator; a
   await once(server, "listening");
   const port = (server.address() as AddressInfo).port;
   // The surface is read in process; the pick's POST goes over a real socket to `target`.
-  const pickTo = async (target: string, signal?: AbortSignal) => {
+  // `onHeaders` runs when the client has read the answer's status and headers.
+  const pickTo = async (target: string, signal?: AbortSignal, onHeaders?: () => void) => {
     const fetch = ((input: string | URL | Request, init?: RequestInit) =>
       String(input).endsWith("/surface")
         ? Promise.resolve(Response.json(SURFACE))
-        : globalThis.fetch(`${target}${new URL(String(input)).pathname}`, init)) as typeof globalThis.fetch;
+        : globalThis.fetch(`${target}${new URL(String(input)).pathname}`, init).then((res) => {
+            onHeaders?.();
+            return res;
+          })) as typeof globalThis.fetch;
     return (await readMenu(opts(fetch), "run-1/coder"))!.menu[0]!.pick({}, signal);
   };
   const live = `http://127.0.0.1:${port}`;
@@ -696,15 +700,15 @@ test("over a real socket: a refused connection never reached the Orchestrator; a
       /^It is not known whether this pick reached the workflow: the call to `mcp__jr2__run_tests` failed before the workflow answered \(/,
     );
 
-    // A 200 whose body the Turn's abort cuts: the Orchestrator took the pick.
+    // A 200 whose body the Turn's abort cuts: the Orchestrator took the pick. The Turn ends when
+    // the client has read the status, not after a fixed time, so a slow host cannot end it first.
     const ended = new AbortController();
     handle = (req, res) => {
       req.resume();
       res.writeHead(200, { "content-type": "application/json" });
       res.write('{"delivered":');
-      setTimeout(() => ended.abort(), 20);
     };
-    assert.equal(await pickTo(live, ended.signal), unreadAnswerResult("mcp__jr2__run_tests"));
+    assert.equal(await pickTo(live, ended.signal, () => ended.abort()), unreadAnswerResult("mcp__jr2__run_tests"));
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

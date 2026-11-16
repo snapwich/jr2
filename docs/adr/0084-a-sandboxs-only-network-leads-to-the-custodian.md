@@ -87,8 +87,10 @@ and that holds when Workspace code is root in the Sandbox.
   text, with jr2's reason. A Tunneled connection that the Custodian refuses after the TLS name, because of the address
   that the name resolves to or because the name is refused there, is closed with no text: the client's TLS has started,
   and only the log line gives the reason. The Custodian logs each refusal with the Sandbox, the name, the port and the
-  reason. A refusal before a name is known names the address dialed and the TLS name instead (ADR-0059). This log
-  replaces the flow log of the cluster's network.
+  reason. A refusal before a name is known names the address dialed and the TLS name instead (ADR-0059). The resolver
+  writes at most 20 refusal lines a second for each Sandbox, and then one line with the count of the others, so that a
+  Sandbox that asks for many names cannot push the lines of the other Sandboxes out of the log. This log replaces the
+  flow log of the cluster's network.
 - **The Instance Harness and each check pod are behind a Fence too.** Each Harness pod has the same network and reaches
   the Custodian the same way, so no Harness has a proxy setting. The Instance Harness
   ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)) has an Egress list with no entry of the author's:
