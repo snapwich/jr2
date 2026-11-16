@@ -107,6 +107,13 @@ function trunkNad(ns, k) {
         hairpinMode: false,
         portIsolation: false,
         mtu: 1500,
+        // With vlanTrunk and no vlan, the stock bridge plugin v1.10.0 adds VID 1 (PVID, untagged) to the trunk port,
+        // so the trunks of two Instances on one node share VLAN 1. With vlan = the first VLAN of the range, the plugin
+        // first adds that VID as PVID, then adds the whole range as tagged VIDs, which replaces the flags of that
+        // VID. The port then has exactly the range, tagged, and no PVID: the bridge drops each untagged frame from
+        // the trunk. M1 reads `bridge vlan show` to check it.
+        vlan: vlan(k, 0),
+        preserveDefaultVlan: false,
         vlanTrunk: [{ minID: vlan(k, 0), maxID: vlan(k, SLOTS - 1) }],
       },
       { type: "tuning", sysctl },
