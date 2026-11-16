@@ -29,7 +29,7 @@ export const rule = (
 });
 
 /** A Sandbox's manifest with each kind of rule: a bound model host, a bound host that an entry also
- * names, an intercepted entry with no secret, Tunneled names on 443, 80 and 22, a `*.` entry, `*`,
+ * names, an intercepted entry with no secret, Tunneled names on 443, 80 and 22, a `*.` entry (also on 9443), `*`,
  * and two address entries, one of them intercepted. */
 export const SANDBOX_MANIFEST: HeldManifest = {
   version: 1,
@@ -66,6 +66,7 @@ export const SANDBOX_MANIFEST: HeldManifest = {
     rule("10.0.0.7", 8443, "address", true, "held"),
     rule("githubusercontent.com", 443, "below", false, "entry"),
     rule("githubusercontent.com", 80, "below", false, "entry"),
+    rule("githubusercontent.com", 9443, "below", false, "entry"),
     rule("*", 443, "any", false, "entry"),
     rule("*", 80, "any", false, "entry"),
   ],

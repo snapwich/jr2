@@ -88,7 +88,7 @@ test("a slot's listener is on 20000 + slot, reads the dialed address and the TLS
   assert.match(text(listener.default_filter_chain as Chain)!, /no entry of the Egress list permits/);
 });
 
-test("a Tunneled name: its placeholder and port with its TLS name go to the dial listener as the name; another TLS name gets an alert; plain bytes on 443 get a line of text", () => {
+test("a Tunneled name: its placeholder and port with its TLS name go to the dial listener as the name; another TLS name gets an alert; plain bytes are carried by the address, on 443 too", () => {
   const r = sandbox();
   const p = r.resolver.names.find((n) => n.name === "github.com")!.address;
   const tls = chainOf(r, "action=tunnel target=github.com:443");
@@ -113,8 +113,13 @@ test("a Tunneled name: its placeholder and port with its TLS name go to the dial
   assert.equal(sni.filter_chain_match.transport_protocol, "tls");
   assert.equal(sni.filter_chain_match.server_names, undefined);
   assert.ok(isAlert(sni));
+  // One rule serves each protocol (ADR-0084): SSH over 443, for example, is carried by the address.
+  const raw = chainOf(r, "action=tunnel target=github.com:443 transport=raw");
+  assert.deepEqual(raw.filter_chain_match, { ...at(p, 443), transport_protocol: "raw_buffer" });
+  assert.equal(tcp(raw)!.tunneling_config.hostname, "github.com:443");
+  // Plain bytes are refused on 443 only where TLS alone is carried: an Intercepted name, jr2's name.
   const plain = chainOf(r, "action=refuse reason=not-tls port=443");
-  assert.ok(plain.filter_chain_match.prefix_ranges.some((x: { address_prefix: string }) => x.address_prefix === p));
+  assert.ok(!plain.filter_chain_match.prefix_ranges.some((x: { address_prefix: string }) => x.address_prefix === p));
   assert.equal(plain.filter_chain_match.transport_protocol, undefined);
   assert.match(text(plain)!, /^jr2 custodian: refused: this address takes TLS only on port 443/);
 });
@@ -252,16 +257,49 @@ test("an address entry is dialed as written; an Intercepted one ends TLS with th
   );
 });
 
-test("`*.` and `*` carry TLS and HTTP only, by the name the client sent, and never an Intercepted host or jr2's own name", () => {
+test("`*.` and `*` carry TLS and HTTP only, on each of their ports, by the name the client sent, and never an Intercepted host or jr2's own name", () => {
   const r = sandbox();
   const below = r.resolver.names.find((n) => n.name === "*.githubusercontent.com")!;
+  const anyName = r.resolver.names.find((n) => n.name === "*")!;
   assert.equal(below.match, "below");
   const tls = chainOf(r, "action=tunnel target=*.githubusercontent.com:443");
   assert.deepEqual(tls.filter_chain_match.server_names, ["*.githubusercontent.com"]);
   assert.equal(tcp(tls)!.tunneling_config.hostname, "%REQUESTED_SERVER_NAME%:443");
+  // Port 80 carries HTTP alone: no chain of a wildcard's address there, so the port's HTTP chain
+  // takes it.
+  assert.ok(!chainsOf(r).some((c) => c.name === "action=tunnel target=*:80" || c.name.endsWith("target=*:80")));
+  // Plain bytes to a wildcard's address on 443 are HTTP, whose `Host` must name port 443.
+  const web443 = chainOf(r, "action=tunnel port=443 transport=http");
+  assert.deepEqual(web443.filter_chain_match, {
+    prefix_ranges: [below.address, anyName.address].map((a) => ({ address_prefix: a, prefix_len: 32 })),
+    destination_port: 443,
+    transport_protocol: "raw_buffer",
+  });
+  const vhosts443 = manager(web443)!.route_config.virtual_hosts as Array<{
+    name: string;
+    domains: string[];
+    routes: any[];
+  }>;
+  assert.deepEqual(
+    vhosts443.map((v) => [v.name, v.domains]),
+    [
+      ["*.githubusercontent.com", ["*.githubusercontent.com", "*.githubusercontent.com:443"]],
+      ["each", ["*"]],
+    ],
+  );
+  const tunnel443 = vhosts443[0]!.routes.find((x) => x.route)!;
+  assert.deepEqual(tunnel443.metadata.filter_metadata["envoy.filters.http.lua"], {
+    role: "http",
+    address: `${below.address}:443`,
+  });
+  const port443Re = re2(tunnel443.match.headers[0].string_match.safe_regex.regex);
+  assert.match("x.githubusercontent.com:443", port443Re);
+  for (const host of ["x.githubusercontent.com", "x.githubusercontent.com:80", "x.githubusercontent.com:4430"]) {
+    assert.doesNotMatch(host, port443Re, host);
+  }
   assert.ok(
-    chainOf(r, "action=refuse reason=not-tls port=443").filter_chain_match.prefix_ranges.some(
-      (x: { address_prefix: string }) => x.address_prefix === below.address,
+    !chainOf(r, "action=refuse reason=not-tls port=443").filter_chain_match.prefix_ranges.some(
+      (x: { address_prefix: string }) => x.address_prefix === below.address || x.address_prefix === anyName.address,
     ),
   );
   const any = chainOf(r, "action=tunnel target=*:443");
@@ -333,9 +371,55 @@ test("`*.` and `*` carry TLS and HTTP only, by the name the client sent, and nev
   );
 });
 
+test("a `*.` entry on another port carries TLS and plain HTTP there, and its `Host` must name that port", () => {
+  const manifest = {
+    version: 1 as const,
+    secrets: [],
+    egress: [rule("d.test", 8080, "below", false, "entry"), rule("plain.test", 8080, "name", false, "entry")],
+  };
+  const r = renderSlot(inputsOf(5, manifest, { sandbox: "x" }));
+  const below = r.resolver.names.find((n) => n.name === "*.d.test")!;
+  const plain = r.resolver.names.find((n) => n.name === "plain.test")!;
+  assert.equal(
+    tcp(chainOf(r, "action=tunnel target=*.d.test:8080"))!.tunneling_config.hostname,
+    "%REQUESTED_SERVER_NAME%:8080",
+  );
+  const web = chainOf(r, "action=tunnel port=8080 transport=http");
+  // Only the wildcard's address: an exact name on the port is carried by its address.
+  assert.deepEqual(web.filter_chain_match, { ...at(below.address, 8080), transport_protocol: "raw_buffer" });
+  assert.deepEqual(chainOf(r, "action=tunnel target=plain.test:8080 transport=raw").filter_chain_match, {
+    ...at(plain.address, 8080),
+    transport_protocol: "raw_buffer",
+  });
+  const vhosts = manager(web)!.route_config.virtual_hosts as Array<{ name: string; domains: string[]; routes: any[] }>;
+  assert.deepEqual(vhosts[0]!.domains, ["*.d.test", "*.d.test:8080"]);
+  assert.deepEqual(
+    vhosts[0]!.routes.map((x) => x.metadata.filter_metadata["envoy.filters.http.lua"].reason ?? "tunnel"),
+    ["host", "host", "tunnel", "port"],
+  );
+  const tunnel = vhosts[0]!.routes[2];
+  assert.equal(tunnel.route.cluster, "dial-http");
+  assert.equal(tunnel.metadata.filter_metadata["envoy.filters.http.lua"].address, `${below.address}:8080`);
+  const portRe = re2(tunnel.match.headers[0].string_match.safe_regex.regex);
+  assert.match("a.d.test:8080", portRe);
+  for (const host of ["a.d.test", "a.d.test:80", "a.d.test:80800", "a.d.test:8080:1"]) {
+    assert.doesNotMatch(host, portRe, host);
+  }
+  assert.match(vhosts[0]!.routes[3].metadata.filter_metadata["envoy.filters.http.lua"].body, /other than 8080/);
+  // With no `*` on the port, another `Host` is refused there.
+  assert.equal(vhosts[1]!.routes[0].metadata.filter_metadata["envoy.filters.http.lua"].reason, "no-entry");
+  assert.ok(!chainsOf(r).some((c) => c.name === "action=refuse reason=not-tls port=8080"));
+  const matches = chainsOf(r).map((c) => JSON.stringify(c.filter_chain_match));
+  assert.equal(new Set(matches).size, matches.length);
+});
+
 test("jr2's own name: TLS with the slot's leaf on 443 and the six routes to the Orchestrator; on 80 the fetch route alone", () => {
   const r = sandbox();
   assert.deepEqual(r.resolver.names[0], { name: JR2_CUSTODIAN_NAME, match: "name", address: "198.18.0.1" });
+  // One row for each name: github.com is on ports 22, 80 and 443, and has one placeholder.
+  const resolved = r.resolver.names.map((n) => n.name);
+  assert.equal(new Set(resolved).size, resolved.length, resolved.join(" "));
+  assert.equal(resolved.filter((n) => n === "github.com").length, 1);
   const c = chainOf(r, `action=intercept target=${JR2_CUSTODIAN_NAME}:443`);
   assert.deepEqual(c.filter_chain_match, {
     ...at("198.18.0.1", 443),
@@ -453,6 +537,29 @@ test("the renderer refuses a slot out of range, a placeholder table of another r
   const wild = { ...SANDBOX_MANIFEST, egress: [rule("example.com", 443, "below", true, "entry")] };
   assert.throws(() => renderSlot(inputsOf(3, wild, { sandbox: "x" })), /a leaf names one host/);
   assert.throws(() => renderSlot({ ...ok, owner: { sandbox: "a b%" } }), /is a Kubernetes name/);
+  // Each rule once: Envoy refuses a listener with two chains that match alike, so the slot would
+  // have no listener.
+  const twice = (egress: ReturnType<typeof rule>[]) => () =>
+    renderSlot(inputsOf(3, { version: 1, secrets: [], egress }, { sandbox: "x" }));
+  assert.throws(
+    twice([rule("a.test", 443, "name", false, "entry"), rule("a.test", 443, "name", false, "entry")]),
+    /^Error: slot 3: the rule a\.test:443 is in the manifest twice \(ADR-0084\)$/,
+  );
+  assert.throws(
+    twice([rule("a.test", 443, "name", false, "entry"), rule("a.test", 443, "name", true, "entry")]),
+    /the rule a\.test:443 is in the manifest twice/,
+  );
+  assert.throws(
+    twice([rule("d.test", 443, "below", false, "entry"), rule("d.test", 443, "below", false, "entry")]),
+    /the rule \*\.d\.test:443 is in the manifest twice/,
+  );
+  assert.throws(
+    twice([rule("10.0.0.5", 8000, "address", false, "entry"), rule("10.0.0.5", 8000, "address", true, "entry")]),
+    /the rule 10\.0\.0\.5:8000 is in the manifest twice/,
+  );
+  // A name and the wildcard of its domain, or one name on two ports, are two rules.
+  twice([rule("d.test", 443, "name", false, "entry"), rule("d.test", 443, "below", false, "entry")])();
+  twice([rule("a.test", 443, "name", false, "entry"), rule("a.test", 80, "name", false, "entry")])();
 });
 
 test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also when `fence` moves them, and judges each address of a name (ADR-0059, ADR-0084)", () => {

@@ -198,10 +198,12 @@ and it replaces the Adapter.
 - **The log is a contract.** One line per decision on stdout, with the prefix `jr2.custodian` and `key=value` pairs:
   `ready secrets=… hosts=N` (when a pod's rules are live), `action=intercept target=… secret=… method=… status=…`,
   `action=tunnel target=…`, `action=refuse target=… reason=…`. Each line also names the Sandbox, or the other Harness
-  pod, that it is for (`sandbox=…` or `pod=…`, ADR-0084). A refusal that a slot's listener makes before a name is known
-  (a TLS name that does not agree, plain bytes where only TLS is carried, a port with no entry) names the address dialed
-  (`to=`) and the TLS name (`sni=`); the slot's resolver table gives the name of a placeholder address. Never a header
-  value, a body, a path, a query, a value or a Stand-in.
+  pod, that it is for (`sandbox=…` or `pod=…`, ADR-0084). A line of the Orchestrator's dial to a Harness pod
+  (`jr2.custodian dial action=inbound target=…`) names the slot address of a target that passed the check instead, and
+  `target=-` for a refusal: the target header's value is not logged. A refusal that a slot's listener makes before a
+  name is known (a TLS name that does not agree, plain bytes where only TLS is carried, a port with no entry) names the
+  address dialed (`to=`) and the TLS name (`sni=`); the slot's resolver table gives the name of a placeholder address.
+  Never a header value, a body, a path, a query, a value or a Stand-in.
 - **The dial guard, in two halves.** The Custodian never dials a loopback, link-local (the cloud metadata address
   included, and AWS's `fd00:ec2::254`) or unspecified address, or an IPv4-mapped form of one. It never dials an address
   in the Fence's own ranges either: the segment, the placeholder range and 198.18.0.0/15
@@ -214,6 +216,11 @@ and it replaces the Adapter.
   fails, so each address is judged. A name with no address left is refused like the literal, with a `reason=guard` line;
   a name with an address left is dialed at the addresses left only. The address judged is the address dialed: each dial
   by name goes through one of the Custodian's dial listeners, and each listener and its cluster share that one lookup.
+  The lookup's filter (`resolved_address_filter` of Envoy's DNS cache) uses a message, `xds.core.v3.CidrRange`, that the
+  pinned Envoy marks work-in-progress: Envoy does not count it as stable, its threat model and its security team do not
+  cover it, and it can change with no notice. Envoy prints this warning at each start. jr2 uses it all the same, because
+  at the pin it is the only check that judges each address of an answer before a connection (Considered options). The
+  Custodian suite's test of each address holds it: the suite runs before the pin moves and on each release tag.
 - **Health.** `0.0.0.0:15021`, `GET /healthz`. The kubelet cannot reach a loopback listener, and a distroless image has
   no shell for an exec probe. The Custodian's readiness probe is on it. A provision waits until the Custodian says that
   the Sandbox's rules are live (ADR-0084), so no Turn is admitted in a Sandbox before the Custodian serves it. A peer on
@@ -365,6 +372,10 @@ and it replaces the Adapter.
   would exist while the Agent runs. The Sandbox Image is the user's, and its tools may not trust a jr2 CA.
 - **mitmproxy, Squid.** mitmproxy streams SSE only if the addon asks, and its swap is code jr2 writes anyway; Squid
   brings the GPL and a poor CVE record. Both would be a fourth image.
+- **The RBAC filter's matcher of the upstream address as the dial guard's second half.** Rejected: it judges one address
+  of a name, and when a connection to that address fails, Envoy connects to the next address of the answer, which no
+  check then judges. So a name with an unreachable first address and a guarded second one reached the guarded address.
+  It is stable Envoy; the lookup's filter that replaced it is not (the dial guard, above).
 - **Envoy's `credential_injector`, or the value in a bootstrap Secret with `request_headers_to_add`.** Rejected: the
   first is alpha and fails on a trailing newline; both replace a header without seeing the Stand-in, and the second
   cannot hold a `secretKeyRef` value, which `jr2 up` never copies.
@@ -440,13 +451,13 @@ and it replaces the Adapter.
   on the host network with free ports, with local HTTPS upstreams under their own CA. It is opt-in, like `@kind`,
   because it needs docker ([ADR-0010](0010-bdd-acceptance-tests.md)), and the release job runs it on every tag
   ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)): the image moves only with its
-  pin, but the configuration jr2 renders moves with any release. About 35 seconds. It checks the swap, the strip, 403
+  pin, but the configuration jr2 renders moves with any release. About 95 seconds. It checks the swap, the strip, 403
   with no Stand-in, 405 on a method, 400 on an underscore header, a header `Connection` names, two `Host` headers, idle
   connections on the health listener, 421, 400 and 403 on paths, the tunnel, the dial guard by every spelling, by
   resolved name and by each address of a name, 502 on an untrusted upstream, SSE timing, abort, a 302, the refusal of a
-  bad value, the log, a TLS name or a `Host` header that does not agree with the name of the address, and the Anthropic
-  SDK with no proxy setting. The first SSE event arrives through the Custodian about half a millisecond later than
-  direct.
+  bad value, the log, a TLS name or a `Host` header that does not agree with the name of the address, a wildcard's
+  `Host` that names another port than the entry's, and the Anthropic SDK with no proxy setting. The first SSE event
+  arrives through the Custodian about half a millisecond later than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses the Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

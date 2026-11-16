@@ -246,10 +246,11 @@ An entry of the list is `"<host>"`, `"<host>:<port>"`, or `{ host, port?, interc
 to GitHub, and PyPI, which the Custodian intercepts:
 
 - An entry with no port permits ports 443 and 80.
-- `*.` at the start of a host, such as `*.example.com`, permits each name below that domain, for TLS and HTTP only.
+- `*.` at the start of a host, such as `*.example.com`, permits each name below that domain, for TLS and HTTP only, on
+  each port of the entry.
 - `["*"]` permits each name, for TLS and HTTP only.
 - A `*.` entry or `["*"]` never carries an Intercepted host of the Sandbox or a name of jr2's, in any spelling of the
-  name. On port 80 it carries no `Host` header that names another port.
+  name. It carries no `Host` header that names a port other than the port of the entry.
 - `jr2 up` gives a warning for `["*"]` and for each `*.` entry. Each one is a way for data to go out.
 - An exact IPv4 address with a port, such as `"192.168.1.20:8000"`, is an entry too, for a host that has no name. An
   IPv6 address, a range, and a loopback or link-local address are refused.
@@ -261,8 +262,9 @@ A name decides, and an address only as an entry of its own. The Sandbox asks the
 resolver answers a permitted name with an address that stands for that name in that Sandbox, and it asks no server. It
 refuses each other name, also when a tool names its own DNS server. The Custodian finds the name from that address, and
 dials the real host itself. For TLS and HTTP, it also checks that the TLS name or the `Host` header agrees. Thus one
-rule serves each port and each protocol: TLS, HTTP, ssh or a database. An entry for a protocol that sends no name, such
-as ssh or a database, must be an exact name, with no `*.`.
+rule serves each port and each protocol: TLS, HTTP, ssh or a database. Port 80 of a name carries HTTP only, and its
+`Host` header must agree, so that plain HTTP to a server with many names reaches only the name that you permit. An entry
+for a protocol that sends no name, such as ssh or a database, must be an exact name, with no `*.`.
 
 A host that a Held secret of the Sandbox is bound to needs no entry. The Custodian permits it, and refuses a request to
 it that carries no [Stand-in](../reference/glossary.md#stand-in). Thus

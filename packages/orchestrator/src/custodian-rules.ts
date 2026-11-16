@@ -181,9 +181,11 @@ function namesRegex(names: readonly string[]): string {
 /** An `:authority` whose name ends in a dot, with or without a port. */
 const TRAILING_DOT_AUTHORITY = "^[^:]*\\.(:[0-9]*)?$";
 
-/** An `:authority` with no port, or with port 80: what a wildcard on port 80 carries. The Custodian
- * dials the port of the `Host`, so each other port is refused. */
-const PORT_80_AUTHORITY = "^[^:]*(:80)?$";
+/** An `:authority` that names `port`: what a wildcard on that port carries. The Custodian dials the
+ * port of the `Host`, so each other port is refused. A `Host` with no port names port 80. */
+function portAuthority(port: number): string {
+  return port === 80 ? "^[^:]*(:80)?$" : `^[^:]*:${port}$`;
+}
 
 function ip32(address: string): Json[] {
   return [{ address_prefix: address, prefix_len: 32 }];
@@ -487,7 +489,9 @@ function slotLua(inputs: SlotInputs, rules: readonly EgressRule[]): string {
 }
 
 /** Throws unless the slot's inputs can be rendered: a slot number in range, a placeholder table of
- * the Instance's range with a row for each name, and no rule that the Fence cannot carry. */
+ * the Instance's range with a row for each name, no rule that the Fence cannot carry, and each
+ * rule once. Envoy refuses a listener with two chains that match alike, so a rule twice, or one
+ * name and port both Tunneled and Intercepted, would leave the slot with no listener. */
 function checkInputs(inputs: SlotInputs): void {
   const { slot, manifest, placeholders, ranges } = inputs;
   if (!Number.isInteger(slot) || slot < 0 || slot >= FENCE_SLOTS) {
@@ -498,7 +502,12 @@ function checkInputs(inputs: SlotInputs): void {
       `slot ${slot}: its placeholder table is of ${placeholders.range}, not the Instance's ${ranges.placeholders} (ADR-0084)`,
     );
   }
+  const seen = new Set<string>();
   for (const r of manifest.egress) {
+    // `*.d` and `*` are spelled apart from a name, so the target says which rule it is.
+    if (seen.has(targetOf(r)))
+      throw new Error(`slot ${slot}: the rule ${targetOf(r)} is in the manifest twice (ADR-0084)`);
+    seen.add(targetOf(r));
     if (r.match === "name" || r.match === "address") {
       const why = uncarried(r.host, ranges);
       if (why !== undefined) throw new Error(`slot ${slot}: the rule ${r.host}:${r.port} ${why} (ADR-0084)`);
@@ -521,17 +530,20 @@ function checkInputs(inputs: SlotInputs): void {
  * placeholder, or the address entry itself), then jr2's own name, then the refusals:
  *
  *   name, Tunneled, TLS     `A:port` with the TLS name → tunnel to the name; another TLS name →
- *                           TLS alert; plain bytes → on 443 a line of text, on another port a
- *                           tunnel (a protocol that sends no name: the address decides)
+ *                           TLS alert; plain bytes → a tunnel, on each port (a protocol that
+ *                           sends no name: the address decides)
  *   Tunneled, port 80       one HTTP chain for the slot: the `Host` chooses the name, and the
  *                           program refuses it (403) unless `A` is that name's placeholder
  *   name, Intercepted       TLS with the TLS name → TLS ended with the slot's leaf, the program,
  *                           the guard, the name; another TLS name → TLS alert; plain bytes → text.
  *                           On port 80: HTTP with the program, no TLS
- *   `*.` and `*`            TLS and HTTP only: the TLS name or the `Host` header must be below the
- *                           domain (each name, for `*`); an address, jr2's own domain and each
- *                           Intercepted host of the slot are refused in any letter case and with a
- *                           trailing dot; on port 80, a `Host` that names another port is refused
+ *   `*.` and `*`            TLS and HTTP only, on each port of the rule: the TLS name or the
+ *                           `Host` header must be below the domain (each name, for `*`); an
+ *                           address, jr2's own domain and each Intercepted host of the slot are
+ *                           refused in any letter case and with a trailing dot; a `Host` that
+ *                           names another port than the rule's is refused. Plain bytes go to the
+ *                           slot's HTTP chain of that port; port 80 carries HTTP alone (the one
+ *                           chain above)
  *   an address              each byte to the address as written, or, Intercepted, TLS ended with
  *                           the leaf of that address
  *   `custodian.jr2.internal` 443: TLS with the leaf, the six routes to the Orchestrator; 80: the
@@ -585,15 +597,27 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
   const refuseOn = (map: Map<number, string[]>, port: number, address: string): void => {
     map.set(port, [...(map.get(port) ?? []), address]);
   };
-  // The virtual hosts of the slot's one HTTP chain on port 80, and its route for `*` on port 80.
-  const http80: Json[] = [];
-  let http80Any: Json[] | undefined;
+  // The slot's HTTP chain of each port that carries plain HTTP by its `Host`: its virtual hosts,
+  // its route for `*`, and the addresses that it serves (on port 80, each address).
+  const httpPorts = new Map<number, { hosts: Json[]; any?: Json[]; addresses: string[] }>();
+  const httpOn = (port: number) => {
+    if (!httpPorts.has(port)) httpPorts.set(port, { hosts: [], addresses: [] });
+    return httpPorts.get(port)!;
+  };
   // What the Custodian adds to a request toward its dial listeners, so that their log names the
   // slot. It replaces what the pod sent, and goes no further.
   const fenceHeaders = [
     { header: { key: SLOT_HEADER, value: String(slot) }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
     { header: { key: OWNER_HEADER, value: owner }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
   ];
+  // The route of a Tunneled host's plain HTTP: the program refuses it unless the address dialed is
+  // that host's placeholder.
+  const tunnelRoute = (address: string, port: number): Json => ({
+    match: { prefix: "/" },
+    route: { cluster: "dial-http", timeout: "0s" },
+    request_headers_to_add: fenceHeaders,
+    metadata: meta({ role: "http", address: `${address}:${port}` }),
+  });
 
   // The Intercepted names of the slot that a wildcard rule covers: a wildcard refuses them.
   const interceptedNames = [...new Set(rules.filter((r) => r.intercept && r.match === "name").map((r) => r.host))];
@@ -603,13 +627,44 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
       : rule.match === "below"
         ? interceptedNames.filter((n) => n.endsWith(`.${rule.host}`))
         : [];
+  // The routes of a `*.` or `*` rule's plain HTTP on its port.
+  const wildcardRoutes = (rule: EgressRule, address: string): Json[] => [
+    refuseRoute("host", "the Host header names an address or a name of jr2's", {
+      prefix: "/",
+      headers: [{ name: ":authority", string_match: { safe_regex: { regex: REFUSED_AUTHORITY } } }],
+    }),
+    ...(covered(rule).length > 0
+      ? [
+          refuseRoute("intercepted", "the Host header names an Intercepted host, which no wildcard carries", {
+            prefix: "/",
+            headers: [{ name: ":authority", string_match: { safe_regex: { regex: namesRegex(covered(rule)) } } }],
+          }),
+        ]
+      : []),
+    // A tunnel dials a name in one spelling only, as the `dial` listener does (`REFUSED_CONNECT`).
+    refuseRoute("host", "the Host header ends in a dot: a wildcard carries a name without one", {
+      prefix: "/",
+      headers: [{ name: ":authority", string_match: { safe_regex: { regex: TRAILING_DOT_AUTHORITY } } }],
+    }),
+    // The Custodian dials the port that the `Host` names: a wildcard carries the port of its rule
+    // alone (ADR-0084: an entry permits its ports).
+    {
+      ...tunnelRoute(address, rule.port),
+      match: {
+        prefix: "/",
+        headers: [{ name: ":authority", string_match: { safe_regex: { regex: portAuthority(rule.port) } } }],
+      },
+    },
+    refuseRoute("port", `the Host header names a port other than ${rule.port}, which this entry does not permit`),
+  ];
 
   for (const rule of rules) {
     ports.add(rule.port);
     const target = targetOf(rule);
     const name = placeholderName(rule);
     const address = name === undefined ? rule.host : placeholderOf(placeholders, name)!;
-    if (name !== undefined) {
+    // One row for each name: a name on two ports has one placeholder.
+    if (name !== undefined && !names.some((n) => n.name === name)) {
       names.push({ name, match: rule.match as ResolverName["match"], address });
     }
     const at = { prefix_ranges: ip32(address), destination_port: rule.port };
@@ -680,53 +735,14 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
       continue;
     }
 
-    if (rule.port === 80) {
+    if (rule.port === 80 && rule.match === "name") {
       // Port 80 of each Tunneled name is one HTTP chain of the slot (below): its `Host` chooses the
       // route, and the program checks that the address dialed is that host's placeholder.
-      const tunnelRoute = {
-        match: { prefix: "/" },
-        route: { cluster: "dial-http", timeout: "0s" },
-        request_headers_to_add: fenceHeaders,
-        metadata: meta({ role: "http", address: `${address}:80` }),
-      };
-      if (rule.match === "name") {
-        http80.push({ name: rule.host, domains: [rule.host, `${rule.host}:80`], routes: [tunnelRoute] });
-      } else {
-        const routes = [
-          refuseRoute("host", "the Host header names an address or a name of jr2's", {
-            prefix: "/",
-            headers: [{ name: ":authority", string_match: { safe_regex: { regex: REFUSED_AUTHORITY } } }],
-          }),
-          ...(covered(rule).length > 0
-            ? [
-                refuseRoute("intercepted", "the Host header names an Intercepted host, which no wildcard carries", {
-                  prefix: "/",
-                  headers: [{ name: ":authority", string_match: { safe_regex: { regex: namesRegex(covered(rule)) } } }],
-                }),
-              ]
-            : []),
-          // A tunnel dials a name in one spelling only, as the `dial` listener does (`REFUSED_CONNECT`).
-          refuseRoute("host", "the Host header ends in a dot: a wildcard carries a name without one", {
-            prefix: "/",
-            headers: [{ name: ":authority", string_match: { safe_regex: { regex: TRAILING_DOT_AUTHORITY } } }],
-          }),
-          // The Custodian dials the port that the `Host` names: a wildcard on port 80 carries port 80
-          // alone (ADR-0084: an entry permits its ports).
-          {
-            ...tunnelRoute,
-            match: {
-              prefix: "/",
-              headers: [{ name: ":authority", string_match: { safe_regex: { regex: PORT_80_AUTHORITY } } }],
-            },
-          },
-          refuseRoute("port", "the Host header names a port other than 80, which this entry does not permit"),
-        ];
-        if (rule.match === "below") {
-          http80.push({ name: `*.${rule.host}`, domains: [`*.${rule.host}`, `*.${rule.host}:80`], routes });
-        } else {
-          http80Any = routes;
-        }
-      }
+      httpOn(80).hosts.push({
+        name: rule.host,
+        domains: [rule.host, `${rule.host}:80`],
+        routes: [tunnelRoute(address, 80)],
+      });
       continue;
     }
 
@@ -735,22 +751,33 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
         chain(`action=tunnel target=${target}`, { ...at, transport_protocol: "tls", ...sni }, [
           tunnel(slot, owner, `${rule.host}:${rule.port}`),
         ]),
-        ...(rule.port === 443
-          ? []
-          : [
-              chain(`action=tunnel target=${target} transport=raw`, { ...at, transport_protocol: "raw_buffer" }, [
-                tunnel(slot, owner, `${rule.host}:${rule.port}`),
-              ]),
-            ]),
+        // A protocol that sends no name (SSH, a database, also on 443): the address decides.
+        chain(`action=tunnel target=${target} transport=raw`, { ...at, transport_protocol: "raw_buffer" }, [
+          tunnel(slot, owner, `${rule.host}:${rule.port}`),
+        ]),
       );
       refuseOn(sniRefused, rule.port, address);
-      if (rule.port === 443) refuseOn(tlsOnly, rule.port, address);
       continue;
     }
 
-    // `*.` and `*`: the TLS name says which name was meant. An Intercepted host, jr2's own name
-    // among them, is never carried by a wildcard: it has its own chain, where the Custodian ends its
-    // TLS.
+    // `*.` and `*`, on each of their ports: on HTTP the `Host` header says which name was meant
+    // (the slot's HTTP chain of that port, below), on TLS the TLS name. An Intercepted host, jr2's
+    // own name among them, is never carried by a wildcard: it has its own chain, where the Custodian
+    // ends its TLS.
+    const web = httpOn(rule.port);
+    if (rule.port !== 80) web.addresses.push(address);
+    if (rule.match === "below") {
+      web.hosts.push({
+        name: `*.${rule.host}`,
+        domains: [`*.${rule.host}`, `*.${rule.host}:${rule.port}`],
+        routes: wildcardRoutes(rule, address),
+      });
+    } else {
+      web.any = wildcardRoutes(rule, address);
+    }
+    // Port 80 carries HTTP alone. A chain of the address there would also hide the port's one HTTP
+    // chain from it: Envoy does not step back from an address that matched.
+    if (rule.port === 80) continue;
     chains.push(
       chain(
         `action=refuse reason=intercepted target=${target}`,
@@ -769,7 +796,6 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
       ),
     );
     if (rule.match === "below") refuseOn(sniRefused, rule.port, address);
-    refuseOn(tlsOnly, rule.port, address);
   }
 
   // jr2's own name: the control routes on 443 with the slot's leaf, the fetch route on 443 and 80.
@@ -832,6 +858,38 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
     );
   }
 
+  // The slot's HTTP chain of a port: the `Host` chooses the virtual host. On port 80 it serves each
+  // address of the port; on another port, the addresses of the wildcards there, by plain bytes.
+  const webChain = (port: number): Json => {
+    const web = httpOn(port);
+    return http({
+      stat: port === 80 ? `slot${slot}_http` : `slot${slot}_http_${port}`,
+      log: httpLog(who, "%REQ(:AUTHORITY)%"),
+      lua: program,
+      local: { mappers: unreachable("%REQ(:AUTHORITY)%").mappers as Json[] },
+      routes: {
+        virtual_hosts: [
+          ...web.hosts,
+          {
+            name: "each",
+            domains: ["*"],
+            routes: web.any ?? [refuseRoute("no-entry", "no entry of the Egress list permits this address and Host")],
+          },
+        ],
+      },
+    });
+  };
+  for (const [port, web] of httpPorts) {
+    if (port === 80) continue;
+    chains.push(
+      chain(
+        `action=tunnel port=${port} transport=http`,
+        { prefix_ranges: web.addresses.flatMap(ip32), destination_port: port, transport_protocol: "raw_buffer" },
+        [webChain(port)],
+      ),
+    );
+  }
+
   // Each port that a chain names, then every other port. Envoy does not step back from a port that
   // matched to a chain with no port, so each port that a chain names has its own refusals.
   for (const port of [...ports].sort((a, b) => a - b)) {
@@ -847,26 +905,7 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
         port === 80 ? "action=tunnel port=80" : `action=refuse reason=no-entry port=${port}`,
         { destination_port: port },
         port === 80
-          ? [
-              http({
-                stat: `slot${slot}_http`,
-                log: httpLog(who, "%REQ(:AUTHORITY)%"),
-                lua: program,
-                local: { mappers: unreachable("%REQ(:AUTHORITY)%").mappers as Json[] },
-                routes: {
-                  virtual_hosts: [
-                    ...http80,
-                    {
-                      name: "each",
-                      domains: ["*"],
-                      routes: http80Any ?? [
-                        refuseRoute("no-entry", "no entry of the Egress list permits this address and Host"),
-                      ],
-                    },
-                  ],
-                },
-              }),
-            ]
+          ? [webChain(80)]
           : [textRefusal(`no entry of the Egress list permits this address on port ${port}`)],
       ),
     );

@@ -277,7 +277,7 @@ function targetBootstrap(): unknown {
   return { static_resources: { listeners: [listener(80, false), listener(6379, false), listener(443, true)] } };
 }
 
-test("the pinned Envoy runs a slot's rules: a wildcard on port 80 dials port 80 alone, a wildcard carries no Intercepted host in another spelling, no target gets a forwarding header, and the Orchestrator's dial fails closed (ADR-0084, ADR-0059)", async (t) => {
+test("the pinned Envoy runs a slot's rules: a wildcard dials the port of its rule alone, on port 80 and on another port, a wildcard carries no Intercepted host in another spelling, no target gets a forwarding header, and the Orchestrator's dial fails closed (ADR-0084, ADR-0059)", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "jr2-custodian-run-"));
   const tag = `${process.pid}-${Date.now() % 100000}`;
   const [netA, netB] = [`jr2-crules-a-${tag}`, `jr2-crules-b-${tag}`];
@@ -308,10 +308,11 @@ test("the pinned Envoy runs a slot's rules: a wildcard on port 80 dials port 80 
     custodianRef(), "-c", "/etc/target/envoy.json", "--log-level", "warning",
   );
 
-  // One Sandbox slot: `*` on 443 and 80, and `secure.test:443` Intercepted with no secret.
+  // One Sandbox slot: `*` on 443, 80 and 6379, and `secure.test:443` Intercepted with no secret.
   const egress = [
     rule("*", 443, "any", false, "entry"),
     rule("*", 80, "any", false, "entry"),
+    rule("*", 6379, "any", false, "entry"),
     rule("secure.test", 443, "name", true, "entry"),
   ];
   const placeholders = withPlaceholders(emptyPlaceholders(RANGES.placeholders), egress);
@@ -377,6 +378,10 @@ test("the pinned Envoy runs a slot's rules: a wildcard on port 80 dials port 80 
   on443.name = "slot-3-443";
   on443.address.socket_address.port_value = 443;
   parsed.resources.push(on443);
+  const on6379 = structuredClone(on443);
+  on6379.name = "slot-3-6379";
+  on6379.address.socket_address.port_value = 6379;
+  parsed.resources.push(on6379);
   parsed.version_info = "1";
   const xds = local(CUSTODIAN_LDS, root);
   await writeFile(`${xds}.next`, JSON.stringify(parsed), { mode: 0o644 });
@@ -410,6 +415,18 @@ test("the pinned Envoy runs a slot's rules: a wildcard on port 80 dials port 80 
     assert.equal(status(answer), "HTTP/1.1 403 Forbidden", `${authority} ${path}: ${answer}`);
     assert.match(body(answer), /port other than 80/);
     assert.doesNotMatch(answer, /port=6379|port=8080/);
+  }
+
+  // A wildcard on another port carries plain HTTP there too, and dials that port alone.
+  {
+    const answer = await get(any, 6379, "other.test:6379");
+    assert.equal(status(answer), "HTTP/1.1 200 OK", answer);
+    assert.match(body(answer), /^port=6379 /);
+  }
+  for (const authority of ["other.test", "other.test:80", "other.test:443"]) {
+    const answer = await get(any, 6379, authority);
+    assert.equal(status(answer), "HTTP/1.1 403 Forbidden", `${authority}: ${answer}`);
+    assert.match(body(answer), /port other than 6379/, authority);
   }
 
   // A name with a trailing dot is refused on port 80, as the CONNECT of a tunnel refuses it.
