@@ -367,9 +367,10 @@ _Avoid_: connector, plugin, integration, extension, tools (unqualified)
 ### Sandboxes, Harnesses and secrets
 
 **Sandbox**:
-The isolated pod in which an Agent works, with a filesystem of its own. Agents in different Sandboxes share no host
-resources: no ports, no filesystem, no process space. It is jr2's security boundary: the Agents in one Sandbox share its
-files and have free rein in it, and jr2 trusts nothing that a Sandbox puts out.
+The isolated pod in which an Agent works, with a filesystem of its own and a network whose only exit is the Custodian.
+Agents in different Sandboxes share no host resources: no ports, no filesystem, no process space. It is jr2's security
+boundary: the Agents in one Sandbox share its files and have free rein in it, and jr2 trusts nothing that a Sandbox puts
+out.
 _Avoid_: worker pod, container
 
 **Harness**:
@@ -387,35 +388,57 @@ such as Claude Code or Codex), Orchestrator
 
 **Instance Harness**:
 The one Harness of an Instance that is in no Sandbox: the Turns of every Menu-only Agent run on it, also when a
-Workspace encloses that Agent. Its pod has a Custodian and no Worktree, and it keeps a conversation only while a live
-run holds it.
+Workspace encloses that Agent. Its pod has no Worktree and is behind a Fence as a Sandbox is, and it keeps a
+conversation only while a live run holds it.
 _Avoid_: shared harness, global harness, dev harness
 
 **Custodian**:
-The jr2-composed container in every Harness pod, a Sandbox or the Instance Harness, that holds the pod's Held secrets
-and carries the Harness's traffic out. The Agent executes no code in it, and it controls no egress: a client that goes
-around it sends only a Stand-in.
-_Avoid_: proxy (the mechanism, and the Forward's word), sidecar (its deployment shape), MITM, vault, egress gateway,
-firewall
+The one part of an Instance, outside every Sandbox, that holds the Held secrets of each Harness and decides all traffic
+out of each Sandbox: it carries what the Sandbox's Egress list permits and refuses all else, with a reason. No Agent
+executes code in it, and no traffic of a Sandbox goes around it.
+_Avoid_: proxy (the mechanism, and the Forward's word), sidecar, MITM, vault, egress gateway, gateway, firewall
+
+**Fence**:
+The network of a Harness pod, a Sandbox or the Instance Harness, which is its only one: all that the pod sends arrives
+at the Custodian, whatever address a process dials and whatever rights it has in the pod. The pod cannot reach another
+such pod, a node or the cluster through it.
+_Avoid_: network policy, firewall, sandbox network, isolation (unqualified)
+
+**Egress list**:
+The names that a Sandbox may reach, each with its ports: the Instance states a default, and a Workspace that states its
+own list replaces it. A name decides, and an address is permitted only as an entry of its own. A host that a Held secret is bound to needs no
+entry.
+_Avoid_: allowlist, allowed hosts (**Allowed picks** is a Menu's), whitelist, reach, egress policy
+
+**Intercepted host**:
+A host whose TLS the Custodian ends, so that it reads each request, can put a Held secret in place of a Stand-in, and
+refuses a request for another host: each host that the Custodian holds a secret for, and each host that the Egress list
+marks.
+_Avoid_: MITM host, inspected host, terminated host
+
+**Tunneled host**:
+A host on the Egress list that is not an Intercepted host: the Custodian checks the name and carries the bytes, and the
+client sees the host's own certificate or host key. The Custodian does not see what is sent.
+_Avoid_: pass-through host, allowed host, trusted host
 
 **Held secret**:
-A credential that the Harness uses through its pod's Custodian but never holds: a model API key above all, the token of
-an MCP server that an Agent names, and the Sandbox tokens. The Harness holds only its Stand-in, so no Agent can take the
-secret out of the pod. Workspace code can spend it through the Custodian, while the pod lives, only when its Workspace
-grants that secret.
+A credential that the Harness uses through the Custodian but never holds: a model API key above all, the token of
+an MCP server that an Agent names, and the Sandbox tokens. The Harness holds only its Stand-in, and the secret is never in a Sandbox, so no Agent can take it. Workspace code can spend
+it through the Custodian, while the Sandbox lives, only when its Workspace grants that secret.
 _Avoid_: masked secret, injected secret, proxied key, secret (unqualified)
 
 **Stand-in**:
-The value that the Harness holds in place of a Held secret. It means something only to the Custodian, and only toward a
-host or a route that the secret is bound to; sent anywhere else, it arrives as it left. It is secret, and only the
+The value that a Harness holds in place of a Held secret, or that a Sandbox Effector holds in place of an Effect secret
+that the Custodian holds. It means something only to the Custodian, and only toward a
+host or a route that the secret is bound to; sent to a Tunneled host, it arrives as it left. It is secret, and only the
 Harness itself holds it: Workspace code gets a Stand-in only for a secret that its Workspace grants, and never the one
 for the control token. The one public Stand-in is the fetch token's, which can only ask for a fetch.
 _Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
 
 **Sandbox token**:
-A credential that jr2 makes for one Sandbox, which its Custodian alone holds. There are two. The **control token** lets
+A credential that jr2 makes for one Sandbox, which the Custodian alone holds. There are two. The **control token** lets
 the Harness read each Agent's Menu and deliver its picks, for the Agent that the Harness names. The **fetch token** lets
-a process in the pod ask for a fetch of a Repo that the Sandbox holds. Each one is good only for its own work and in its
+a process in the Sandbox ask for a fetch of a Repo that the Sandbox holds. Each one is good only for its own work and in its
 own Sandbox, and neither one reaches a Gate.
 _Avoid_: pod token, agent token, slot token, Instance token (the Caller's credential)
 
@@ -429,8 +452,8 @@ _Avoid_: agent code (any Agent can run another's), user code, untrusted code (un
 **Check pod**:
 The one-shot pod in which the provider preflight of `jr2 up` checks the models of one class of Harness pod, and the tool
 list of each remote MCP server that an Agent of the class names, before the converge writes an object that the Instance
-reads. It has a Custodian, its own copies of the objects that it reads, and labels that no Harness pod has. Its check
-container calls each model as a Turn calls it. The preflight is the step of `jr2 up`, and a check is what the check
+reads. It is behind a Fence and reaches the Custodian as a pod of its class does, and it has its own copies of the
+objects that it reads and labels that no Harness pod has. Its check container calls each model as a Turn calls it. The preflight is the step of `jr2 up`, and a check is what the check
 container does for one model: one call, and at most a second one after an answer in text; for an MCP server, it reads
 its tool list once through the Custodian. `jr2 check` is not this check: it runs the typecheck and the Machine walk of
 `jr2 up`, with no pod and no cluster.
@@ -459,7 +482,8 @@ one call out.
 _Avoid_: sidecar, worker, runner
 
 **Effect secret**:
-A secret as an Effect uses it: the real value, in an Effector. It is a placement, not a kind: one secret is a Held
+A secret as an Effect uses it. The Instance Effector holds its real value. For a Sandbox Effector, the Custodian holds
+the value of a secret that goes in a header, and the Effector holds the value of each other one. It is a placement, not a kind: one secret is a Held
 secret where an Agent's pod names it and an Effect secret where an Effect names it, and it can be both.
 _Avoid_: secret (unqualified), injected secret
 

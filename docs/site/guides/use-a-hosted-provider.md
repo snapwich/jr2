@@ -23,9 +23,10 @@ ANTHROPIC_API_KEY=<your key>
 ```
 
 The `name` of the entry is the env var that the provider reads. When an Agent names a model of that provider, the key is
-a [Held secret](../reference/glossary.md#held-secret) in the pod of the Agent. The Harness container holds only its
-[Stand-in](../reference/glossary.md#stand-in). The [Custodian](../reference/glossary.md#custodian) of the pod puts the
-key into the requests to the provider.
+a [Held secret](../reference/glossary.md#held-secret) for the pod of the Agent. The Harness container holds only its
+[Stand-in](../reference/glossary.md#stand-in). The [Custodian](../reference/glossary.md#custodian) puts the key into the
+requests to the provider. The host of the key needs no entry on the [Egress list](../reference/glossary.md#egress-list)
+of a Sandbox.
 
 You do not say which pods get the key. jr2 finds them from the models that the Agents of each pod name.
 
@@ -56,6 +57,8 @@ jr2 up
 
 For an Instance whose Agent has only the [Menu](../reference/glossary.md#menu) and uses Anthropic, you see these lines:
 
+<!-- output: not run -->
+
 ```text
 …
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
@@ -73,7 +76,7 @@ For an Agent in a [Workspace](../reference/glossary.md#workspace), the line name
 Machine, the label continues with its route, such as ` → "<state>"`.
 
 Before `jr2 up` applies the operator and the Instance, it checks each catalog model that an Agent names. A pod in the
-cluster asks the provider for one tool call, through a Custodian that holds the key, as a
+cluster asks the provider for one tool call, through the Custodian, which holds the key, as a
 [Turn](../reference/glossary.md#turn) asks. When the model id or the key is wrong, `jr2 up` stops with
 `error: provider preflight failed for model "<model>"`. The Instance, its Assembly and the operator do not change.
 [Fix a failed converge](fix-a-failed-converge.md#rules) gives the full error.
@@ -105,7 +108,7 @@ Obey these conditions:
   `baseUrl`, not to `api.anthropic.com`.
 
 `paths` limits the key to the path prefixes that the Agents use. A gateway key can often reach admin routes too, such as
-a route that makes new keys. An Agent could take a new key out of the pod. Thus give a gateway key `paths`.
+a route that makes new keys. An Agent could read a new key and take it away. Thus give a gateway key `paths`.
 
 When the certificate of the gateway comes from a private CA, name the CA in
 [`harness.caBundle`](../reference/config.md#harness-cabundle). The guide

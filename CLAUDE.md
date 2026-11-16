@@ -93,7 +93,7 @@ can break), and since ADR-0038 `@kind` is a **second** canary — it drives the 
 both before bumping pi** — and the `@model` tier below, the third canary. **`@model` (ADR-0066; opt-in):** a REAL model
 behind each scenario's Custodian — see [Model-tier testing](#model-tier-testing-adr-0066) below. **Custodian suite
 (ADR-0059; opt-in, needs docker):** the Custodian's claims against the pinned Envoy image itself — the swap, the strip,
-the refusals, the dial guard, SSE, abort, and the Anthropic SDK through `HTTPS_PROXY` — `just custodian-test`; not in
+the refusals, the dial guard, SSE, abort, and the Anthropic SDK with no proxy setting — `just custodian-test`; not in
 `pnpm -r test`. Run it before moving the Envoy pin.
 
 ## Model-tier testing (ADR-0066)

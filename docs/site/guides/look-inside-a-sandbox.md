@@ -163,8 +163,11 @@ git push origin <branch>
 ```
 
 `origin` fetches through the [Repo cache](../concepts/architecture.md#the-repo-cache) of the node, and pushes to the
-Repo. When the Repo url starts with `https://`, `git push` asks for a user name and a password. Give your user name.
-Give a token that can push to the Repo as the password.
+Repo. The push goes out through the [Custodian](../reference/glossary.md#custodian). It works only when the
+[Egress list](../reference/glossary.md#egress-list) of the Workspace permits the host of the Repo, such as `github.com`.
+The same applies to the LFS server. See [Workspaces](../concepts/workspaces.md#the-network-of-a-sandbox). When the Repo
+url starts with `https://`, `git push` asks for a user name and a password. Give your user name. Give a token that can
+push to the Repo as the password.
 
 When the Repo keeps its large files with Git LFS, `git push` also uploads the large files of the branch to the LFS
 server. The upload uses your credential, not a credential of jr2. git-lfs can ask for your user name and token again.

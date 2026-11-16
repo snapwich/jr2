@@ -270,17 +270,22 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   See [Use a local model](use-a-local-model.md).
 
 - When an Agent uses a model of pi's catalog (for example `anthropic/claude-haiku-5-5`), a pod in the cluster asks the
-  provider for one tool call for each model. The pod has the placement of the Harness pods that run the model, and a
-  Custodian that holds the secrets of those pods. When a call fails:
+  provider for one tool call for each model. The pod has the placement of the Harness pods that run the model, and it
+  reaches the [Custodian](../reference/glossary.md#custodian) as those pods do. When a call fails:
   `error: provider preflight failed for model "<model>" toward <host> (from a pod on <where>, through a Custodian, as a Turn calls it): <error>`.
-  When the pods hold no secret, the error says `direct` in place of `through a Custodian`. Each failed model has its own
-  error. Lines with the usual causes follow:
+  Each failed model has its own error. Lines with the usual causes follow:
 
   ```text
     - the pods may have no egress to <host> (a NetworkPolicy, a firewall, no route out of the cluster)
     - the held secret <NAME> may be empty, wrong, or without access to this model (`secrets` in jr2.config.ts)
     - a private CA on that path must be in harness.caBundle
   ```
+
+  Each check pod is behind a [Fence](../reference/glossary.md#fence), as each Harness pod is, also the check pod for the
+  [Instance Harness](../reference/glossary.md#instance-harness). The Custodian refuses a host that the
+  [Egress list](../reference/glossary.md#egress-list) does not permit and that no Held secret is bound to, such as a
+  local model with no key. `jr2 up` refuses to converge while such a host that jr2 uses has no entry, and it prints the
+  entry to add. Add the host to `egress`.
 
   When the provider refused the key (a 401 or a 403), the line about the held secret comes first, and the line about
   egress is left out, because the provider answered. When no Harness pod holds a key of the provider, the line about the
@@ -304,9 +309,8 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   error, because their tries are not seen. When the check pod stops before the end, the error says which model the check
   was on, and `not checked` for each model that it never reached.
 
-  The check has a limit. The check pod has labels of its own, so a NetworkPolicy that selects the Harness pods by label
-  does not select the check pod. When such a policy closes the egress of the Harness pods, the check can pass while a
-  Turn fails. The egress policy of jr2, which closes the cloud metadata addresses, selects the check pod too.
+  No NetworkPolicy applies to a check pod or to a Harness pod. The Fence and the Egress list decide their traffic, so
+  the check and a Turn take the same path.
 
   A check can fail when the model works, for example a model that loads for longer than the check waits. When you know
   that the models work, run `jr2 up --skip-provider-preflight`. No check pod runs, and the converge goes on. `jr2 up`
@@ -316,7 +320,7 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `; these MCP servers' tool lists were not checked: <server>, …`. A model that does not work then fails in a run, as
   `agent.fault`, and not at the converge. Remove the flag when the check works again.
 
-- When an Agent names a remote MCP server, the check pod also asks the server for its tools, through its Custodian. Each
+- When an Agent names a remote MCP server, the check pod also asks the server for its tools, through the Custodian. Each
   name in an allowlist must be a tool of the server:
   `error: mcp: workflow "<workflow>": Agent "<slot>" allowlists the tool "<tool>", which "<server>" does not list — it lists: <tools> (ADR-0079)`.
   A server that refuses the token (a 401 or a 403) is an error too:
@@ -324,14 +328,17 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   A server that does not answer is a warning. [Give an Agent MCP tools](give-an-agent-mcp-tools.md#rules) gives each
   text.
 
+- When a Machine has a Sandbox or a Menu-only Agent, each Sandbox node must have the parts of the Fence that `jr2 up`
+  does not install: the second network of a pod (Multus), the bridge of the node, and the rule set of the node. While a
+  node lacks one, `jr2 up` refuses to converge. The error names the node and the part. See
+  [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#check-the-cluster).
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See
   [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). Every rollout comes after the provider
   check, the rollout of the operator (`jr2-controller-manager`) too.
 - When the rollout made no pod, the error says:
   `no pod matches <selector> — the ReplicaSet made none (check quota, node taints, and the selector)`. For the Repo
-  cache and the [Instance Harness](../reference/glossary.md#instance-harness), it names the DaemonSet or the
-  StatefulSet.
+  cache and the Instance Harness, it names the DaemonSet or the StatefulSet.
 - After each rollout, the pods must run the image that `jr2 up` expected. `<layer>` is `operator`, `orchestrator`,
   `repo cache`, `instance harness` or `instance effector`:
   ``error: <layer>: rollout reported success, but the running pod carries <images> — expected <image>. The cluster is serving code this converge did not deploy; `kubectl -n <namespace> rollout restart deploy` and re-run `jr2 up` to resolve it.``

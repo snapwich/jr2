@@ -91,9 +91,9 @@ recover, finish — are exercised only one scripted tool call at a time.
   the lock names one owner, so a later suite with another profile could take it over while the second still converges,
   and two suites put twice `workers` × `parallel` runs in flight. A lock whose owner is gone is taken over. Nothing in
   the product learns the tier exists. Reachability from the pods is `jr2 up`'s provider preflight, for both kinds of
-  profile. It checks each model from a check pod with a Custodian before it writes anything
-  ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). So a pod with no egress to the provider
-  fails the converge at the check pod.
+  profile. It checks each model from a check pod, which reaches the Custodian as a pod of its class does, before it
+  writes anything ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). So a pod with no egress to
+  the provider fails the converge at the check pod.
 - **Not in CI. Run by whoever changed what the model reads, before calling the change done.** Not in `pnpm -r test`, not
   in the release job: it needs a cluster and an endpoint, it is nondeterministic by nature, and a gate that flakes is a
   gate everyone re-runs. `just e2e-model` probes the profile's endpoint first and, when nothing answers, exits 0 with

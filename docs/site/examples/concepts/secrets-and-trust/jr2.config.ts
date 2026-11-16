@@ -2,7 +2,7 @@ import { defineConfig } from "@jr2/orchestrator";
 
 export default defineConfig({
   secrets: [
-    // A model key. Each pod whose Agents use Anthropic claims it, and the Custodian of that pod holds it.
+    // A model key. Each pod whose Agents use Anthropic claims it, and the Custodian holds it for that pod.
     // It has no hosts, so it goes only to the host that Anthropic's calls go to.
     { name: "ANTHROPIC_API_KEY", value: process.env.ANTHROPIC_API_KEY },
     // A Held secret for a tool that the Agent runs. A workspace() claims it with secrets: ["TRACKER_TOKEN"].

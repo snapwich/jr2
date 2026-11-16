@@ -40,15 +40,29 @@ below explains one field. Set only the fields that your cluster needs.
   node. To keep a node out, use `sandbox.nodeSelector` or a taint (see
   [Choose the Sandbox nodes](#choose-the-sandbox-nodes)). A node that joins later and has no Landlock gets no working
   Sandbox: its Harness does not start.
-- A CNI that enforces NetworkPolicy, and no node credential that a pod can get. `jr2 up` applies a NetworkPolicy that
-  stops each Harness pod at the cloud metadata addresses: `169.254.169.254`, `fd00:ec2::254`, `169.254.170.2`,
-  `169.254.170.23` and `100.100.100.200`. There, the metadata service of a node can give the node's cloud credential to
-  a pod. `jr2 up` does not check these. Do these checks:
-  - Find the metadata address of your cloud provider. If it is not in the list, block it with a NetworkPolicy of your
-    own.
-  - Make sure that the CNI enforces NetworkPolicy. Without it, the policy stops nothing.
+- The parts of the [Fence](../reference/glossary.md#fence) on each Sandbox node. The Fence is the only network of a
+  Sandbox and of the [Instance Harness](../reference/glossary.md#instance-harness). It is a second pod network, apart
+  from the network of the cluster. `jr2 up` installs the [Custodian](../reference/glossary.md#custodian), its uplink on
+  each Sandbox node and its resolver. It does not install these parts:
+  - Multus, with the stock `bridge` plugin, so that a Sandbox pod gets the Fence as its only network.
+  - One bridge on each Sandbox node.
+  - The rule set of each Sandbox node, which keeps the node's own network stack off the bridge.
+
+  `jr2 up` checks each part, and refuses to converge while a Sandbox node lacks one. It names the node and the part. On
+  Cilium, the config of the node must let a different CNI plugin run (`cni-exclusive: false`). A managed cluster that
+  permits no second pod network and no rule set on its nodes cannot have the Fence.
+
+- No node credential that a pod can get. At a cloud metadata address, the metadata service of a node can give the node's
+  cloud credential to a pod. A Sandbox and the Instance Harness cannot dial such an address: the Custodian refuses each
+  IP address that is not an entry of the Egress list, and its dial guard refuses a permitted name that resolves to a
+  link-local address. The guard does not refuse Alibaba Cloud's `100.100.100.200`, because it is not link-local. No
+  NetworkPolicy or service mesh applies to a pod behind a Fence. The other pods of the Instance, such as the
+  Orchestrator and the Instance Effector, are on the network of the cluster. `jr2 up` does not check these. Do these
+  checks:
+  - Find the metadata address of your cloud provider. When the dial guard does not refuse it, put no name that resolves
+    to it on an Egress list.
   - Give pods no node credential. On GKE, use Workload Identity. On AWS, use IMDSv2 with a hop limit of 1. Then a pod
-    gets no node credential from the metadata service, also where the policy does not apply.
+    gets no node credential from the metadata service, also a pod that is not behind a Fence.
 - Your kubectl user can apply objects outside the namespace of the Instance. `jr2 up` applies the operator in the
   `jr2-system` namespace, with its CustomResourceDefinitions, ClusterRoles and ClusterRoleBindings. It also applies two
   PriorityClasses, unless you name your own.
@@ -80,11 +94,11 @@ credentials on the nodes or with anonymous pulls.
 
 The [Kit images](../reference/glossary.md#kit-image) do not go to `registry`. The image of the
 [Orchestrator](../reference/glossary.md#orchestrator) is one of them. The nodes pull them from `ghcr.io/snapwich`, and
-the Envoy image of the [Custodian](../reference/glossary.md#custodian) from `docker.io`. When the nodes cannot reach
-those registries, see [Mirror the Kit images](mirror-the-kit-images.md).
+the Envoy image of the Custodian from `docker.io`. When the nodes cannot reach those registries, see
+[Mirror the Kit images](mirror-the-kit-images.md).
 
 `jr2 up` also checks each model that an [Agent](../reference/glossary.md#agent) names, from a pod in the cluster. That
-pod uses the Harness Kit image and the Envoy image of the Custodian, so it needs no other image.
+pod uses the Harness Kit image, so it needs no other image.
 
 ## Choose the platforms
 
@@ -160,9 +174,8 @@ again in the cluster, where your shell and `.env` are not available.
 ## Use the priority classes of the cluster
 
 `jr2 up` creates two PriorityClasses by default. `jr2-control` is for the Orchestrator, the operator, the Repo cache and
-the [Instance Effector](../reference/glossary.md#instance-effector). `jr2-sandbox` is for the Sandboxes and the
-[Instance Harness](../reference/glossary.md#instance-harness). An ordinary pod cannot preempt a Sandbox, and a Sandbox
-that waits for a node preempts no pod.
+the [Instance Effector](../reference/glossary.md#instance-effector). `jr2-sandbox` is for the Sandboxes and the Instance
+Harness. An ordinary pod cannot preempt a Sandbox, and a Sandbox that waits for a node preempts no pod.
 
 When the cluster has its own priority scheme, set [`priorityClasses`](../reference/config.md#priorityclasses) to the
 names of its classes. `jr2 up` creates no class for a key that you set, and tells you which classes it uses:

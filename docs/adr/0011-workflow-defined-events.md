@@ -52,9 +52,9 @@ invoked the agent** (bubbling to ancestor states per statechart semantics — a 
 
 **Transport: the Agent's registration is read from the Sandbox** (ADR-0013). The Orchestrator speaks no MCP: it serves
 `GET /agents/:iid/surface` + `POST /agents/:iid/events` under the Sandbox token, and the pod's Harness reads them
-through the Custodian on `localhost`, which holds the token, and presents the surface to its model as the Menu (the
-Harness re-reads per Submission, so the iid in the path is all the addressing needed). Lookup, validation, delivery, and
-lifecycle stay implemented once, in the registration table.
+through the Custodian, which holds the token, and presents the surface to its model as the Menu (the Harness re-reads
+per Submission, so the iid in the path is all the addressing needed). Lookup, validation, delivery, and lifecycle stay
+implemented once, in the registration table.
 
 ## External side: the same primitive over HTTP (`gate`), and each gate is a resource
 

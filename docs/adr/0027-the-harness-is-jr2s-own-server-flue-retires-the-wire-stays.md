@@ -274,8 +274,8 @@ jr2's engine part ([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md
   must now be answered, not re-deferred
   ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)).
 - **Kept verbatim**: the wire, the stub as the mechanics fixture, `AgentRunPort` and the admission ledger, ADR-0024's
-  rule, receipt, and ordering, and the container split — restated in jr2 terms: the pod's credentials live in a separate
-  container (the Custodian, ADR-0059) _because working tools execute in the Harness container_, so the
+  rule, receipt, and ordering, and the credential split — restated in jr2 terms: the Harness's credentials live outside
+  its pod (in the Custodian, ADR-0059, ADR-0084) _because working tools execute in the Harness container_, so the
   credential-isolation premise survives while `local()` leaves the vocabulary. The one credential that the Harness
   process holds, the control Stand-in, is out of reach of the Working tools' children, which run confined (ADR-0076).
 - **The `flue-contract` tier dissolves into the conformance suite.** Its rig — scripted OpenAI-compatible provider, the

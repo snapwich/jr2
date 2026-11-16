@@ -41,8 +41,8 @@ Add a `harness` entry to `jr2.config.ts`. It declares a custom provider with the
 
 <<< @/examples/shared/local/jr2.config.ts
 
-Add the address of the endpoint to `.env`. Write the LAN address of the computer that runs the server in place of
-`<address>`:
+Add the address of the endpoint to `.env`. Write the LAN address or the host name of the computer that runs the server
+in place of `<address>`:
 
 ```sh
 LOCAL_MODEL_URL=http://<address>:8000/v1
@@ -58,6 +58,14 @@ The fields of [`harness.provider`](../reference/config.md#harness-provider) do t
 Set `contextWindow` to the context of the server: `-c` for llama.cpp, `--max-model-len` for vLLM. A limit that nothing
 sets is 0. Then [Compaction](../reference/glossary.md#compaction) has no context budget.
 
+An endpoint with no key is not the host of a [Held secret](../reference/glossary.md#held-secret). Thus a
+[Harness](../reference/glossary.md#harness) reaches it only when the [Egress list](../reference/glossary.md#egress-list)
+permits it, in a [Sandbox](../reference/glossary.md#sandbox) and on the
+[Instance Harness](../reference/glossary.md#instance-harness) alike. Add `"<address>:8000"` to `egress` in
+`jr2.config.ts`, such as `egress: ["<address>:8000"]`. An IP address with its port is a correct entry. While the entry
+is not there, `jr2 up` refuses to converge, and it prints the entry to add. An endpoint with a key needs no entry,
+because the key is a Held secret ([Workspaces](../concepts/workspaces.md#the-network-of-a-sandbox)).
+
 ## Name the model in an Agent
 
 An Agent names the model in the `model` field of its definition, as `<provider>/<modelId>`: `"local/qwen3.6-35b-a3b"`.
@@ -71,6 +79,8 @@ jr2 up
 
 `jr2 up` starts a pod in the cluster, on the nodes where the Agents that name the model run. The pod asks the endpoint
 for one tool call for each model, as a Turn asks. You see these lines when the Agent is a `workspace: "none"` Agent:
+
+<!-- output: not run -->
 
 ```text
 …
@@ -94,11 +104,10 @@ provider: http://<address>:8000/v1 configured, but no carried Agent names a "loc
 
 ## Serve over TLS with a key
 
-The server listens on `0.0.0.0`, so each device on your network can use it. A key stops this. The key is a
-[Held secret](../reference/glossary.md#held-secret). The [Harness](../reference/glossary.md#harness) container holds
-only its [Stand-in](../reference/glossary.md#stand-in). The [Custodian](../reference/glossary.md#custodian) of the pod
-puts the key into the requests. The Custodian sends a key over TLS only. Thus a key needs an `https://` endpoint, and
-the cluster must trust its certificate.
+The server listens on `0.0.0.0`, so each device on your network can use it. A key stops this. The key is a Held secret.
+The Harness container holds only its [Stand-in](../reference/glossary.md#stand-in). The
+[Custodian](../reference/glossary.md#custodian) puts the key into the requests. The Custodian sends a key over TLS only.
+Thus a key needs an `https://` endpoint, and the cluster must trust its certificate.
 
 ### Make a key
 
@@ -172,6 +181,8 @@ trust it. An `https://` endpoint whose certificate comes from a private CA needs
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 the Instance Harness: Custodian holds JR2_PROVIDER_API_KEY (provider)
@@ -184,21 +195,19 @@ provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 ```
 
-The Custodian of the Instance Harness holds the key. `jr2 up` prints the `held secrets:` line when the namespace has no
-CA for the Custodians yet, as on the first `jr2 up` with a Held secret.
+The Custodian holds the key. `jr2 up` prints the `held secrets:` line when the namespace has no CA for the Custodian
+yet, as on the first `jr2 up` with a Held secret.
 
-To change the key, edit `.env`. Then start the server again. Then run `jr2 up` again. When a Menu-only Agent names the
-model, `jr2 up` restarts the [Instance Harness](../reference/glossary.md#instance-harness) with the new key. A live
-[Sandbox](../reference/glossary.md#sandbox) keeps the old key, so its calls to the server fail after the restart. A
-Sandbox that starts after `jr2 up` gets the new key.
+To change the key, edit `.env`. Then start the server again. Then run `jr2 up` again. The Custodian then uses the new
+key, also for a live Sandbox. No Harness restarts.
 
 ## Rules
 
 `jr2 up` prints each refusal after `error: `.
 
 - `jr2 up` stops when the check of the endpoint fails. A pod in the cluster asks the endpoint for one tool call for each
-  model, as a Turn asks. The pod has a Custodian, so a key in `apiKey` is held as in a Harness pod. The first line gives
-  the error. The other lines are the usual causes:
+  model, as a Turn asks. The pod reaches the Custodian as a Harness of its class does, so a key in `apiKey` is held as
+  in a Turn. The first line gives the error. The other lines are the usual causes:
 
   ```text
   provider preflight failed for model "<model>" against <host> (from a pod on <where>, as a Turn calls it): <error>
@@ -212,8 +221,7 @@ Sandbox that starts after `jr2 up` gets the new key.
   `harness.provider.apiKey is set, and harness.provider.baseUrl is not https:// — the key is a held secret and the Custodian carries TLS only (ADR-0059). Serve the endpoint over TLS (and name its CA in harness.caBundle), or drop apiKey for an endpoint that needs none.`
 - `jr2 up` refuses a `caBundle` that it cannot read:
   `harness.caBundle names "<path>" but <file> is not readable — the path is relative to the instance folder; commit the PEM bundle there (CA certs are public)`.
-- While a Held secret exists, `jr2 up` refuses a proxy or trust variable in `harness.env`, such as
-  `NODE_EXTRA_CA_CERTS`. Put the CA in `caBundle`:
+- `jr2 up` refuses a proxy or trust variable in `harness.env`, such as `NODE_EXTRA_CA_CERTS`. Put the CA in `caBundle`:
   `harness.env[<i>] sets <NAME>, which the Custodian owns while a held secret exists — it cannot chain to another proxy or trust store yet. Drop the entry; put a private CA in harness.caBundle (ADR-0059).`
 - `jr2 up` warns about a key when no Agent names a model of the provider:
   `warning: harness.provider.apiKey is named by nothing; goes nowhere — no Agent names a "<id>/…" model (ADR-0059)`.
@@ -236,3 +244,5 @@ Sandbox that starts after `jr2 up` gets the new key.
 - [ADR-0020](../reference/decisions/0020-private-ca-trust-is-a-named-concept.md): `caBundle`.
 - [ADR-0059](../reference/decisions/0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md): the Custodian
   holds the key.
+- [ADR-0084](../reference/decisions/0084-a-sandboxs-only-network-leads-to-the-custodian.md): a Harness reaches only what
+  the Egress list permits, and a host with no key needs an entry.

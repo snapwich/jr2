@@ -119,9 +119,13 @@ installs its own copy of `@jr2/cli`. In an Instance folder, the global `jr2` giv
 version that runs is the version that the Instance pins. The glossary calls this a
 [Forward](../reference/glossary.md#forward).
 
-You also made a kind cluster. jr2 needs no setup in the cluster other than Kubernetes 1.35 or later. `jr2 up` puts in it
-all that an Instance needs. [Converge](../concepts/converge.md) explains what `jr2 up` makes. The
-[CLI reference](../reference/cli.md) gives each command and its options.
+You also made a kind cluster. It runs Kubernetes 1.35 or later, which jr2 needs. `jr2 up` puts in it the parts that an
+Instance needs, such as the [Orchestrator](../reference/glossary.md#orchestrator) and the
+[Custodian](../reference/glossary.md#custodian). A [Sandbox](../reference/glossary.md#sandbox) and the
+[Instance Harness](../reference/glossary.md#instance-harness) also need parts of their network that `jr2 up` does not
+install: Multus, a bridge on each node, and a rule set on each node. `jr2 up` checks them, and names each node that does
+not have one. [Converge](../concepts/converge.md) explains what `jr2 up` makes. The [CLI reference](../reference/cli.md)
+gives each command and its options.
 
 ## Next
 

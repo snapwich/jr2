@@ -60,11 +60,11 @@ the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
   its constructor, with the bound name in every place `secret(open)` stood, so a bound part meets every rule the
   constructor checks — a literal host, no secret in a query, a non-empty argv, a secret's name — and the bound Effect is
   the one the same definition written with that name gives; `jr2 up` reads it as written: the placement, the secrets it
-  names, and the Effector's fence ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)) are the
-  bound ones, and the bound secret is placed only in that Effect's Effector, as a named secret is. Only an Open part is
-  offered: a part the author fixed is no key of `effects` and is refused at the call, and a part bound once is fixed
-  from then on, so a second composer cannot move it. `effects` reaches through `workspace()`'s body, `pool()`'s worker
-  and a composed Machine's `actors`, as `agents` does, typed off the slot's logic. An Open argv's slots are the
+  names, and the Effector's match of hosts ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md))
+  are the bound ones, and the bound secret is placed only in that Effect's Effector, as a named secret is. Only an Open
+  part is offered: a part the author fixed is no key of `effects` and is refused at the call, and a part bound once is
+  fixed from then on, so a second composer cannot move it. `effects` reaches through `workspace()`'s body, `pool()`'s
+  worker and a composed Machine's `actors`, as `agents` does, typed off the slot's logic. An Open argv's slots are the
   composer's, so the load walk counts every pick param as read by it when the Machine is built, and `customize()` runs
   the walk's pick-param check again once the argv is bound — a param the bound argv does not read is refused there, and
   a warning it gives for the bound argv is the bound Machine's, as it is the same Machine's written with that argv: the

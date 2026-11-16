@@ -28,9 +28,10 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   Nothing else in git talks to a remote, so `status`, `log`, and `rebase` stay local. The push url is unchanged: the
   Binding's own spelling, the caller's own credential, never the Agent's (ADR-0005).
 
-- **The ask rides the Sandbox CR and reaches the agent through the pod.** The program asks the Custodian on `localhost`
-  (`POST /fetch`, with the fetch token's Stand-in — a constant, because the User Container gets no env); the Custodian
-  puts the fetch token in place of the Stand-in, on this route alone and asks the Orchestrator for THIS pod's Sandbox
+- **The ask rides the Sandbox CR and reaches the agent through the pod.** The program asks the Custodian through the
+  Fence (`POST /fetch` to a name of jr2's own, [ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md), with
+  the fetch token's Stand-in — a constant, because the User Container gets no env); the Custodian puts the fetch token
+  in place of the Stand-in, on this route alone and asks the Orchestrator for THIS Sandbox, which the Fence names to it
   (`POST /sandboxes/<name>/fetch` — the program cannot name another,
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); the Orchestrator patches one
   annotation on the Sandbox CR, per Repo key, timestamp value — the Lease's shape, an annotation the Orchestrator
@@ -139,9 +140,9 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 - The cache agent serves a Repo's git asks and its LFS asks one at a time, and it works on at most four Repos at once.
   While it downloads large files for one pod, a fetch that another pod on that node asks for the same Repo can run out
   of its budget and land `stale`. Four such downloads at once hold the agent, so a fetch of any Repo on that node waits.
-- The Sandbox status grows a standing per-key Repo entry; the Custodian carries one loopback route for it; the
-  Orchestrator gains a Sandbox-token route. No new credential, no new watch in the cache agent, no git knowledge in the
-  operator beyond the timestamp comparison it already makes.
+- The Sandbox status grows a standing per-key Repo entry; the Custodian carries one route for it; the Orchestrator gains
+  a Sandbox-token route. No new credential, no new watch in the cache agent, no git knowledge in the operator beyond the
+  timestamp comparison it already makes.
 - The rewind gotcha vanishes: a human who fetched around the cache with their own credential advanced a remote-tracking
   ref the Agent's next cache fetch forced back. Nobody fetches around the cache now.
 - The Harness `bash` tool's own timeout still bounds a fetch the way it bounds any slow command.

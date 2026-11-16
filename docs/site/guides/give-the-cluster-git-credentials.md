@@ -23,7 +23,7 @@ identity is the host and the path of the url, with no scheme, no user and no `.g
 - `match` is a prefix of the identity, such as `github.com/<you>/`, or `*` for each Repo.
 - When two or more entries match, the longest `match` wins. When two have the same length, the first entry wins.
 - The scheme of the url selects the credential. An `https://` url uses `token`. An ssh url uses `sshKey`.
-- An entry with no `token` and no `sshKey` lets its Repos through the fence. The cluster clones them with no credential.
+- An entry with no `token` and no `sshKey` lets its Repos through the match. The cluster clones them with no credential.
   If the entry also has no `push` field, the cluster never pushes to them.
 
 `jr2 init` writes one entry, `{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }`. It matches each Repo.
@@ -145,9 +145,9 @@ kubectl -n <namespace> create secret generic <name> --from-file=identity=<privat
 With `known_hosts`, the Repo cache accepts only the host keys in that file. With no `known_hosts`, it accepts the host
 key on the first connection, and keeps it while the Repo cache agent runs.
 
-## Narrow the fence
+## Narrow the match
 
-The list is also a fence. A url that a Machine binds is code that your Instance typechecked. It needs no entry, and with
+The list is also a match. A url that a Machine binds is code that your Instance typechecked. It needs no entry, and with
 no entry it clones with no credential. A url that comes from the run input is different: a run could name any host. So
 the url of a per-run Repo Slot must match an entry, or the [Sandbox](../reference/glossary.md#sandbox) refuses it.
 
@@ -218,5 +218,5 @@ default. When the server does not speak it, they use `git-lfs-authenticate`.
 - [`git.credentials`](../reference/config.md#git-credentials) in the `jr2.config.ts` Reference, and
   [`jr2 up`](../reference/cli.md#up) in the CLI Reference.
 - [ADR-0051](../reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md): the entries, and
-  the fence.
+  the match.
 - [ADR-0047](../reference/decisions/0047-the-git-ssh-key-source-is-the-users-choice.md): the choice of the ssh key.

@@ -103,6 +103,30 @@ Make the file `workflows/task.ts`. Replace `<you>` and `<version>` in it:
   fixture.
 - The file name gives the [Workflow](../reference/glossary.md#workflow) its name: `task`.
 
+## Let the Sandbox reach GitHub
+
+A Sandbox reaches only the names that its [Egress list](../reference/glossary.md#egress-list) permits. You push the
+branch from the Sandbox, so the Sandbox must reach `github.com`.
+
+::: tabs key:provider
+
+== Anthropic
+
+Open `jr2.config.ts`. Add this entry to the object that `defineConfig()` gets: `egress: ["github.com"],`. Keep the other
+lines.
+
+The model key is a [Held secret](../reference/glossary.md#held-secret), so the Sandbox reaches the Anthropic API with no
+entry.
+
+== Local
+
+Open `jr2.config.ts`. Add `"github.com"` to the `egress` entry that [Connect a model](connect-a-model.md) added:
+`egress: ["github.com", "<address>:8000"],`. Keep the other lines.
+
+The endpoint has no key, so it keeps its entry. The coder calls the model from the Sandbox.
+
+:::
+
 ## Converge the Instance
 
 [`jr2 up`](../reference/cli.md#up) converges the Instance with the new Workflow:
@@ -302,8 +326,9 @@ To https://github.com/<you>/jr2.git
  * [new branch]      jr2/task-b6316ef4-306f-4de1-bd29-dfecaacfb035 -> jr2/task-b6316ef4-306f-4de1-bd29-dfecaacfb035
 ```
 
-`origin` fetches through the Repo cache of the node, and pushes to your fork. Open your fork on GitHub to see the
-branch. Then leave the Sandbox:
+`origin` fetches through the Repo cache of the node, and pushes to your fork. The push goes out through the
+[Custodian](../reference/glossary.md#custodian), because the Egress list permits `github.com`. Open your fork on GitHub
+to see the branch. Then leave the Sandbox:
 
 ```sh
 exit
@@ -367,6 +392,9 @@ The list has no row, because the run removed its Sandbox.
 - You used `jr2 workspace shell` to go into the Sandbox. The shell runs as the Agent runs, so it cannot read the
   credential of the Agent. The guide [Look inside a Sandbox](../guides/look-inside-a-sandbox.md) gives the same
   commands.
+- The Sandbox could reach only `github.com`, the model and the routes of jr2. The Custodian refuses each other name. See
+  [The network of a Sandbox](../concepts/workspaces.md#the-network-of-a-sandbox) and
+  [ADR-0084](../reference/decisions/0084-a-sandboxs-only-network-leads-to-the-custodian.md).
 - You pushed by hand, because `task` does not push. On the next page, a Machine pushes the branch with an
   [Effect](../reference/glossary.md#effect).
 

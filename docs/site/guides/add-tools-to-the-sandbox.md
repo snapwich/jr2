@@ -22,6 +22,12 @@ Use this table to choose:
 | A service that runs beside the Agent           | Name its image in the `user` option. It runs in the [User Container](../reference/glossary.md#user-container).                            |
 | A tool that the model calls by name            | Put an MCP server in the image, and declare it in `jr2.config.ts`. See [Write a tool as an MCP server](write-a-tool-as-an-mcp-server.md). |
 
+`jr2 up` builds the image on your computer, so the build gets its packages as each docker build does. In the Sandbox, a
+program that an Agent downloads while it works, such as a package that `npm install` gets, comes through the
+[Custodian](../reference/glossary.md#custodian). The [Egress list](../reference/glossary.md#egress-list) of the
+Workspace must permit its host, such as `registry.npmjs.org`. A tool that is in the image needs no entry. See
+[Workspaces](../concepts/workspaces.md#the-network-of-a-sandbox).
+
 ## Add a tool to the default image
 
 `jr2 init` writes `images/default/Dockerfile`. Each Workspace that names no `image` in
@@ -196,8 +202,9 @@ The User Container is not a second Sandbox Image:
 - It has no floor: an Alpine base is correct here. It runs as the `USER` of its image, and root is permitted.
 - Its user can be different from the user that owns the Worktrees, for example root. Thus an image that runs git needs
   `git config --system --add safe.directory '*'`, as the example has.
-- The pod has one network. The User Container cannot listen on the ports of jr2's containers: `8080`, `8082` and
-  `15021`, and `8081` and `15001` on loopback.
+- The pod has one network. The User Container cannot listen on the ports of jr2's containers: `8080` and `8082`.
+- Its traffic goes through the Custodian, as all traffic of the Sandbox does. It reaches only the names that the Egress
+  list permits.
 - To give it a part of the [Size](../reference/glossary.md#size), write `user: { image, resources }`. See
   [Size a Workspace](size-a-workspace.md).
 

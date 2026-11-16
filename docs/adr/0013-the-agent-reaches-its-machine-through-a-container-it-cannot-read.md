@@ -5,11 +5,10 @@ An earlier cut put the Agent's tool surface on the Orchestrator (`/mcp/:instance
 not exist and could not be safely built as specified: nothing passed a callback URL into a Sandbox, `jr2 dev` bound
 loopback, and — the real problem — an Agent that can reach the delivery API can deliver to **any** registration in its
 run, including its own human-review Gate. The fix is not to hide the API from the Agent. Working tools give the Agent
-code execution in the Harness container, which shares the pod's network namespace, so it can reach any address the pod
-can. The fix is where the credential lives: in a container of the same pod that the Agent executes nothing in — the
-**Custodian** ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Orchestrator speaks
-no MCP, and keeps one HTTP surface over the registration table it already has
-([ADR-0011](0011-workflow-defined-events.md)).
+code execution in the Harness container, so it can reach whatever the Harness can reach. The fix is where the credential
+lives: outside the Sandbox, in a container that the Agent executes nothing in — the **Custodian**
+([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Orchestrator speaks no MCP, and
+keeps one HTTP surface over the registration table it already has ([ADR-0011](0011-workflow-defined-events.md)).
 
 ## The enabling fact: the Harness reads its Menu per Submission
 
@@ -24,16 +23,16 @@ is needed either (ADR-0006).
 
 ## Decision
 
-- **The Custodian carries the Agent's Menu, and holds the credential that makes it work.** It is a jr2-composed
-  container in every Harness pod ([ADR-0005](0005-sandbox-pod-composition.md)). A Sandbox has two tokens, its **Sandbox
-  tokens**: the **control token** and the **fetch token**, mounted into the Custodian as files, and into no other
-  container. The Harness process holds the control token's Stand-in, which is secret: a file that no process it confines
-  can read, in no child's env
+- **The Custodian carries the Agent's Menu, and holds the credential that makes it work.** It is one part of the
+  Instance, outside every Sandbox (ADR-0059, [ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). A
+  Sandbox has two tokens, its **Sandbox tokens**: the **control token** and the **fetch token**, which the Custodian
+  alone holds; no container of a Sandbox mounts them. The Harness process holds the control token's Stand-in, which is
+  secret: a file that no process it confines can read, in no child's env
   ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). The fetch token's Stand-in
   is public, `jr2-held-JR2_SANDBOX_TOKEN`, and `jr2-upload-pack` holds it as a constant. The Harness reaches the
-  Orchestrator only through the Custodian: the agent routes on its control socket, `/run/jr2/custodian/control.sock`,
-  which no confined program can replace (ADR-0076), and the fetch on `127.0.0.1:8081`. The Custodian forwards six
-  routes, with each route's own token put in place of its Stand-in, and answers every other route itself:
+  Orchestrator only through the Custodian: the agent routes are HTTPS to a name of jr2's own, whose certificate no
+  process in the Sandbox can make (ADR-0076), and the fetch reaches the Custodian through the Fence too. The Custodian
+  forwards six routes, with each route's own token put in place of its Stand-in, and answers every other route itself:
 
   ```
   GET  /agents/<iid>/surface          the Menu                            → the Orchestrator
@@ -65,7 +64,7 @@ is needed either (ADR-0006).
   GET  /runs/:id                       → open gates: accepts + schemas + acceptsNow + meta  [answer]
   POST /runs/:id/gates/:gate/events    → validate + deliver, or 409                   [answer]
 
-  # the Agent's, through its pod's Custodian
+  # the Agent's, through the Custodian
   GET  /agents/:iid/surface            → Menu + Allowed picks + schemas + semantics [control token]
   POST /agents/:iid/events             → validate + deliver → the receipt, or 409  [control token]
   GET  /agents/:iid/deliveries/:id     → an outstanding pick's answer, long-polled [control token]
@@ -91,11 +90,10 @@ is needed either (ADR-0006).
   would move on this payload (ADR-0015, ADR-0029) — is answered `409 { error, acceptsNow }` and nothing is delivered.
   `jr2 send --gate` prints that error, which names what the Gate takes now, and exits 1.
 
-- **Bearer tokens, because the boundary is otherwise theater.** The Harness container shares the pod's network
-  namespace, so an Agent can `curl` the Orchestrator directly; a per-pod NetworkPolicy cannot distinguish it from the
-  Custodian. Only authentication closes this.
+- **Bearer tokens, because the boundary is otherwise theater.** An Agent's `curl` reaches the Custodian by the same path
+  as the Harness, from the same Sandbox, so no network control can tell the two apart. Only authentication closes this.
   - **Control token and fetch token** — minted per Sandbox at provision (signed names, so re-provision after a restart
-    yields the same tokens), delivered as a Secret mounted into the **Custodian container only**. User
+    yields the same tokens), and held by the **Custodian only**, outside every Sandbox (ADR-0059). User
     `harness.env`/`envFrom` land on the Harness container, never the Custodian. The control token authorizes exactly:
     read and deliver to agent registrations **whose Sandbox is this one** and whose slot is the slot the Harness states
     for the conversation (ADR-0076). The fetch token authorizes exactly: ask for this Sandbox's fetch. The Orchestrator
@@ -123,9 +121,9 @@ is needed either (ADR-0006).
     not enough, and ADR-0076 keeps the control credential where no Workspace code runs, so a coder's code cannot act as
     the reviewer beside it.
 - **Reachability, narrowed to one caller.** The Orchestrator is always in-cluster (ADR-0019), so the route home is
-  simply **Service DNS**, which the pod's maker writes into the Custodian's configuration — the Orchestrator at a
-  Sandbox's provision, `jr2 up` for the Instance Harness. The Harness is told the Custodian's loopback address
-  (`JR2_CUSTODIAN_URL`) and nothing else.
+  simply **Service DNS**, in the Custodian's configuration. The Harness is told the Custodian's URL
+  (`JR2_CUSTODIAN_URL`) and nothing else: in each Harness pod, a Sandbox or the Instance Harness, a name of jr2's own
+  that the Custodian's resolver answers (ADR-0084).
 - **A Machine-answered tool result is the held answer, for every pick that runs work.** No def declares it: a pick whose
   target runs something inside the Agent's state is outstanding until the workflow is back at Rest, and the Harness
   polls its delivery inside the one tool call (ADR-0002, ADR-0024). The gates surface answers `{ ok: true }` for a send
@@ -144,7 +142,7 @@ is needed either (ADR-0006).
   container the Agent executes nothing in anyway (ADR-0059); one container can hold every credential, and the
   translation then has no reason to live outside the Harness.
 - **Translation inside the Harness, with the credential there too.** Rejected — same container, same code execution,
-  same credential. The translation is inside the Harness now; the credential is not.
+  same credential. The translation is inside the Harness; the credential is not.
 - **The Orchestrator serves MCP, and the Custodian forwards it.** Rejected: it keeps the MCP transport and its session
   handling in the control plane and on both ends, to carry two plain HTTP calls.
 - **A uniform `/registrations/:address` API** for every caller. Rejected: it dissolves the run-scoped, discoverable Gate
@@ -153,14 +151,13 @@ is needed either (ADR-0006).
 
 ## Consequences
 
-- **The operator needs no change.** ADR-0001 made sidecars generic container fragments the operator schedules without
-  understanding; the Custodian is exactly that. `kubeSandbox` composes it (plus the token Secret, written right after
-  the CR with the CR as its owner from birth, so Kubernetes reaps it with the Sandbox and no path leaks it — ADR-0001).
+- **The token Secret goes with the Sandbox.** `kubeSandbox` writes it right after the CR, with the CR as its owner from
+  birth, so Kubernetes reaps it with the Sandbox and no path leaks it (ADR-0001).
 - **The control plane speaks no MCP.** The Orchestrator and the CLI carry no MCP dependency, and no MCP carries the
   Menu. The Harness and the Instance Effector speak MCP only as clients of an author's servers
   ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)).
-- **One container holds the Sandbox's tokens and every model key.** A fault in the Custodian's engine is a fault in the
-  one container that holds both. ADR-0059 records the trade.
+- **One part holds the tokens of each Sandbox and every model key.** A fault in the Custodian's engine is a fault in the
+  one part that holds them all, for each Sandbox of the Instance. ADR-0059 records the trade.
 - **The `@kind` e2e tier owns the pod → Orchestrator leg** — the pod's Harness actually calls its tool through the
   Custodian, so a broken leg is a red test, and a Harness container that posts a pick straight to the Orchestrator with
   the Stand-in it holds is refused. The mechanics tier plays `/agents/:iid/*` from the host, which is honestly
@@ -171,10 +168,11 @@ is needed either (ADR-0006).
   states each conversation's slot, and the Orchestrator checks it on the whole `/agents/:iid/*` set. The `@kind` tier
   gains the sibling cases: a coder's `bash` finds no control credential, and code it plants that the reviewer's own
   `bash` runs cannot deliver a pick as the reviewer.
-- **NetworkPolicy is a second layer, not the control.** It bounds where a pod may talk; only the token bounds what it
-  may _do_. `jr2 up` converges ingress policies that admit only the Orchestrator to a Harness pod
-  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)); the Orchestrator itself is left reachable, because a
-  Custodian in every Harness pod must reach it and no policy can tell the Custodian's packets from the Agent's.
+- **The network is a second layer, not the control.** It bounds where a pod may talk; only the token bounds what it may
+  _do_. The Fence bounds each Harness pod, a Sandbox or the Instance Harness (ADR-0084), and the Custodian's uplink
+  accepts a dial toward a Harness pod from the Orchestrator only
+  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). The Orchestrator itself is left reachable on the
+  cluster's network: a Harness pod reaches it only through the Custodian, which puts the token on what it forwards.
 - **The Harness wire is authenticated in the other direction.** The Orchestrator bears a token derived for the placement
   on every Harness call, and the Harness holds only its digest (ADR-0058). Same signed-name idea, reversed caller.
 - **Callers without kube credentials are ADR-0078's.** The Instance token rides kube RBAC for anyone with cluster creds;

@@ -77,11 +77,17 @@ jr2 up
 
 `jr2 up` prints who can send each event, in each state of `triage`. Then it converges the cluster.
 
+This `jr2 up` is the first that converges the [Instance Harness](../reference/glossary.md#instance-harness), which runs
+the Turns of `triager`. The Instance Harness is behind a [Fence](../reference/glossary.md#fence), as a Sandbox is. Thus
+`jr2 up` checks each node for the parts of the Fence that it does not install ([Install](install.md)).
+
 ::: tabs key:provider
 
 == Anthropic
 
 The output shows where the model key goes. Then `jr2 up` asks your model for one tool call, from inside the cluster:
+
+<!-- output: not run -->
 
 ```text
 → .env: ANTHROPIC_API_KEY
@@ -108,13 +114,15 @@ converged — `jr2 run <workflow>` when ready
 ```
 
 The warning of Connect a model, `secrets[0] (ANTHROPIC_API_KEY) is named by nothing; goes nowhere`, is gone. `triager`
-names an Anthropic model, so `jr2 up` gives the key to the [Custodian](../reference/glossary.md#custodian) of the pod
-that runs its Turns. Then it checks the model through a Custodian that holds the key. If the check fails, `jr2 up` stops
-and prints what to examine.
+names an Anthropic model, so `jr2 up` gives the key to the [Custodian](../reference/glossary.md#custodian), for the
+Harness that runs its Turns. Then it checks the model through the Custodian. If the check fails, `jr2 up` stops and
+prints what to examine.
 
 == Local
 
 `jr2 up` asks your model for one tool call, from inside the cluster:
+
+<!-- output: not run -->
 
 ```text
 → .env: LOCAL_MODEL_URL

@@ -2,14 +2,17 @@
 
 A `Sandbox` custom resource describes infrastructure only — a primary container, a generic list of additional sidecar
 container specs, volumes, resources, secrets, idle timeout — and a custom operator reconciles it into one Pod — created
-once, never recreated: a pod that is gone or terminal makes the Sandbox `Lost` (ADR-0021) — plus a Service, reporting a
-`status.endpoint` the Orchestrator uses to reach the Harness. The CRD names the Repos a Sandbox needs by identity —
-enough for the operator to place the pod and mount each node cache read-only (ADR-0051) — and knows nothing about
-clones, worktrees, or Agents; those are layered on by the Orchestrator after the Sandbox reaches `Ready`. The operator
-also publishes what the Orchestrator needs to know about the pod onto the Sandbox's status — `podUID`, a scheduling
-condition with the scheduler's message, the Harness container's restarts and last terminated reason, and the same for
-the Sandbox Effector's container — because the Orchestrator watches Sandboxes and never reads a Pod
-([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)).
+once, never recreated: a pod that is gone or terminal makes the Sandbox `Lost` (ADR-0021) — and no Service: the
+Orchestrator reaches the Harness through the Custodian's uplink
+([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The pod is hardened at the host boundary:
+`automountServiceAccountToken: false`, and a `securityContext` (`runAsNonRoot`, `allowPrivilegeEscalation: false`, drop
+`ALL`, seccomp `RuntimeDefault`) on each container that jr2 owns ([ADR-0005](0005-sandbox-pod-composition.md)). The CRD
+names the Repos a Sandbox needs by identity — enough for the operator to place the pod and mount each node cache
+read-only (ADR-0051) — and knows nothing about clones, worktrees, or Agents; those are layered on by the Orchestrator
+after the Sandbox reaches `Ready`. The operator also publishes what the Orchestrator needs to know about the pod onto
+the Sandbox's status — `podUID`, a scheduling condition with the scheduler's message, the Harness container's restarts
+and last terminated reason, and the same for the Sandbox Effector's container — because the Orchestrator watches
+Sandboxes and never reads a Pod ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)).
 
 We chose the operator over the Orchestrator calling the Kubernetes API directly because the custom resource _is_ the
 durable desired state: Sandboxes survive an Orchestrator restart, and garbage collection / readiness / retries live in
@@ -60,9 +63,9 @@ The scaling review (R7, 2026-09-30) found it fine at 40 Sandboxes and predicted 
 cluster; these are the rules.
 
 - **The operator caches only what it labels.** controller-runtime keeps an in-memory copy of every object a controller
-  watches; the Pod and Service informers take the selector `app.kubernetes.io/managed-by=jr2-operator`, which every
-  object the operator creates carries, so memory and watch traffic are O(Sandboxes) whatever cluster the operator lands
-  in. Sandboxes and Repos are jr2's own kinds and are cached whole. The one read that must not trust the cache — the
+  watches; the Pod informer takes the selector `app.kubernetes.io/managed-by=jr2-operator`, which every object the
+  operator creates carries, so memory and watch traffic are O(Sandboxes) whatever cluster the operator lands in.
+  Sandboxes and Repos are jr2's own kinds and are cached whole. The one read that must not trust the cache — the
   confirmation before a pod is declared lost (ADR-0021) — goes past it through the API reader.
 - **Reconciles run in parallel, at fixed numbers.** controller-runtime never reconciles one Sandbox twice at once and a
   reconcile holds no shared state, so the Sandbox controller runs 16 workers, the Repo controller 4, and the client's
@@ -83,32 +86,20 @@ Not taken (R15): a parked Workspace releasing its pod. A run parked on a Gate fo
 the problem Agent Substrate exists for, and upstream Kubernetes has no production checkpoint/restore to build it on. The
 one constraint kept: the Sandbox CRD stays close to `agent-sandbox`'s shape, so a backend swap stays possible.
 
-Not taken (R14): a headless Service. A ClusterIP Service programs kube-proxy rules on every node per Sandbox; a headless
-one keeps the name and the endpoint and costs no node anything. Deferred until a cluster with many nodes measures it.
-
 ## Known limitations
 
 These are accepted gaps in the current operator, recorded so they aren't silently forgotten. Each is a deliberate
 deferral.
 
-- **Egress is open.** The pod is hardened at the host boundary — `automountServiceAccountToken: false`, pod/container
-  `securityContext` (`runAsNonRoot`, `allowPrivilegeEscalation: false`, drop `ALL`, seccomp `RuntimeDefault`) — and its
-  _ingress_ is the Orchestrator's alone: `jr2 up` converges a NetworkPolicy that admits no other pod to a Sandbox
-  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), which kind's `kindnet` enforces. _Egress_ is open
-  except for the cloud metadata addresses, which no Harness pod reaches
-  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)): an untrusted Agent can
-  still reach the cluster's API server IP (it holds no credential there) and the internet. A default-deny egress policy
-  with an allowlist is the next layer, and ADR-0058 records it open. The ADR-0013 boundary does not depend on either:
-  only the token bounds what a pod may _do_; NetworkPolicy bounds where it may _talk_.
 - **Sidecars are plain containers, not native sidecars.** They are scheduled as ordinary `containers`, not Kubernetes
   ≥1.29 native sidecars (`initContainers` with `restartPolicy: Always`). There is no start-ordering or
-  termination-ordering guarantee between the Harness and its sidecars — the Harness may begin serving before the
-  Custodian is up, or outlive it during shutdown. Start-up is covered without ordering: the Custodian's readiness probe
-  holds the pod's Ready, which holds the Sandbox's, so no Turn is admitted before it serves (ADR-0059). Revisit if
-  ordering becomes load-bearing.
+  termination-ordering guarantee between the Harness and its sidecars — the Harness may begin serving before the Sandbox
+  Effector is up, or outlive it during shutdown. Start-up is covered without ordering: the Sandbox Effector's readiness
+  probe holds the pod's Ready, which holds the Sandbox's, so no Effect is sent before it serves
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). Revisit if ordering becomes
+  load-bearing.
 - **`reconcileStatus` writes status only when it changed.** Every status write is a watch event at the Orchestrator
   (ADR-0063), so an unconditional `Status().Update` per reconcile would wake it for nothing.
-- **Consumers must gate on `phase: Ready`, not endpoint presence.** `status.endpoint` is populated as soon as the
-  Service exists, before the Harness is reachable; only `phase: Ready` (backed by a readiness probe) means "serving".
-  The `Terminating` phase is best-effort — there is no finalizer, so a fast delete may GC the Pod/Service before the
-  phase is observed.
+- **Consumers must gate on `phase: Ready`.** Only `phase: Ready` (backed by a readiness probe) means "serving". The
+  `Terminating` phase is best-effort — there is no finalizer, so a fast delete may GC the Pod before the phase is
+  observed.

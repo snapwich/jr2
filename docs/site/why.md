@@ -27,9 +27,12 @@ the parts of jr2, from you to the world outside your cluster.
       - **coder** (Agent): edits and commits
       - **reviewer** (Agent): its Menu: `approved` `changes`
       - **Worktree**: your code
-    - **Custodian**: keys that the Agents can use but not read, such as the model key
     - **Effector**: keys that only your Effects use, such as a git credential
-- ↓ Custodian → Outside · Effector → Outside
+  - ↓ Harness → Custodian: all traffic, through the Fence · Effector → Custodian
+  - **Custodian**: the only way out of each Sandbox
+    - **Held secrets**: keys that the Agents can use but not read, such as the model key
+    - **Egress list**: the names that each Sandbox can reach
+- ↓ Held secrets → Outside · Egress list → Outside
 - **Outside**: what the work uses
   - model provider
   - your APIs
@@ -116,19 +119,26 @@ It talks to the model, and it runs the tools of the Agent. The Agent can run eac
 Agent that needs only its Menu has no Sandbox. Its Turns run on the
 [Instance Harness](reference/glossary.md#instance-harness).
 
+A Sandbox has one network, its [Fence](reference/glossary.md#fence). All that the Sandbox sends arrives at the
+[Custodian](reference/glossary.md#custodian), which is outside every Sandbox. The Custodian carries a connection only to
+a name that the [Egress list](reference/glossary.md#egress-list) of the Workspace permits. It refuses all else, with a
+reason. The Sandbox cannot reach another Sandbox, a node or the cluster. The Instance Harness is behind a Fence too.
+
 The Harness runs each command of an Agent confined with Landlock, so the command cannot read a credential, and it cannot
-send a pick for a different Agent. jr2 keeps each credential in one of the two containers beside the Harness:
+send a pick for a different Agent. jr2 keeps each credential in one of two places in which the Agent executes nothing:
 
-- The [Custodian](reference/glossary.md#custodian) holds each [Held secret](reference/glossary.md#held-secret): a key
-  that the Agents can use, but cannot read. The Harness holds only a [Stand-in](reference/glossary.md#stand-in) for it.
-  The Custodian puts the real key in place of the Stand-in, in each request to the host of that key. A Stand-in has no
-  value outside its pod. The model key is a Held secret. A token for an API that the Agents call can be one too.
-- The [Effector](reference/glossary.md#effector) holds each [Effect secret](reference/glossary.md#effect-secret): a key
+- The Custodian holds each [Held secret](reference/glossary.md#held-secret): a key that the Agents can use, but cannot
+  read. The Harness holds only a [Stand-in](reference/glossary.md#stand-in) for it. The Custodian puts the real key in
+  place of the Stand-in, in each request to the host of that key. A Stand-in has no value to a different host. The model
+  key is a Held secret. A token for an API that the Agents call can be one too.
+- The [Effector](reference/glossary.md#effector) uses each [Effect secret](reference/glossary.md#effect-secret): a key
   that only an [Effect](reference/glossary.md#effect) of your Machine uses, such as a push or a call to an API. The
-  Agents cannot use it.
+  Agents cannot use it. The Effector of the Instance holds the value. The Effector of a Sandbox holds a Stand-in for a
+  key that goes in a header, such as the token of a push over `https://`, and the Custodian holds its value. It holds
+  the value of each other key, such as a signing key.
 
-Put a key in the Custodian when the Agents can use it as they decide. Put it in the Effector when only your Machine
-decides when to use it. One key can be in both containers.
+Make a key a Held secret when the Agents can use it as they decide. Make it an Effect secret when only your Machine
+decides when to use it. One key can be both.
 
 When the Workspace ends, its Sandbox ends too. When a [Lease](reference/glossary.md#lease) lapses, the operator removes
 what the Agents left behind.
@@ -139,9 +149,9 @@ Read [Workspaces](concepts/workspaces.md) and [Secrets and trust](concepts/secre
 
 A workflow must not depend on one model or one provider. You can change the model of one Agent, and keep the Machine.
 
-In the diagram, the line from the Custodian goes to a model provider outside your cluster. jr2 has one Harness, and it
-is jr2's own. An Agent is a model and its instructions. The model is a name such as `<provider>/<model>`. The provider
-is one from the model catalog of the Harness, or an endpoint that you run and set in
+In the diagram, the line from the Held secrets of the Custodian goes to a model provider outside your cluster. jr2 has
+one Harness, and it is jr2's own. An Agent is a model and its instructions. The model is a name such as
+`<provider>/<model>`. The provider is one from the model catalog of the Harness, or an endpoint that you run and set in
 [`harness.provider`](reference/config.md#harness-provider). The same Harness runs the Turns of each Agent, with each
 provider. A state can set the model of one Turn.
 
@@ -154,9 +164,9 @@ when the laptop stops.
 
 In the diagram, the bracket is your cluster, and the compute is in it. For each Agent, the Orchestrator holds only an
 [Actor](reference/glossary.md#actor): a local handle. The Harness that runs the Turns of the Agent runs where the
-cluster puts it. A Sandbox can go on each node that can run an ordinary pod. The Orchestrator keeps a snapshot of each
-run on its volume, so a run continues after a restart of the Orchestrator. On a shared cluster, a run continues when
-your computer is off.
+cluster puts it. A Sandbox can go on each node that has the parts of the Fence. The Orchestrator keeps a snapshot of
+each run on its volume, so a run continues after a restart of the Orchestrator. On a shared cluster, a run continues
+when your computer is off.
 
 Read [Architecture](concepts/architecture.md).
 
@@ -166,10 +176,11 @@ A workflow that runs on a laptop must also run on a shared cluster, without a se
 
 The bracket of the diagram has the label `jr2 up`. [`jr2 up`](reference/cli.md#up) converges an
 [Instance](reference/glossary.md#instance) folder into the cluster of the current kubectl context. It builds the images
-that the folder needs, and it puts the Orchestrator and the operator in the cluster. It does not start a Sandbox: during
-a run, the operator makes one Sandbox for each Workspace. The same folder converges into kind on a laptop or into a
-shared cluster. You select the cluster with the kubectl context. A shared cluster also needs a container registry, which
-`.env` gives to [`registry`](reference/config.md#registry). You can run `jr2 up` again at any time.
+that the folder needs, and it puts the Orchestrator, the Custodian and the operator in the cluster. It does not start a
+Sandbox: during a run, the operator makes one Sandbox for each Workspace. The same folder converges into kind on a
+laptop or into a shared cluster. You select the cluster with the kubectl context. A shared cluster also needs a
+container registry, which `.env` gives to [`registry`](reference/config.md#registry). You can run `jr2 up` again at any
+time.
 
 Read [Converge](concepts/converge.md).
 

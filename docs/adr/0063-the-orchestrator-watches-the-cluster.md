@@ -40,10 +40,13 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
     falls back to its last log lines (`terminationMessagePolicy: FallbackToLogsOnError`), so the fault that ends the
     provision carries the Harness's own last words, and the Harness says them plainly at startup (a port another
     container in the pod took: `EADDRINUSE` names the port and the cause). No reason is invented for what a log line
-    already says. And readiness proves the Harness, not the port: the probe is a GET of the Harness's own `/healthz`,
-    because a pod has one network namespace and a socket probe passes for whatever listens there — the nginx that took
-    `:8080` made the pod Ready and the attach met its 404 page (scaling review R16, 2026-09-30). A pod with a Sandbox
-    Effector is Ready only when that Effector serves too: its container is probed on its own `/healthz` (ADR-0068).
+    already says. And readiness proves the Harness, not the port: the probe asks the Harness's own `/healthz`, because a
+    pod has one network namespace and a socket probe passes for whatever listens there — the nginx that took `:8080`
+    made the pod Ready and the attach met its 404 page (scaling review R16, 2026-09-30). In each Harness pod, a Sandbox
+    or the Instance Harness, the probe is an exec probe, which asks `/healthz` from inside the container: no HTTP or TCP
+    probe of the kubelet reaches a pod on the Fence
+    ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). A pod with a Sandbox Effector is Ready only
+    when that Effector serves too: its container's exec probe asks its own `/healthz` (ADR-0068).
   - Continuity: a gone or `Lost` Sandbox is `workspace.lost` within seconds, and a Harness restart ends the Turns
     waiting on it (ADR-0021). A dropped watch is unknown, never loss; the loop re-lists and reconciles.
   - A fetch ask (ADR-0053) is answered by the watch event that carries its landing.

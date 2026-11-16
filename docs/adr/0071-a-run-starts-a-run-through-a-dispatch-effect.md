@@ -46,7 +46,7 @@ composition and does not replace it. The two uses stay two mechanisms.
   `target: { url, token: secret("ops-instance") }`, the Effect runs in the Instance Effector, which gains a `dispatch`
   kind, holds the token as an Effect secret and calls the foreign door; the url is an origin, scheme and host and a
   port, and a path, a query or userinfo in it is refused at build, since the Effector appends the door's path and the
-  origin is what its fence (`effector.json`) names. A packaged Machine leaves it `target: open` and the composer binds
+  origin is what its match (`effector.json`) names. A packaged Machine leaves it `target: open` and the composer binds
   the url and the token together, one Open part, with `customize(m, { effects: { task: { target: { url, token } } } })`
   ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); `secret(open)` inside a
   target is refused, since the whole target is the part. Another Instance may run another Kit version, so the HTTP door

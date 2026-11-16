@@ -15,7 +15,8 @@ it, and deletes the Sandbox when the body reaches a final state.
 
 An [Agent](../reference/glossary.md#agent) that works on code runs programs, writes files and opens ports. Two Agents on
 one host would share the filesystem, the ports and the processes. A Sandbox gives each unit of work its own pod, with
-its own filesystem, network and processes.
+its own filesystem, network and processes. Its network leads only to the
+[Custodian](../reference/glossary.md#custodian), which carries only the names that you permit.
 
 The Workspace holds the life of that pod, so that your Machine does not. Your body Machine does the work: it codes,
 reviews and waits for a person. The Workspace makes the Sandbox before the body starts, and removes it after the body
@@ -56,6 +57,8 @@ Only a per-run [Repo Slot](../reference/glossary.md#repo-slot) reads the run inp
   containers.
 - `secrets` names the [Held secrets](../reference/glossary.md#held-secret) that the Sandbox can use (see
   [Secrets and trust](secrets-and-trust.md)).
+- `egress` is the [Egress list](../reference/glossary.md#egress-list) of the Sandbox: the names that it can reach. It
+  replaces the default of the Instance (see [The network of a Sandbox](#the-network-of-a-sandbox)).
 - `workGroup` is the group id that owns the files in `/work`. The default is 2000.
 
 The body gets the run input, plus `workspace`: the handles of the Workspace (see
@@ -221,16 +224,85 @@ jr2 deletes `/work` with the Sandbox. Send what must stay before the body ends, 
 secret `files` that `upload` names is an entry of the `secrets` list of `jr2.config.ts`, as each Effect secret is. A
 Lost Sandbox has lost all of its work, because no commit was pushed.
 
+## The network of a Sandbox
+
+A Sandbox has one network, its [Fence](../reference/glossary.md#fence). All that the Sandbox sends arrives at the
+Custodian, whatever address a process dials, and also when the process runs as root. The Custodian is outside every
+Sandbox. Thus a Sandbox reaches no other Sandbox, no node, no pod, no Service and no DNS server of the cluster. No tool
+needs a proxy setting.
+
+The Custodian carries a connection only to a name that the Egress list of the Sandbox permits. It refuses all else. The
+Egress list has two places:
+
+- `egress` in `jr2.config.ts` is the default of the Instance.
+- `egress` on a `workspace()` replaces that default for its Sandbox. It does not add to the default.
+
+With neither, a Sandbox reaches only the hosts that its Held secrets are bound to, and jr2's own routes. The
+[Instance Harness](../reference/glossary.md#instance-harness) is behind a Fence too. Its list has no entry of yours: it
+reaches the hosts of its Held secrets, the hosts that `jr2 up` requires an entry for (below), and jr2's own routes.
+
+An entry of the list is `"<host>"`, `"<host>:<port>"`, or `{ host, port?, intercept: true }`. For example,
+`egress: ["registry.npmjs.org", "github.com:22", { host: "pypi.org", intercept: true }]` permits the npm registry, ssh
+to GitHub, and PyPI, which the Custodian intercepts:
+
+- An entry with no port permits ports 443 and 80.
+- `*.` at the start of a host, such as `*.example.com`, permits each name below that domain, for TLS and HTTP only.
+- `["*"]` permits each name.
+- `jr2 up` gives a warning for `["*"]` and for each `*.` entry. Each one is a way for data to go out.
+- An exact IP address with a port, such as `"192.168.1.20:8000"`, is an entry too, for a host that has no name.
+- `intercept: true` makes the host an [Intercepted host](../reference/glossary.md#intercepted-host): the Custodian ends
+  its TLS, reads each request and checks its `Host` header. When the Custodian holds no secret for the host, it removes
+  each credential header from the request. A client must trust the CA of the Sandbox to connect to it.
+
+A name decides, and an address only as an entry of its own. The Sandbox asks the Custodian's resolver for each name. The
+resolver answers a permitted name with an address that stands for that name in that Sandbox, and it asks no server. It
+refuses each other name, also when a tool names its own DNS server. The Custodian finds the name from that address, and
+dials the real host itself. For TLS and HTTP, it also checks that the TLS name or the `Host` header agrees. Thus one
+rule serves each port and each protocol: TLS, HTTP, ssh or a database. An entry for a protocol that sends no name, such
+as ssh or a database, must be an exact name, with no `*.`.
+
+A host that a Held secret of the Sandbox is bound to needs no entry. The Custodian permits it, and refuses a request to
+it that carries no [Stand-in](../reference/glossary.md#stand-in). Thus
+[Workspace code](../reference/glossary.md#workspace-code) cannot use the host of your model key unless the `workspace()`
+lists that key. Each host of the list is an Intercepted host or a
+[Tunneled host](../reference/glossary.md#tunneled-host).
+[Secrets and trust](secrets-and-trust.md#intercepted-and-tunneled-hosts) tells the difference. The Intercepted hosts of
+a Sandbox are fixed when jr2 makes the Sandbox, so a new one applies to the next Sandbox. A Tunneled host can be added
+while the Sandbox lives.
+
+jr2's own traffic goes through the Fence too: the Harness's calls to the model, to an MCP server and to the
+Orchestrator, the fetch of a Repo, and the calls of the Sandbox Effector. jr2 permits its own routes. For a `push` over
+ssh, jr2 permits port 22 of the host of each ssh Repo that the Workspace binds. A `git push` that you or an Agent run by
+hand needs an entry for its host, such as `github.com`.
+
+A host with no secret needs an entry, also when jr2 itself uses it: a model endpoint with no key, an MCP server with no
+token, or a url that the Sandbox Effector calls with no secret. `jr2 up` refuses to converge while such a host has no
+entry, and it prints the entry to add.
+
+The Custodian refuses with a reason, and logs each refusal with the Sandbox, the name, the port and the reason:
+
+- A name that the list does not permit gets a DNS refusal at once.
+- A connection that the list does not permit gets a TLS alert, an HTTP 403 or a line of text.
+- A connection to an IP address that is not an entry, such as `curl https://1.2.3.4`, is refused, because it has no
+  name.
+
+These limits follow from the Fence:
+
+- A tool that dials a fixed address fails, unless that address and its port are an entry.
+- UDP, QUIC and ICMP do not go out. A client that tries QUIC falls back to TCP.
+- A protocol in which the server speaks first waits about 2 seconds for each connection.
+- When you remove an entry, a connection that is open stays open. The change applies to each new connection.
+- While the Custodian is down, no Sandbox reaches anything.
+
 ## The pod
 
-A Sandbox pod has two containers, and two more when the Machine needs them:
+A Sandbox pod has the Harness container, and two more when the Machine needs them. The Custodian is not in the pod:
 
-| Container                                                     | What runs in it                                                                                                                                  |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The [Harness](../reference/glossary.md#harness) container     | The Harness, the Agent's Working tools, and a `command` that names no Effect secret                                                              |
-| The [Custodian](../reference/glossary.md#custodian)           | jr2's own container. It holds the pod's Held secrets, and the Harness's calls out of the pod go through it (see [Architecture](architecture.md)) |
-| The [User Container](../reference/glossary.md#user-container) | Your own image, with its own entrypoint. Only when `user` names one.                                                                             |
-| The Sandbox Effector                                          | A `push`, an `http` Effect with a Worktree file, and a `command` that names an Effect secret. Only when an Effect needs it.                      |
+| Container                                                     | What runs in it                                                                                                             |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| The [Harness](../reference/glossary.md#harness) container     | The Harness, the Agent's Working tools, and a `command` that names no Effect secret                                         |
+| The [User Container](../reference/glossary.md#user-container) | Your own image, with its own entrypoint. Only when `user` names one.                                                        |
+| The Sandbox Effector                                          | A `push`, an `http` Effect with a Worktree file, and a `command` that names an Effect secret. Only when an Effect needs it. |
 
 ### The Sandbox Image
 
@@ -255,8 +327,7 @@ The User Container is an optional third container, for a program that must run w
 runs its own entrypoint, with `/work` mounted. jr2 never builds into it, probes it or sends it commands. `user` names
 its image, in the same two forms as `image`.
 
-The pod has one network. Thus the User Container cannot use the ports of jr2's containers: `8080`, `8082` and `15021`,
-and `8081` and `15001` on loopback.
+The pod has one network. Thus the User Container cannot use the ports of jr2's containers: `8080` and `8082`.
 
 ## Size
 
@@ -274,9 +345,8 @@ The Size is a fact of the Machine, as its image is. It is never set for one run.
    `jr2.config.ts`. A field that it does not state comes from the kit default.
 
 A Size is `{ limits: { memory, cpu } }`, and nothing else (see [`Size`](../reference/authoring-surface/type-size.md)).
-Inside the pod, the Custodian gets a small fixed part. A User Container gets the part that `user` gives it, or shares
-the rest. The Harness container gets the rest. `jr2 up` refuses a Size that leaves the Harness container less than 256Mi
-of memory.
+Inside the pod, a User Container gets the part that `user` gives it, or shares the rest. The Harness container gets the
+rest. `jr2 up` refuses a Size that leaves the Harness container less than 256Mi of memory.
 
 ## Placing
 
@@ -288,7 +358,8 @@ The wait shows in the [Console](../reference/glossary.md#console) and in the CLI
 marks a run that has a Workspace in `placing`. `jr2 status <run id>` gives the reason, in the words of the scheduler or
 the quota. `<run id>` is the id that `jr2 run` printed, or a prefix of it. The body gets no event.
 
-A Sandbox lands where an ordinary pod lands. To limit the nodes, set
+A Sandbox lands where an ordinary pod lands. Each such node needs the parts of the Fence (see
+[Converge](converge.md#what-jr2-up-does)). To limit the nodes, set
 [`sandbox.nodeSelector`](../reference/config.md#sandbox-nodeselector) and
 [`sandbox.tolerations`](../reference/config.md#sandbox-tolerations) in `jr2.config.ts`. After Placing, the pod has 120
 seconds to become ready. A Sandbox that waits for the Repo cache to clone has 25 minutes.
@@ -369,6 +440,12 @@ the Harness container does not lose the Workspace: the pod and `/work` stay.
 - A `push` whose large files the LFS server does not hold after the upload is `rejected`, and nothing is pushed.
 - With no Repo Slot, `jr2 up` refuses a `worktree()`, a `push`, and a `command` that names an Effect secret.
 - A Size has only `limits.memory` and `limits.cpu`. jr2 refuses `requests` and each other key.
+- A Sandbox reaches only the names and the addresses that its Egress list permits, and the hosts of its Held secrets.
+  The Custodian refuses an IP address that is not an entry, and a request to the host of a Held secret that carries no
+  Stand-in.
+- A host with no secret needs an entry, also when jr2 itself uses it. `jr2 up` refuses to converge without it, and
+  prints the entry to add.
+- An entry with `*.` permits TLS and HTTP only. A protocol that sends no name needs an exact name.
 - `jr2 up` refuses a Size that leaves the Harness container less than 256Mi of memory, or no cpu.
 - Under a Workspace with Repo Slots, a Turn states its `cwd`, and a `command`, a `push` and an `http` Effect with a file
   body state their `worktree`. A Turn that wants `/work` states `cwd: "/work"`. An Agent with `workspace: "none"` needs
@@ -411,3 +488,5 @@ The guides and the Reference give the refusal text of each rule.
 - [ADR-0005](../reference/decisions/0005-sandbox-pod-composition.md) and
   [ADR-0037](../reference/decisions/0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md): the pod, and
   the Sandbox Image
+- [ADR-0084](../reference/decisions/0084-a-sandboxs-only-network-leads-to-the-custodian.md): a Sandbox's only network
+  leads to the Custodian

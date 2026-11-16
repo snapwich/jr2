@@ -136,7 +136,11 @@ relative to that Worktree. In a Workspace with no Repo Slot, the input has no `w
 An `http` Effect runs in the [Instance Effector](../reference/glossary.md#instance-effector). The
 [Effector](../reference/glossary.md#effector) puts the value of each Effect secret into the call. The Agent never reads
 the value. You can invoke an `http` Effect in a Machine with no Workspace. An `http` Effect with a file body runs in the
-Sandbox Effector, so invoke it in the body of a `workspace()`.
+Sandbox Effector, so invoke it in the body of a `workspace()`. Its call goes out through the
+[Custodian](../reference/glossary.md#custodian), so the [Egress list](../reference/glossary.md#egress-list) of the
+Workspace must permit the host of its `url`. For a `url` with no secret, `jr2 up` refuses to converge while the list has
+no entry for its host, and it prints the entry to add. See
+[Workspaces](../concepts/workspaces.md#the-network-of-a-sandbox).
 
 Each outcome is output for `onDone`. Route on `outcome`
 ([`HttpOutput`](../reference/authoring-surface/type-httpoutput.md)):
