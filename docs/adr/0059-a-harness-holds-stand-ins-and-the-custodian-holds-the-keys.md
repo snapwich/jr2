@@ -198,7 +198,10 @@ and it replaces the Adapter.
 - **The log is a contract.** One line per decision on stdout, with the prefix `jr2.custodian` and `key=value` pairs:
   `ready secrets=… hosts=N` (when a pod's rules are live), `action=intercept target=… secret=… method=… status=…`,
   `action=tunnel target=…`, `action=refuse target=… reason=…`. Each line also names the Sandbox, or the other Harness
-  pod, that it is for (ADR-0084). Never a header value, a body, a path, a query, a value or a Stand-in.
+  pod, that it is for (`sandbox=…` or `pod=…`, ADR-0084). A refusal that a slot's listener makes before a name is known
+  (a TLS name that does not agree, plain bytes where only TLS is carried, a port with no entry) names the address dialed
+  (`to=`) and the TLS name (`sni=`); the slot's resolver table gives the name of a placeholder address. Never a header
+  value, a body, a path, a query, a value or a Stand-in.
 - **The dial guard, in two halves.** The Custodian never dials a loopback, link-local (the cloud metadata address
   included, and AWS's `fd00:ec2::254`) or unspecified address, or an IPv4-mapped form of one. It never dials an address
   in the Fence's own ranges either: the segment, the placeholder range and 198.18.0.0/15

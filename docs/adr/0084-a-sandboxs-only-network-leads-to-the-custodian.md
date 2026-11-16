@@ -32,8 +32,10 @@ and that holds when Workspace code is root in the Sandbox.
   `"host[:port]"` or `{ host, port?, intercept: true }`. With no port, the entry permits ports 443 and 80. `*.` at the
   start permits each name below a domain, for TLS and HTTP only. `["*"]` permits each name, for TLS and HTTP only too,
   because one placeholder address serves each name of such an entry, and only a TLS name or a `Host` header then says
-  which name was meant. `intercept: true` takes an exact name or address, because the Custodian's leaf names one host.
-  `jr2 up` gives a warning for `["*"]` and for each `*.` entry, because each one is a channel out (Consequences).
+  which name was meant. Such an entry never carries an Intercepted host of the Sandbox or a name of jr2's, in any
+  spelling of the name, and on port 80 it carries no `Host` that names another port. `intercept: true` takes an exact
+  name or address, because the Custodian's leaf names one host. `jr2 up` gives a warning for `["*"]` and for each `*.`
+  entry, because each one is a channel out (Consequences).
 - **A name decides, never an address.** The resolver answers each name on the Egress list with a placeholder address
   that stands for that name in that Sandbox, and it asks no server. It refuses each other name, also when the tool names
   its own DNS server. The Custodian reads the name from the placeholder address, checks that the TLS name or the `Host`
@@ -76,8 +78,10 @@ and that holds when Workspace code is root in the Sandbox.
   second control ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). The kubelet's probes of the pod's
   containers are exec probes.
 - **A refusal has a reason, and each one is logged.** A refused name gets a DNS refusal at once. A refused connection
-  gets a TLS alert, an HTTP 403 or a line of text, with jr2's reason. The Custodian logs each refusal with the Sandbox,
-  the name, the port and the reason. This log replaces the flow log of the cluster's network.
+  gets a TLS alert, an HTTP 403 or a line of text, with jr2's reason. A Tunneled connection that the Custodian refuses
+  after the TLS name, because of the address that the name resolves to or because the name is refused there, is closed
+  with no text: the client's TLS has started, and only the log line gives the reason. The Custodian logs each refusal
+  with the Sandbox, the name, the port and the reason. This log replaces the flow log of the cluster's network.
 - **The Instance Harness and each check pod are behind a Fence too.** Each Harness pod has the same network and reaches
   the Custodian the same way, so no Harness has a proxy setting. The Instance Harness
   ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)) has an Egress list with no entry of the author's:
@@ -123,8 +127,10 @@ and that holds when Workspace code is root in the Sandbox.
   name, so the domain's owner sees each label. Exact names close it.
 - **A removed entry cuts an open connection after about a minute.** The rule applies to each new connection at once. A
   connection that the change no longer permits stays open for the Custodian's drain time, 60 seconds, and is then
-  closed. Envoy's default is 600 seconds, and churn then holds memory for ten minutes. A change to a Sandbox's
-  Intercepted hosts or to a held value has the same effect on that host's connections.
+  closed. Envoy's default is 600 seconds, and churn then holds memory for ten minutes. A changed held value has the same
+  effect on each connection of that Sandbox that the Custodian ends: those to its Intercepted hosts, to jr2's control
+  routes and plain HTTP on port 80. So a model stream or a long poll of the Menu that is open then closes after the
+  drain time.
 - **A protocol where the server speaks first waits about 2 seconds** for each connection, because the Custodian waits
   for a TLS name on each port.
 - **A Sandbox can fill the bridge's address table.** This can stop the node's Sandboxes. It leaks nothing.

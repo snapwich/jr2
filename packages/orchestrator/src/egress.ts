@@ -98,9 +98,10 @@ export const DEFAULT_EGRESS_PORTS: readonly number[] = [443, 80];
 export const JR2_NAME_DOMAIN = "jr2.internal";
 
 /**
- * The addresses a tunnel never reaches (ADR-0059's dial guard): loopback, unspecified, link-local
- * (the cloud metadata address among it, and AWS's IPv6 one), and the IPv4-mapped spelling of each.
- * The script refuses a target that SPELLS one; this list refuses a name that RESOLVES to one.
+ * Loopback, unspecified and link-local addresses (the cloud metadata address among them, and AWS's
+ * IPv6 one), and the IPv4-mapped spelling of each: one part of ADR-0059's dial guard. The script
+ * refuses a target that SPELLS one; this list refuses a name that RESOLVES to one. The Custodian of
+ * an Instance also never dials the Fence's own ranges: {@link dialGuardRanges} is its whole guard.
  */
 export const GUARDED_RANGES: ReadonlyArray<readonly [string, number]> = [
   ["127.0.0.0", 8],

@@ -146,19 +146,33 @@ const DIAL_DNS: Json = {
 };
 
 /** The headers that the Custodian adds to the CONNECT of a tunnel, toward its own dial listener, so
- * that the dial listener's log names the slot. They go no further. */
+ * that the dial listener's log names the slot and its Harness pod (`sandbox=<name>` or
+ * `pod=<name>`). They go no further. */
 const SLOT_HEADER = "x-jr2-fence-slot";
 const OWNER_HEADER = "x-jr2-fence-owner";
 
-/** The `:authority` of a dial that the dial listener refuses whatever it resolves to: an address
- * (the slot chains dial an address entry directly, so each dial by name names a name), an empty
- * name, and jr2's own domain. */
-const REFUSED_AUTHORITY = `^(\\[.*|[0-9.]*(:[0-9]+)?|(.*\\.)?${JR2_NAME_DOMAIN.replace(/\./g, "\\.")}\\.?(:[0-9]+)?)$`;
+/** A name as an RE2 pattern: each dot is a dot. */
+const literal = (name: string): string => name.replace(/\./g, "\\.");
 
-/** An `:authority` that is one of `names`, with or without a port. */
+/** The `:authority` of a dial that is refused whatever it resolves to, in any letter case: an
+ * address (the slot chains dial an address entry directly, so each dial by name names a name), an
+ * empty name, `-` (Envoy's text for a TLS name that the client did not send), and jr2's own domain. */
+const REFUSED_AUTHORITY = `(?i)^(\\[.*|(-|[0-9.]*|(.*\\.)?${literal(JR2_NAME_DOMAIN)}\\.?)(:[0-9]+)?)$`;
+
+/** What the `dial` listener refuses as the target of a CONNECT: `REFUSED_AUTHORITY`, and a name
+ * that ends in a dot. A tunnel dials a name in one spelling only, so no other spelling of a name
+ * that a wildcard refuses can pass it. */
+const REFUSED_CONNECT = `(?i)^(\\[.*|(-|[0-9.]*|(.*\\.)?${literal(JR2_NAME_DOMAIN)}|.*\\.)(:[0-9]+)?)$`;
+
+/** An `:authority` that is one of `names`, in any letter case, with or without a trailing dot and a
+ * port. */
 function namesRegex(names: readonly string[]): string {
-  return `^(${names.map((n) => n.replace(/\./g, "\\.")).join("|")})\\.?(:[0-9]+)?$`;
+  return `(?i)^(${names.map(literal).join("|")})\\.?(:[0-9]+)?$`;
 }
+
+/** An `:authority` with no port, or with port 80: what a wildcard on port 80 carries. The Custodian
+ * dials the port of the `Host`, so each other port is refused. */
+const PORT_80_AUTHORITY = "^[^:]*(:80)?$";
 
 function ip32(address: string): Json[] {
   return [{ address_prefix: address, prefix_len: 32 }];
@@ -270,6 +284,9 @@ function guardReply(): Json {
   };
 }
 
+/** The headers that an HTTP connection manager of Envoy adds to a request, which no target gets. */
+const FORWARD_HEADERS = ["x-forwarded-proto", "x-forwarded-for", "x-request-id", "x-envoy-internal"];
+
 /** One HTTP connection manager of the Custodian. It adds nothing to a request or a response: no
  * `server: envoy`, no `x-request-id`, no `x-forwarded-*`, no `x-envoy-*` (ADR-0059). */
 function http(opts: { stat: string; log: Json[]; routes: Json; lua: Json; local?: Json; strictPath?: boolean }): Json {
@@ -308,7 +325,7 @@ function http(opts: { stat: string; log: Json[]; routes: Json; lua: Json; local?
         },
       ],
       route_config: {
-        request_headers_to_remove: ["x-forwarded-proto", "x-forwarded-for", "x-request-id", "x-envoy-internal"],
+        request_headers_to_remove: FORWARD_HEADERS,
         response_headers_to_remove: ["x-envoy-upstream-service-time"],
         ...opts.routes,
       },
@@ -524,7 +541,8 @@ function checkInputs(inputs: SlotInputs): void {
  *                           On port 80: HTTP with the program, no TLS
  *   `*.` and `*`            TLS and HTTP only: the TLS name or the `Host` header must be below the
  *                           domain (each name, for `*`); an address, jr2's own domain and each
- *                           Intercepted host of the slot are refused
+ *                           Intercepted host of the slot are refused in any letter case and with a
+ *                           trailing dot; on port 80, a `Host` that names another port is refused
  *   an address              each byte to the address as written, or, Intercepted, TLS ended with
  *                           the leaf of that address
  *   `custodian.jr2.internal` 443: TLS with the leaf, the six routes to the Orchestrator; 80: the
@@ -553,7 +571,8 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
   const clusters: Json[] = [];
   const names: ResolverName[] = [];
   const ports = new Set<number>([443, 80]);
-  const owner = ownerText(inputs.owner).replace(/^[a-z]+=/, "");
+  // The dial listeners print it as it is: `sandbox=<name>` or `pod=<name>`, as each line of the slot.
+  const owner = ownerText(inputs.owner);
 
   // A refusal that an HTTP route states: the program answers it, so it is logged as each refusal is.
   const refuseRoute = (reason: string, body: string, match: Json = { prefix: "/" }): Json => ({
@@ -697,7 +716,16 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
                 }),
               ]
             : []),
-          tunnelRoute,
+          // The Custodian dials the port that the `Host` names: a wildcard on port 80 carries port 80
+          // alone (ADR-0084: an entry permits its ports).
+          {
+            ...tunnelRoute,
+            match: {
+              prefix: "/",
+              headers: [{ name: ":authority", string_match: { safe_regex: { regex: PORT_80_AUTHORITY } } }],
+            },
+          },
+          refuseRoute("port", "the Host header names a port other than 80, which this entry does not permit"),
         ];
         if (rule.match === "below") {
           http80.push({ name: `*.${rule.host}`, domains: [`*.${rule.host}`, `*.${rule.host}:80`], routes });
@@ -732,7 +760,12 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
     chains.push(
       chain(
         `action=refuse reason=intercepted target=${target}`,
-        { ...at, transport_protocol: "tls", server_names: [`*.${JR2_NAME_DOMAIN}`, JR2_NAME_DOMAIN, ...covered(rule)] },
+        {
+          ...at,
+          transport_protocol: "tls",
+          // Each name also with a trailing dot, which a client may send and a DNS lookup accepts.
+          server_names: [`*.${JR2_NAME_DOMAIN}`, JR2_NAME_DOMAIN, ...covered(rule)].flatMap((n) => [n, `${n}.`]),
+        },
         [ALERT],
       ),
       chain(
@@ -986,8 +1019,9 @@ function dfpCluster(name: string, extra: Json = {}, plain = false): Json {
   };
 }
 
-/** A dial listener's log (ADR-0059): one line for a refusal by the dial guard, one for a target that
- * gave no answer, each with the slot and its Harness pod that the slot's chain named. */
+/** A dial listener's log (ADR-0059): one line for a refusal by the dial guard, one for a name that it
+ * refuses, one for a target that gave no answer, each with the slot and its Harness pod that the
+ * slot's chain named. */
 function dialLog(): Json[] {
   const line = (reason: string, expression: string): Json => ({
     name: "envoy.access_loggers.stdout",
@@ -1005,7 +1039,7 @@ function dialLog(): Json[] {
       log_format: {
         text_format_source: {
           inline_string:
-            "jr2.custodian slot=%DYNAMIC_METADATA(jr2:slot)% owner=%DYNAMIC_METADATA(jr2:owner)% action=refuse " +
+            "jr2.custodian slot=%DYNAMIC_METADATA(jr2:slot)% %DYNAMIC_METADATA(jr2:owner)% action=refuse " +
             `target=%REQ(:AUTHORITY)% reason=${reason} method=%REQ(:METHOD)% status=%RESPONSE_CODE% flags=%RESPONSE_FLAGS%\n`,
         },
       },
@@ -1014,7 +1048,8 @@ function dialLog(): Json[] {
   return [
     line("guard", "response.code_details.startsWith('rbac_access_denied')"),
     line("name", "response.code_details == 'direct_response' && response.code == 403"),
-    line("unreachable", "response.flags != 0u"),
+    // A flag on an answer of the target, or on a tunnel that its client closed (`DC`), is no refusal.
+    line("unreachable", "response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream'"),
   ];
 }
 
@@ -1048,7 +1083,7 @@ function dialListener(name: "dial" | "dial-http" | "dial-tls", ranges: FenceRang
         {
           match: {
             connect_matcher: {},
-            headers: [{ name: ":authority", string_match: { safe_regex: { regex: REFUSED_AUTHORITY } } }],
+            headers: [{ name: ":authority", string_match: { safe_regex: { regex: REFUSED_CONNECT } } }],
           },
           direct_response: { status: 403 },
         },
@@ -1101,6 +1136,8 @@ function dialListener(name: "dial" | "dial-http" | "dial-tls", ranges: FenceRang
                 },
               ],
               route_config: {
+                // This manager sets `x-forwarded-proto` again; the target gets none of these (ADR-0059).
+                request_headers_to_remove: FORWARD_HEADERS,
                 response_headers_to_remove: ["x-envoy-upstream-service-time"],
                 virtual_hosts: [{ name, domains: ["*"], routes }],
               },

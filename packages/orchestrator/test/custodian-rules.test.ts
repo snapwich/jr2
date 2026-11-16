@@ -64,6 +64,8 @@ const manager = (c: Chain) =>
   c.filters.find((f) => f.name === "envoy.filters.network.http_connection_manager")?.typed_config;
 const tcp = (c: Chain) => c.filters.find((f) => f.name === "envoy.filters.network.tcp_proxy")?.typed_config;
 const text = (c: Chain) => c.filters[0]!.typed_config.response?.inline_string as string | undefined;
+/** An RE2 pattern of Envoy as a JS RegExp: a leading `(?i)` is the `i` flag. */
+const re2 = (pattern: string) => (pattern.startsWith("(?i)") ? new RegExp(pattern.slice(4), "i") : new RegExp(pattern));
 const isAlert = (c: Chain) => c.filters[0]!.typed_config.response?.inline_bytes === "FQMDAAICMQ==";
 
 test("a slot's listener is on 20000 + slot, reads the dialed address and the TLS name, and no chain reads a source address", () => {
@@ -101,7 +103,7 @@ test("a Tunneled name: its placeholder and port with its TLS name go to the dial
     tcp(tls)!.tunneling_config.headers_to_add.map((h: { header: { key: string; value: string } }) => h.header),
     [
       { key: "x-jr2-fence-slot", value: "3" },
-      { key: "x-jr2-fence-owner", value: "ticket-a1b2c" },
+      { key: "x-jr2-fence-owner", value: "sandbox=ticket-a1b2c" },
     ],
   );
   // One chain of the port refuses another TLS name on each address whose name it checks; the chain
@@ -266,27 +268,32 @@ test("`*.` and `*` carry TLS and HTTP only, by the name the client sent, and nev
   assert.equal(any.filter_chain_match.server_names, undefined);
   // Each Intercepted name of the slot, and jr2's domain, is refused on the `*` chain.
   const refused = chainOf(r, "action=refuse reason=intercepted target=*:443");
-  assert.deepEqual(refused.filter_chain_match.server_names, [
-    "*.jr2.internal",
-    "jr2.internal",
-    "api.anthropic.com",
-    "api.github.com",
-    "registry.npmjs.org",
-  ]);
+  // Each name also with a trailing dot: Envoy makes a TLS name lower case, but keeps its dot.
+  assert.deepEqual(
+    refused.filter_chain_match.server_names,
+    ["*.jr2.internal", "jr2.internal", "api.anthropic.com", "api.github.com", "registry.npmjs.org"].flatMap((n) => [
+      n,
+      `${n}.`,
+    ]),
+  );
   assert.ok(isAlert(refused));
-  // On HTTP, an address, an empty name, jr2's domain and an Intercepted host are refused by Host.
+  // On HTTP, an address, an empty name, jr2's domain and an Intercepted host are refused by Host, in
+  // any letter case; then `*` carries a Host with no port or port 80, and refuses each other port.
   const http = manager(chainOf(r, "action=tunnel port=80"))!;
   const each = (http.route_config.virtual_hosts as Array<{ name: string; routes: any[] }>).find(
     (v) => v.name === "each",
   )!;
-  const [addressRoute, interceptedRoute] = each.routes;
-  const addressRe = new RegExp(addressRoute.match.headers[0].string_match.safe_regex.regex);
+  const [addressRoute, interceptedRoute, tunnelRoute, portRoute] = each.routes;
+  const addressRe = re2(addressRoute.match.headers[0].string_match.safe_regex.regex);
   for (const host of [
     "10.0.0.9",
     "10.0.0.9:80",
     "[fd00::1]:80",
     ":80",
+    "-",
     "custodian.jr2.internal",
+    "CUSTODIAN.JR2.INTERNAL",
+    "custodian.jr2.internal.:80",
     "x.jr2.internal:80",
   ]) {
     assert.match(host, addressRe, host);
@@ -294,9 +301,27 @@ test("`*.` and `*` carry TLS and HTTP only, by the name the client sent, and nev
   for (const host of ["example.com", "example.com:80", "jr2.internal.example.com"]) {
     assert.doesNotMatch(host, addressRe, host);
   }
-  const interceptedRe = new RegExp(interceptedRoute.match.headers[0].string_match.safe_regex.regex);
-  assert.match("api.anthropic.com:80", interceptedRe);
+  const interceptedRe = re2(interceptedRoute.match.headers[0].string_match.safe_regex.regex);
+  for (const host of ["api.anthropic.com", "api.anthropic.com:80", "API.ANTHROPIC.COM", "api.anthropic.com."]) {
+    assert.match(host, interceptedRe, host);
+  }
   assert.doesNotMatch("xapi.anthropic.com", interceptedRe);
+  assert.equal(tunnelRoute.route.cluster, "dial-http");
+  const portRe = re2(tunnelRoute.match.headers[0].string_match.safe_regex.regex);
+  for (const host of ["example.com", "example.com:80"]) assert.match(host, portRe, host);
+  for (const host of ["example.com:6379", "example.com:8080", "example.com:", "example.com:080", "a:80:6379"]) {
+    assert.doesNotMatch(host, portRe, host);
+  }
+  assert.equal(portRoute.metadata.filter_metadata["envoy.filters.http.lua"].reason, "port");
+  assert.deepEqual(portRoute.match, { prefix: "/" });
+  // `*.` on port 80: the same port check.
+  const below80 = (http.route_config.virtual_hosts as Array<{ name: string; routes: any[] }>).find(
+    (v) => v.name === "*.githubusercontent.com",
+  )!;
+  assert.deepEqual(
+    below80.routes.map((x) => x.metadata.filter_metadata["envoy.filters.http.lua"].reason ?? "tunnel"),
+    ["host", "tunnel", "port"],
+  );
 });
 
 test("jr2's own name: TLS with the slot's leaf on 443 and the six routes to the Orchestrator; on 80 the fetch route alone", () => {
@@ -446,6 +471,41 @@ test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also whe
       `${name}: the guard judges the address that the same lookup gives the dial`,
     );
     assert.equal(hcm.http_filters[1].typed_config.save_upstream_address, true);
+    // This manager adds `x-forwarded-proto`; no target gets it, nor the other forwarding headers.
+    assert.deepEqual(hcm.route_config.request_headers_to_remove, [
+      "x-forwarded-proto",
+      "x-forwarded-for",
+      "x-request-id",
+      "x-envoy-internal",
+    ]);
+    // Each line names the slot and its Harness pod as the slot's own lines do: `sandbox=` or `pod=`.
+    for (const log of hcm.access_log) {
+      const format = log.typed_config.log_format.text_format_source.inline_string as string;
+      assert.match(
+        format,
+        /^jr2\.custodian slot=%DYNAMIC_METADATA\(jr2:slot\)% %DYNAMIC_METADATA\(jr2:owner\)% action=refuse /,
+      );
+    }
+  }
+  // The CONNECT of a tunnel names a name in one spelling: an address, `-` (no TLS name), jr2's
+  // domain in any letter case and a name with a trailing dot are refused, whatever they resolve to.
+  const connect = boot.static_resources.listeners.find((l: { name: string }) => l.name === "dial").filter_chains[0]
+    .filters[0].typed_config.route_config.virtual_hosts[0].routes[0];
+  assert.deepEqual(connect.direct_response, { status: 403 });
+  const connectRe = re2(connect.match.headers[0].string_match.safe_regex.regex);
+  for (const authority of [
+    "-:443",
+    "10.0.0.1:443",
+    "[::1]:443",
+    "custodian.jr2.internal:443",
+    "CUSTODIAN.JR2.INTERNAL:443",
+    "api.anthropic.com.:443",
+    "API.ANTHROPIC.COM.:443",
+  ]) {
+    assert.match(authority, connectRe, authority);
+  }
+  for (const authority of ["example.com:443", "EXAMPLE.com:22", "jr2.internal.example.com:443"]) {
+    assert.doesNotMatch(authority, connectRe, authority);
   }
   // Each dial by name of a slot goes through a dial listener: no slot chain dials a name itself.
   const clustersNamed = JSON.stringify(sandbox().listener).match(/"cluster":"[^"]+"/g) ?? [];
@@ -532,6 +592,20 @@ test("the pod's bootstrap: admin on loopback, health, the Orchestrator's dial to
   assert.ok(CUSTODIAN_POD_ARGS.includes("--drain-time-s"));
   assert.equal(CUSTODIAN_POD_ARGS[CUSTODIAN_POD_ARGS.indexOf("--drain-time-s") + 1], String(CUSTODIAN_DRAIN_SECONDS));
   assert.equal(CUSTODIAN_DRAIN_SECONDS, 60);
+  // The program decides each request in a protected call: an error refuses it, and Envoy never lets
+  // an unchecked dial through. Its own refusals of a dial say that they are the Custodian's.
+  assert.match(CUSTODIAN_PROGRAM, /local ok, err = pcall\(decide, handle, meta, role\)\n  if not ok then/);
+  assert.match(
+    CUSTODIAN_PROGRAM,
+    /refuse\(handle, 503, "error", "the Custodian could not decide this request", mark\)/,
+  );
+  for (const [reason, mark] of [
+    ["not-ready", "not-ready"],
+    ["dial", "refused"],
+    ["target", "refused"],
+  ] as const) {
+    assert.match(CUSTODIAN_PROGRAM, new RegExp(`refuse\\(handle, [45]03, "${reason}", "[^"]+", "${mark}"\\)`), reason);
+  }
 });
 
 test("the LDS and CDS files hold each slot's listener and each address cluster once, and refuse a cluster two slots render differently", () => {
@@ -552,20 +626,25 @@ test("the LDS and CDS files hold each slot's listener and each address cluster o
   assert.throws(() => custodianXds([...slots, clash]), /render the cluster tcp\|10\.0\.0\.5\|8000 differently/);
 });
 
-test("size: 128 slots of 30 entries each, rendered into the LDS and CDS files (risk 4 of the plan)", (t) => {
-  const started = performance.now();
-  const slots = manySlots(128, 30).map(renderSlot);
-  const { lds, cds } = custodianXds(slots);
-  const ms = performance.now() - started;
-  const ldsBytes = Buffer.byteLength(JSON.stringify(lds));
-  const cdsBytes = Buffer.byteLength(JSON.stringify(cds));
-  const luaBytes = slots.reduce((n, s) => n + Buffer.byteLength(s.lua.text), 0);
-  const chains = slots.reduce((n, s) => n + chainsOf(s).length, 0);
-  const one = Buffer.byteLength(JSON.stringify(slots[5]!.listener));
-  const line = `128 slots x 30 entries: lds ${ldsBytes} bytes, cds ${cdsBytes} bytes, lua ${luaBytes} bytes, ${chains} filter chains, one listener ${one} bytes, rendered in ${Math.round(ms)} ms`;
-  t.diagnostic(line);
-  console.log(`jr2.custodian-rules size: ${line}`);
-  // A ceiling, so that a change that makes each slot much larger is seen: the Custodian pod writes
-  // this file into memory and Envoy parses it whole on each change.
-  assert.ok(ldsBytes < 24 * 1024 * 1024, `the LDS file is ${ldsBytes} bytes`);
+test("size: 128 slots of 30 entries each, rendered into the LDS and CDS files, with no Intercepted host and with 5 of 30 (risk 4 of the plan)", (t) => {
+  for (const intercepted of [0, 5]) {
+    const started = performance.now();
+    const slots = manySlots(128, 30, intercepted).map(renderSlot);
+    const { lds, cds } = custodianXds(slots);
+    const ms = performance.now() - started;
+    const ldsBytes = Buffer.byteLength(JSON.stringify(lds));
+    const cdsBytes = Buffer.byteLength(JSON.stringify(cds));
+    const luaBytes = slots.reduce((n, s) => n + Buffer.byteLength(s.lua.text), 0);
+    const chains = slots.reduce((n, s) => n + chainsOf(s).length, 0);
+    const one = Buffer.byteLength(JSON.stringify(slots[5]!.listener));
+    const line = `128 slots x 30 entries, ${intercepted} Intercepted with a bound secret: lds ${ldsBytes} bytes, cds ${cdsBytes} bytes, lua ${luaBytes} bytes, ${chains} filter chains, one listener ${one} bytes, rendered in ${Math.round(ms)} ms`;
+    t.diagnostic(line);
+    console.log(`jr2.custodian-rules size: ${line}`);
+    // A ceiling, so that a change that makes each slot much larger is seen: the Custodian pod writes
+    // this file into memory and Envoy parses it whole on each change.
+    assert.ok(ldsBytes < 24 * 1024 * 1024, `the LDS file is ${ldsBytes} bytes`);
+    if (intercepted > 0) {
+      assert.equal((slots[5]!.lua.text.match(/^HELD\.targets\[/gm) ?? []).length, intercepted);
+    }
+  }
 });

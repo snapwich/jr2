@@ -248,6 +248,8 @@ to GitHub, and PyPI, which the Custodian intercepts:
 - An entry with no port permits ports 443 and 80.
 - `*.` at the start of a host, such as `*.example.com`, permits each name below that domain, for TLS and HTTP only.
 - `["*"]` permits each name, for TLS and HTTP only.
+- A `*.` entry or `["*"]` never carries an Intercepted host of the Sandbox or a name of jr2's, in any spelling of the
+  name. On port 80 it carries no `Host` header that names another port.
 - `jr2 up` gives a warning for `["*"]` and for each `*.` entry. Each one is a way for data to go out.
 - An exact IPv4 address with a port, such as `"192.168.1.20:8000"`, is an entry too, for a host that has no name. An
   IPv6 address, a range, and a loopback or link-local address are refused.
@@ -285,6 +287,8 @@ The Custodian refuses with a reason, and logs each refusal with the Sandbox, the
 
 - A name that the list does not permit gets a DNS refusal at once.
 - A connection that the list does not permit gets a TLS alert, an HTTP 403 or a line of text.
+- A TLS connection to a permitted name that resolves to an address that the Custodian never dials is closed with no
+  text. Only the log line gives the reason.
 - A connection to an IP address that is not an entry, such as `curl https://1.2.3.4`, is refused, because it has no
   name.
 

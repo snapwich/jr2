@@ -80,11 +80,15 @@ local function tag(handle, key, value)
   handle:streamInfo():dynamicMetadata():set("jr2", key, value)
 end
 
-local function refuse(handle, status, reason, body)
+-- `mark`, when given, is the `x-jr2-custodian` header of the answer: the Orchestrator's dial reads
+-- it to tell the Custodian's own refusal from a Harness pod's answer (ADR-0084).
+local function refuse(handle, status, reason, body, mark)
   tag(handle, "action", "refuse")
   tag(handle, "reason", reason)
   tag(handle, "log", true)
-  handle:respond({ [":status"] = tostring(status), ["content-type"] = "text/plain" }, "jr2 custodian: " .. body .. "\n")
+  local headers = { [":status"] = tostring(status), ["content-type"] = "text/plain" }
+  if mark ~= nil then headers["x-jr2-custodian"] = mark end
+  handle:respond(headers, "jr2 custodian: " .. body .. "\n")
 end
 
 -- The swap, in the two forms a client writes a key in: the Stand-in alone (`x-api-key`), or one
@@ -323,23 +327,25 @@ local function inbound(handle, headers)
   if DIAL_TOKEN == nil then
     local f = io.open(HELD.inbound.token, "rb")
     if f ~= nil then
-      local v = f:read("*a"):gsub("\r?\n$", "", 1)
+      -- A folder opens, and reads as nil.
+      local v = f:read("*a")
       f:close()
-      if v ~= "" then DIAL_TOKEN = v end
+      if v ~= nil then v = v:gsub("\r?\n$", "", 1) end
+      if v ~= nil and v ~= "" then DIAL_TOKEN = v end
     end
   end
   local given = headers:get(DIAL_HEADER)
   local count = headers:getNumValues(DIAL_HEADER)
   headers:remove(DIAL_HEADER)
   if DIAL_TOKEN == nil then
-    return refuse(handle, 503, "not-ready", "the Custodian has no dial token yet")
+    return refuse(handle, 503, "not-ready", "the Custodian has no dial token yet", "not-ready")
   end
   if count ~= 1 or given ~= DIAL_TOKEN then
-    return refuse(handle, 403, "dial", "a dial to a Harness pod needs the dial token of this Instance")
+    return refuse(handle, 403, "dial", "a dial to a Harness pod needs the dial token of this Instance", "refused")
   end
   local target = headers:get(TARGET_HEADER)
   if headers:getNumValues(TARGET_HEADER) ~= 1 or HELD.inbound.targets[target] ~= true then
-    return refuse(handle, 403, "target", "the target is not port 8080 or 8082 of a slot of this Instance")
+    return refuse(handle, 403, "target", "the target is not port 8080 or 8082 of a slot of this Instance", "refused")
   end
   tag(handle, "action", "inbound")
   tag(handle, "target", target)
@@ -360,9 +366,7 @@ function envoy_on_response(handle)
   tag(handle, "reason", "guard")
 end
 
-function envoy_on_request(handle)
-  local meta = handle:metadata()
-  local role = meta:get("role")
+local function decide(handle, meta, role)
   local headers = handle:headers()
   if role == "egress" then return egress(handle, headers) end
   if role == "intercept" then return intercept(handle, headers, meta:get("target")) end
@@ -395,5 +399,20 @@ function envoy_on_request(handle)
   end
   if role == "deny" then
     return refuse(handle, 404, "route", "no such route")
+  end
+end
+
+-- Envoy's Lua filter lets a request go on when the script raises, and then no check of this
+-- program has run. So each request is decided in a protected call, and an error refuses it: the
+-- Custodian fails closed. The line names the role, never what the request held.
+function envoy_on_request(handle)
+  local meta = handle:metadata()
+  local role = meta:get("role")
+  local ok, err = pcall(decide, handle, meta, role)
+  if not ok then
+    handle:logErr("jr2.custodian refuse reason=error role=" .. tostring(role) .. ": " .. tostring(err))
+    local mark = nil
+    if role == "inbound" then mark = "refused" end
+    return refuse(handle, 503, "error", "the Custodian could not decide this request", mark)
   end
 end
