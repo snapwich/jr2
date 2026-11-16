@@ -15,13 +15,15 @@
 //            table is of that version. Then the slot is live
 //
 // A slot whose Secret is gone, or whose rules cannot be rendered, or whose listener Envoy refuses,
-// is removed: a slot with no rules reaches nothing. A slot whose Secret cannot be read now (the API
-// does not answer) keeps the rules it has.
+// is removed: a slot with no rules reaches nothing. A slot whose Secrets cannot be read now (the API
+// does not answer) keeps the rules it has only while the slot Secret, if it was read, names the same
+// Harness pod: a slot given to another pod never serves it the rules of the pod before.
 //
 // It reads every slot at start and every 60 s, and one slot when the Orchestrator asks
 // (`POST /slots/<i>`) on port 18081, with the Instance's dial token. It writes the dial token to the
-// file that Envoy's inbound listener reads. It reports whether a pod answers on a slot's VLAN
-// (`present`), which the slot allocator reads before it gives a slot again.
+// file that Envoy's inbound listener reads at each dial, so both take the same token. It reports
+// which rules Envoy holds for a slot (`active`), and whether a pod answers on the slot's VLAN
+// (`present`): the slot allocator reads both before it gives a slot again.
 //
 // A log line names slots, Harness pods, secrets and reasons; never a value, a Stand-in or a token.
 
@@ -41,7 +43,7 @@ import {
   type SlotOwner,
   type SlotRules,
 } from "./custodian-rules.ts";
-import { readSlotSecret, type SlotFiles } from "./custodian-slot.ts";
+import { readSlotSecret, type SlotFiles, type SlotSpec } from "./custodian-slot.ts";
 import {
   CUSTODIAN_CDS,
   CUSTODIAN_DIAL_TOKEN,
@@ -54,7 +56,7 @@ import {
   slotInterface,
 } from "./custodian.ts";
 import type { FenceRanges } from "./egress.ts";
-import { isNotFound, SECRETS, type KubeClient, type KubeObject } from "./kube-client.ts";
+import { SECRETS, type KubeClient, type KubeObject } from "./kube-client.ts";
 import { CUSTODIAN_DIAL_KEY, CUSTODIAN_DIAL_SECRET, custodianSlotSecret, heldSecretsSecret } from "./names.ts";
 
 /** How often the control process reads every slot again. */
@@ -105,12 +107,17 @@ export type CustodianControlOptions = {
   liveTimeoutMs?: number;
 };
 
-/** What the control process says of one slot. `version` is the version of the rules that are live,
- * or that it waits for; `null` when the slot has none. */
+/** What the control process says of one slot. */
 export type SlotStatus = {
   slot: number;
+  /** The version of the rules that the slot's Secrets state now: live, or waited for, or refused by
+   * Envoy. `null` when the slot has no Secret, or its rules cannot be read or made now. */
   version: string | null;
   live: boolean;
+  /** The version of the rules that Envoy holds for the slot (seen active, or written and not yet
+   * seen), whatever the Secrets state now; `null` when Envoy holds no rules of the slot. A slot is
+   * given again only when each Custodian pod answers `null` here. */
+  active: string | null;
   /** Why the slot is not live. Names a key, a secret or a host; never a value. */
   error?: string;
   /** Whether a pod answers on the slot's VLAN: only on a GET. */
@@ -134,14 +141,22 @@ export type CustodianControl = {
 /** What one read of a slot gave. */
 type Wanted =
   | { kind: "absent" }
-  /** The slot cannot be read now: it keeps what it has. */
-  | { kind: "unreadable"; error: string }
+  /** The slot cannot be read now. It keeps what it has while `owner` and `heldPod` (the slot Secret's,
+   * when it was read) are those of its rules. */
+  | { kind: "unreadable"; owner?: SlotOwner; heldPod?: string; error: string }
   /** The slot's Secret is there, and its rules cannot be made: it is removed. */
   | { kind: "refused"; owner?: SlotOwner; error: string }
   | { kind: "ok"; slot: Slot };
 
 /** One slot's rules and what they are made of. */
-type Slot = { rules: SlotRules; owner: SlotOwner; files: SlotFiles; secrets: string[]; hosts: number };
+type Slot = {
+  rules: SlotRules;
+  owner: SlotOwner;
+  heldPod?: string;
+  files: SlotFiles;
+  secrets: string[];
+  hosts: number;
+};
 
 type DynamicListener = {
   name?: string;
@@ -156,9 +171,13 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
   const resolver = opts.resolver ?? resolverTables();
   const present = opts.present ?? slotPresent;
   const liveTimeout = opts.liveTimeoutMs ?? LIVE_TIMEOUT_MS;
+  // A range with no VLANs would make each slot's address a program error at the first GET.
+  slotVlan(opts.range, 0);
 
   const wanted = new Map<number, Wanted>();
   const applied = new Map<number, Slot>();
+  /** The version of each slot in the LDS file last written: what Envoy takes, or has taken. */
+  const inLds = new Map<number, string>();
   /** A version of a slot's rules that Envoy refused: not tried again until the version changes. */
   const refusedByEnvoy = new Map<number, string>();
   /** Why a slot is not live, by slot. */
@@ -166,6 +185,12 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
   let dialToken: Buffer | undefined;
   let written = false;
   let isReady = false;
+  /** True once a full sync has written what each slot's Secrets state: before it, Envoy may hold
+   * rules from the files of the process before, which `applied` does not know. */
+  let synced = false;
+  /** The signal of `run`: a wait for Envoy ends when it aborts. */
+  let stop: AbortSignal | undefined;
+  const pause = (ms: number) => sleep(ms, undefined, stop === undefined ? {} : { signal: stop });
 
   // One sync at a time: two would write the LDS file over each other.
   let queue: Promise<unknown> = Promise.resolve();
@@ -194,60 +219,77 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
       log(`jr2.custodian control action=read secret=${CUSTODIAN_DIAL_SECRET} error=no-token`);
       return;
     }
-    const token = Buffer.from(value, "base64");
+    const token = dialTokenOf(Buffer.from(value, "base64"));
+    if (token === undefined) {
+      log(`jr2.custodian control action=read secret=${CUSTODIAN_DIAL_SECRET} error=empty-token`);
+      return;
+    }
     if (dialToken !== undefined && token.equals(dialToken)) return;
     await put(local(CUSTODIAN_DIAL_TOKEN), token);
     dialToken = token;
   };
 
-  /** One slot, as its Secrets state it now. */
-  const read = async (slot: number, cache: Map<string, Promise<Record<string, string> | undefined>>) => {
+  /** One slot, as its Secrets state it now. Never throws: what goes wrong is the slot's alone. */
+  const read = async (
+    slot: number,
+    cache: Map<string, Promise<Record<string, string> | undefined>>,
+  ): Promise<Wanted> => {
     const get = (name: string) => {
       if (!cache.has(name)) cache.set(name, secretData(name));
       return cache.get(name)!;
+    };
+    /** A get that failed. 403 is a lasting answer (the Role does not name the Secret): the slot is
+     * refused. Any other error is a pause of the API. */
+    const failed = (what: string, e: unknown, spec?: SlotSpec): Wanted => {
+      const error = `${what} cannot be read: ${reasonOf(e)}`;
+      const owner = spec === undefined ? {} : { owner: spec.owner };
+      if ((e as { status?: number }).status === 403) return { kind: "refused", ...owner, error };
+      return { kind: "unreadable", ...owner, ...(spec?.heldPod === undefined ? {} : { heldPod: spec.heldPod }), error };
     };
     let data: Record<string, string> | undefined;
     try {
       data = await get(custodianSlotSecret(slot));
     } catch (e) {
-      return { kind: "unreadable", error: `the slot Secret cannot be read: ${reasonOf(e)}` } satisfies Wanted;
+      return failed("the slot Secret", e);
     }
-    if (data === undefined) return { kind: "absent" } satisfies Wanted;
-    let parsed: ReturnType<typeof readSlotSecret>;
+    if (data === undefined) return { kind: "absent" };
+    let owner: SlotOwner | undefined;
     try {
-      parsed = readSlotSecret(data);
-    } catch (e) {
-      return { kind: "refused", error: (e as Error).message } satisfies Wanted;
-    }
-    const { spec, files } = parsed;
-    for (const binding of spec.manifest.secrets) {
-      if (!ENV_NAME.test(binding.name)) {
-        return { kind: "refused", owner: spec.owner, error: "a held secret's name is not an env name" } as Wanted;
+      const { spec, files } = readSlotSecret(data);
+      owner = spec.owner;
+      for (const binding of spec.manifest.secrets) {
+        if (!ENV_NAME.test(binding.name)) {
+          return { kind: "refused", owner, error: "a held secret's name is not an env name" };
+        }
+        // A slot that names no pod holds its literal values itself (a check pod).
+        if (binding.source.kind === "literal" && spec.heldPod === undefined) {
+          if (files.has(`values/${binding.name}`)) continue;
+          return {
+            kind: "refused",
+            owner,
+            error: `the value of ${binding.name} is missing: no key values.${binding.name} in the slot Secret, and it names no pod that holds it`,
+          };
+        }
+        const [secret, key] =
+          binding.source.kind === "secret"
+            ? [binding.source.secret, binding.source.key]
+            : [heldSecretsSecret(spec.heldPod!), binding.name];
+        let values: Record<string, string> | undefined;
+        try {
+          values = await get(secret);
+        } catch (e) {
+          return failed(`the Secret ${secret}`, e, spec);
+        }
+        const value = values?.[key];
+        if (value === undefined) {
+          return {
+            kind: "refused",
+            owner,
+            error: `the value of ${binding.name} is missing: no key ${key} in the Secret ${secret}`,
+          };
+        }
+        files.set(`values/${binding.name}`, Buffer.from(value, "base64"));
       }
-      const [secret, key] =
-        binding.source.kind === "secret"
-          ? [binding.source.secret, binding.source.key]
-          : [spec.heldPod === undefined ? undefined : heldSecretsSecret(spec.heldPod), binding.name];
-      if (secret === undefined) {
-        return { kind: "refused", owner: spec.owner, error: `no pod holds the literal ${binding.name}` } as Wanted;
-      }
-      let values: Record<string, string> | undefined;
-      try {
-        values = await get(secret);
-      } catch (e) {
-        return { kind: "unreadable", error: `the Secret ${secret} cannot be read: ${reasonOf(e)}` } as Wanted;
-      }
-      const value = values?.[key];
-      if (value === undefined) {
-        return {
-          kind: "refused",
-          owner: spec.owner,
-          error: `the value of ${binding.name} is missing: no key ${key} in the Secret ${secret}`,
-        } as Wanted;
-      }
-      files.set(`values/${binding.name}`, Buffer.from(value, "base64"));
-    }
-    try {
       const rules = renderSlot({
         slot,
         owner: spec.owner,
@@ -258,9 +300,10 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
       });
       const secrets = spec.manifest.secrets.map((x) => x.name);
       const hosts = new Set(spec.manifest.egress.map((e) => e.host)).size;
-      return { kind: "ok", slot: { rules, owner: spec.owner, files, secrets, hosts } } satisfies Wanted;
+      const heldPod = spec.heldPod === undefined ? {} : { heldPod: spec.heldPod };
+      return { kind: "ok", slot: { rules, owner: spec.owner, ...heldPod, files, secrets, hosts } };
     } catch (e) {
-      return { kind: "refused", owner: spec.owner, error: (e as Error).message } satisfies Wanted;
+      return { kind: "refused", ...(owner === undefined ? {} : { owner }), error: (e as Error).message };
     }
   };
 
@@ -280,7 +323,12 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
     for (let slot = 0; slot < FENCE_SLOTS; slot++) {
       const w = wanted.get(slot);
       if (w?.kind === "ok" && refusedByEnvoy.get(slot) !== w.slot.rules.version) next.set(slot, w.slot);
-      if (w?.kind === "unreadable" && applied.has(slot)) next.set(slot, applied.get(slot)!);
+      const a = applied.get(slot);
+      // Rules kept through a pause of the API are those of the same Harness pod: a slot that was
+      // given to another pod is removed, so that the new pod never gets the old pod's rules.
+      if (w?.kind === "unreadable" && a !== undefined && (w.owner === undefined || sameHolder(a, w))) {
+        next.set(slot, a);
+      }
     }
     // A slot whose rules Envoy no longer shows (its container started again and read an older
     // file) is written again.
@@ -307,7 +355,9 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
         next.delete(r.slot);
       }
       // Envoy keeps the old listener of a slot whose new one it refused: the slot is written out,
-      // so that it reaches nothing rather than what it reached before.
+      // so that it reaches nothing rather than what it reached before. Its names stop answering
+      // first.
+      for (const r of outcome.refused) resolver.remove(r.slot);
       await writeXds([...next.values()].map((s) => s.rules));
       const out = await settle(
         [],
@@ -328,6 +378,7 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
     }
     for (const slot of outcome.removed) {
       const was = applied.get(slot);
+      resolver.remove(slot);
       applied.delete(slot);
       await rm(local(slotFolder(slot)), { recursive: true, force: true });
       log(`jr2.custodian removed ${who(slot, was?.owner)}`);
@@ -374,6 +425,19 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
     }
   };
 
+  /** The folders of slots that neither `applied` nor the LDS file holds: a slot that went while
+   * this process was down leaves its values, tokens and leaves there, and the first sync removes
+   * them. */
+  const removeOrphans = async (): Promise<void> => {
+    const slots = local(`${CUSTODIAN_STATE}/slots`);
+    for (const name of await readdir(slots).catch(() => [] as string[])) {
+      const slot = /^(0|[1-9][0-9]{0,2})$/.test(name) ? Number(name) : -1;
+      if (slot < 0 || slot >= FENCE_SLOTS || applied.has(slot) || inLds.has(slot)) continue;
+      await rm(join(slots, name), { recursive: true, force: true });
+      log(`jr2.custodian removed slot=${slot}`);
+    }
+  };
+
   /** The CDS file, and when Envoy has its clusters, the LDS file: a listener that names a cluster
    * Envoy does not know yet is refused, and nothing reads the LDS file again until its next move. */
   const writeXds = async (slots: SlotRules[]): Promise<void> => {
@@ -384,9 +448,11 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
     for (;;) {
       const stats = await opts.admin("/stats?filter=^cluster_manager\\.cds\\.version_text$").catch(() => "");
       if (stats.includes(want) || performance.now() > deadline) break;
-      await sleep(10);
+      await pause(10);
     }
     await put(local(CUSTODIAN_LDS), Buffer.from(JSON.stringify(lds)));
+    inLds.clear();
+    for (const r of slots) inLds.set(r.slot, r.version);
   };
 
   /** The dynamic listeners whose names match `regex`, by name. */
@@ -421,7 +487,7 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
       }
       if (waiting.length === 0 && going.length === 0) break;
       if (performance.now() > deadline) break;
-      await sleep(20);
+      await pause(20);
     }
     return { live, refused, removed: gone, waiting };
   };
@@ -440,7 +506,9 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
     const line = w.error.replace(/\s+/g, " ");
     if (w.kind === "refused") log(`jr2.custodian refuse ${who(slot, w.owner)} reason=rules why=${line}`);
     // While the API does not answer, a line for each slot with rules; `syncAll` writes one for all.
-    else if (applied.has(slot)) log(`jr2.custodian control ${who(slot, applied.get(slot)!.owner)} error=${line}`);
+    else if (applied.has(slot)) {
+      log(`jr2.custodian control ${who(slot, w.owner ?? applied.get(slot)!.owner)} error=${line}`);
+    }
   };
 
   const syncAll = (): Promise<void> =>
@@ -458,16 +526,20 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
       const unread = slots.filter((slot) => reads[slot]!.kind === "unreadable").length;
       if (unread > 0) log(`jr2.custodian control action=read error=unreadable slots=${unread}`);
       await converge(true);
-      // Ready once each slot was read, and each that has rules is live or refused: a pod that starts
+      if (!synced) await removeOrphans();
+      synced = true;
+      // Ready once it has the dial token and each slot was read, and each that has rules is live or refused: a pod that starts
       // later is live for each slot before the Orchestrator dials through it. Then it stays ready, so
       // that a pause of the API does not take a pod that serves out of the EndpointSlice.
-      isReady ||= slots.every((slot) => {
-        const w = wanted.get(slot)!;
-        if (w.kind === "unreadable") return false;
-        if (w.kind !== "ok") return true;
-        const version = w.slot.rules.version;
-        return applied.get(slot)?.rules.version === version || refusedByEnvoy.get(slot) === version;
-      });
+      isReady ||=
+        dialToken !== undefined &&
+        slots.every((slot) => {
+          const w = wanted.get(slot)!;
+          if (w.kind === "unreadable") return false;
+          if (w.kind !== "ok") return true;
+          const version = w.slot.rules.version;
+          return applied.get(slot)?.rules.version === version || refusedByEnvoy.get(slot) === version;
+        });
     });
 
   /** A slot is live when Envoy shows its rules active and its resolver table is of their version. */
@@ -476,16 +548,18 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
     const w = wanted.get(slot);
     const e = errors.get(slot);
     const wantedVersion = w?.kind === "ok" ? w.slot.rules.version : null;
+    const active = a?.rules.version ?? inLds.get(slot) ?? null;
     const live =
       a !== undefined &&
       e === undefined &&
       (wantedVersion === null || a.rules.version === wantedVersion) &&
       resolver.get(slot)?.version === a.rules.version;
-    if (live) return { slot, version: a.rules.version, live: true };
+    if (live) return { slot, version: a.rules.version, live: true, active };
     return {
       slot,
       version: wantedVersion ?? e?.version ?? null,
       live: false,
+      active,
       ...(e !== undefined ? { error: e.error } : {}),
     };
   };
@@ -520,6 +594,8 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
       log(`jr2.custodian control action=refuse slot=${slot} reason=dial`);
       return text(401, "refused: this API takes the Instance's dial token (ADR-0084)");
     }
+    // Before the first full sync, Envoy may hold rules that this process does not know of yet.
+    if (!synced) return text(503, "not ready: the first sync of every slot has not ended");
     if (req.method === "GET") {
       const address = slotAddress(opts.ranges.segment, slotVlan(opts.range, slot));
       return Response.json({ ...status(slot), present: await present(slot, address).catch(() => false) });
@@ -528,11 +604,15 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
     return text(405, "GET or POST");
   };
 
+  /** Each wait for Envoy ends when `signal` aborts, so that the process stops at once: it holds
+   * nothing that must be written, and the next process reads every slot again. */
   const run = async (signal: AbortSignal): Promise<void> => {
+    stop = signal;
     while (!signal.aborted) {
       try {
         await syncAll();
       } catch (e) {
+        if (signal.aborted) break;
         log(`jr2.custodian control action=sync error=${reasonOf(e)}`);
       }
       await sleep(isReady ? CUSTODIAN_RESYNC_MS : 2_000, undefined, { signal }).catch(() => {});
@@ -540,6 +620,19 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
   };
 
   return { syncAll, syncSlot, status, ready: () => isReady, fetch: fetchHandler, run };
+}
+
+/** True when a read of a slot names the Harness pod, and the pod of literal values, of its rules. */
+function sameHolder(a: Slot, w: { owner?: SlotOwner; heldPod?: string }): boolean {
+  return JSON.stringify(a.owner) === JSON.stringify(w.owner) && a.heldPod === w.heldPod;
+}
+
+/** The dial token as Envoy's inbound role reads it (`custodian.lua`): one trailing `\n` or `\r\n`
+ * taken off; `undefined` when nothing is left. */
+export function dialTokenOf(raw: Buffer): Buffer | undefined {
+  let end = raw.length;
+  if (raw[end - 1] === 0x0a) end -= raw[end - 2] === 0x0d ? 2 : 1;
+  return end === 0 ? undefined : raw.subarray(0, end);
 }
 
 /** True when the listener's active state has the chain of the rules of `version`. */

@@ -24,6 +24,7 @@ import {
   custodianPodBootstrap,
   custodianRef,
   custodianXds,
+  CUSTODIAN_INBOUND_PORT,
   JR2_CUSTODIAN_NAME,
   leafStem,
   slotSecretData,
@@ -186,8 +187,29 @@ test("the control process makes each slot's rules live in the pinned Envoy, take
 
     // A Secret gone: the slot is removed from Envoy.
     secrets.delete("jr2-custodian-slot-1");
-    assert.deepEqual(await control.syncSlot(1), { slot: 1, version: null, live: false });
+    assert.deepEqual(await control.syncSlot(1), { slot: 1, version: null, live: false, active: null });
     assert.equal(await active(1), false);
+
+    // The dial token: Envoy's inbound role and the control API take the same one, also after it
+    // changes. The target is no slot, so a dial that passes the token check is refused for its
+    // target, and nothing is dialed.
+    const dial = async (token: string) => {
+      const res = await fetch(`http://${ip}:${CUSTODIAN_INBOUND_PORT}/healthz`, {
+        headers: { "x-jr2-dial": token, "x-jr2-target": "10.1.2.3:8080" },
+      });
+      const body = await res.text();
+      return /needs the dial token/.test(body) ? "token" : /not port 8080 or 8082/.test(body) ? "target" : body;
+    };
+    const api = async (token: string) =>
+      (await control.fetch(new Request("http://c/slots/3", { headers: { "x-jr2-dial": token } }))).status;
+    assert.equal(await dial("dial-token"), "target");
+    assert.equal(await api("dial-token"), 200);
+    secrets.set("jr2-custodian-dial", b64data({ token: "dial-token-2\n" }));
+    await control.syncAll();
+    assert.equal(await dial("dial-token"), "token", "the old token is refused at the next dial");
+    assert.equal(await api("dial-token"), 401);
+    assert.equal(await dial("dial-token-2"), "target");
+    assert.equal(await api("dial-token-2"), 200);
 
     // Envoy's container starts again and reads the files that the control process wrote: each slot
     // that was live is live again, and a sync finds nothing to write.

@@ -317,30 +317,34 @@ end
 
 -- The Orchestrator's dial to a Harness pod (ADR-0084): it names the pod by `x-jr2-target`, and it
 -- proves that it is the Orchestrator by `x-jr2-dial`, the dial token of this Instance. The token is
--- read when the first dial comes, because the Custodian's control process writes it after Envoy
--- starts. Neither header leaves the Custodian.
+-- read from its file at each dial: the Custodian's control process writes the file after Envoy
+-- starts, and again when the Instance's token changes, and its own API takes the token of the same
+-- file. One trailing `\n` or `\r\n` is taken off, as the control process does (`dialTokenOf`).
+-- Neither header leaves the Custodian.
 local DIAL_HEADER = "x-jr2-dial"
 local TARGET_HEADER = "x-jr2-target"
-local DIAL_TOKEN = nil
+
+local function dial_token()
+  local f = io.open(HELD.inbound.token, "rb")
+  if f == nil then return nil end
+  -- A folder opens, and reads as nil.
+  local v = f:read("*a")
+  f:close()
+  if v == nil then return nil end
+  v = v:gsub("\r?\n$", "", 1)
+  if v == "" then return nil end
+  return v
+end
 
 local function inbound(handle, headers)
-  if DIAL_TOKEN == nil then
-    local f = io.open(HELD.inbound.token, "rb")
-    if f ~= nil then
-      -- A folder opens, and reads as nil.
-      local v = f:read("*a")
-      f:close()
-      if v ~= nil then v = v:gsub("\r?\n$", "", 1) end
-      if v ~= nil and v ~= "" then DIAL_TOKEN = v end
-    end
-  end
+  local token = dial_token()
   local given = headers:get(DIAL_HEADER)
   local count = headers:getNumValues(DIAL_HEADER)
   headers:remove(DIAL_HEADER)
-  if DIAL_TOKEN == nil then
+  if token == nil then
     return refuse(handle, 503, "not-ready", "the Custodian has no dial token yet", "not-ready")
   end
-  if count ~= 1 or given ~= DIAL_TOKEN then
+  if count ~= 1 or given ~= token then
     return refuse(handle, 403, "dial", "a dial to a Harness pod needs the dial token of this Instance", "refused")
   end
   local target = headers:get(TARGET_HEADER)

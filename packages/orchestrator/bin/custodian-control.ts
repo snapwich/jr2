@@ -10,17 +10,30 @@
 
 import { serve } from "@hono/node-server";
 import { custodianControl } from "../src/custodian-control.ts";
+import { slotVlan } from "../src/custodian-rules.ts";
 import { CUSTODIAN_ADMIN_PORT, CUSTODIAN_CONTROL_PORT } from "../src/custodian.ts";
 import { fenceRangesOf } from "../src/egress.ts";
 import { kubeClient } from "../src/kube-client.ts";
 
 const env = process.env;
 const namespace = env.JR2_NAMESPACE;
-const range = Number(env.JR2_FENCE_RANGE);
-if (!namespace || !Number.isInteger(range) || range < 0) {
-  console.error("jr2.custodian control: JR2_NAMESPACE and JR2_FENCE_RANGE must be set (jr2 up sets both)");
+const range = env.JR2_FENCE_RANGE ? Number(env.JR2_FENCE_RANGE) : Number.NaN;
+const rangeError = (() => {
+  try {
+    slotVlan(range, 0);
+    return undefined;
+  } catch (e) {
+    return (e as Error).message;
+  }
+})();
+if (!namespace || rangeError !== undefined) {
+  console.error(
+    `jr2.custodian control: JR2_NAMESPACE and JR2_FENCE_RANGE must be set (jr2 up sets both)${rangeError ? `: ${rangeError}` : ""}`,
+  );
   process.exit(2);
 }
+
+const stop = new AbortController();
 
 const control = custodianControl({
   kube: kubeClient(),
@@ -31,16 +44,18 @@ const control = custodianControl({
     ...(env.JR2_FENCE_PLACEHOLDERS ? { placeholders: env.JR2_FENCE_PLACEHOLDERS } : {}),
   }),
   admin: async (path) => {
-    const res = await fetch(`http://127.0.0.1:${CUSTODIAN_ADMIN_PORT}${path}`, { signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`http://127.0.0.1:${CUSTODIAN_ADMIN_PORT}${path}`, {
+      signal: AbortSignal.any([AbortSignal.timeout(10_000), stop.signal]),
+    });
     if (!res.ok) throw new Error(`Envoy's admin answered ${res.status}`);
     return res.text();
   },
 });
 
 const server = serve({ fetch: control.fetch, port: CUSTODIAN_CONTROL_PORT, hostname: "0.0.0.0" });
-const stop = new AbortController();
 const running = control.run(stop.signal);
 
+// The process holds nothing that must be written: each wait for Envoy ends on the abort.
 const shutdown = async (): Promise<void> => {
   stop.abort();
   server.close();

@@ -9,10 +9,12 @@
 //                        the fetch token, each held secret's Stand-in (`<NAME>.standin`)
 //   tls.<stem>.crt|key   the leaf of an Intercepted host (`leafStem`), and of jr2's own name
 //
-// A held secret's VALUE is not in this Secret: it is in the pod's `jr2-held-secrets-<pod>` (a literal)
-// or in the user's own Secret (`secretKeyRef`), so a rotation reaches the Custodian with no new slot
-// Secret (ADR-0059). A Secret's key cannot hold a `/`, so each key names one file of one of the two
-// folders, and no key names a file outside them.
+// A held secret's VALUE is in this Secret only for a slot that names no `heldPod` (a check pod: the
+// slot Secret holds the copy of its literal values as `values.<NAME>`, and `jr2 up` deletes the
+// Secret after the check). Else it is in the pod's `jr2-held-secrets-<heldPod>` (a literal) or in
+// the user's own Secret (`secretKeyRef`), so a rotation reaches the Custodian with no new slot Secret
+// (ADR-0059); a `values.<NAME>` of this Secret is then not read. A Secret's key cannot hold a `/`,
+// so each key names one file of one of the two folders, and no key names a file outside them.
 
 import { z } from "zod";
 import type { SlotOwner } from "./custodian-rules.ts";
@@ -29,7 +31,8 @@ export type SlotSpec = {
   manifest: HeldManifest;
   placeholders: PlaceholderTable;
   /** The pod whose `jr2-held-secrets-<pod>` holds the slot's literal values. Absent when the
-   * manifest has no literal. */
+   * manifest has no literal, or when the slot Secret holds each literal's value itself
+   * (`values.<NAME>`: a check pod). */
   heldPod?: string;
 };
 
@@ -45,10 +48,22 @@ const NAME = /^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
 const FILE = /^[A-Za-z0-9_.-]{1,240}$/;
 
 const name = z.string().regex(NAME);
+/** One held secret: the names that say where its value is. The renderer checks its hosts and headers. */
+const binding = z
+  .object({
+    name: z.string().min(1),
+    source: z.union([
+      z.object({ kind: z.literal("literal") }).strict(),
+      z.object({ kind: z.literal("secret"), secret: name, key: z.string().regex(/^[-._a-zA-Z0-9]{1,253}$/) }).strict(),
+    ]),
+    hosts: z.array(z.any()),
+    headers: z.array(z.any()),
+  })
+  .passthrough();
 const spec = z.object({
   version: z.literal(1),
   owner: z.union([z.object({ sandbox: name }).strict(), z.object({ pod: name }).strict()]),
-  manifest: z.object({ version: z.literal(1), secrets: z.array(z.any()), egress: z.array(z.any()) }).passthrough(),
+  manifest: z.object({ version: z.literal(1), secrets: z.array(binding), egress: z.array(z.any()) }).passthrough(),
   placeholders: z.object({
     range: z.string(),
     rows: z.array(z.object({ name: z.string(), address: z.string() }).strict()),
