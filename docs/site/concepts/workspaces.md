@@ -289,7 +289,8 @@ entry to add. A host that no entry can name, such as `localhost` or an IPv6 addr
 
 The Custodian refuses with a reason, and logs each refusal with the Sandbox, the name, the port and the reason:
 
-- A name that the list does not permit gets a DNS refusal at once.
+- A name that the list does not permit gets a DNS refusal at once. A permitted name has an IPv4 address only: a lookup
+  of its IPv6 address gets an empty answer at once.
 - A connection that the list does not permit gets a TLS alert, an HTTP 403 or a line of text.
 - A TLS connection to a permitted name that resolves to an address that the Custodian never dials is closed with no
   text. Only the log line gives the reason. When the name also has other addresses, the Custodian connects only to

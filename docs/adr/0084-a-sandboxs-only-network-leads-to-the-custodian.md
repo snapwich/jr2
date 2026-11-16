@@ -81,12 +81,14 @@ and that holds when Workspace code is root in the Sandbox.
   carries it to that pod. The uplink accepts such a dial from the Orchestrator only, and the bearer check stays as the
   second control ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). The kubelet's probes of the pod's
   containers are exec probes.
-- **A refusal has a reason, and each one is logged.** A refused name gets a DNS refusal at once. A refused connection
-  gets a TLS alert, an HTTP 403 or a line of text, with jr2's reason. A Tunneled connection that the Custodian refuses
-  after the TLS name, because of the address that the name resolves to or because the name is refused there, is closed
-  with no text: the client's TLS has started, and only the log line gives the reason. The Custodian logs each refusal
-  with the Sandbox, the name, the port and the reason. A refusal before a name is known names the address dialed and the
-  TLS name instead (ADR-0059). This log replaces the flow log of the cluster's network.
+- **A refusal has a reason, and each one is logged.** A refused name gets a DNS refusal at once. A permitted name has
+  only its placeholder address, so a query for another record of it, such as an IPv6 address, gets an empty answer at
+  once, and a client that asks for both does not wait. A refused connection gets a TLS alert, an HTTP 403 or a line of
+  text, with jr2's reason. A Tunneled connection that the Custodian refuses after the TLS name, because of the address
+  that the name resolves to or because the name is refused there, is closed with no text: the client's TLS has started,
+  and only the log line gives the reason. The Custodian logs each refusal with the Sandbox, the name, the port and the
+  reason. A refusal before a name is known names the address dialed and the TLS name instead (ADR-0059). This log
+  replaces the flow log of the cluster's network.
 - **The Instance Harness and each check pod are behind a Fence too.** Each Harness pod has the same network and reaches
   the Custodian the same way, so no Harness has a proxy setting. The Instance Harness
   ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)) has an Egress list with no entry of the author's:

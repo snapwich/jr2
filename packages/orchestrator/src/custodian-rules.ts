@@ -104,9 +104,10 @@ export type SlotInputs = {
 /** One name that a slot's resolver answers, with its placeholder address. */
 export type ResolverName = { name: string; match: "name" | "below" | "any"; address: string };
 
-/** What a slot's resolver answers (M6): jr2's own name first, then each name of the Egress list.
- * Each other name is refused. `version` is the version of the slot's rules. */
-export type ResolverTable = { slot: number; version: string; names: ResolverName[] };
+/** What a slot's resolver answers (`custodian-resolver.ts`): jr2's own name first, then each name of
+ * the Egress list. Each other name is refused. `version` is the version of the slot's rules, and
+ * `owner` the Harness pod as each log line names it (`ownerText`). */
+export type ResolverTable = { slot: number; version: string; owner: string; names: ResolverName[] };
 
 /** One slot's rules. */
 export type SlotRules = {
@@ -1079,7 +1080,7 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
     listener,
     clusters,
     lua: { path: luaPath, text: luaText },
-    resolver: { slot, version, names },
+    resolver: { slot, version, owner, names },
   };
 }
 

@@ -70,6 +70,7 @@ export * from "./custodian.ts";
 export * from "./custodian-rules.ts";
 export * from "./custodian-slot.ts";
 export * from "./custodian-control.ts";
+export * from "./custodian-resolver.ts";
 export * from "./placeholders.ts";
 export * from "./harness-env.ts";
 export * from "./sandbox-kube.ts";

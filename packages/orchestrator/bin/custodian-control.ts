@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The `control` container of a Custodian pod (ADR-0084): the second entrypoint of the Orchestrator Kit
-// image. It makes each slot's rules live in the pod's Envoy and serves its API on port 18081. Logic
-// lives in `custodian-control.ts`; this file owns only what a process owns: env, the port, signals.
+// image. It makes each slot's rules live in the pod's Envoy, serves its API on port 18081, and serves
+// each slot's resolver on port 25000 + i (UDP and TCP). Logic lives in `custodian-control.ts` and
+// `custodian-resolver.ts`; this file owns only what a process owns: env, the ports, signals.
 //
 //   JR2_NAMESPACE          the Instance's namespace (fieldRef)
 //   JR2_FENCE_RANGE        the Instance's VLAN range k (`jr2-fence-range-<k>`)
@@ -9,7 +10,8 @@
 //   JR2_FENCE_PLACEHOLDERS the placeholder range, when the Instance's `fence` moves it
 
 import { serve } from "@hono/node-server";
-import { custodianControl } from "../src/custodian-control.ts";
+import { custodianControl, resolverTables } from "../src/custodian-control.ts";
+import { custodianResolver } from "../src/custodian-resolver.ts";
 import { slotVlan } from "../src/custodian-rules.ts";
 import { CUSTODIAN_ADMIN_PORT, CUSTODIAN_CONTROL_PORT } from "../src/custodian.ts";
 import { fenceRangesOf } from "../src/egress.ts";
@@ -34,8 +36,19 @@ if (!namespace || rangeError !== undefined) {
 }
 
 const stop = new AbortController();
+// The control process sets a slot's table once Envoy carries that version of its rules; the resolver
+// answers from it.
+const tables = resolverTables();
+const resolver = custodianResolver({ tables });
+try {
+  await resolver.listen();
+} catch (e) {
+  console.error(`jr2.custodian control: the resolver cannot listen: ${(e as Error).message}`);
+  process.exit(1);
+}
 
 const control = custodianControl({
+  resolver: tables,
   kube: kubeClient(),
   namespace,
   range,
@@ -59,6 +72,7 @@ const running = control.run(stop.signal);
 const shutdown = async (): Promise<void> => {
   stop.abort();
   server.close();
+  await resolver.close();
   await running;
   process.exit(0);
 };

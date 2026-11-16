@@ -70,8 +70,8 @@ const PRESENT_TIMEOUT_MS = 1_500;
 /** A held secret's name: an env name, and so a file name of the slot's values. */
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
-/** The resolver tables of the slots, which the resolver answers from (M6). A slot is live only when
- * its table is of the version of its rules. */
+/** The resolver tables of the slots, which the resolver answers from (`custodian-resolver.ts`). A
+ * slot is live only when its table is of the version of its rules. */
 export interface ResolverTables {
   set(table: ResolverTable): void;
   remove(slot: number): void;
