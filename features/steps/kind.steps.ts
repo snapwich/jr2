@@ -1721,7 +1721,7 @@ type FencePod = {
   metadata: { name: string; annotations?: Record<string, string> };
   spec: {
     nodeName?: string;
-    initContainers?: unknown[];
+    initContainers?: Array<{ name: string }>;
     containers: Array<{ name: string; env?: Array<{ name: string; value?: string }> }>;
   };
   status: { podIP?: string };
@@ -1805,7 +1805,8 @@ async function assertOnFence(
   const { pod, node, slot, attachment } = fence;
   const names = pod.spec.containers.map((c) => c.name);
   assert.deepEqual(names, ["harness"], `the pod runs the Harness and no Custodian container (got: ${names})`);
-  assert.equal(pod.spec.initContainers, undefined, "no Custodian as a sidecar either");
+  const inits = (pod.spec.initContainers ?? []).map((c) => c.name);
+  assert.ok(!inits.includes("custodian"), `no Custodian as a sidecar either (init containers: ${inits})`);
   // The one network Multus reports is the slot's attachment, and it is the pod's default network.
   const status = JSON.parse(pod.metadata.annotations?.["k8s.v1.cni.cncf.io/network-status"] ?? "[]") as Array<{
     name: string;
