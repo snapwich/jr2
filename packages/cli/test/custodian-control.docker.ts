@@ -32,7 +32,7 @@ import {
   type SlotSpec,
 } from "@jr2/orchestrator/internal";
 import { RANGES, THREE_SLOTS } from "./support/custodian-slots.ts";
-import { issueCa, issueLeaf, trustBundles } from "../src/held-pki.ts";
+import { issueCa, issueLeaf, trustBundles } from "@jr2/orchestrator/internal";
 
 const exec = promisify(execFile);
 const roots: string[] = [];

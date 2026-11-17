@@ -71,9 +71,12 @@ export * from "./custodian-rules.ts";
 export * from "./custodian-slot.ts";
 export * from "./custodian-control.ts";
 export * from "./custodian-resolver.ts";
+export * from "./pki.ts";
 export * from "./placeholders.ts";
 export * from "./harness-env.ts";
 export * from "./sandbox-kube.ts";
+export * from "./sandbox-fence.ts";
+export * from "./fence-slots.ts";
 export {
   effectorManifestKey,
   LABEL_EFFECTOR_POD,

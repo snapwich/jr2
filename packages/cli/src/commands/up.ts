@@ -128,7 +128,7 @@ import {
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { awaitMounts, digestSecretsOf, mountedDigests, staleLine } from "../mount-wait.ts";
-import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
+import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "@jr2/orchestrator/internal";
 import {
   assertEmulation,
   buildSandboxImage,

@@ -1,20 +1,27 @@
-// The held-secret PKI (ADR-0059): the per-Instance CA and the leaves the Custodian ends TLS with.
+// The PKI of the Custodian's leaves (ADR-0059): the CAs, and the leaves the Custodian ends TLS with.
 //
-// `jr2 up` issues every leaf BEFORE a pod starts, so the CA's private key never enters a Harness
-// pod: it lives in the `jr2-held-ca` Secret, which no pod mounts, and `jr2 up` alone reads it over
-// the kube API. A Custodian holds leaves and no key that could mint one.
+// Two kinds of CA, one shape of leaf:
 //
-// jr2 WRITES two fixed certificate shapes and nothing else, so this is a small DER writer over
-// `node:crypto` rather than a dependency: the CLI's one runtime dependency is `ts-blank-space`, and
-// the libraries that write X.509 bring a dozen packages (`@peculiar/x509`) or an ASN.1 parser and
-// pure-JS RSA (`node-forge`) jr2 has no use for. Nor does it shell to `openssl`: that would add a
-// binary to `jr2 up`'s floor, and macOS ships LibreSSL, whose flags differ. Node VERIFIES what this
-// writes — the tests read every certificate back with `crypto.X509Certificate`, and the Custodian
-// suite ends real TLS handshakes with them.
+//   the Instance's CA   `jr2 up` keeps it in the `jr2-held-ca` Secret, which no pod mounts, and
+//                       issues the leaves of the Instance Harness and the check pods from it before
+//                       a pod starts. A Custodian holds leaves and no key that could mint one.
+//   a Sandbox's CA      the Orchestrator makes it at provision (`sandboxPki`), with critical name
+//                       constraints for the Sandbox's Intercepted hosts and jr2's own name, issues one
+//                       leaf for each, and drops the key: it exists only in that call's memory, and
+//                       no object holds it. The pod gets the CA's certificate only.
 //
-//   CA    CN=jr2 held-secret CA (<instance>)   CA:true pathLen:0, keyCertSign+cRLSign, SKI   10 years
-//   leaf  CN=<host>                            one DNS or IP SAN, CA:false, digitalSignature,  1 year
-//                                              serverAuth, AKI, SKI
+// jr2 WRITES a few fixed certificate shapes and nothing else, so this is a small DER writer over
+// `node:crypto` rather than a dependency: the libraries that write X.509 bring a dozen packages
+// (`@peculiar/x509`) or an ASN.1 parser and pure-JS RSA (`node-forge`) jr2 has no use for. Nor does
+// it shell to `openssl`: that would add a binary to `jr2 up`'s floor, and macOS ships LibreSSL,
+// whose flags differ. Node VERIFIES what this writes — the tests read every certificate back with
+// `crypto.X509Certificate` and end TLS handshakes with them, and the Custodian suite ends real TLS
+// handshakes with them.
+//
+//   CA         CN=jr2 held-secret CA (<instance>)  CA:true pathLen:0, keyCertSign+cRLSign, SKI   10 years
+//   Sandbox CA CN=jr2 Sandbox CA (<sandbox>)       the same, and critical nameConstraints        10 years
+//   leaf       CN=<host> (an address: jr2 leaf (<a>)) one DNS or IP SAN, CA:false, digitalSignature,  1 year
+//                                                  serverAuth, AKI, SKI
 //
 // Keys are ECDSA P-256. Serials are 16 random bytes, top bit clear. `notBefore` is an hour back,
 // for clock skew between this host and a node.
@@ -145,8 +152,44 @@ function certificate(tbs: Buffer, signerKeyPem: string): Buffer {
 
 /** The per-Instance CA: `CN=jr2 held-secret CA (<instance>)`, ten years. */
 export function issueCa(instance: string, now: Date = new Date()): Pem {
+  return selfSignedCa(`jr2 held-secret CA (${instance})`, now, []);
+}
+
+/**
+ * A CA whose critical name constraints permit `hosts` and nothing else (ADR-0059): each DNS name
+ * exactly, and each IP literal as one address. A DNS constraint also permits each name below it
+ * (RFC 5280 §4.2.1.10), so each name gets an excluded subtree `.<name>` too, unless another of
+ * `hosts` is below it. With no IP literal among `hosts`, every IPv4 and IPv6 address is excluded.
+ * The CA cannot then vouch for a host outside `hosts`, whatever leaf its key signs. Throws on an
+ * empty list and on a host that is not a name or an IP literal (a wildcard, a trailing dot).
+ */
+export function issueConstrainedCa(cn: string, hosts: readonly string[], now: Date = new Date()): Pem {
+  return selfSignedCa(cn, now, [extension("2.5.29.30", true, nameConstraints(hosts))]);
+}
+
+/** A Sandbox's CA as the pod gets it, and a leaf for each of its Intercepted hosts. No CA key. */
+export type SandboxPki = {
+  /** The CA's certificate, PEM. Its key is not here, and not anywhere else. */
+  ca: string;
+  /** One leaf for each host, by the host as it was given. */
+  leaves: ReadonlyMap<string, Pem>;
+};
+
+/**
+ * A Sandbox's CA and its leaves (ADR-0059): a CA constrained to `hosts` (`issueConstrainedCa`), one
+ * leaf for each host, and then no key that can sign another leaf. The CA's key exists only inside
+ * this call: it is not returned, so no object that the caller writes can hold it. `hosts` are the
+ * Sandbox's Intercepted hosts and jr2's own name.
+ */
+export function sandboxPki(sandbox: string, hosts: readonly string[], now: Date = new Date()): SandboxPki {
+  const ca = issueConstrainedCa(`jr2 Sandbox CA (${sandbox})`, hosts, now);
+  const leaves = new Map(unique(hosts).map((host) => [host, issueLeaf(ca, host, now)] as const));
+  return { ca: ca.cert, leaves };
+}
+
+function selfSignedCa(cn: string, now: Date, more: Buffer[]): Pem {
   const key = p256();
-  const subject = name(`jr2 held-secret CA (${instance})`);
+  const subject = name(cn);
   const tbs = seq(
     context(0, integer(Buffer.from([2])), true),
     integer(serial()),
@@ -162,11 +205,51 @@ export function issueCa(instance: string, now: Date = new Date()): Pem {
         // keyCertSign (bit 5) + cRLSign (bit 6): 0b0000_0110, one unused bit.
         extension("2.5.29.15", true, bits(Buffer.from([0x06]), 1)),
         extension("2.5.29.14", false, octets(keyId(key.point))),
+        ...more,
       ),
       true,
     ),
   );
   return { cert: pem(certificate(tbs, key.keyPem)), key: key.keyPem };
+}
+
+/** The hosts, lowercase, each once, in their first order. */
+function unique(hosts: readonly string[]): string[] {
+  return [...new Set(hosts.map((h) => (isIP(h) === 0 ? h.toLowerCase() : h)))];
+}
+
+const DNS_NAME = /^(?=.{1,253}$)([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$/;
+
+/** NameConstraints (RFC 5280 §4.2.1.10): permittedSubtrees [0], excludedSubtrees [1]. */
+function nameConstraints(hosts: readonly string[]): Buffer {
+  const all = unique(hosts);
+  if (all.length === 0) throw new Error("a constrained CA needs at least one host");
+  const names = all.filter((h) => isIP(h) === 0);
+  const addresses = all.filter((h) => isIP(h) !== 0);
+  for (const n of names) {
+    if (!DNS_NAME.test(n)) throw new Error(`${n} is not a host name that a name constraint can state`);
+  }
+  const subtree = (general: Buffer): Buffer => seq(general);
+  const dns = (n: string): Buffer => context(2, Buffer.from(n, "ascii"), false);
+  const ip = (bytes: Buffer, mask: Buffer): Buffer => context(7, Buffer.concat([bytes, mask]), false);
+  const ipBytes = (h: string): Buffer => (isIP(h) === 4 ? Buffer.from(h.split(".").map(Number)) : ipv6Bytes(h));
+  const permitted = [
+    ...names.map((n) => subtree(dns(n))),
+    ...addresses.map((a) => {
+      const bytes = ipBytes(a);
+      return subtree(ip(bytes, Buffer.alloc(bytes.length, 0xff)));
+    }),
+  ];
+  const excluded = [
+    ...names.filter((n) => !names.some((o) => o.endsWith(`.${n}`))).map((n) => subtree(dns(`.${n}`))),
+    ...(addresses.length === 0
+      ? [subtree(ip(Buffer.alloc(4), Buffer.alloc(4))), subtree(ip(Buffer.alloc(16), Buffer.alloc(16)))]
+      : []),
+  ];
+  return seq(
+    context(0, Buffer.concat(permitted), true),
+    ...(excluded.length ? [context(1, Buffer.concat(excluded), true)] : []),
+  );
 }
 
 /** A leaf for one bound host — a DNS name or an IP literal — signed by `ca`, one year. */
@@ -180,7 +263,9 @@ export function issueLeaf(ca: Pem, host: string, now: Date = new Date()): Pem {
     ECDSA_SHA256,
     issuerName(caCert),
     seq(time(new Date(now.getTime() - HOUR)), time(new Date(now.getTime() + 365 * DAY))),
-    name(host),
+    // An address is no host name: OpenSSL checks a CN that reads as a host name against a CA's DNS
+    // constraints when the leaf has no DNS SAN, and "10.0.0.5" reads as one.
+    name(isIP(host) === 0 ? host : `jr2 leaf (${host})`),
     key.publicKeyDer,
     context(
       3,

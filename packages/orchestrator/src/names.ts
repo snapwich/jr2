@@ -157,6 +157,15 @@ export const sandboxCustodianConfigMap = (sandbox: string): string => `${sandbox
 export function custodianSlotSecret(slot: number): string {
   return `jr2-custodian-slot-${slot}`;
 }
+/** The label of a slot Secret: its slot (ADR-0084). */
+export const LABEL_FENCE_SLOT = "jr2.dev/fence-slot";
+/** A Sandbox's trust ConfigMap on the Fence (ADR-0059, ADR-0084), owned by its CR: `extra.crt` and
+ * `bundle.crt`, each with the Sandbox's own CA. Its Harness container mounts it at `/etc/jr2/ca`. */
+export const sandboxTrustConfigMap = (sandbox: string): string => `${sandbox}-trust`;
+/** A Sandbox's Stand-ins on the Fence (ADR-0059, ADR-0076), owned by its CR: the secret control
+ * Stand-in and one secret Stand-in per held secret, which its Harness container mounts as files. No
+ * token and no value: those are in its slot Secret, which no Harness pod mounts. */
+export const sandboxStandInSecret = (sandbox: string): string => `${sandbox}-standins`;
 /** The Secret of the Instance's dial token (ADR-0084): the token of the Orchestrator's dial through a
  * Custodian pod, and of the API of its control process. One key, `CUSTODIAN_DIAL_KEY`. */
 export const CUSTODIAN_DIAL_SECRET = "jr2-custodian-dial";

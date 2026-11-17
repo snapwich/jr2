@@ -409,7 +409,7 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
  * ECDSA P-256, valid from an hour back to a day ahead. With `under`, the leaf is of that CA instead
  * of a new one.
  *
- * `notBefore` is an hour back, as held-pki.ts sets it, because the wall clock can step back: a
+ * `notBefore` is an hour back, as the orchestrator's pki.ts sets it, because the wall clock can step back: a
  * certificate that starts at the current second is "not yet valid" to a handshake after such a
  * step. OpenSSL 3.0 has no `-not_before`, so `openssl ca` signs both, with `-startdate`. */
 export function testTls(

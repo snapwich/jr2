@@ -102,7 +102,7 @@ import {
   type FenceRanges,
 } from "@jr2/orchestrator/internal";
 import { fenceAttachments, FENCE_TRUNK_INTERFACE, UPLINK_SCRIPT, uplinkArgs } from "./fence.ts";
-import type { Pem } from "./held-pki.ts";
+import type { Pem } from "@jr2/orchestrator/internal";
 
 export {
   INSTANCE_EFFECTOR,

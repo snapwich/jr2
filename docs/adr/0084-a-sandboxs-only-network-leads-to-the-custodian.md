@@ -24,10 +24,14 @@ and that holds when Workspace code is root in the Sandbox.
   the cluster: `jr2 up` creates the Kubernetes Lease object `jr2-fence-range-<k>` in `jr2-system`, which names the
   Instance's namespace, and a create of a name that exists fails, so two Instances cannot claim one range. The range is
   the same on every node, because a pod's VLAN is chosen before the scheduler picks its node. Slot i of range k is VLAN
-  2 + 128k + i, and its address is that VLAN's address on the segment. The uplink of an Instance has the trunk of its
-  own range only, and no port of the bridge is a member of VLAN 1, so a frame of one Instance never reaches the uplink
-  or a Harness pod of another. An Instance keeps its range until `jr2 down`, also while it has no Harness pod, because a
-  pod of it can still be on a VLAN of the range: a held run's Sandbox
+  2 + 128k + i, and its address is that VLAN's address on the segment. `jr2 up` gives slots 0–2 to the Instance Harness,
+  the check pod and the node probes, and the Orchestrator gives each Sandbox one of the other slots for the Sandbox's
+  life. The Custodian knows a pod only by its VLAN, so the Orchestrator gives a slot again only when the Sandbox that
+  had it has been gone for 2 minutes and each Custodian pod of the Instance says that it holds no rules of the slot and
+  that no pod answers on the slot's VLAN. A Custodian pod that does not answer stops the slot's reuse. The uplink of an
+  Instance has the trunk of its own range only, and no port of the bridge is a member of VLAN 1, so a frame of one
+  Instance never reaches the uplink or a Harness pod of another. An Instance keeps its range until `jr2 down`, also
+  while it has no Harness pod, because a pod of it can still be on a VLAN of the range: a held run's Sandbox
   ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), or an Instance Harness
   pod that drains. For the same reason, `jr2 up` deletes the Custodian of an Instance with no Harness pod only when its
   namespace has no Sandbox and no Instance Harness pod left. `jr2 down` gives the range back when the namespace is

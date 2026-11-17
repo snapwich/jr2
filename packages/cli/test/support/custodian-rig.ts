@@ -75,7 +75,7 @@ import {
   type SlotOwner,
   type SlotRules,
 } from "@jr2/orchestrator/internal";
-import { issueCa, issueLeaf, trustBundles, type Pem } from "../../src/held-pki.ts";
+import { issueCa, issueLeaf, trustBundles, type Pem } from "@jr2/orchestrator/internal";
 
 const exec = promisify(execFile);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
