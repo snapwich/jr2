@@ -389,15 +389,15 @@ another, whatever it writes.
   does not stop normal work: a server that one `bash` call starts is found and ended by a later call; a write to a
   folder of the image that the uid owns, outside `/work`, succeeds; a move of a file into another folder succeeds;
   `ls /` and `ls /run` succeed; and `read` reads the full output of a `bash` call. It proves the metadata block: kind
-  has no metadata service, so the step gives `169.254.169.254` to the node, and the Agent's `bash` does not reach it.
-  The unit and conformance tests refuse the control token on the fetch route, the fetch token on an agent route, a
-  stated slot that is not the registration's, and both tokens at a Gate, and they check the slot on the delivery poll. A
-  test reads the Harness container's mounts from the pod spec. It fails on a mount that is not read-only, not under
-  `/run/jr2`, and not the Workspace's own (`/work`, `HOME`), so a new mount is classified before it ships. Unit tests
-  start node through `effector nocore --harness-env` with a `HOME` that holds a planted `.node_modules`, and check that
-  node looks for no module there; they also retarget a link onto `/run/jr2`, restart the spawner, and check that the new
-  domain reads nothing there. The `@kind` tier reads the Harness process's environ from outside the pod and checks its
-  `HOME`.
+  has no metadata service, so the step gives `169.254.169.254` to each node, and the Agent's `bash` gets the Custodian's
+  refusal. The unit and conformance tests refuse the control token on the fetch route, the fetch token on an agent
+  route, a stated slot that is not the registration's, and both tokens at a Gate, and they check the slot on the
+  delivery poll. A test reads the Harness container's mounts from the pod spec. It fails on a mount that is not
+  read-only, not under `/run/jr2`, and not the Workspace's own (`/work`, `HOME`), so a new mount is classified before it
+  ships. Unit tests start node through `effector nocore --harness-env` with a `HOME` that holds a planted
+  `.node_modules`, and check that node looks for no module there; they also retarget a link onto `/run/jr2`, restart the
+  spawner, and check that the new domain reads nothing there. The `@kind` tier reads the Harness process's environ from
+  outside the pod and checks its `HOME`.
 - **The `@model` tier runs after the build.** The change alters what the Working tools can do and where a notice is
   delivered ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), so it is a `@model`-tier change
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)).

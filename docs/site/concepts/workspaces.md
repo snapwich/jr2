@@ -282,8 +282,9 @@ while the Sandbox lives.
 jr2's own traffic goes through the Fence too: the Harness's calls to the model, to an MCP server and to the
 Orchestrator, the fetch of a Repo, and the calls of the Sandbox Effector. jr2 permits its own routes. For a `push` over
 ssh, jr2 permits the ssh port (22 by default) of the host of each ssh Repo that the Workspace binds. The url of a
-per-run Repo is run input, which `jr2 up` does not know, so its ssh host needs an entry, such as `"git.example.com:22"`.
-A `git push` that you or an Agent run by hand needs an entry for its host, such as `github.com`.
+per-run Repo, or of a slot that `customize()` binds, is not known to `jr2 up` when it makes the list, so its ssh host
+needs an entry, such as `"git.example.com:22"`. A `git push` that you or an Agent run by hand needs an entry for its
+host, such as `github.com`.
 
 A host with no secret needs an entry, also when jr2 itself uses it: a model endpoint with no key, an MCP server with no
 token, or a url that the Sandbox Effector calls with no secret. A secret in the path of a url does not count, because

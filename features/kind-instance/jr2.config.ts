@@ -147,8 +147,8 @@ export default defineConfig({
       id: "fake",
       api: "openai-completions",
       // Deployment-varying, so it rides env (ADR-0019): the World starts the scripted endpoint on
-      // an ephemeral port per scenario and publishes a POD-reachable address (the kind bridge
-      // gateway — localhost never works from a pod).
+      // an ephemeral port per scenario and publishes the name of the `model` Service of the
+      // scenario's namespace, whose one endpoint is this host at the scripted model's port.
       baseUrl: process.env.JR2_FAKE_PROVIDER_URL ?? "",
       // Per scenario, from env like the endpoint. In-cluster this reads undefined, which is safe:
       // the Orchestrator composes pods from what `jr2 up` resolved, never from this field.

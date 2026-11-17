@@ -246,18 +246,26 @@ export async function routeProbeMain(sys: ProbeSys): Promise<void> {
   const target = env.JR2_PROBE_TARGET ?? "";
   const segment = env.JR2_PROBE_SEGMENT ?? "";
   const port = Number(env.JR2_PROBE_TARGET_PORT ?? "9");
-  const started = Date.now();
-  const code = await new Promise<string>((resolve) => {
-    const socket = sys.net.connect({ host: target, port });
-    const done = (c: string) => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(c);
-    };
-    const timer = setTimeout(() => done(""), 1000);
-    socket.on("connect", () => done("CONNECTED"));
-    socket.on("error", (e: NodeJS.ErrnoException) => done(e.code ?? e.message));
-  });
+  // A try with no answer in 1 s is made again with a new socket, at most 3 times: on a loaded node the
+  // refusal can come after the timer, and TCP sends the SYN again only at 1 s. Each try still must get
+  // "no route to host" at once; any other answer refuses at once.
+  const tries = 3;
+  let started = Date.now();
+  let code = "";
+  for (let i = 0; i < tries && code === ""; i++) {
+    started = Date.now();
+    code = await new Promise<string>((resolve) => {
+      const socket = sys.net.connect({ host: target, port });
+      const done = (c: string) => {
+        clearTimeout(timer);
+        socket.destroy();
+        resolve(c);
+      };
+      const timer = setTimeout(() => done(""), 1000);
+      socket.on("connect", () => done("CONNECTED"));
+      socket.on("error", (e: NodeJS.ErrnoException) => done(e.code ?? e.message));
+    });
+  }
   if (code === "EHOSTUNREACH") return end({ ok: true });
   return end({
     ok: false,
@@ -265,7 +273,7 @@ export async function routeProbeMain(sys: ProbeSys): Promise<void> {
     why:
       `no unreachable route for ${segment} on the node: a connection to ${target}:${port} from the cluster's network ` +
       (code === ""
-        ? 'got no answer in 1 s, not "no route to host" at once'
+        ? `got no answer in 1 s in each of ${tries} tries, not "no route to host" at once`
         : `got ${code} after ${Date.now() - started} ms, not "no route to host"`),
   });
 }

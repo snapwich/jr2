@@ -50,9 +50,9 @@ const BIN = fileURLToPath(new URL("../../packages/cli/bin/jr2.js", import.meta.u
 /** The Orchestrator Kit image's server entrypoint (ADR-0019, ADR-0069) — the per-scenario
  * orchestrator fixture. */
 const SERVER_BIN = fileURLToPath(new URL("../../packages/orchestrator/bin/server.ts", import.meta.url));
-/** Base for per-scenario temp instances; gitignored. */
 /** @kind: the name of the scripted model's Service in each scenario's namespace (`modelService`). */
 const MODEL_SERVICE = "model";
+/** Base for per-scenario temp instances; gitignored. */
 const TMP_BASE = fileURLToPath(new URL("../.tmp/", import.meta.url));
 /**
  * The kind tier's instance (@kind, ADR-0010): ONE shared workspace package (`jr2 up`'s image build

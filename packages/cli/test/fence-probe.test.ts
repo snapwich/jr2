@@ -309,6 +309,44 @@ test("the route probe passes on 'no route to host' and names the rule set on any
   assert.match(refused.message!.why!, /^no unreachable route for 198\.19\.0\.0\/20 on the node: .* got ECONNREFUSED/);
 });
 
+/** A fake net whose n-th socket does what `script[n]` says: "silent" emits nothing, a code emits that error. */
+function scriptedNet(script: string[]): { net: typeof net; sockets: () => number } {
+  let n = 0;
+  return {
+    net: {
+      connect: () => {
+        const s = new net.Socket();
+        const step = script[n++] ?? "silent";
+        if (step !== "silent") {
+          setImmediate(() => s.emit("error", Object.assign(new Error(`connect ${step}`), { code: step })));
+        }
+        return s;
+      },
+    } as unknown as typeof net,
+    sockets: () => n,
+  };
+}
+
+test("the route probe tries again with a new socket when a try gets no answer, and passes on a later 'no route to host'", async () => {
+  const fake = scriptedNet(["silent", "EHOSTUNREACH"]);
+  const run = await runRoute(fake.net, "198.19.15.254", 9);
+  assert.equal(fake.sockets(), 2);
+  assert.equal(run.code, 0);
+  assert.deepEqual(run.message, { probe: "route", ok: true });
+});
+
+test("the route probe refuses with 'got no answer' when none of its 3 tries gets an answer", async () => {
+  const fake = scriptedNet(["silent", "silent", "silent"]);
+  const run = await runRoute(fake.net, "198.19.15.254", 9);
+  assert.equal(fake.sockets(), 3);
+  assert.equal(run.code, 1);
+  assert.equal(run.message?.part, "rule-set");
+  assert.match(
+    run.message!.why!,
+    /^no unreachable route for 198\.19\.0\.0\/20 on the node: a connection to 198\.19\.15\.254:9 .* got no answer/,
+  );
+});
+
 // ---- what `jr2 up` reads --------------------------------------------------------------------------------
 
 const ended = (message: string, exitCode = 1) => ({

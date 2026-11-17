@@ -73,7 +73,8 @@ and that holds when Workspace code is root in the Sandbox.
   database. Port 80 of a name carries HTTP alone, because there the `Host` header must agree too, so that plain HTTP to
   a server that serves many names reaches only the name permitted. An entry for a protocol that has no name in its first
   bytes must be an exact name. The Custodian looks up the real name as it is written, with no search list of the
-  cluster, so an entry for a Service of the cluster names its full name (`<service>.<namespace>.svc.cluster.local`).
+  cluster, so an entry for a Service of the cluster names its full name (`<service>.<namespace>.svc.<domain>`, with the
+  cluster's domain, `cluster.local` by default).
 - **An address is permitted only as an entry that the author wrote.** An entry can be an exact IPv4 address with a port,
   for a host that has no name, such as a model on the local network. A connection to an address that has no such entry
   is refused, because it has no name. The same applies to a placeholder address that the Sandbox did not get for that
@@ -104,8 +105,8 @@ and that holds when Workspace code is root in the Sandbox.
   name of jr2's own that the resolver answers, and it is an Intercepted host. The push of a Sandbox Effector over SSH is
   a Tunneled host: jr2 permits the port of the url (22 by default) of each SSH Repo that the Workspace binds, and the
   push key stays in the Effector's container
-  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). The url of a per-run Repo is run input,
-  which `jr2 up` does not know when it makes the list, so its SSH host needs an entry.
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). The url of a per-run Repo, or of a slot
+  that `customize()` binds, is not known to `jr2 up` when it makes the list, so its SSH host needs an entry.
 - **The Orchestrator reaches a Harness pod through the uplink, and nothing else does.** A pod behind a Fence has no
   Service and no pod address, so the Orchestrator's dial to a Harness or to a Sandbox Effector goes to the uplink, which
   carries it to that pod. The uplink accepts such a dial from the Orchestrator only. A NetworkPolicy admits the
@@ -142,13 +143,14 @@ and that holds when Workspace code is root in the Sandbox.
   bridge carries the frames and the node changes them (the rule set), and no ARP answer says that the bridge or the
   Custodian pod does not carry them. Then `jr2 up` also replaces that node's Custodian pod, so that its trunk joins the
   bridge that the node has after the fix. The other pod is on the cluster's network and dials the segment: the node's
-  unreachable route must refuse it at once. The probe is a probe of behaviour with no privilege: no pod of it has the
-  node's network, a capability or a token, because jr2 owns no privileged code on a node beyond the uplink. So it sees
-  the effect of the rule set, not the rule set: a node that does not change bridged frames today passes without the rule
-  that keeps conntrack off the bridge, and the probe cannot see the bridge's default VLAN or the node's IPv6 link-local
-  address. The Sandbox node set changes between converges, so the operator also does not count a Sandbox Ready until
-  Multus reports its attachment as the pod's default network: on a node where Multus did not act, the pod has the
-  cluster's network, and its exec probe passes there too.
+  unreachable route must refuse it at once. A dial with no answer in 1 s is made again, at most 3 times, because on a
+  loaded node the refusal can come after the timer; each dial must still be refused at once. The probe is a probe of
+  behaviour with no privilege: no pod of it has the node's network, a capability or a token, because jr2 owns no
+  privileged code on a node beyond the uplink. So it sees the effect of the rule set, not the rule set: a node that does
+  not change bridged frames today passes without the rule that keeps conntrack off the bridge, and the probe cannot see
+  the bridge's default VLAN or the node's IPv6 link-local address. The Sandbox node set changes between converges, so
+  the operator also does not count a Sandbox Ready until Multus reports its attachment as the pod's default network: on
+  a node where Multus did not act, the pod has the cluster's network, and its exec probe passes there too.
 
 ## Considered options
 
