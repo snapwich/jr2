@@ -60,10 +60,14 @@ const (
 	// the remote is asked for first, as it is for a fetch, so an archive is
 	// taken of the remote's now.
 	ServiceUploadArchive = "git-upload-archive"
-	// DefaultCustodianURL is the Custodian on the pod's loopback — the pod's
-	// only route to the Orchestrator (ADR-0013, ADR-0059), at the same address
-	// in every Harness pod.
-	DefaultCustodianURL = "http://127.0.0.1:8081"
+	// DefaultCustodianURL is the Custodian's fetch route at jr2's own name, which
+	// the resolver of each Harness pod's slot answers (ADR-0053, ADR-0059,
+	// ADR-0084): the pod's only route to the Orchestrator, the same in every
+	// Harness pod. It is plain HTTP, port 80: the User Container gets no env
+	// (ADR-0005), so no trust for the Custodian's leaf, and the fetch Stand-in
+	// that the ask carries is public. A process with the trust variables gets
+	// `JR2_CUSTODIAN_URL` (HTTPS) instead.
+	DefaultCustodianURL = "http://custodian.jr2.internal"
 	// SandboxTokenStandIn is what the program presents as its bearer: the
 	// Sandbox token's Stand-in (ADR-0059), deterministic and public, and the
 	// one bearer the Custodian swaps for the token on the ask. The program
@@ -291,8 +295,8 @@ func timeOrUnknown(ts *string) string {
 }
 
 // custodianURL: the third argument if git was given one, else
-// `JR2_CUSTODIAN_URL`, else the loopback default — which is where every
-// Harness pod's Custodian is, so the attach never passes the argument.
+// `JR2_CUSTODIAN_URL`, else the default at jr2's own name — which answers in
+// every Harness pod, so the attach never passes the argument.
 func custodianURL(o Options) string {
 	if len(o.Args) > 2 && strings.TrimSpace(o.Args[2]) != "" {
 		return strings.TrimSpace(o.Args[2])

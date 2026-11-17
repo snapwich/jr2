@@ -18,7 +18,6 @@ import { McpHost } from "../src/mcp.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
 import { runSubmissionFor } from "../src/turn.ts";
-import { unixFetch } from "../src/unix-fetch.ts";
 import type { Settlement, StreamEvent } from "../src/wire.ts";
 import type { Surface } from "../src/menu.ts";
 import { testChildren } from "./support/children.ts";
@@ -100,10 +99,11 @@ before(async () => {
     runSubmissionFor: (seat) =>
       runSubmissionFor({
         models,
+        // Over HTTPS at jr2's own name, under the pod's CA, as on the Fence (ADR-0059, ADR-0084).
         menu: {
-          url: "http://jr2-custodian",
+          url: sandbox.https.url,
           token: CONTROL_STAND_IN,
-          fetch: unixFetch(sandbox.socket),
+          fetch: sandbox.https.fetch,
           retryWindowMs: 50,
           retryInitialMs: 1,
         },

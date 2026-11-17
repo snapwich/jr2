@@ -48,11 +48,19 @@ test("readControlStandIn: the file's value; no file, or an empty one, is a start
   assert.throws(() => readControlStandIn(join(dir, "empty")), /is empty/);
 });
 
-test("childEnv: the container's start env, HOME, TMPDIR and the granted Stand-ins — no JR2_* but the Custodian's address, never the control Stand-in, never an ungranted one", () => {
+test("childEnv: the container's start env, HOME, TMPDIR and the granted Stand-ins — no JR2_* but the Custodian's address, no proxy variable, never the control Stand-in, never an ungranted one", () => {
+  const lines: string[] = [];
   const env = childEnv(
     {
       PATH: "/usr/bin:/bin",
+      // No proxy variable reaches the domain (ADR-0084): the Fence takes each connection to the
+      // Custodian, whatever the image's ENV or `harness.env` says.
       HTTPS_PROXY: "http://127.0.0.1:15001",
+      https_proxy: "http://127.0.0.1:15001",
+      HTTP_PROXY: "http://elsewhere:3128",
+      ALL_PROXY: "socks5://elsewhere:1080",
+      NO_PROXY: "localhost",
+      NODE_USE_ENV_PROXY: "1",
       NODE_EXTRA_CA_CERTS: "/etc/jr2/ca/extra.crt",
       GIT_CONFIG_SYSTEM: "/opt/jr2/etc/gitconfig",
       JR2_CUSTODIAN_URL: "http://127.0.0.1:8081",
@@ -76,10 +84,10 @@ test("childEnv: the container's start env, HOME, TMPDIR and the granted Stand-in
     ["JIRA_TOKEN", "SNEAKY"],
     "the-control",
     { home: "/home/jr2", tmp: "/tmp" },
+    (line) => lines.push(line),
   );
   assert.deepEqual(env, {
     PATH: "/usr/bin:/bin",
-    HTTPS_PROXY: "http://127.0.0.1:15001",
     NODE_EXTRA_CA_CERTS: "/etc/jr2/ca/extra.crt",
     GIT_CONFIG_SYSTEM: "/opt/jr2/etc/gitconfig",
     JR2_CUSTODIAN_URL: "http://127.0.0.1:8081",
@@ -93,6 +101,11 @@ test("childEnv: the container's start env, HOME, TMPDIR and the granted Stand-in
     GIT_CONFIG_KEY_0: "safe.bareRepository",
     GIT_CONFIG_VALUE_0: "explicit",
   });
+  assert.deepEqual(lines, [
+    "the start env's HTTPS_PROXY, https_proxy, HTTP_PROXY, ALL_PROXY, NO_PROXY, NODE_USE_ENV_PROXY is not given to the " +
+      "Agent's processes: each connection of a Sandbox goes through the Fence to the Custodian, so a program needs no " +
+      "proxy setting (ADR-0084)",
+  ]);
   assert.throws(
     () => childEnv({}, new Map(), ["JIRA_TOKEN"], undefined, { home: "/h", tmp: "/t" }),
     /grants JIRA_TOKEN, and the pod holds no Stand-in for it/,
@@ -339,4 +352,11 @@ test("the pod paths the Harness reads are the ones the Orchestrator mounts: @jr2
   assert.equal(harness.CONVERSATIONS_DIR, names.CONVERSATIONS_DIR);
   assert.equal(join(harness.SHELL_SOCKET, ".."), names.SHELL_DIR);
   assert.equal(join(harness.CONTROL_SOCKET, ".."), names.CUSTODIAN_SOCKET_DIR);
+});
+
+test("the Harness's name for the Custodian is the one its resolver answers and its leaf names: @jr2/orchestrator's JR2_CUSTODIAN_NAME (ADR-0084)", async () => {
+  const control = await import("../src/control-fetch.ts");
+  const names = await import("@jr2/orchestrator/internal");
+  assert.equal(control.CUSTODIAN_URL, `https://${names.JR2_CUSTODIAN_NAME}`);
+  assert.equal(control.CUSTODIAN_SOCKET_ENV, names.CUSTODIAN_SOCKET_ENV);
 });

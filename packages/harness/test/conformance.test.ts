@@ -35,7 +35,6 @@ import type { HistoryView, MemoryKillsResponse, Notice, Settlement, StreamEvent 
 import { startAnthropicGateway, type AnthropicGateway } from "./support/anthropic-gateway.ts";
 import { deniedDir, testChildren } from "./support/children.ts";
 import type { ChildPolicy } from "../src/children.ts";
-import { unixFetch } from "../src/unix-fetch.ts";
 import {
   CONTROL_STAND_IN,
   severKeepAliveSockets,
@@ -224,11 +223,11 @@ before(async () => {
         const { retries, guard, sweepWaitMs: _sweepWaitMs, ...turnSeams } = seams ?? {};
         return runSubmissionFor({
           models: registry,
-          // Over the control socket, as in a pod (ADR-0076).
+          // Over HTTPS at jr2's own name, under the pod's CA, as on the Fence (ADR-0059, ADR-0084).
           menu: {
-            url: "http://jr2-custodian",
+            url: sandbox.https.url,
             token: CONTROL_STAND_IN,
-            fetch: unixFetch(sandbox.socket),
+            fetch: sandbox.https.fetch,
             retryWindowMs: 50,
             retryInitialMs: 1,
           },

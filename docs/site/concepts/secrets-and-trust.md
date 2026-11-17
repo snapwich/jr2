@@ -175,9 +175,11 @@ program can connect only through the Fence, to the names that the Egress list pe
 
 The environment of a confined program is the environment with which the container started: the `ENV` of the image,
 `harness.env`, `harness.envFrom`, and the trust variables. jr2 removes its own `JR2_` names from it, except
-`JR2_CUSTODIAN_URL`. jr2 adds `HOME`, `TMPDIR` and the Stand-in of each Held secret that the `workspace()` lists, under
-the name of that secret. jr2 also adds `safe.bareRepository=explicit` for git, in `GIT_CONFIG_COUNT`,
-`GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, after the image's own entries (see
+`JR2_CUSTODIAN_URL`. jr2 also removes the proxy variables, such as `HTTPS_PROXY` and `NO_PROXY`, because each connection
+goes through the Fence to the Custodian, and the Harness logs one line that names them. jr2 adds `HOME`, `TMPDIR` and
+the Stand-in of each Held secret that the `workspace()` lists, under the name of that secret. jr2 also adds
+`safe.bareRepository=explicit` for git, in `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, after
+the image's own entries (see
 [What the image must have](../guides/add-tools-to-the-sandbox.md#what-the-image-must-have)). The environment holds no
 control Stand-in. It holds the Stand-in of a model key only when the `workspace()` lists that key. Thus code in `/work`
 cannot call the model with your key unless you allow it. jr2 records the use of each Turn, and a call that you did not

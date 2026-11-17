@@ -124,15 +124,18 @@ another, whatever it writes.
 
 - **The env of the domain is the container's own env, with the granted Stand-ins.** A program in the domain gets the env
   that the container started with: the image's `ENV`, `harness.env` and `envFrom`, and the CA variables. jr2's own
-  `JR2_*` names are removed, except `JR2_CUSTODIAN_URL`. It also gets `HOME`, `TMPDIR`, and the Stand-ins of the secrets
-  that the `workspace()` grants (its `secrets` list), each under its own name, and `safe.bareRepository=explicit` for
-  git, because a commit can hold a bare repository whose config runs a program on a `git status` inside its folder
-  (ADR-0080). The entry goes after the start env's own `GIT_CONFIG_KEY_<n>` entries: with a start env that sets
-  `GIT_CONFIG_COUNT=n`, jr2 sets `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, and `GIT_CONFIG_COUNT=n+1`. So an
-  image's own entries stay, and the Harness needs to read no image. A start-env `GIT_CONFIG_COUNT` that is not a count
-  is replaced, and the Harness logs one line. `jr2 up` warns, and does not refuse, when the `ENV` of a Sandbox Image
-  that it builds sets `GIT_CONFIG_COUNT`: the warning says which entries an Agent's git then gets, so that the image's
-  author sees that jr2's entry comes last and wins over an image entry of the same key. It warns too when the image's
+  `JR2_*` names are removed, except `JR2_CUSTODIAN_URL`. The proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`
+  and `NO_PROXY`, in both cases, and `NODE_USE_ENV_PROXY`) are removed too, and the Harness logs one line that names
+  them: the Fence takes each connection to the Custodian (ADR-0084), so such a variable could only send a program's
+  requests to another host. It also gets `HOME`, `TMPDIR`, and the Stand-ins of the secrets that the `workspace()`
+  grants (its `secrets` list), each under its own name, and `safe.bareRepository=explicit` for git, because a commit can
+  hold a bare repository whose config runs a program on a `git status` inside its folder (ADR-0080). The entry goes
+  after the start env's own `GIT_CONFIG_KEY_<n>` entries: with a start env that sets `GIT_CONFIG_COUNT=n`, jr2 sets
+  `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, and `GIT_CONFIG_COUNT=n+1`. So an image's own entries stay, and the
+  Harness needs to read no image. A start-env `GIT_CONFIG_COUNT` that is not a count is replaced, and the Harness logs
+  one line. `jr2 up` warns, and does not refuse, when the `ENV` of a Sandbox Image that it builds sets
+  `GIT_CONFIG_COUNT`: the warning says which entries an Agent's git then gets, so that the image's author sees that
+  jr2's entry comes last and wins over an image entry of the same key. It warns too when the image's
   `GIT_CONFIG_PARAMETERS` names `safe.bareRepository`, because git reads that variable after the counted entries. The
   domain never gets what the Harness process added to its own env after the start, and so it never gets the control
   Stand-in, or the Stand-in of a model key that the `secrets` list does not name. A toolchain and a bring-your-own image

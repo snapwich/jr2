@@ -21,7 +21,6 @@ import {
   childPolicy,
   CONFINER,
   runIn,
-  CONTROL_SOCKET,
   CONTROL_STANDIN_FILE,
   CONVERSATIONS_DIR,
   probeLandlock,
@@ -59,7 +58,7 @@ import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
 import { contextScopeOf, userContextMount } from "./project-context.ts";
 import { OutputFolder } from "./output-folder.ts";
-import { unixFetch } from "./unix-fetch.ts";
+import { controlReachOf, type ControlReach } from "./control-fetch.ts";
 import { keepSendOver } from "./keep.ts";
 import { serveShells } from "./workspace-shell.ts";
 
@@ -129,13 +128,16 @@ try {
 } catch (err) {
   refuse(err instanceof Error ? err.message : String(err));
 }
-// Every control request goes to the Custodian's control socket under /run/jr2 (ADR-0076), which no
-// process of the domain can bind. The URL's host is a name only.
-const menu = {
-  url: "http://jr2-custodian",
-  token: control,
-  fetch: unixFetch(process.env.JR2_CUSTODIAN_SOCKET || CONTROL_SOCKET),
-};
+// Every control request goes to the Custodian: over HTTPS at jr2's own name, whose leaf only the
+// Custodian holds (ADR-0059, ADR-0084), or, in a pod that has a Custodian container, to its control
+// socket under /run/jr2, which no process of the domain can bind (ADR-0076).
+let reach: ControlReach;
+try {
+  reach = controlReachOf(process.env);
+} catch (err) {
+  refuse(err instanceof Error ? err.message : String(err));
+}
+const menu = { ...reach, token: control };
 // Every held secret's Stand-in (ADR-0059): secret, a file each, read once. The engine gets a model
 // key's in this process (pi reads the key variable here); the domain gets only the ones its
 // `workspace()` grants (`JR2_GRANTED_SECRETS`), never this process's env.

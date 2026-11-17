@@ -374,7 +374,7 @@ func TestUploadPackServesTheCacheAndNotTheCallersOwnRepository(t *testing.T) {
 	}
 }
 
-func TestTheCustodianUrlIsTheArgumentThenTheEnvironmentThenLoopback(t *testing.T) {
+func TestTheCustodianUrlIsTheArgumentThenTheEnvironmentThenJr2sOwnName(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
@@ -383,7 +383,7 @@ func TestTheCustodianUrlIsTheArgumentThenTheEnvironmentThenLoopback(t *testing.T
 	}{
 		{"the third argument wins", []string{ServiceUploadPack, "id", "http://127.0.0.1:9999"}, someURL, "http://127.0.0.1:9999"},
 		{"then the environment", []string{ServiceUploadPack, "id"}, someURL, someURL},
-		{"then the loopback default", []string{ServiceUploadPack, "id"}, "", DefaultCustodianURL},
+		{"then jr2's own name", []string{ServiceUploadPack, "id"}, "", "http://custodian.jr2.internal"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

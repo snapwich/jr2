@@ -86,7 +86,7 @@ import { hasProjectContext, projectContexts, type ContextOptions } from "./proje
 export type TurnDeps = {
   /** The model registry (`provider.ts` — pi's catalog + the instance's custom provider). */
   models: Models;
-  /** Where the Menu is read and picks go: the Custodian's control socket (`unix-fetch.ts`), with
+  /** Where the Menu is read and picks go: the Custodian (`control-fetch.ts`), with
    * the control Stand-in that the Harness process alone holds — ADR-0013, ADR-0059, ADR-0076. Each
    * request states this conversation's slot, which its admission names (`TurnFrame.slot`). */
   menu: MenuReach & Partial<Omit<MenuOptions, keyof MenuReach | "slot">>;

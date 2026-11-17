@@ -311,7 +311,7 @@ export class ConversationKeeper {
 
 /**
  * The send over the Harness's control channel (ADR-0076): `POST /agents/<iid>/conversation` to the
- * Custodian's control socket, with the control Stand-in that this process alone holds and the
+ * Custodian, with the control Stand-in that this process alone holds and the
  * conversation's slot. The Custodian puts the pod's control token in the Stand-in's place.
  */
 export function keepSendOver(reach: MenuReach): KeepSend {

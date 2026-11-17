@@ -5,9 +5,10 @@
 // Allowed-picks text, each receipt, each refusal — so a presenter only maps items to its tool API
 // and places the text it is handed, and a second presenter reuses it (ADR-0029).
 //
-// The Harness reads the surface from the Orchestrator itself, through the Custodian's control
-// socket under `/run/jr2` (`unix-fetch.ts`, ADR-0059, ADR-0076), never a loopback port: no process of
-// the domain can make a socket there. It sends `Authorization: Bearer <control Stand-in>`:
+// The Harness reads the surface from the Orchestrator itself, through the Custodian: over HTTPS at
+// jr2's own name, which only the Custodian holds a leaf for (`control-fetch.ts`, ADR-0059,
+// ADR-0084), or to a Custodian container's control socket under `/run/jr2`, where no process of the
+// domain can make a socket (ADR-0076). It sends `Authorization: Bearer <control Stand-in>`:
 // the Harness PROCESS alone holds that Stand-in, read once from its file (`children.ts`), and no
 // process it confines can read it (ADR-0076). The Custodian — a container the Agent executes
 // nothing in — puts the control token in its place on the agent routes and on no other. So no
@@ -157,12 +158,13 @@ export type DeliveryReceipt = {
 /** Where the Menu is: the Custodian's control listener and the control Stand-in — the pod's, the
  * same for each conversation. */
 export type MenuReach = {
-  /** The base of each control request's URL. Its host is a name: `fetch` names the socket. */
+  /** The base of each control request's URL: jr2's own name over HTTPS, or, with a control socket,
+   * a name only (`fetch` names the socket). */
   url: string;
   /** The control Stand-in, which the Harness process alone holds (ADR-0076): read from its file. */
   token: string;
-  /** How a request reaches the Custodian's control socket (`unixFetch`). Tests inject one. Default:
-   * global `fetch`. */
+  /** How a request reaches the Custodian (`controlFetch`). Tests inject one. Default: global
+   * `fetch`. */
   fetch?: typeof globalThis.fetch;
 };
 
