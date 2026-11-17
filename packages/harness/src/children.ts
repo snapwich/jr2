@@ -316,8 +316,8 @@ export function childEnv(
   }
   if (dropped.length > 0) {
     log(
-      `the start env's ${dropped.join(", ")} is not given to the Agent's processes: each connection of a Sandbox ` +
-        "goes through the Fence to the Custodian, so a program needs no proxy setting (ADR-0084)",
+      `the start env's ${dropped.join(", ")}: no process of the domain gets them, because each connection of a ` +
+        "Sandbox goes through the Fence to the Custodian, so a program needs no proxy setting (ADR-0084)",
     );
   }
   out.HOME = dirs.home;

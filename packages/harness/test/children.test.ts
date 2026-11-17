@@ -102,9 +102,9 @@ test("childEnv: the container's start env, HOME, TMPDIR and the granted Stand-in
     GIT_CONFIG_VALUE_0: "explicit",
   });
   assert.deepEqual(lines, [
-    "the start env's HTTPS_PROXY, https_proxy, HTTP_PROXY, ALL_PROXY, NO_PROXY, NODE_USE_ENV_PROXY is not given to the " +
-      "Agent's processes: each connection of a Sandbox goes through the Fence to the Custodian, so a program needs no " +
-      "proxy setting (ADR-0084)",
+    "the start env's HTTPS_PROXY, https_proxy, HTTP_PROXY, ALL_PROXY, NO_PROXY, NODE_USE_ENV_PROXY: no process of the " +
+      "domain gets them, because each connection of a Sandbox goes through the Fence to the Custodian, so a program " +
+      "needs no proxy setting (ADR-0084)",
   ]);
   assert.throws(
     () => childEnv({}, new Map(), ["JIRA_TOKEN"], undefined, { home: "/h", tmp: "/t" }),

@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { createServer as createTlsServer, type Server as TlsServer } from "node:https";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo, LookupFunction } from "node:net";
@@ -405,7 +406,12 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
 // ─── a test CA ───────────────────────────────────────────────────────────────
 
 /** A test CA and one leaf of it for `host` (one DNS SAN), made with `openssl` in the test's tmpdir:
- * ECDSA P-256, valid for a day. With `under`, the leaf is of that CA instead of a new one. */
+ * ECDSA P-256, valid from an hour back to a day ahead. With `under`, the leaf is of that CA instead
+ * of a new one.
+ *
+ * `notBefore` is an hour back, as held-pki.ts sets it, because the wall clock can step back: a
+ * certificate that starts at the current second is "not yet valid" to a handshake after such a
+ * step. OpenSSL 3.0 has no `-not_before`, so `openssl ca` signs both, with `-startdate`. */
 export function testTls(
   host: string,
   under?: { ca: string; caKey: string },
@@ -414,30 +420,67 @@ export function testTls(
   const f = (name: string) => join(dir, name);
   const ssl = (...args: string[]) => execFileSync("openssl", args, { stdio: ["ignore", "ignore", "pipe"] });
   const ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"];
+  writeFileSync(f("index.txt"), "");
+  writeFileSync(f("serial"), `${randomBytes(8).toString("hex").replace(/^./, "1")}\n`);
+  writeFileSync(
+    f("ca.cnf"),
+    [
+      "[ca]",
+      "default_ca = test",
+      "[test]",
+      `database = ${f("index.txt")}`,
+      `new_certs_dir = ${dir}`,
+      `serial = ${f("serial")}`,
+      "default_md = sha256",
+      "policy = any",
+      "unique_subject = no",
+      "copy_extensions = none",
+      "[any]",
+      "commonName = supplied",
+      "",
+    ].join("\n"),
+  );
+  // `openssl ca` writes times as UTCTime: YYMMDDHHMMSSZ.
+  const start = new Date(Date.now() - 3_600_000).toISOString().replace(/[-:T]/g, "").slice(2, 14) + "Z";
+  const sign = (csr: string, ext: string, out: string, signer: string[]) => {
+    writeFileSync(f(`${out}.ext`), ext);
+    ssl(
+      "ca",
+      "-batch",
+      "-config",
+      f("ca.cnf"),
+      "-notext",
+      "-startdate",
+      start,
+      "-days",
+      "1",
+      ...signer,
+      "-extfile",
+      f(`${out}.ext`),
+      "-in",
+      f(csr),
+      "-out",
+      f(out),
+    );
+  };
   if (under) {
     writeFileSync(f("ca.crt"), under.ca);
     writeFileSync(f("ca.key"), under.caKey);
   } else {
-    ssl("req", "-x509", ...ec, "-keyout", f("ca.key"), "-out", f("ca.crt"), "-days", "1", "-subj", "/CN=jr2 test CA");
+    ssl("req", "-new", ...ec, "-keyout", f("ca.key"), "-out", f("ca.csr"), "-subj", "/CN=jr2 test CA");
+    sign(
+      "ca.csr",
+      "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n",
+      "ca.crt",
+      ["-selfsign", "-keyfile", f("ca.key")],
+    );
   }
   ssl("req", "-new", ...ec, "-keyout", f("leaf.key"), "-out", f("leaf.csr"), "-subj", `/CN=${host}`);
-  writeFileSync(f("leaf.ext"), `subjectAltName=DNS:${host}\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n`);
-  ssl(
-    "x509",
-    "-req",
-    "-in",
-    f("leaf.csr"),
-    "-CA",
-    f("ca.crt"),
-    "-CAkey",
-    f("ca.key"),
-    "-CAcreateserial",
-    "-days",
-    "1",
-    "-extfile",
-    f("leaf.ext"),
-    "-out",
-    f("leaf.crt"),
+  sign(
+    "leaf.csr",
+    `subjectAltName=DNS:${host}\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid\n`,
+    "leaf.crt",
+    ["-cert", f("ca.crt"), "-keyfile", f("ca.key")],
   );
   return {
     ca: readFileSync(f("ca.crt"), "utf8"),
