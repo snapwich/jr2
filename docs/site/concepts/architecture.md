@@ -66,8 +66,8 @@ the names that the Custodian permits. Thus jr2 puts each thing that the Agent mu
 The [Instance Harness](../reference/glossary.md#instance-harness), the
 [Instance Effector](../reference/glossary.md#instance-effector), the Repo cache and the
 [Sandbox Effector](../reference/glossary.md#sandbox-effector) exist only when a Machine of the Instance needs them. The
-sections below tell when. A Sandbox and the Instance Harness have no Service and no address on the network of the
-cluster. The Orchestrator reaches each of them through the uplink of the Custodian.
+sections below tell when. No Service routes to a Sandbox or to the Instance Harness, and neither has an address on the
+network of the cluster. The Orchestrator reaches each of them through the uplink of the Custodian.
 
 A Sandbox pod can also have a [User Container](../reference/glossary.md#user-container), when its `workspace()` names
 one. It runs its own image, and it mounts `/work`, with each [Worktree](../reference/glossary.md#worktree), read-write.
@@ -141,10 +141,11 @@ The Harness has two placements:
   Harness serves all the Agents of the Sandbox.
 - **As the Instance Harness.** The Instance Harness is one StatefulSet for each Instance, `jr2-instance-harness`. Each
   Turn of a Menu-only Agent (`workspace: "none"`) runs here. Its pod has a Harness and no Worktree, and it is behind a
-  Fence, as a Sandbox is. Its Egress list has no entry of yours: it reaches the hosts of its Held secrets, the hosts
-  that `jr2 up` requires an entry for, and the control routes of jr2. It holds Stand-ins as the Harness of a Sandbox
-  does. It runs no program of an Agent, so its Agents can use only remote MCP servers. It keeps each conversation on its
-  volume while a run can continue it. `jr2 up` converges it when a Machine of the Instance has a Menu-only Agent.
+  Fence, as a Sandbox is, on a Sandbox node. Its Egress list has no entry of yours: it reaches the hosts of its Held
+  secrets, the hosts that `jr2 up` requires an entry for, and the control routes of jr2. It holds Stand-ins as the
+  Harness of a Sandbox does. It runs no program of an Agent, so its Agents can use only remote MCP servers. It keeps
+  each conversation on its volume while a run can continue it. `jr2 up` converges it when a Machine of the Instance has
+  a Menu-only Agent.
 
 A Harness answers only the Orchestrator. The Orchestrator sends a bearer token on each call, and the Harness accepts no
 call without it, except its health check. No Harness has an address on the network of the cluster. The Orchestrator
@@ -170,9 +171,10 @@ executes no code in it. It does three things:
   token of an MCP server. It puts the value into the requests that go to the hosts of each Held secret.
 
 The Custodian has one set of rules for each Sandbox. The Orchestrator writes them when it makes the Sandbox, and the
-Custodian loads them with no restart. `jr2 up` writes the rules of the Instance Harness. A Sandbox starts its work only
-when its rules are live. A Sandbox with no rules reaches nothing. The Custodian runs as one pod on each Sandbox node.
-While the pod of a node is down, no Sandbox on that node reaches anything, and no Turn there can call its model.
+Custodian loads them with no restart. `jr2 up` writes the rules of the Instance Harness and of the check pod of its
+provider check. A Harness pod starts its work only when its rules are live. A Sandbox with no rules reaches nothing. The
+Custodian runs as one pod on each Sandbox node. While the pod of a node is down, no Sandbox on that node reaches
+anything, and no Turn there can call its model.
 
 The Custodian runs Envoy, from a [Pinned image](../reference/glossary.md#pinned-image). The Fence of each Sandbox node
 ends at the uplink of the Custodian on that node. The uplink gives each connection to the Custodian and each DNS query

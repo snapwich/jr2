@@ -9,13 +9,18 @@ export const ORCHESTRATOR_PORT = 4000;
 /** The instance-owned Secret: Instance token + signing key (+ orchestrator-side creds). */
 export const INSTANCE_SECRET = "jr2-instance";
 
-/** The Instance Harness's StatefulSet + Service name (ADR-0031): converged by `jr2 up` whenever any
- * Agent definition declares `workspace: "none"`, and the deterministic Service DNS the Agent actor
- * resolves such a Turn to. Doubles as the delivery scope a Menu-only registration records — the
- * name the placement's Sandbox token is signed for (tokens.ts, ADR-0013), which its Custodian holds. The port is the
- * Harness's own listen port (`PORT` default). */
+/** The Instance Harness's StatefulSet name (ADR-0031): converged by `jr2 up` whenever any Agent
+ * definition declares `workspace: "none"`. Doubles as the delivery scope a Menu-only registration
+ * records — the name the placement's tokens are signed for (tokens.ts, ADR-0013), which the
+ * Custodian holds. The port is the Harness's own listen port (`PORT` default). The pod is on slot 0
+ * of the Fence (ADR-0084), and the Orchestrator dials it there, through the Custodian. */
 export const INSTANCE_HARNESS_SERVICE = "jr2-instance-harness";
 export const INSTANCE_HARNESS_PORT = 8080;
+
+/** The Instance Harness StatefulSet's governing Service (ADR-0031, ADR-0084): headless, and no
+ * address routes to it. Its EndpointSlices name the pod's node, which is how the Orchestrator finds
+ * the Custodian pod that carries a dial to it. */
+export const INSTANCE_HARNESS_PODS_SERVICE = `${INSTANCE_HARNESS_SERVICE}-pods`;
 
 /** The Instance Effector (ADR-0068): its Deployment, headless Service, NetworkPolicy and Secret all
  * carry this name. `jr2 up` converges them when a registered Machine places an Effect there, or a

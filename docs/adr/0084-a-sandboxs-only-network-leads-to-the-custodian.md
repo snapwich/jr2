@@ -107,14 +107,17 @@ and that holds when Workspace code is root in the Sandbox.
   push key stays in the Effector's container
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). The url of a per-run Repo, or of a slot
   that `customize()` binds, is not known to `jr2 up` when it makes the list, so its SSH host needs an entry.
-- **The Orchestrator reaches a Harness pod through the uplink, and nothing else does.** A pod behind a Fence has no
-  Service and no pod address, so the Orchestrator's dial to a Harness or to a Sandbox Effector goes to the uplink, which
-  carries it to that pod. The uplink accepts such a dial from the Orchestrator only. A NetworkPolicy admits the
-  Instance's Orchestrator alone to the Custodian pod's dial port and to the port of its control process, and each dial
-  carries the Instance's dial token, which the Custodian checks also on a cluster whose network enforces no policy. The
-  bearer check stays as the second control ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). The
-  Orchestrator finds the Custodian pod on a Harness pod's node from the EndpointSlices of the Custodian's headless
-  Service. The kubelet's probes of the pod's containers are exec probes.
+- **The Orchestrator reaches a Harness pod through the uplink, and nothing else does.** No Service routes to a pod
+  behind a Fence, and its only address is its slot's on the segment, so the Orchestrator's dial to a Harness or to a
+  Sandbox Effector goes to the uplink, which carries it to that pod. The uplink accepts such a dial from the
+  Orchestrator only. A NetworkPolicy admits the Instance's Orchestrator alone to the Custodian pod's dial port and to
+  the port of its control process, and each dial carries the Instance's dial token, which the Custodian checks also on a
+  cluster whose network enforces no policy. The bearer check stays as the second control
+  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). The Orchestrator finds the Custodian pod on a Harness
+  pod's node from the EndpointSlices of the Custodian's headless Service. It finds a Sandbox's node in the Sandbox's
+  status, and the Instance Harness's node in the EndpointSlices of the headless Service that governs its StatefulSet,
+  which routes nothing; so it reads no Pod ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)). The kubelet's
+  probes of the pod's containers are exec probes.
 - **A refusal has a reason, and each one is logged.** A refused name gets a DNS refusal at once. A permitted name has
   only its placeholder address, so a query for another record of it, such as an IPv6 address, gets an empty answer at
   once, and a client that asks for both does not wait. A refused connection gets a TLS alert, an HTTP 403 or a line of
@@ -127,10 +130,15 @@ and that holds when Workspace code is root in the Sandbox.
   flow log of the cluster's network.
 - **The Instance Harness and each check pod are behind a Fence too.** Each Harness pod has the same network and reaches
   the Custodian the same way, so no Harness has a proxy setting. The Instance Harness
-  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)) has an Egress list with no entry of the author's:
-  it reaches its bound hosts, the hosts that `jr2 up` requires an entry for, and jr2's control routes. A check pod calls
-  a model as a Turn of its class calls it ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). The
-  Instance Effector holds real values and runs no code of an Agent, and it stays on the cluster's network.
+  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)) is on slot 0 and has an Egress list with no entry
+  of the author's: it reaches its bound hosts, the hosts that `jr2 up` requires an entry for, and jr2's control routes.
+  The check pod is on slot 1 and calls a model as a Turn calls it
+  ([ADR-0019](0019-one-converging-command-against-the-current-context.md)), so `jr2 up` converges the Custodian before
+  the check. Each takes the Sandbox placement, so a Custodian pod is on its node. `jr2 up` writes their slot Secrets,
+  with leaves of the Instance's CA (ADR-0059), and starts each pod only after each Custodian pod says that its rules are
+  live. It asks each Custodian pod through a port-forward to its control port, with the dial token, because it runs
+  outside the cluster. The Instance Effector holds real values and runs no code of an Agent, and it stays on the
+  cluster's network.
 - **How a Sandbox's traffic reaches the Custodian is one seam.** The segment is the only form that is built. A cluster
   that cannot have it needs another form behind the same seam, and the rules of the Custodian do not change.
 - **`jr2 up` installs the uplink, the Custodian and the resolver, and it probes what it does not install.** The second

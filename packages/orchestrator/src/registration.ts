@@ -622,9 +622,10 @@ export type RunBinding = {
    * one cluster per orchestrator instance, so it is host infrastructure like the table). */
   sandbox?: SandboxPort;
   /**
-   * The Instance Harness base URL (ADR-0031) — the deterministic Service DNS a
-   * `workspace: "none"` Turn is admitted at. Deployed instances derive it from their namespace;
-   * absent, a `"none"` Agent without an explicit `endpoint` fails loudly.
+   * The Instance Harness base URL (ADR-0031) — the address a `workspace: "none"` Turn is admitted
+   * at. A deployed Instance derives it from its VLAN range: slot 0's address on the Fence, which the
+   * process's route dials through the Custodian (ADR-0084); absent, a `"none"` Agent without an
+   * explicit `endpoint` fails loudly.
    */
   instanceHarness?: string;
   /**

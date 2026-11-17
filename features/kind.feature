@@ -768,8 +768,8 @@ Feature: a workspace() run drives a real Sandbox on kind
     its iids are derivable (ADR-0013/0057), so a caller that can reach a Harness must also hold the
     bearer the Orchestrator derives for that pod, which no pod holds (the Harness keeps only its
     digest). And a Sandbox reaches no other pod at all: its only network is the Fence (ADR-0084), so
-    the Instance Harness's name gets the resolver's refusal, and each of its addresses the
-    Custodian's. The bearer is the control; the Fence bounds where a Sandbox may talk.
+    the Instance Harness's name gets the resolver's refusal, and its address, slot 0's on the
+    segment, no answer. The bearer is the control; the Fence bounds where a Sandbox may talk.
 
     Scenario: the Agent cannot drive its own Harness's wire
       Given the kind instance is serving
@@ -787,7 +787,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # The Instance Harness holds every Menu-only conversation in the Instance (ADR-0031), and the
       # kind instance's advisor converges one in every scenario's namespace.
       When the Harness container dials the Instance Harness
-      Then the Instance Harness never answered, and the Fence refused each dial with jr2's reason
+      Then the Instance Harness never answered: its name is refused, and its address gets no answer
 
   Rule: an Agent's turn ends when the state that asked for it stops waiting
     ADR-0024. Leaving an Agent invoke means "I am no longer interested in this answer", so the
@@ -924,15 +924,19 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: a Menu-only Agent's Turn runs on the Instance Harness, and needs no Sandbox
     ADR-0031. An Agent whose definition declares `workspace: "none"` (ADR-0028) has no worktree to
-    run in, so `jr2 up` converges an Instance Harness — a Harness + Custodian pod with no Workspace —
-    whenever a registered Machine carries such a definition, and the Turn is admitted THERE. No
-    config names or enables it: the kind instance's `advisor` definition is the whole reason the
-    Deployment exists in every scenario's namespace. Placement is definition-wins: even invoked
-    inside a `workspace()`, the advisor's conversation lives on the Instance Harness and never on
-    the run's Sandbox, because a conversation is an Instance ID on ONE server.
+    run in, so `jr2 up` converges an Instance Harness — a pod with the Harness alone and no
+    Workspace — whenever a registered Machine carries such a definition, and the Turn is admitted
+    THERE. No config names or enables it: the kind instance's `advisor` definition is the whole
+    reason the StatefulSet exists in every scenario's namespace. It is behind the Fence as a
+    Sandbox is (ADR-0084): on slot 0 of the Instance's range, its model and its Menu through the
+    Instance's Custodian, and the Orchestrator dials it through the Custodian pod on its node, which
+    it finds in the EndpointSlices of the pod's headless Service. Placement is definition-wins: even
+    invoked inside a `workspace()`, the advisor's conversation lives on the Instance Harness and
+    never on the run's Sandbox, because a conversation is an Instance ID on ONE server.
 
     Scenario: a workflow with no Workspace runs its Agent on the Instance Harness
       Given the kind instance is serving
+      Then the Instance Harness is on slot 0 of the Fence, and its Custodian is outside the pod
       When I start the "advised" workflow detached
       Then the model was offered "advise" from the Menu and no Working tools
       And the Instance Harness holds the "advisor" conversation of the run's root Machine

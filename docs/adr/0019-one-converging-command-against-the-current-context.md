@@ -107,27 +107,26 @@ loudly narrated, safe to re-run:
     - a Secret with the check pod's Stand-ins;
     - a Secret with the literal `harness.env` values.
 
-    The Custodian gets the check pod's rules, its token, the literal values of its held secrets and its leaves, as it
-    gets a Sandbox's (ADR-0059, ADR-0084). A held secret from `valueFrom` stays a reference to the user's Secret. A
-    literal value is thus held twice while the check pod lives. `up` removes the second copy after the check.
+    The Custodian gets the check pod's rules, its token, the literal values of its held secrets and its leaves of the
+    Instance's CA in the Secret of slot 1 of the Instance's range, as it gets a Sandbox's in the Sandbox's slot
+    (ADR-0059, ADR-0084). `up` writes it before the pod, and starts the pod only after each Custodian pod says that the
+    slot's rules are live. A held secret from `valueFrom` stays a reference to the user's Secret. A literal value is
+    thus held twice while the check pod lives. `up` deletes slot 1's Secret after the check.
 
-  - **What it checks.** It checks every carried model that a Harness pod runs. A typo, a retired model and a model that
-    the key cannot use are each per model. One check pod stands for one class of Harness pod. A class is a placement and
-    a held set:
-    - The placement: a Workspace's model runs on the Sandbox nodes (`config.sandbox`, ADR-0052). A `"none"` Agent's
-      model runs where the Instance Harness runs.
-    - The held set: a host that a pod's held secret is bound to is an Intercepted host, and the Custodian carries a
-      pod's other permitted hosts as Tunneled hosts (ADR-0084). So the check pod holds the held set of the first pod of
-      its class, and the keys and the MCP server secrets that the other pods of the class hold. A class that holds
-      nothing gets a check pod that holds nothing.
+  - **What it checks.** It checks every carried model that a Harness pod runs, in one check pod. A typo, a retired model
+    and a model that the key cannot use are each per model. Every Harness pod, a Sandbox or the Instance Harness, is on
+    a Sandbox node (`config.sandbox`, ADR-0052) behind the Fence, and reaches a provider through the Custodian
+    (ADR-0084). So one check pod with the Sandbox placement stands for all of them. For each provider, it holds the keys
+    that the first pod that runs one of its models holds, with that pod's binding, and it holds the secret of each MCP
+    server that an Agent names. Its Egress list is each rule of each Harness pod.
 
-    When no pod of the class holds a key of the provider, the check pod holds none. Then pi refuses the call
-    (`not configured`), and the converge fails. A signing credential in `harness.env` reaches the check pod, as it
-    reaches a Turn. An id that pi does not know (a typo) fails, because pi resolves no model for it. An id that pi
-    knows, and for which jr2 knows no key name, is checked with no held key, as a Turn runs it. The check pod has the
-    priority class of the Sandbox tier, as the Harness pods have (ADR-0060).
+    When no pod holds a key of the provider, the check pod holds none. Then pi refuses the call (`not configured`), and
+    the converge fails. A signing credential in `harness.env` reaches the check pod, as it reaches a Turn. An id that pi
+    does not know (a typo) fails, because pi resolves no model for it. An id that pi knows, and for which jr2 knows no
+    key name, is checked with no held key, as a Turn runs it. The check pod has the priority class of the Sandbox tier,
+    as the Harness pods have (ADR-0060).
 
-  - **MCP servers.** The check pod also checks each remote MCP server that an Agent of its class names
+  - **MCP servers.** The check pod also checks each remote MCP server that an Agent names
     ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). It
     reads the server's `tools/list` through the Custodian, with the Stand-in of the server's secret, as a Turn reads it.
     An allowlisted tool name that the list does not have fails the converge, and the result names the server and the
@@ -184,18 +183,18 @@ loudly narrated, safe to re-run:
     `up` builds and delivers, and the Custodian, its uplink and its resolver, which the check pod's calls cross. The
     operator (its CRDs, RBAC and Deployment, its label and its rollout), a deploy key and the wait for its registration
     (ADR-0047), the trust bundles, the held objects and the instance List come after every check passes.
-  - **When a check fails.** The converge stops. `up` applied only the items above and the check pods with their own
-    objects, and it deleted the check pods and their objects. It also deleted the leftovers of earlier runs (below). The
+  - **When a check fails.** The converge stops. `up` applied only the items above and the check pod with its own
+    objects, and it deleted the check pod and its objects. It also deleted the leftovers of earlier runs (below). The
     operator, the Orchestrator, its Assembly and every pod of the Instance continue to run as before. Nothing else is
     deleted, and no Assembly is published.
-  - **The pods.** `up` runs the check pods in series, one at a time, and reports every failure in one error. When the
-    cluster refuses a check pod (a quota, a Pod Security level, a webhook), that check fails, and the other checks still
-    run. In a new namespace, `up` waits up to 10 s for the `default` ServiceAccount before it calls a refusal a refusal.
-    The check container writes a start line and a result line for each model. `up` reads its log while it runs, and
-    writes each result as it comes. When the pod stops before the end, the error names the model that the check was on,
-    and each model that it never reached. The name of each pod is unique to the run
-    (`jr2-provider-preflight-<run>-<n>`), so two runs in one namespace do not touch each other's pods. `up` deletes the
-    objects of each check after it. `up` waits up to 300 s for the check container to start (two cold image pulls), and
+  - **The pod.** `up` reports every failure of the check pod in one error. When the cluster refuses the check pod (a
+    quota, a Pod Security level, a webhook), the check of each of its models fails. In a new namespace, `up` waits up to
+    10 s for the `default` ServiceAccount before it calls a refusal a refusal. The check container writes a start line
+    and a result line for each model. `up` reads its log while it runs, and writes each result as it comes. When the pod
+    stops before the end, the error names the model that the check was on, and each model that it never reached. The
+    name of the pod is unique to the run (`jr2-provider-preflight-<run>-<n>`), so two runs in one namespace do not touch
+    each other's pods; they share slot 1, so two runs at once in one namespace are not supported. `up` deletes the
+    objects of the check after it. `up` waits up to 300 s for the check container to start (two cold image pulls), and
     it writes each new reason that the pod gives for the wait. Then it waits 360 s for each model (the model's own
     budget in the check), and 30 s more for the Node.js process, which runs under tini as the Harness does, to start. It
     stops at once in these cases:

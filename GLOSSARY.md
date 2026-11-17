@@ -450,10 +450,10 @@ for an Agent is where Workspace code runs.
 _Avoid_: agent code (any Agent can run another's), user code, untrusted code (unqualified), tool process
 
 **Check pod**:
-The one-shot pod in which the provider preflight of `jr2 up` checks the models of one class of Harness pod, and the tool
-list of each remote MCP server that an Agent of the class names, before the converge writes an object that the Instance
-reads. It is behind a Fence and reaches the Custodian as a pod of its class does, and it has its own copies of the
-objects that it reads and labels that no Harness pod has. Its check container calls each model as a Turn calls it. The preflight is the step of `jr2 up`, and a check is what the check
+The one-shot pod in which the provider preflight of `jr2 up` checks the models that the Harness pods run, and the tool
+list of each remote MCP server that an Agent names, before the converge writes an object that the Orchestrator or a
+Harness pod reads. It is behind a Fence on slot 1 and reaches the Custodian as each Harness pod does, and it has its
+own copies of the objects that it reads and labels that no Harness pod has. Its check container calls each model as a Turn calls it. The preflight is the step of `jr2 up`, and a check is what the check
 container does for one model: one call, and at most a second one after an answer in text; for an MCP server, it reads
 its tool list once through the Custodian. `jr2 check` is not this check: it runs the typecheck and the Machine walk of
 `jr2 up`, with no pod and no cluster.

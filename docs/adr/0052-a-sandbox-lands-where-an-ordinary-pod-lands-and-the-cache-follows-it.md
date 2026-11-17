@@ -26,7 +26,10 @@ use. **Which nodes are an Instance's Sandbox nodes, and who follows that set** i
   `nodeSelector` and `tolerations`. The DaemonSet loses its blanket `operator: Exists` toleration: one cache agent per
   Sandbox node, so a cache is only ever present where a Sandbox can land, and the affinity it feeds only ever names a
   usable node. The build set (ADR-0045) is the union of the nodes an ordinary pod lands on — the Orchestrator
-  Deployment's own placement — and the Sandbox nodes, intersected with the supported set as before.
+  Deployment's own placement — and the Sandbox nodes, intersected with the supported set as before. The Instance
+  Harness, the check pod of the provider preflight and the Custodian's DaemonSet use the same predicate too, because
+  each Harness pod reaches the Instance's Custodian through the Custodian pod on its own node
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)).
 - **The cache agent also reports Landlock for its node.** It probes Landlock when it starts, and on a node without it
   the agent is NotReady, with the reason. `jr2 up` reads the DaemonSet's pods and refuses to converge while a Sandbox
   node lacks Landlock, naming each one ([ADR-0077](0077-jr2-requires-landlock-on-every-sandbox-node.md)). This is the

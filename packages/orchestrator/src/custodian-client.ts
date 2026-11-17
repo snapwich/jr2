@@ -37,7 +37,7 @@ export type CustodianPod = { pod: string; address: string; node?: string; ready:
 type EndpointSlice = KubeObject & {
   endpoints?: Array<{
     addresses?: string[];
-    conditions?: { ready?: boolean };
+    conditions?: { ready?: boolean; serving?: boolean };
     nodeName?: string;
     targetRef?: { name?: string };
   }>;
@@ -220,6 +220,50 @@ export function custodianClient(opts: CustodianClientOptions): CustodianClient {
       const all = await pods();
       return all.find((p) => p.ready && p.node === node)?.address;
     },
+  };
+}
+
+/**
+ * The node of a pod that `jr2 up` makes on the Fence and that a headless Service governs (the
+ * Instance Harness, `jr2-instance-harness-pods`, ADR-0031): the `nodeName` of its endpoint in the
+ * Service's EndpointSlices, so the Orchestrator reads no Pod (ADR-0063). An endpoint that serves is
+ * taken first, then any: a draining pod is still listed while it terminates, and the Custodian
+ * carries a dial to it until it is gone. The list serves for `cacheMs` (default 2 s). Undefined when
+ * no endpoint names a node.
+ */
+export function governedPodNode(opts: {
+  kube: Pick<KubeClient, "list">;
+  namespace: string;
+  service: string;
+  cacheMs?: number;
+  now?: () => number;
+}): () => Promise<string | undefined> {
+  const cacheMs = opts.cacheMs ?? 2_000;
+  const now = opts.now ?? (() => performance.now());
+  let cached: { at: number; node: Promise<string | undefined> } | undefined;
+  const read = async (): Promise<string | undefined> => {
+    const { items } = await opts.kube.list<EndpointSlice>(ENDPOINTSLICES, opts.namespace, {
+      labelSelector: `kubernetes.io/service-name=${opts.service}`,
+    });
+    const endpoints = items.flatMap((slice) => slice.endpoints ?? []).filter((e) => e.nodeName !== undefined);
+    const serving = endpoints.find((e) => e.conditions?.serving !== false && e.conditions?.ready !== false);
+    return (serving ?? endpoints[0])?.nodeName;
+  };
+  return () => {
+    const t = now();
+    if (cached !== undefined && t - cached.at < cacheMs) return cached.node;
+    const node = read();
+    cached = { at: t, node };
+    // A failed list, or no node yet, is not kept: the next call asks again.
+    node.then(
+      (n) => {
+        if (n === undefined && cached?.node === node) cached = undefined;
+      },
+      () => {
+        if (cached?.node === node) cached = undefined;
+      },
+    );
+    return node;
   };
 }
 

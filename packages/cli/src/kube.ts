@@ -45,10 +45,12 @@ export type KubePort = {
    * server does not answer it. Never rejects: the name is a claim the CLI adds, and a verb does not
    * fail for want of it. */
   selfSubject(opts: { context?: string }): Promise<string | undefined>;
-  /** Forward a Service port to an ephemeral local port for the life of the command. */
+  /** Forward a port of a Service, or of one pod (`pod`), to an ephemeral local port for the life of
+   * the command. */
   portForward(opts: {
     namespace: string;
-    service: string;
+    service?: string;
+    pod?: string;
     port: number;
     context?: string;
   }): Promise<{ url: string; close: () => void }>;
@@ -1222,14 +1224,14 @@ export const kubectlKube: KubePort = {
 
   // `:port` asks kubectl for an ephemeral local port, announced on its stdout as
   // "Forwarding from 127.0.0.1:<local> -> <remote>" — parsed rather than raced.
-  portForward({ namespace, service, port, context }) {
+  portForward({ namespace, service, pod, port, context }) {
     return new Promise((resolve, reject) => {
       const child = spawn("kubectl", [
         ...ctxArgs(context),
         "--namespace",
         namespace,
         "port-forward",
-        `service/${service}`,
+        pod !== undefined ? `pod/${pod}` : `service/${service}`,
         `:${port}`,
       ]);
       const kill = endsWithProcess(child);

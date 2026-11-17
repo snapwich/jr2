@@ -12,6 +12,8 @@ import { after, test } from "node:test";
 import { custodianXds, fenceRangesOf, FENCE_LAST_RANGE } from "@jr2/orchestrator/internal";
 import {
   claimRange,
+  makeSlotLive,
+  type LiveKube,
   FENCE_CLAIM_NAMESPACE,
   otherHolders,
   fenceAttachments,
@@ -432,5 +434,76 @@ test("the uplink refuses a range outside 0 … 30", () => {
   assert.throws(
     () => uplinkArgs({ range: 31, ranges: fenceRangesOf(undefined), state: "/s", group: 1 }),
     /VLAN range 31/,
+  );
+});
+
+// --- makeSlotLive: the rules of a slot that `jr2 up` gives are live before its pod starts ---------
+
+/** Custodian pods that answer `POST /slots/<i>` as `answer` says, over a port-forward each. */
+function liveKube(
+  pods: Array<{ name: string; phase?: string; deleting?: boolean }>,
+  answer: (pod: string, n: number) => { status?: number; body?: unknown },
+): LiveKube & { posts: string[]; closed: string[] } {
+  const posts: string[] = [];
+  const closed: string[] = [];
+  const asked = new Map<string, number>();
+  return {
+    posts,
+    closed,
+    listJson: async <T>() =>
+      pods.map((p) => ({
+        metadata: { name: p.name, ...(p.deleting ? { deletionTimestamp: "now" } : {}) },
+        spec: { nodeName: `node-${p.name}` },
+        status: { phase: p.phase ?? "Running" },
+      })) as T[],
+    portForward: async ({ pod, port }) => ({ url: `http://${pod}.fwd:${port}`, close: () => void closed.push(pod) }),
+    fetch: async (url, init) => {
+      const pod = new URL(url).hostname.replace(/\.fwd$/, "");
+      posts.push(`${pod} ${init?.method} ${new URL(url).pathname} ${new Headers(init?.headers).get("x-jr2-dial")}`);
+      const n = (asked.get(pod) ?? 0) + 1;
+      asked.set(pod, n);
+      const a = answer(pod, n);
+      return Response.json(a.body ?? {}, { status: a.status ?? 200 });
+    },
+  };
+}
+
+test("makeSlotLive asks each running Custodian pod with the dial token until each says one version is live, and closes each forward", async () => {
+  const kube = liveKube(
+    [{ name: "c-a" }, { name: "c-b" }, { name: "c-old", deleting: true }, { name: "c-new", phase: "Pending" }],
+    (pod, n) => ({ body: { live: !(pod === "c-b" && n === 1), version: "v7" } }),
+  );
+  const version = await makeSlotLive(kube, { namespace: "ns", slot: 0, dialToken: "dial", intervalMs: 1 });
+  assert.equal(version, "v7");
+  assert.deepEqual(kube.posts.sort(), [
+    "c-a POST /slots/0 dial",
+    "c-a POST /slots/0 dial",
+    "c-b POST /slots/0 dial",
+    "c-b POST /slots/0 dial",
+  ]);
+  assert.deepEqual(kube.closed.sort(), ["c-a", "c-b"]);
+});
+
+test("makeSlotLive with no running Custodian pod asks nothing; a slot that is not live in time names each pod's word", async () => {
+  assert.equal(
+    await makeSlotLive(
+      liveKube([], () => ({})),
+      { namespace: "ns", slot: 1, dialToken: "d" },
+    ),
+    undefined,
+  );
+  const kube = liveKube([{ name: "c-a" }, { name: "c-b" }], (pod) =>
+    pod === "c-a" ? { body: { live: true, version: "v1" } } : { status: 401, body: { error: "no" } },
+  );
+  await assert.rejects(
+    makeSlotLive(kube, { namespace: "ns", slot: 1, dialToken: "d", timeoutMs: 30, intervalMs: 5 }),
+    /did not make the rules of Fence slot 1 live in 0 s \(ADR-0084\): c-a on node-c-a: live at version v1; c-b on node-c-b: 401/,
+  );
+  assert.deepEqual(kube.closed.sort(), ["c-a", "c-b"], "the forwards close on a refusal too");
+  // Two versions are not one: a pod that holds the rules of before is not live yet.
+  const split = liveKube([{ name: "c-a" }, { name: "c-b" }], (pod) => ({ body: { live: true, version: pod } }));
+  await assert.rejects(
+    makeSlotLive(split, { namespace: "ns", slot: 0, dialToken: "d", timeoutMs: 20, intervalMs: 5 }),
+    /live at version c-a; c-b on node-c-b: live at version c-b/,
   );
 });

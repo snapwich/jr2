@@ -9,6 +9,7 @@ import {
   custodianClient,
   fenceRouted,
   fenceSlotAddress,
+  governedPodNode,
   installFenceRoute,
   slotOfAddress,
   type CustodianClient,
@@ -284,4 +285,35 @@ test("a slot with no node, or a node with no ready Custodian pod, is never deliv
   assert.equal(neverDelivered(noPod), true);
   assert.match(String((noPod as Error & { cause: Error }).cause.message), /no Custodian pod is ready on node w2/);
   assert.equal(seen.length, 0);
+});
+
+test("the Instance Harness's node is in the EndpointSlices of its headless Service: a serving endpoint first, a draining one else, and no Pod is read (ADR-0031, ADR-0084)", async () => {
+  let asked: string[] = [];
+  let endpoints: Array<Record<string, unknown>> = [];
+  const kube: Pick<KubeClient, "list"> = {
+    list: (async (kind: { plural?: string }, ns: string, opts?: { labelSelector?: string }) => {
+      asked.push(`${kind.plural} ${ns} ${opts?.labelSelector}`);
+      return { items: [{ metadata: { name: "jr2-instance-harness-pods-x" }, endpoints }] };
+    }) as never,
+  };
+  let t = 0;
+  const node = governedPodNode({ kube, namespace: "ns", service: "jr2-instance-harness-pods", now: () => t });
+  endpoints = [{ addresses: ["198.19.0.2"], nodeName: "node-a", conditions: { ready: true, serving: true } }];
+  assert.equal(await node(), "node-a");
+  assert.deepEqual(asked, ["endpointslices ns kubernetes.io/service-name=jr2-instance-harness-pods"]);
+  // Cached for 2 s, then read again.
+  endpoints = [
+    { addresses: ["198.19.0.2"], nodeName: "node-b", conditions: { ready: false, serving: true, terminating: true } },
+  ];
+  assert.equal(await node(), "node-a");
+  t = 2_500;
+  assert.equal(await node(), "node-b", "a draining pod still serves, so its node still carries the dial");
+  // No endpoint names a node: none, and that is not kept.
+  endpoints = [];
+  t = 5_000;
+  assert.equal(await node(), undefined);
+  endpoints = [{ addresses: ["198.19.0.2"], nodeName: "node-c", conditions: { ready: false } }];
+  asked = [];
+  assert.equal(await node(), "node-c", "not ready, but the only one: the Custodian answers for it");
+  assert.equal(asked.length, 1);
 });

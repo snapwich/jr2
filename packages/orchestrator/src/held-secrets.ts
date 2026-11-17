@@ -49,16 +49,18 @@ import type { EgressRule } from "./egress.ts";
  * Effector's Effect secrets and key, each Workspace's Sandbox Effector Secret (`jr2-effector-<pod>`),
  * each Sandbox's Effector key (`<sandbox>-effector`), and each `git.credentials` entry's clone and
  * push Secrets (`jr2-git-<hash>`, `jr2-git-push-<hash>`, ADR-0051) — and each pod's own credentials
- * (ADR-0076): the Instance Harness's (`jr2-instance-harness-token`), and each Sandbox's on the Fence
- * (ADR-0084): its slot Secret (`jr2-custodian-slot-<i>`), which holds its real tokens, its control
- * Stand-in and its leaf keys, and its Stand-in Secret (`<sandbox>-standins`) — and the Instance's dial
- * token (`jr2-custodian-dial`). Every Secret of the Custodian starts `jr2-custodian-`. */
+ * (ADR-0076) on the Fence (ADR-0084): its slot Secret (`jr2-custodian-slot-<i>`), which holds its real
+ * tokens, its control Stand-in and its leaf keys, and its Stand-in Secret (`<sandbox>-standins`, the
+ * Instance Harness's `jr2-instance-harness-standins`), and the Instance Harness's credentials Secret
+ * of before the Fence (`jr2-instance-harness-token`), which `jr2 up` deletes — and the Instance's
+ * dial token (`jr2-custodian-dial`). Every Secret of the Custodian starts `jr2-custodian-`. */
 const KIT_SECRETS: readonly string[] = [
   INSTANCE_SECRET,
   HELD_TLS_SECRET,
   HELD_CA_SECRET,
   INSTANCE_EFFECTOR,
   `${INSTANCE_HARNESS_SERVICE}-token`,
+  `${INSTANCE_HARNESS_SERVICE}-standins`,
 ];
 const KIT_SECRET_PREFIXES: readonly string[] = [
   `${HELD_SECRETS_SECRET}-`,

@@ -68,7 +68,7 @@ import {
   IMAGES_KEY,
   IMAGES_MOUNT,
   INSTANCE_HARNESS_PORT,
-  INSTANCE_HARNESS_SERVICE,
+  INSTANCE_HARNESS_PODS_SERVICE,
   INSTANCE_EFFECTOR,
   EFFECTOR_PORT,
   CALLER_DIGESTS_KEY,
@@ -85,7 +85,14 @@ import { kubeClient, type KubeClient } from "./kube-client.ts";
 import { kubeRepoFetches, type LfsAsk, type RepoFetches } from "./repo-fetch.ts";
 import { kubeRepos, type RepoResources } from "./repos.ts";
 import { SANDBOX_EFFECTOR_PORT, kubeSandbox, type FenceWiring, type KubeSandboxPort } from "./sandbox-kube.ts";
-import { custodianClient, installFenceRoute, slotOfAddress } from "./custodian-client.ts";
+import {
+  custodianClient,
+  fenceSlotAddress,
+  governedPodNode,
+  installFenceRoute,
+  slotOfAddress,
+} from "./custodian-client.ts";
+import { INSTANCE_HARNESS_SLOT } from "./fence-slots.ts";
 import { slotVlan } from "./custodian-rules.ts";
 import { fenceRangesOf } from "./egress.ts";
 import { readFile } from "node:fs/promises";
@@ -261,13 +268,16 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     });
     // The process's route to a Harness pod behind the Fence (ADR-0084): each client of a Harness or
     // a Sandbox Effector that dials a slot address goes through the Custodian pod on its node.
+    // The Instance Harness is on slot 0, and its node is in the EndpointSlices of its headless
+    // Service (ADR-0031): the Orchestrator reads no Pod.
     if (fence) {
       const kube = sandbox;
       const { ranges, range } = fence;
+      const harnessNode = governedPodNode({ kube: client, namespace, service: INSTANCE_HARNESS_PODS_SERVICE });
       installFenceRoute({
         custodian: fence.custodian,
         slotOf: (host) => slotOfAddress(ranges, range, host),
-        nodeOf: (slot) => kube.fenceNode(slot),
+        nodeOf: (slot) => (slot === INSTANCE_HARNESS_SLOT ? harnessNode() : kube.fenceNode(slot)),
       });
     }
   }
@@ -357,11 +367,13 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
             lfs ? fetches.fetchLfs(name, identity, lfs) : fetches.fetch(name, identity),
         }
       : {}),
-    // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
-    // `jr2 up` converges the StatefulSet behind it whenever any definition declares
-    // `workspace: "none"`, so deployed, the address exists exactly when it is needed.
-    instanceHarness: namespace
-      ? `http://${INSTANCE_HARNESS_SERVICE}.${namespace}.svc:${INSTANCE_HARNESS_PORT}`
+    // Where a Menu-only Turn runs (ADR-0031, ADR-0084): the Instance Harness's address, slot 0 of
+    // the Instance's VLAN range, which the process's route dials through the Custodian pod on its
+    // node. `jr2 up` converges the StatefulSet whenever any definition declares `workspace: "none"`,
+    // and gives the Instance a range whenever it has a Harness pod, so deployed, the address exists
+    // exactly when it is needed.
+    instanceHarness: fence
+      ? `http://${fenceSlotAddress(fence.ranges, fence.range, INSTANCE_HARNESS_SLOT)}:${INSTANCE_HARNESS_PORT}`
       : undefined,
     // What a foreign dispatch names this Orchestrator by at the callee's door (ADR-0071): its
     // namespace, which is stable and not secret — never a run's Instance ID.

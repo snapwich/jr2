@@ -102,14 +102,16 @@ secret ANTHROPIC_API_KEY: Held in the Instance Harness
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
 held secrets: minted the Instance's CA into jr2-held-ca
-provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for api.anthropic.com
-provider: the check pod has up to 5 min to start, then up to 6 min for its model
-…
-provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 custodian: converging on each Sandbox node (VLAN range 0)
 custodian: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+…
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for api.anthropic.com
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
+…
 instance harness: converging (triager declares workspace: "none")
+instance harness: Fence slot 0 live at version <version>
 instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<version>
 …
 converged — `jr2 run <workflow>` when ready
@@ -136,14 +138,16 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
 agents: triager (carried by 2 workflow machine(s))
 …
 the Instance Harness: Custodian holds nothing
-provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), direct, as a pod that holds no secret calls it
-provider: the check pod has up to 5 min to start, then up to 6 min for its model
-…
-provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 custodian: converging on each Sandbox node (VLAN range 0)
 custodian: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+…
+provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), through the Custodian, as a Turn calls it
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
+…
 instance harness: converging (triager declares workspace: "none")
+instance harness: Fence slot 0 live at version <version>
 instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<version>
 …
 converged — `jr2 run <workflow>` when ready

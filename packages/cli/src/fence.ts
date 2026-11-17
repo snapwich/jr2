@@ -14,6 +14,8 @@
 
 import {
   custodianXds,
+  CUSTODIAN_SERVICE,
+  DIAL_TOKEN_HEADER,
   CUSTODIAN_CONTROL_PORT,
   CUSTODIAN_INBOUND_PORT,
   CUSTODIAN_HEALTH_PORT,
@@ -515,4 +517,105 @@ export async function otherHolders(
     if (alive.length > 0) holders.add(holder);
   }
   return [...holders].sort();
+}
+
+/** What `makeSlotLive` reaches the Custodian pods through: the converge's API reads, and a
+ * port-forward to one pod with a `fetch` over it. */
+export type LiveKube = {
+  listJson: KubeAdmin["listJson"];
+  portForward(opts: {
+    namespace: string;
+    pod: string;
+    port: number;
+    context?: string;
+  }): Promise<{ url: string; close: () => void }>;
+  fetch: (url: string, init?: RequestInit) => Promise<Response>;
+};
+
+/** How long `jr2 up` waits for the Custodian to make the rules of a slot of its own live. */
+export const SLOT_LIVE_MS = 60_000;
+
+/**
+ * Make the rules of a slot that `jr2 up` gives (the Instance Harness's, the check pod's) live on
+ * each Custodian pod of the Instance, and wait until each one says that the rules of one version are
+ * live (ADR-0084: a Harness pod starts only after its rules are live). The Orchestrator does the same
+ * for a Sandbox (`custodianClient.makeLive`). `jr2 up` runs outside the cluster, so it asks each pod
+ * over a port-forward, with the Instance's dial token, as the Orchestrator does. The Custodian pods
+ * are those that run and are not being deleted; with none (no Sandbox node took one), nothing is
+ * asked, and the Harness pod cannot be placed either. Answers the version, or undefined with no pod.
+ * Throws, with what each pod said, when the wait ends with no such answer.
+ */
+export async function makeSlotLive(
+  kube: LiveKube,
+  opts: {
+    namespace: string;
+    slot: number;
+    dialToken: string;
+    context?: string;
+    timeoutMs?: number;
+    intervalMs?: number;
+  },
+): Promise<string | undefined> {
+  const ctx = opts.context !== undefined ? { context: opts.context } : {};
+  type Pod = KubeObject & {
+    metadata: { deletionTimestamp?: string };
+    spec?: { nodeName?: string };
+    status?: { phase?: string };
+  };
+  const pods = (
+    await kube.listJson<Pod>({ kind: "pod", selector: `app=${CUSTODIAN_SERVICE}`, namespace: opts.namespace, ...ctx })
+  ).filter((p) => p.status?.phase === "Running" && !p.metadata.deletionTimestamp);
+  if (pods.length === 0) return undefined;
+  const deadline = Date.now() + (opts.timeoutMs ?? SLOT_LIVE_MS);
+  const forwards = await Promise.all(
+    pods.map(async (p) => ({
+      pod: p.metadata.name,
+      node: p.spec?.nodeName,
+      fwd: await kube.portForward({
+        namespace: opts.namespace,
+        pod: p.metadata.name,
+        port: CUSTODIAN_CONTROL_PORT,
+        ...ctx,
+      }),
+    })),
+  );
+  try {
+    let said = "";
+    for (;;) {
+      const answers = await Promise.all(
+        forwards.map(async ({ pod, node, fwd }) => {
+          const where = `${pod}${node ? ` on ${node}` : ""}`;
+          try {
+            const res = await kube.fetch(`${fwd.url.replace(/\/+$/, "")}/slots/${opts.slot}`, {
+              method: "POST",
+              headers: { [DIAL_TOKEN_HEADER]: opts.dialToken },
+              signal: AbortSignal.timeout(10_000),
+            });
+            const text = await res.text();
+            if (res.status !== 200) return { where, text: `${res.status} ${text.trim()}` };
+            const body = JSON.parse(text) as { live?: boolean; version?: string; error?: string };
+            return body.live && typeof body.version === "string"
+              ? { where, version: body.version, text: `live at version ${body.version}` }
+              : { where, text: `not live${body.error ? ` (${body.error})` : ""}` };
+          } catch (err) {
+            return { where, text: `no answer: ${(err as Error).message}` };
+          }
+        }),
+      );
+      const versions = new Set(answers.map((a) => a.version ?? null));
+      const [only] = versions;
+      if (versions.size === 1 && typeof only === "string") return only;
+      said = answers.map((a) => `${a.where}: ${a.text}`).join("; ");
+      const pause = opts.intervalMs ?? 500;
+      if (Date.now() + pause > deadline) {
+        throw new Error(
+          `the Custodian did not make the rules of Fence slot ${opts.slot} live in ` +
+            `${Math.round((opts.timeoutMs ?? SLOT_LIVE_MS) / 1000)} s (ADR-0084): ${said}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, pause));
+    }
+  } finally {
+    for (const { fwd } of forwards) fwd.close();
+  }
 }

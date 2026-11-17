@@ -24,6 +24,11 @@ import type { SlotStatus } from "./custodian-control.ts";
 import { FENCE_SLOTS } from "./custodian.ts";
 import { custodianSlotSecret, fenceSlotAttachment } from "./names.ts";
 
+/** The slot of the Instance Harness, which `jr2 up` gives (ADR-0084). */
+export const INSTANCE_HARNESS_SLOT = 0;
+/** The slot of the check pod of the provider preflight, which `jr2 up` gives (ADR-0084, ADR-0019). */
+export const CHECK_POD_SLOT = 1;
+
 /** The first slot that the Orchestrator gives: 0–2 are `jr2 up`'s. */
 export const FIRST_SANDBOX_SLOT = 3;
 

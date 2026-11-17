@@ -21,6 +21,10 @@
 // attachment and the nameserver of its slot (`spec.network`), the Harness container's env and its
 // mounts. No Custodian container, no proxy variable and no control socket: the Custodian is at
 // jr2's own name, outside the pod.
+//
+// `podFenceObjects` gives the same three objects for a Harness pod that `jr2 up` makes (the
+// Instance Harness on slot 0, the check pod on slot 1), with leaves of the Instance's CA and no
+// owner, and `fencePodNetwork` the pod-level part that the operator writes for a Sandbox.
 
 import type { HarnessEnvVar } from "./config.ts";
 import {
@@ -48,7 +52,7 @@ import {
   sandboxStandInSecret,
   sandboxTrustConfigMap,
 } from "./names.ts";
-import { sandboxPki } from "./pki.ts";
+import { sandboxPki, type Pem } from "./pki.ts";
 import { checkAppendOnly, emptyPlaceholders, withPlaceholders, type PlaceholderTable } from "./placeholders.ts";
 import { controlStandIn, controlToken, sandboxToken } from "./tokens.ts";
 
@@ -198,6 +202,145 @@ export function sandboxFenceObjects(input: SandboxFenceInput): SandboxFenceObjec
   };
 }
 
+export type PodFenceInput = {
+  namespace: string;
+  /** The pod: the slot's owner, and the stem of its trust ConfigMap (`<pod>-trust`) and its Stand-in
+   * Secret (`<pod>-standins`). */
+  pod: string;
+  slot: number;
+  /** The pod's held manifest. */
+  manifest: HeldManifest;
+  /** The key of the pod's secret Stand-ins (`heldStandIn(key, heldPod, name)`), and, when `values` is
+   * absent, the pod whose `jr2-held-secrets-<heldPod>` holds its literal values. */
+  heldPod: string;
+  /** The literal values of the manifest, copied into the slot Secret (a check pod, whose slot Secret
+   * `jr2 up` deletes after the check). Absent: the Custodian reads them from `jr2-held-secrets-<heldPod>`. */
+  values?: Readonly<Record<string, string>>;
+  /** The pod's control token (`controlToken` for its placement, or a value that no one signed). */
+  controlToken: string;
+  /** The name the control Stand-in is derived for (`controlStandIn`). */
+  placement: string;
+  /** The leaves of the Instance's CA, by file stem (`leafStem`): one for each of `leafTargets`. */
+  leaves: Readonly<Record<string, Pem>>;
+  /** The pod's trust files: the Instance's CA after `caBundle` (`extra`), and after `upstream.crt`
+   * (`bundle`); and `caBundle` itself (`ca`), when the Instance ships one. */
+  trust: { extra: string; bundle: string; ca?: string };
+  /** The pod's placeholder table before this write, if its slot Secret had one (append-only). */
+  placeholders?: PlaceholderTable;
+  ranges: FenceRanges;
+  signingKey: Buffer;
+  /** The labels of each object. */
+  labels: Record<string, string>;
+};
+
+/**
+ * The slot Secret, trust ConfigMap and Stand-in Secret of a Harness pod that `jr2 up` makes on the
+ * Fence (ADR-0084): the Instance Harness on slot 0 and the check pod on slot 1. The same three
+ * objects as a Sandbox's (`sandboxFenceObjects`), with two differences: the leaves come from the
+ * Instance's CA (`jr2-held-ca`), which `jr2 up` keeps, so a converge that changes nothing writes
+ * the same objects; and no CR owns them, so `jr2 up` deletes them with the pod. The pod serves no
+ * fetch, so its slot holds no fetch token.
+ */
+export function podFenceObjects(input: PodFenceInput): SandboxFenceObjects {
+  const { namespace, pod, slot, manifest, signingKey } = input;
+  const prev = input.placeholders?.range === input.ranges.placeholders ? input.placeholders : undefined;
+  const placeholders = withPlaceholders(prev ?? emptyPlaceholders(input.ranges.placeholders), manifest.egress);
+  checkAppendOnly(prev, placeholders);
+  const files = new Map<string, string>([
+    [`values/${CONTROL_TOKEN_NAME}`, input.controlToken],
+    [`values/${standInValueFile(CONTROL_TOKEN_NAME)}`, controlStandIn(signingKey, input.placement)],
+    ...manifest.secrets.map(
+      (s) => [`values/${standInValueFile(s.name)}`, heldStandIn(signingKey, input.heldPod, s.name)] as [string, string],
+    ),
+  ]);
+  for (const { host, port } of leafTargets(manifest)) {
+    const leaf = input.leaves[leafStem(host, port)];
+    if (leaf === undefined) throw new Error(`pod "${pod}": no leaf of the Instance's CA for ${host}:${port}`);
+    files.set(`tls/${leafStem(host, port)}.crt`, leaf.cert);
+    files.set(`tls/${leafStem(host, port)}.key`, leaf.key);
+  }
+  const literals = manifest.secrets.filter((s) => s.source.kind === "literal");
+  if (input.values !== undefined) {
+    for (const s of literals) {
+      const value = input.values[s.name];
+      if (value === undefined) throw new Error(`pod "${pod}": no value of the literal held secret ${s.name}`);
+      files.set(`values/${s.name}`, value);
+    }
+  }
+  const spec: SlotSpec = {
+    version: 1,
+    owner: { pod },
+    manifest,
+    placeholders,
+    ...(literals.length > 0 && input.values === undefined ? { heldPod: input.heldPod } : {}),
+  };
+  const metadata = (name: string, labels: Record<string, string> = {}) => ({
+    name,
+    namespace,
+    labels: { ...input.labels, ...labels },
+  });
+  return {
+    placeholders,
+    slotSecret: {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: metadata(custodianSlotSecret(slot), { [LABEL_FENCE_SLOT]: String(slot) }),
+      type: "Opaque",
+      data: base64Values(slotSecretData(spec, files)),
+    },
+    trust: {
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: metadata(sandboxTrustConfigMap(pod)),
+      data: {
+        "extra.crt": input.trust.extra,
+        "bundle.crt": input.trust.bundle,
+        ...(input.trust.ca !== undefined ? { "ca.crt": input.trust.ca } : {}),
+      },
+    },
+    standIns: {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: metadata(sandboxStandInSecret(pod)),
+      type: "Opaque",
+      data: base64Values({
+        [CREDENTIAL_KEYS.controlStandIn]: controlStandIn(signingKey, input.placement),
+        ...Object.fromEntries(
+          manifest.secrets.map((s) => [heldStandInKey(s.name), heldStandIn(signingKey, input.heldPod, s.name)]),
+        ),
+      }),
+    },
+  };
+}
+
+/** The exec probe of a Harness container on the Fence (ADR-0063, ADR-0084): the Effector binary's own
+ * GET of the Harness's `/healthz`, bounded at 1 s, because no HTTP probe of the kubelet reaches a pod
+ * on the Fence. The operator gives a Sandbox's Harness the same command. */
+export function harnessHealthcheck(port: number): string[] {
+  return ["/opt/jr2/bin/effector", "healthcheck", `http://127.0.0.1:${port}/healthz`];
+}
+
+/** The pod-level part of a pod on the Fence that `jr2 up` makes (ADR-0084), as the operator writes it
+ * for a Sandbox: Multus's default network is the slot's attachment, and the one nameserver is the
+ * uplink's, with no search domain and `ndots:1`. */
+export function fencePodNetwork(
+  namespace: string,
+  network: FenceComposition["network"],
+): {
+  annotations: Record<string, string>;
+  dnsPolicy: "None";
+  dnsConfig: { nameservers: string[]; searches: string[]; options: Array<{ name: string; value: string }> };
+} {
+  return {
+    annotations: { [FENCE_DEFAULT_NETWORK_ANNOTATION]: `${namespace}/${network.attachment}` },
+    dnsPolicy: "None",
+    dnsConfig: { nameservers: [network.nameserver], searches: [], options: [{ name: "ndots", value: "1" }] },
+  };
+}
+
+/** Multus's annotation of a pod's default network. */
+export const FENCE_DEFAULT_NETWORK_ANNOTATION = "v1.multus-cni.io/default-network";
+
 type Volume = Record<string, unknown>;
 type VolumeMount = { name: string; mountPath: string; readOnly?: boolean };
 
@@ -225,6 +368,8 @@ export function fenceComposition(
     granted?: readonly string[];
     /** Whether the Instance ships a `caBundle`: its `ca.crt` joins the trust files. */
     caBundle?: boolean;
+    /** The ConfigMap whose `ca.crt` is the `caBundle`. Default `jr2-ca`; a check pod has its own. */
+    caBundleFrom?: string;
   },
 ): FenceComposition {
   const held = new Set(manifest.secrets.map((s) => s.name));
@@ -261,7 +406,11 @@ export function fenceComposition(
               },
             },
             ...(opts.caBundle
-              ? [{ configMap: { name: CA_CONFIGMAP, items: [{ key: "ca.crt", path: "ca.crt" }] } }]
+              ? [
+                  {
+                    configMap: { name: opts.caBundleFrom ?? CA_CONFIGMAP, items: [{ key: "ca.crt", path: "ca.crt" }] },
+                  },
+                ]
               : []),
           ],
         },

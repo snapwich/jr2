@@ -42,10 +42,15 @@ built.
   It uses the Custodian although `"none"` Agents cannot execute code (the
   [ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) rationale technically lapses):
   the Harness has exactly one route to its Menu — the Custodian — and forking that path for one pod buys the same
-  divergence. The pod is composed by the same function a Sandbox's is
+  divergence. Its Harness container is composed by the same function a Sandbox's is
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), so the Custodian carries the
-  Instance Harness's model calls the same way. For this pod it holds what the `"none"` Agents it hosts name — the keys
-  their providers read, and the secrets of the remote MCP servers they name
+  Instance Harness's model calls the same way. It is on slot 0 of the Instance's range, and it takes the Sandbox
+  placement (`sandbox.nodeSelector`, `sandbox.tolerations`,
+  [ADR-0052](0052-a-sandbox-lands-where-an-ordinary-pod-lands-and-the-cache-follows-it.md)), so a Custodian pod is on
+  its node. No Service routes to it: the StatefulSet keeps its headless governing Service, and the Orchestrator reads
+  the pod's node from that Service's EndpointSlices, which list the pod also while it drains, and reads no Pod
+  ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)). For this pod it holds what the `"none"` Agents it hosts
+  name — the keys their providers read, and the secrets of the remote MCP servers they name
   ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)) — and
   none of the held secrets a `workspace()` lists: a `"none"` Agent cannot execute code, so it had no way to use the
   rest. A `"none"` Agent names no stdio MCP server, because the Instance Harness has no Landlock domain to start one in.

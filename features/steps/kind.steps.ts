@@ -1212,26 +1212,23 @@ Then("the Harness refuses it as unauthorized", function (this: E2EWorld): void {
 /**
  * Lateral reach (ADR-0058, ADR-0084): from the Agent's container to the Instance Harness, which
  * holds every Menu-only conversation of the Instance (ADR-0031). On the Fence a Sandbox has no
- * route to another pod: the Instance Harness's name gets the resolver's refusal, and its Service
- * address and its pod address each get the Custodian's. A 401 would be the bearer's, the second
- * control; no byte of the Harness may come back at all.
+ * route to another pod: the Instance Harness's name gets the resolver's refusal, and its address,
+ * slot 0's on the segment, gets no answer: one slot's VLAN never carries a frame to another's. A 401
+ * would be the bearer's, the second control; no byte of the Harness may come back at all.
  */
 When("the Harness container dials the Instance Harness", async function (this: E2EWorld): Promise<void> {
   const pod = (await waitForReadySandbox(this)).metadata.name;
-  const service = (
-    await kubectl(this, ["get", "svc", INSTANCE_HARNESS_SERVICE, "-o", "jsonpath={.spec.clusterIP}"])
-  ).trim();
   const harnessPod = (
     await kubectl(this, ["get", "pod", `${INSTANCE_HARNESS_SERVICE}-0`, "-o", "jsonpath={.status.podIP}"])
   ).trim();
-  assert.ok(service && harnessPod, "the Instance Harness has a Service address and a pod address");
+  assert.ok(harnessPod, "the Instance Harness has a pod address: slot 0's on the segment");
   const path = "/agents/advisor/probe?view=history";
   const script =
     FENCE_PROBE +
     `(async()=>{const out={` +
-    `name:await named(${JSON.stringify(`http://${INSTANCE_HARNESS_SERVICE}.${this.namespace}.svc.cluster.local:8080${path}`)}),` +
+    `name:await named(${JSON.stringify(`http://${INSTANCE_HARNESS_SERVICE}-0.${INSTANCE_HARNESS_SERVICE}-pods.${this.namespace}.svc.cluster.local:8080${path}`)}),` +
     `addresses:{}};` +
-    `for(const to of ${JSON.stringify([`${service}:8080`, `${harnessPod}:8080`])}){` +
+    `for(const to of ${JSON.stringify([`${harnessPod}:8080`])}){` +
     `const [host,port]=to.split(":");` +
     `out.addresses[to]=await raw(host,Number(port),${JSON.stringify(rawRequest("GET", "HOST", path, {}))}.replace("HOST",to))}` +
     `console.log("FENCE-PROBE "+JSON.stringify(out))})()`;
@@ -1239,9 +1236,25 @@ When("the Harness container dials the Instance Harness", async function (this: E
 });
 
 Then(
-  "the Instance Harness never answered, and the Fence refused each dial with jr2's reason",
+  "the Instance Harness never answered: its name is refused, and its address gets no answer",
   async function (this: E2EWorld): Promise<void> {
-    await assertFenceRefused(this, "Instance Harness");
+    const seen = probeJson<{ name: string; addresses: Record<string, string> }>(this.podSays ?? "", "FENCE-PROBE ");
+    assert.equal(
+      seen.name,
+      "ERR ENOTFOUND",
+      `the resolver refused the Instance Harness's name (${JSON.stringify(seen)})`,
+    );
+    const addresses = Object.entries(seen.addresses);
+    assert.ok(addresses.length > 0, "the probe dialed an address");
+    // Another slot's address is on no VLAN of this Sandbox, and the uplink answers ARP only for its
+    // own slot's (ADR-0084): the dial gets no answer at all, and no byte of the Harness.
+    for (const [to, reply] of addresses) {
+      assert.match(
+        reply,
+        /^(ERR EHOSTUNREACH|timeout)$/,
+        `the Instance Harness at ${to} got no answer (got: ${JSON.stringify(reply)})`,
+      );
+    }
   },
 );
 
@@ -1706,7 +1719,11 @@ const CUSTODIAN_NAME = "custodian.jr2.internal";
 
 type FencePod = {
   metadata: { name: string; annotations?: Record<string, string> };
-  spec: { nodeName?: string; containers: Array<{ name: string; env?: Array<{ name: string; value?: string }> }> };
+  spec: {
+    nodeName?: string;
+    initContainers?: unknown[];
+    containers: Array<{ name: string; env?: Array<{ name: string; value?: string }> }>;
+  };
   status: { podIP?: string };
 };
 
@@ -1774,40 +1791,84 @@ async function custodianLine(
   throw new Error(`no Custodian ${container} line matches ${pattern} (a log ends: ${seen.slice(-2000)})`);
 }
 
+/**
+ * A Harness pod on the Fence (ADR-0084): its Harness and no Custodian container; one network, the
+ * slot's attachment, as its default; its address the slot's, on the segment; the Custodian by jr2's
+ * own name and no proxy setting; and the Custodian pod of its node says that the slot's rules are
+ * live for it (`owner`: `sandbox=<name>` or `pod=<name>`).
+ */
+async function assertOnFence(
+  world: E2EWorld,
+  fence: { pod: FencePod; node: string; slot: number; attachment: string },
+  owner: string,
+): Promise<void> {
+  const { pod, node, slot, attachment } = fence;
+  const names = pod.spec.containers.map((c) => c.name);
+  assert.deepEqual(names, ["harness"], `the pod runs the Harness and no Custodian container (got: ${names})`);
+  assert.equal(pod.spec.initContainers, undefined, "no Custodian as a sidecar either");
+  // The one network Multus reports is the slot's attachment, and it is the pod's default network.
+  const status = JSON.parse(pod.metadata.annotations?.["k8s.v1.cni.cncf.io/network-status"] ?? "[]") as Array<{
+    name: string;
+    default?: boolean;
+    ips?: string[];
+  }>;
+  assert.equal(status.length, 1, `the pod has one network (got: ${JSON.stringify(status)})`);
+  assert.equal(status[0]!.name, `${world.namespace}/${attachment}`, "the network is the slot's attachment");
+  assert.equal(status[0]!.default, true, "the slot's attachment is the pod's default network");
+  const ip = pod.status.podIP ?? "";
+  assert.deepEqual(status[0]!.ips, [ip], "the pod's address is the slot's");
+  // The instance's `fence` keeps the default segment, 198.19.0.0/20.
+  const [a, b, c] = ip.split(".").map(Number);
+  assert.ok(a === 198 && b === 19 && c! < 16, `the address ${ip} is on the Fence's segment`);
+  // The Harness names the Custodian by jr2's own name, and no proxy setting reaches it.
+  const env = pod.spec.containers[0]!.env ?? [];
+  assert.equal(env.find((e) => e.name === "JR2_CUSTODIAN_URL")?.value, `https://${CUSTODIAN_NAME}`);
+  const proxies = env.filter((e) => PROXY_NAMES.includes(e.name.toUpperCase())).map((e) => e.name);
+  assert.deepEqual(proxies, [], "no proxy setting is in the Harness container's env");
+  // The Custodian pod of the pod's node made the slot's rules live, for this pod.
+  const live = new RegExp(`^jr2\\.custodian ready slot=${slot} ${owner} `);
+  const logs = await custodianLogs(world, "control");
+  const onNode = logs.find((l) => l.node === node);
+  assert.ok(onNode, `a Custodian pod is on the pod's node ${node} (got: ${logs.map((l) => l.node)})`);
+  assert.ok(
+    onNode.log.split("\n").some((l) => live.test(l)),
+    `the Custodian pod ${onNode.pod} says that slot ${slot}'s rules are live for ${owner}`,
+  );
+}
+
 Then(
   "the run's Sandbox is on the Fence, and its Custodian is outside the pod",
   async function (this: E2EWorld): Promise<void> {
-    const { pod, node, slot, attachment } = await fenceOf(this);
-    const names = pod.spec.containers.map((c) => c.name);
-    assert.deepEqual(names, ["harness"], `the pod runs the Harness and no Custodian container (got: ${names})`);
-    // The one network Multus reports is the slot's attachment, and it is the pod's default network.
-    const status = JSON.parse(pod.metadata.annotations?.["k8s.v1.cni.cncf.io/network-status"] ?? "[]") as Array<{
-      name: string;
-      default?: boolean;
-      ips?: string[];
-    }>;
-    assert.equal(status.length, 1, `the pod has one network (got: ${JSON.stringify(status)})`);
-    assert.equal(status[0]!.name, `${this.namespace}/${attachment}`, "the network is the slot's attachment");
-    assert.equal(status[0]!.default, true, "the slot's attachment is the pod's default network");
-    const ip = pod.status.podIP ?? "";
-    assert.deepEqual(status[0]!.ips, [ip], "the pod's address is the slot's");
-    // The instance's `fence` keeps the default segment, 198.19.0.0/20.
-    const [a, b, c] = ip.split(".").map(Number);
-    assert.ok(a === 198 && b === 19 && c! < 16, `the address ${ip} is on the Fence's segment`);
-    // The Harness names the Custodian by jr2's own name, and no proxy setting reaches it.
-    const env = pod.spec.containers[0]!.env ?? [];
-    assert.equal(env.find((e) => e.name === "JR2_CUSTODIAN_URL")?.value, `https://${CUSTODIAN_NAME}`);
-    const proxies = env.filter((e) => PROXY_NAMES.includes(e.name.toUpperCase())).map((e) => e.name);
-    assert.deepEqual(proxies, [], "no proxy setting is in the Harness container's env");
-    // The Custodian pod of the Sandbox's node made the slot's rules live, for this Sandbox.
-    const live = new RegExp(`^jr2\\.custodian ready slot=${slot} sandbox=${pod.metadata.name} `);
-    const logs = await custodianLogs(this, "control");
-    const onNode = logs.find((l) => l.node === node);
-    assert.ok(onNode, `a Custodian pod is on the Sandbox's node ${node} (got: ${logs.map((l) => l.node)})`);
-    assert.ok(
-      onNode.log.split("\n").some((l) => live.test(l)),
-      `the Custodian pod ${onNode.pod} says that slot ${slot}'s rules are live for ${pod.metadata.name}`,
+    const fence = await fenceOf(this);
+    await assertOnFence(this, fence, `sandbox=${fence.pod.metadata.name}`);
+  },
+);
+
+/** The Instance Harness on slot 0 of the Instance's range (ADR-0031, ADR-0084): `jr2 up` gives the
+ * slot, and no Service routes to the pod. */
+Then(
+  "the Instance Harness is on slot 0 of the Fence, and its Custodian is outside the pod",
+  async function (this: E2EWorld): Promise<void> {
+    const name = `${INSTANCE_HARNESS_SERVICE}-0`;
+    const pod = JSON.parse(await kubectl(this, ["get", "pod", name, "-o", "json"])) as FencePod;
+    assert.ok(pod.spec.nodeName, `the Instance Harness pod ${name} is on a node`);
+    assert.equal(
+      pod.metadata.annotations?.["v1.multus-cni.io/default-network"],
+      `${this.namespace}/jr2-fence-0`,
+      "the pod asks Multus for slot 0's attachment",
     );
+    await assertOnFence(
+      this,
+      { pod, node: pod.spec.nodeName, slot: 0, attachment: "jr2-fence-0" },
+      `pod=${INSTANCE_HARNESS_SERVICE}`,
+    );
+    // No Service routes to it: the headless one that governs the StatefulSet alone.
+    const services = (await kubectl(this, ["get", "svc", "-o", "jsonpath={.items[*].metadata.name}"])).split(/\s+/);
+    assert.ok(!services.includes(INSTANCE_HARNESS_SERVICE), `no ClusterIP Service names it (got: ${services})`);
+    const governing = (
+      await kubectl(this, ["get", "svc", `${INSTANCE_HARNESS_SERVICE}-pods`, "-o", "jsonpath={.spec.clusterIP}"])
+    ).trim();
+    assert.equal(governing, "None", "its governing Service is headless");
   },
 );
 

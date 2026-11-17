@@ -12,11 +12,20 @@ import { readSlotSecret, SLOT_SPEC_KEY } from "../src/custodian-slot.ts";
 import { JR2_CUSTODIAN_NAME } from "../src/custodian.ts";
 import { CONTROL_TOKEN_NAME, heldStandIn, leafStem, SANDBOX_TOKEN_NAME } from "../src/held-secrets.ts";
 import { checkAppendOnly, placeholderOf } from "../src/placeholders.ts";
-import { fenceComposition, FENCE_CUSTODIAN_URL, leafTargets, sandboxFenceObjects } from "../src/sandbox-fence.ts";
+import {
+  fenceComposition,
+  fencePodNetwork,
+  FENCE_CUSTODIAN_URL,
+  harnessHealthcheck,
+  leafTargets,
+  podFenceObjects,
+  sandboxFenceObjects,
+} from "../src/sandbox-fence.ts";
+import { issueCa, issueLeaf } from "../src/pki.ts";
 import { sandboxCr, sandboxEffectorContainer } from "../src/sandbox-kube.ts";
 import { resolveSize, splitSize } from "../src/size.ts";
 import { controlStandIn, controlToken, sandboxToken } from "../src/tokens.ts";
-import { RANGES, rule, SANDBOX_MANIFEST } from "./_custodian-slots.ts";
+import { INSTANCE_MANIFEST, RANGES, rule, SANDBOX_MANIFEST } from "./_custodian-slots.ts";
 
 const KEY = Buffer.from("the-signing-key-of-the-instance");
 const UID = "6f1c0d6e-0000-4000-8000-000000000003";
@@ -298,4 +307,102 @@ test("a Sandbox CR on the Fence: spec.network, no Custodian container, and the S
   });
   assert.deepEqual(plain.readinessProbe, { httpGet: { path: "/healthz", port: 8082 }, periodSeconds: 1 });
   assert.equal("startupProbe" in plain, false);
+});
+
+// --- a Harness pod that `jr2 up` makes on the Fence (ADR-0084): the Instance Harness, the check pod
+
+/** The leaves of a CA for each TLS target of `manifest`, as `jr2 up` keeps them in `jr2-held-tls`. */
+function heldLeaves(manifest: typeof INSTANCE_MANIFEST) {
+  const ca = issueCa("jr2-test");
+  return {
+    ca,
+    leaves: Object.fromEntries(leafTargets(manifest).map((t) => [leafStem(t.host, t.port), issueLeaf(ca, t.host)])),
+  };
+}
+
+const podObjectsOf = (over: Partial<Parameters<typeof podFenceObjects>[0]> = {}) => {
+  const { leaves } = heldLeaves(INSTANCE_MANIFEST);
+  return podFenceObjects({
+    namespace: "jr2-test",
+    pod: "jr2-instance-harness",
+    slot: 0,
+    manifest: INSTANCE_MANIFEST,
+    heldPod: "instance",
+    controlToken: controlToken(KEY, "jr2-instance-harness"),
+    placement: "jr2-instance-harness",
+    leaves,
+    trust: { extra: "EXTRA", bundle: "BUNDLE" },
+    ranges: RANGES,
+    signingKey: KEY,
+    labels: { "jr2.dev/instance": "jr2-test" },
+    ...over,
+  });
+};
+
+test("a pod that jr2 up makes: slot 0's Secret names the pod, its signed control token, its Stand-ins and the leaves of the Instance's CA, and no owner", () => {
+  const { slotSecret, trust, standIns } = podObjectsOf();
+  assert.equal(slotSecret.metadata?.name, "jr2-custodian-slot-0");
+  assert.equal(
+    (slotSecret.metadata as { ownerReferences?: unknown }).ownerReferences,
+    undefined,
+    "no CR owns it: jr2 up deletes it with the pod",
+  );
+  assert.deepEqual(slotSecret.metadata?.labels, { "jr2.dev/instance": "jr2-test", "jr2.dev/fence-slot": "0" });
+  const { spec, files } = readSlotSecret(slotSecret.data);
+  assert.deepEqual(spec.owner, { pod: "jr2-instance-harness" });
+  assert.equal(files.get(`values/${CONTROL_TOKEN_NAME}`)!.toString(), controlToken(KEY, "jr2-instance-harness"));
+  assert.equal(
+    files.get(`values/${CONTROL_TOKEN_NAME}.standin`)!.toString(),
+    controlStandIn(KEY, "jr2-instance-harness"),
+  );
+  assert.equal(files.get(`values/${SANDBOX_TOKEN_NAME}`), undefined, "the pod serves no fetch");
+  for (const s of INSTANCE_MANIFEST.secrets) {
+    assert.equal(files.get(`values/${s.name}.standin`)!.toString(), heldStandIn(KEY, "instance", s.name));
+  }
+  // The renderer finds a leaf for each TLS chain.
+  const rules = renderSlot({
+    slot: 0,
+    owner: spec.owner,
+    manifest: spec.manifest,
+    placeholders: spec.placeholders,
+    ranges: RANGES,
+  });
+  const named = [...JSON.stringify(rules.listener).matchAll(/\/tls\/([0-9a-f]{16}\.(?:crt|key))/g)].map((m) => m[1]);
+  assert.ok(named.includes(`${leafStem(JR2_CUSTODIAN_NAME, 443)}.crt`), "jr2's own name has its leaf");
+  for (const file of named) assert.ok(files.has(`tls/${file}`), `tls/${file} is in the slot Secret`);
+  assert.equal(trust.metadata?.name, "jr2-instance-harness-trust");
+  assert.deepEqual(trust.data, { "extra.crt": "EXTRA", "bundle.crt": "BUNDLE" });
+  assert.equal(standIns.metadata?.name, "jr2-instance-harness-standins");
+  assert.equal(text(standIns.data["control-standin"]!), controlStandIn(KEY, "jr2-instance-harness"));
+});
+
+test("a pod that jr2 up makes: a literal's value is read from the pod's held Secret, or, for a check pod, copied into the slot", () => {
+  const literal = INSTANCE_MANIFEST.secrets.find((s) => s.source.kind === "literal")!;
+  const named = readSlotSecret(podObjectsOf().slotSecret.data);
+  assert.equal(named.spec.heldPod, "instance");
+  assert.equal(named.files.get(`values/${literal.name}`), undefined, "no value in the slot");
+  const copied = readSlotSecret(podObjectsOf({ values: { [literal.name]: "the-value" } }).slotSecret.data);
+  assert.equal(copied.spec.heldPod, undefined);
+  assert.equal(copied.files.get(`values/${literal.name}`)!.toString(), "the-value");
+  assert.throws(() => podObjectsOf({ values: {} }), /no value of the literal held secret/);
+});
+
+test("a pod that jr2 up makes: a TLS target with no leaf of the Instance's CA is a defect, and the placeholder table of before stays", () => {
+  assert.throws(() => podObjectsOf({ leaves: {} }), /no leaf of the Instance's CA for custodian\.jr2\.internal:443/);
+  const first = podObjectsOf();
+  const again = podObjectsOf({ placeholders: first.placeholders });
+  assert.deepEqual(again.placeholders, first.placeholders);
+  // A table of another placeholder range (a moved `fence`) starts again.
+  const moved = podObjectsOf({ placeholders: { range: "10.99.0.0/16", rows: [] } });
+  assert.equal(moved.placeholders.range, RANGES.placeholders);
+});
+
+test("a pod that jr2 up makes: Multus's default network is its slot's attachment, and its one nameserver the uplink's", () => {
+  const network = fencePodNetwork("jr2-test", { attachment: "jr2-fence-0", nameserver: "198.19.0.1" });
+  assert.deepEqual(network, {
+    annotations: { "v1.multus-cni.io/default-network": "jr2-test/jr2-fence-0" },
+    dnsPolicy: "None",
+    dnsConfig: { nameservers: ["198.19.0.1"], searches: [], options: [{ name: "ndots", value: "1" }] },
+  });
+  assert.deepEqual(harnessHealthcheck(8080), ["/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8080/healthz"]);
 });
