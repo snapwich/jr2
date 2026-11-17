@@ -159,9 +159,12 @@ export function issueCa(instance: string, now: Date = new Date()): Pem {
  * A CA whose critical name constraints permit `hosts` and nothing else (ADR-0059): each DNS name
  * exactly, and each IP literal as one address. A DNS constraint also permits each name below it
  * (RFC 5280 §4.2.1.10), so each name gets an excluded subtree `.<name>` too, unless another of
- * `hosts` is below it. With no IP literal among `hosts`, every IPv4 and IPv6 address is excluded.
- * The CA cannot then vouch for a host outside `hosts`, whatever leaf its key signs. Throws on an
- * empty list and on a host that is not a name or an IP literal (a wildcard, a trailing dot).
+ * `hosts` is below it. Then that exclusion would also exclude the lower host, so the CA also
+ * permits the other names below the upper one: name constraints cannot state that set exactly.
+ * With no IP literal among `hosts`, every IPv4 and IPv6 address is excluded; with no name, every
+ * DNS name is excluded. Else the CA cannot vouch for a host outside `hosts`, whatever leaf its key
+ * signs. Throws on an empty list and on a host that is not a name or an IP literal (a wildcard, a
+ * trailing dot).
  */
 export function issueConstrainedCa(cn: string, hosts: readonly string[], now: Date = new Date()): Pem {
   return selfSignedCa(cn, now, [extension("2.5.29.30", true, nameConstraints(hosts))]);
@@ -171,7 +174,7 @@ export function issueConstrainedCa(cn: string, hosts: readonly string[], now: Da
 export type SandboxPki = {
   /** The CA's certificate, PEM. Its key is not here, and not anywhere else. */
   ca: string;
-  /** One leaf for each host, by the host as it was given. */
+  /** One leaf for each host, by the host in lower case (an IP literal as it was given). */
   leaves: ReadonlyMap<string, Pem>;
 };
 
@@ -242,6 +245,9 @@ function nameConstraints(hosts: readonly string[]): Buffer {
   ];
   const excluded = [
     ...names.filter((n) => !names.some((o) => o.endsWith(`.${n}`))).map((n) => subtree(dns(`.${n}`))),
+    // A constraint holds only for its own name form (RFC 5280 §4.2.1.10): with addresses alone, the
+    // permitted subtrees state no DNS name, so every name is excluded ("" is each name).
+    ...(names.length === 0 ? [subtree(dns(""))] : []),
     ...(addresses.length === 0
       ? [subtree(ip(Buffer.alloc(4), Buffer.alloc(4))), subtree(ip(Buffer.alloc(16), Buffer.alloc(16)))]
       : []),

@@ -21,6 +21,9 @@ import { RANGES, rule, SANDBOX_MANIFEST } from "./_custodian-slots.ts";
 const KEY = Buffer.from("the-signing-key-of-the-instance");
 const UID = "6f1c0d6e-0000-4000-8000-000000000003";
 
+/** The Instance's `upstream.crt` as `jr2 up` wrote it: here a stand-in for its roots and `caBundle`. */
+const UPSTREAM = "-----BEGIN CERTIFICATE-----\nroots-of-jr2-up\n-----END CERTIFICATE-----\n";
+
 const objectsOf = (over: Partial<Parameters<typeof sandboxFenceObjects>[0]> = {}) =>
   sandboxFenceObjects({
     namespace: "jr2-test",
@@ -31,6 +34,7 @@ const objectsOf = (over: Partial<Parameters<typeof sandboxFenceObjects>[0]> = {}
     heldPod: "ws-abc",
     ranges: RANGES,
     signingKey: KEY,
+    upstream: UPSTREAM,
     ...over,
   });
 
@@ -118,7 +122,11 @@ test("each leaf chains to the CA in the trust files, names its host, and has its
   const caPem = extra.slice(extra.indexOf("-----END CERTIFICATE-----\n") + "-----END CERTIFICATE-----\n".length);
   const ca = new X509Certificate(caPem);
   assert.equal(ca.subject, "CN=jr2 Sandbox CA (ws-3)");
-  assert.ok(trust.data["bundle.crt"]!.endsWith(caPem), "bundle.crt ends with the Sandbox's CA");
+  assert.equal(
+    trust.data["bundle.crt"],
+    `${UPSTREAM}${caPem}`,
+    "bundle.crt is the Instance's upstream.crt, then the Sandbox's CA: not the roots of the Orchestrator's Node",
+  );
 
   for (const { host, port } of leafTargets(SANDBOX_MANIFEST)) {
     const stem = leafStem(host, port);

@@ -54,16 +54,19 @@ test("the names of a slot: an attachment and a slot Secret, and nothing that onl
 
 test("the reuse rule needs each Custodian pod's word: no rules held, no pod on the VLAN", () => {
   assert.deepEqual(slotIsClear(5, [{ pod: "a", status: CLEAR }]), { clear: true });
-  const no = (reports: SlotReport[]) => {
+  const no = (reports: SlotReport[], of: "pod" | "slot") => {
     const v = slotIsClear(5, reports);
     assert.equal(v.clear, false);
+    assert.equal((v as { of: string }).of, of);
     return (v as { why: string }).why;
   };
-  assert.match(no([]), /no Custodian pod/);
-  assert.match(no([{ pod: "a", status: CLEAR }, { pod: "b" }]), /b does not answer/);
-  assert.match(no([{ pod: "a", status: { active: "v1", present: false } }]), /holds its rules v1/);
-  assert.match(no([{ pod: "a", status: { active: null, present: true } }]), /a pod answers on its VLAN/);
-  assert.match(no([{ pod: "a", status: { active: null } }]), /does not say whether/);
+  assert.match(no([], "pod"), /no Custodian pod/);
+  assert.match(no([{ pod: "a", status: CLEAR }, { pod: "b" }], "pod"), /b does not answer/);
+  assert.match(no([{ pod: "a", status: { active: null } }], "pod"), /cannot tell whether/);
+  assert.match(no([{ pod: "a", status: { active: "v1", present: false } }], "slot"), /holds its rules v1/);
+  assert.match(no([{ pod: "a", status: { active: null, present: true } }], "slot"), /a pod answers on its VLAN/);
+  // A pod that does not answer says nothing of the slot, whatever the others say.
+  assert.match(no([{ pod: "a", status: { active: "v1", present: true } }, { pod: "b" }], "pod"), /b does not answer/);
 });
 
 test("a Sandbox gets the first free slot from 3, and the same slot again when it asks again", async () => {
@@ -161,7 +164,7 @@ test("no slot is given while a Custodian pod does not answer, or none answers", 
   });
   await assert.rejects(
     slots.take("a"),
-    /gets no Fence slot \(ADR-0084\): 0 of the 125 Sandbox slots are held, 0 wait 120 s.*125 are still in use: slot 3: the Custodian pod c-2 does not answer/,
+    /gets no Fence slot \(ADR-0084\): 0 of the 125 Sandbox slots are held, 0 wait 120 s after their Sandbox went, and the Custodian cannot say whether a slot is clear now: slot 3: the Custodian pod c-2 does not answer$/,
   );
   const none = slotAllocator({ sandboxes: [], secrets: [], reports: async () => [] });
   await assert.rejects(none.take("a"), /no Custodian pod answers/);
@@ -173,6 +176,109 @@ test("no slot is given while a Custodian pod does not answer, or none answers", 
     },
   });
   await assert.rejects(broken.take("a"), /cannot be asked: EndpointSlice list failed/);
+});
+
+test("a Custodian pod that does not answer stops a take at once, and gives no slot a new wait", async () => {
+  const t = clock();
+  let down = true;
+  const c = custodians(() =>
+    down
+      ? [{ pod: "c-1", status: CLEAR }, { pod: "c-2" }]
+      : [
+          { pod: "c-1", status: CLEAR },
+          { pod: "c-2", status: CLEAR },
+        ],
+  );
+  const slots = slotAllocator({ sandboxes: [], secrets: [], reports: c.reports, now: t.now });
+  await assert.rejects(slots.take("a"), /c-2 does not answer/);
+  assert.deepEqual(c.asked, [3], "one ask: the reason is the same for every slot");
+  // A pod that cannot tell whether a pod is on the VLAN is the same kind of reason.
+  down = false;
+  const blind = slotAllocator({
+    sandboxes: [],
+    secrets: [],
+    reports: async () => [{ pod: "c-1", status: { active: null } }],
+    now: t.now,
+  });
+  await assert.rejects(blind.take("a"), /c-1 cannot tell whether a pod is on its VLAN$/);
+  // Ten seconds later the pod answers (a roll of the Custodian ended): the first slot, at once.
+  t.advance(10_000);
+  c.asked.length = 0;
+  assert.equal(await slots.take("b"), 3);
+  assert.deepEqual(c.asked, [3]);
+});
+
+test("a slot that a Custodian pod holds rules of waits again; a later pod-level reason ends the take", async () => {
+  const t = clock();
+  let down = true;
+  const c = custodians((slot) =>
+    slot === 3
+      ? [{ pod: "c-1", status: { active: "v9", present: false } }]
+      : slot === 4 && down
+        ? [{ pod: "c-1" }]
+        : undefined,
+  );
+  const slots = slotAllocator({ sandboxes: holdersFrom(6), secrets: [], reports: c.reports, now: t.now });
+  await assert.rejects(
+    slots.take("a"),
+    /0 wait 120 s after their Sandbox went, 1 are still in use, and the Custodian cannot say whether a slot is clear now: slot 4: the Custodian pod c-1 does not answer$/,
+  );
+  assert.deepEqual(c.asked, [3, 4], "slot 5 is not asked");
+  down = false;
+  c.asked.length = 0;
+  assert.equal(await slots.take("b"), 4, "slot 3 waits; slot 4 got no wait");
+  assert.deepEqual(c.asked, [4]);
+  assert.equal(await slots.take("c"), 5);
+  await assert.rejects(slots.take("d"), /1 wait 120 s/);
+});
+
+test("a release while the Sandbox's take waits: the take gives no slot, and the slot can be given at once", async () => {
+  let open!: () => void;
+  const gate = new Promise<void>((r) => (open = r));
+  const slots = slotAllocator({
+    sandboxes: [],
+    secrets: [],
+    reports: async () => {
+      await gate;
+      return [{ pod: "c-1", status: CLEAR }];
+    },
+  });
+  const a = slots.take("a");
+  slots.release("a");
+  const b = slots.take("b");
+  open();
+  await assert.rejects(a, /Sandbox "a" was released while it waited for a Fence slot/);
+  assert.equal(await b, 4, "slot 3 was under the check of a's take");
+  assert.equal(slots.holder(3), undefined, "a holds no slot");
+  assert.equal(await slots.take("c"), 3, "no Sandbox was on slot 3, so it has no wait");
+  // A take of the same Sandbox after the release is a new take.
+  const again = slotAllocator({ sandboxes: [], secrets: [], reports: async () => [{ pod: "c-1", status: CLEAR }] });
+  const first = again.take("a");
+  again.release("a");
+  const second = again.take("a");
+  await assert.rejects(first, /was released/);
+  assert.equal(await second, 4);
+  assert.equal(again.holder(4), "a");
+});
+
+test("two CRs that name one slot at start: the slot is free only when the last one goes", async () => {
+  const t = clock();
+  const slots = slotAllocator({
+    sandboxes: [{ name: "a", slot: 9 }, { name: "b", slot: 9 }, ...holdersFrom(10)],
+    secrets: [],
+    reports: custodians().reports,
+    now: t.now,
+  });
+  slots.release("a");
+  assert.equal(slots.holder(9), "b", "b still names slot 9");
+  t.advance(10 * SLOT_REUSE_MS);
+  for (let slot = 3; slot < 9; slot++) await slots.take(`n${slot}`);
+  await assert.rejects(slots.take("x"), /125 of the 125 Sandbox slots are held, 0 wait/);
+  slots.release("b");
+  assert.equal(slots.holder(9), undefined);
+  await assert.rejects(slots.take("x"), /1 wait 120 s/);
+  t.advance(SLOT_REUSE_MS);
+  assert.equal(await slots.take("x"), 9);
 });
 
 test("a full range refuses with the count of each kind", async () => {

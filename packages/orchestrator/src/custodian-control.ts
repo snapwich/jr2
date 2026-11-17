@@ -100,8 +100,9 @@ export type CustodianControlOptions = {
   /** Where the state folder (`CUSTODIAN_STATE`) is. Default: that folder. */
   root?: string;
   resolver?: ResolverTables;
-  /** Whether a pod answers at `address` on slot `slot`'s VLAN. Default: `slotPresent`. */
-  present?: (slot: number, address: string) => Promise<boolean>;
+  /** Whether a pod answers at `address` on slot `slot`'s VLAN, or undefined when it cannot tell.
+   * Default: `slotPresent`. */
+  present?: (slot: number, address: string) => Promise<boolean | undefined>;
   log?: (line: string) => void;
   /** How long one sync waits for Envoy. Default 30 s. */
   liveTimeoutMs?: number;
@@ -120,7 +121,8 @@ export type SlotStatus = {
   active: string | null;
   /** Why the slot is not live. Names a key, a secret or a host; never a value. */
   error?: string;
-  /** Whether a pod answers on the slot's VLAN: only on a GET. */
+  /** Whether a pod answers on the slot's VLAN: only on a GET, and absent when this pod cannot tell.
+   * `false` only on a sign that no pod is there. */
   present?: boolean;
 };
 
@@ -598,7 +600,9 @@ export function custodianControl(opts: CustodianControlOptions): CustodianContro
     if (!synced) return text(503, "not ready: the first sync of every slot has not ended");
     if (req.method === "GET") {
       const address = slotAddress(opts.ranges.segment, slotVlan(opts.range, slot));
-      return Response.json({ ...status(slot), present: await present(slot, address).catch(() => false) });
+      // An error says nothing of the VLAN: `present` is then absent, never `false`.
+      const seen = await present(slot, address).catch(() => undefined);
+      return Response.json({ ...status(slot), ...(seen === undefined ? {} : { present: seen }) });
     }
     if (req.method === "POST") return Response.json(await syncSlot(slot));
     return text(405, "GET or POST");
@@ -663,12 +667,13 @@ function reasonOf(e: unknown): string {
 }
 
 /**
- * Whether a pod answers at a slot's address (M11 reads it before it gives a slot again). A TCP
- * connection to the Harness port on the slot's VLAN makes the kernel ask for the address by ARP: an
- * answer, or a refusal, says a pod is there. Else the neighbour table says whether the address was
- * resolved on the slot's interface. No capability: the control container has none.
+ * Whether a pod answers at a slot's address (the slot allocator reads it before it gives a slot
+ * again), or undefined when this process cannot tell. A TCP connection to the Harness port on the
+ * slot's VLAN makes the kernel ask for the address by ARP: an answer, or a refusal, says a pod is
+ * there; `EHOSTUNREACH` says that no pod answered the ARP. Else the neighbour table tells
+ * (`neighbourSays`). No capability: the control container has none.
  */
-export async function slotPresent(slot: number, address: string): Promise<boolean> {
+export async function slotPresent(slot: number, address: string): Promise<boolean | undefined> {
   const answered = await new Promise<boolean | undefined>((resolve) => {
     const socket = connect({ host: address, port: DIAL_PORTS[0]! });
     const done = (v: boolean | undefined) => {
@@ -682,14 +687,23 @@ export async function slotPresent(slot: number, address: string): Promise<boolea
     );
   });
   if (answered !== undefined) return answered;
-  return neighbourResolved(await readFile("/proc/net/arp", "utf8").catch(() => ""), address, slotInterface(slot));
+  const table = await readFile("/proc/net/arp", "utf8").catch(() => undefined);
+  return table === undefined ? undefined : neighbourSays(table, address, slotInterface(slot));
 }
 
-/** True when `/proc/net/arp` has `address` on `device`, resolved (flag 0x2). */
-export function neighbourResolved(table: string, address: string, device: string): boolean {
-  return table
+/**
+ * What `/proc/net/arp` says of `address` on `device`: true when it is resolved (flag 0x2), false
+ * when the kernel asked and no pod answered (flags 0x0), and undefined with no entry (no ARP request
+ * went out, so the table says nothing) or with other flags.
+ */
+export function neighbourSays(table: string, address: string, device: string): boolean | undefined {
+  const entry = table
     .split("\n")
     .slice(1)
     .map((line) => line.trim().split(/\s+/))
-    .some((cols) => cols[0] === address && cols[5] === device && (Number(cols[2]) & 0x2) !== 0);
+    .find((cols) => cols[0] === address && cols[5] === device);
+  if (entry === undefined) return undefined;
+  const flags = Number(entry[2]);
+  if ((flags & 0x2) !== 0) return true;
+  return flags === 0 ? false : undefined;
 }

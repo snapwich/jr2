@@ -314,16 +314,17 @@ and it replaces the Adapter.
   for the Sandbox's Intercepted hosts: each host that a held secret of the pod is bound to, each host to which the
   Custodian puts a value for its Sandbox Effector (ADR-0068), each host that its Egress list marks `intercept: true`,
   and the name of its agent routes. The constraints are critical: they permit these names and no other name below them,
-  and each address entry as one address, and no other address. Before the pod starts, it issues one leaf for each of
-  them and gives the leaves to the Custodian in the Sandbox's slot Secret
-  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The CA's key is never written, and it goes when
-  the provision's call ends. The pod gets the CA's certificate only. So no key that can sign a leaf for a Sandbox exists
-  while its Agents run, and the CA cannot vouch for a host outside its constraints. The Instance Harness and the check
-  pods are not Sandboxes and run no Workspace code. `jr2 up` keeps the Instance's CA for them in the `jr2-held-ca`
-  Secret, which no pod mounts, and issues their leaves from it before the pod starts. It never rotates that CA; a human
-  deletes the Secret to rotate it. Such a leaf is reused while its SAN is the same, it chains to the current CA, and
-  more than 30 days remain. Keys are ECDSA P-256, written by jr2's own small DER writer over `node:crypto`: no
-  dependency, and no `openssl`.
+  and each address entry as one address, and no other address. When one of these names is below another, the constraints
+  also permit the other names below the upper one, because an exclusion of them would also exclude the lower name.
+  Before the pod starts, it issues one leaf for each of them and gives the leaves to the Custodian in the Sandbox's slot
+  Secret ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The CA's key is never written, and it
+  goes when the provision's call ends. The pod gets the CA's certificate only. So no key that can sign a leaf for a
+  Sandbox exists while its Agents run, and the CA cannot vouch for a host outside its constraints. The Instance Harness
+  and the check pods are not Sandboxes and run no Workspace code. `jr2 up` keeps the Instance's CA for them in the
+  `jr2-held-ca` Secret, which no pod mounts, and issues their leaves from it before the pod starts. It never rotates
+  that CA; a human deletes the Secret to rotate it. Such a leaf is reused while its SAN is the same, it chains to the
+  current CA, and more than 30 days remain. Keys are ECDSA P-256, written by jr2's own small DER writer over
+  `node:crypto`: no dependency, and no `openssl`.
 - **Trust is in variables only.** jr2 mounts no file over the image's own CA bundle, so the bundle of a brought image
   stays as its owner made it. The `jr2-ca` ConfigMap carries `ca.crt` (the user's `caBundle`) and `upstream.crt` (the
   roots + `caBundle`, and never a jr2 CA, for the Custodian). "Roots" are the Mozilla roots of the Node that runs

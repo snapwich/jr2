@@ -351,9 +351,11 @@ kept copy with `GET /runs/:runId/conversations`.
   public roots, `harness.caBundle` and the CA of the Sandbox. Thus a private CA goes in
   [`harness.caBundle`](../reference/config.md#harness-cabundle), not in the image.
 - The Orchestrator makes the CA of a Sandbox when it provisions the Sandbox. The CA can sign only for the Intercepted
-  hosts of that Sandbox. Before the pod starts, the Orchestrator issues the certificates that the Custodian uses for
-  them, and deletes the key of the CA. Thus the Intercepted hosts of a Sandbox do not change while it lives. A new
-  Intercepted host applies to the next Sandbox. A Tunneled host can be added while the Sandbox lives.
+  hosts of that Sandbox. When one Intercepted host is below another, for example `api.corp.example` below
+  `corp.example`, the CA can also sign for the other names below the upper host. Before the pod starts, the Orchestrator
+  issues the certificates that the Custodian uses for them, and deletes the key of the CA. Thus the Intercepted hosts of
+  a Sandbox do not change while it lives. A new Intercepted host applies to the next Sandbox. A Tunneled host can be
+  added while the Sandbox lives.
 - The Instance Harness and the check pods use the CA of the [Instance](../reference/glossary.md#instance). `jr2 up`
   makes it one time, in the `jr2-held-ca` Secret, and never changes it. No pod mounts that Secret. When you delete it,
   the next `jr2 up` makes a new CA.

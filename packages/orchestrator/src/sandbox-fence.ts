@@ -7,9 +7,9 @@
 //                            Sandbox's CA for each Intercepted host and for jr2's own name. The
 //                            Custodian's control process reads it (`custodian-slot.ts`); the
 //                            Orchestrator writes it and never reads it. No Harness pod mounts it.
-//   <sandbox>-trust          ConfigMap, owned by the CR: `extra.crt` and `bundle.crt`, each with the
-//                            Sandbox's CA. The CA's certificate is the only part of the PKI that
-//                            the pod gets.
+//   <sandbox>-trust          ConfigMap, owned by the CR: `extra.crt` (`caBundle` + the Sandbox's CA)
+//                            and `bundle.crt` (the Instance's `upstream.crt` + the Sandbox's CA).
+//                            The CA's certificate is the only part of the PKI that the pod gets.
 //   <sandbox>-standins       Secret, owned by the CR: the secret control Stand-in and each held
 //                            secret's Stand-in, which the Harness container reads as files under
 //                            `/run/jr2/`. No token and no value.
@@ -48,7 +48,7 @@ import {
   sandboxStandInSecret,
   sandboxTrustConfigMap,
 } from "./names.ts";
-import { sandboxPki, trustBundles } from "./pki.ts";
+import { sandboxPki } from "./pki.ts";
 import { checkAppendOnly, emptyPlaceholders, withPlaceholders, type PlaceholderTable } from "./placeholders.ts";
 import { controlStandIn, controlToken, sandboxToken } from "./tokens.ts";
 
@@ -85,6 +85,10 @@ export type SandboxFenceInput = {
   signingKey: Buffer;
   /** The user's `harness.caBundle` (ADR-0020), trusted beside the Sandbox's CA. */
   caBundle?: string;
+  /** The text of the Instance's `upstream.crt` (ADR-0020): the roots of the Node that ran `jr2 up`,
+   * and `caBundle`. `bundle.crt` is this and the Sandbox's CA, so a Sandbox trusts the same roots
+   * as the Instance Harness, whatever Node runs the Orchestrator. */
+  upstream: string;
   now?: Date;
 };
 
@@ -161,7 +165,8 @@ export function sandboxFenceObjects(input: SandboxFenceInput): SandboxFenceObjec
       },
     ],
   });
-  const bundles = trustBundles(pki.ca, input.caBundle);
+  const line = (text: string): string => (text === "" || text.endsWith("\n") ? text : `${text}\n`);
+  const bundles = { extra: `${line(input.caBundle ?? "")}${pki.ca}`, bundle: `${line(input.upstream)}${pki.ca}` };
   return {
     placeholders,
     slotSecret: {

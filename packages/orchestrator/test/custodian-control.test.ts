@@ -9,12 +9,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import {
-  custodianControl,
-  neighbourResolved,
-  resolverTables,
-  type CustodianControl,
-} from "../src/custodian-control.ts";
+import { custodianControl, neighbourSays, resolverTables, type CustodianControl } from "../src/custodian-control.ts";
 import { rulesChainName } from "../src/custodian-rules.ts";
 import { readSlotSecret, slotSecretData, SLOT_SPEC_KEY, type SlotSpec } from "../src/custodian-slot.ts";
 import { DIAL_TOKEN_HEADER, JR2_CUSTODIAN_NAME, slotFolder, CUSTODIAN_STATE } from "../src/custodian.ts";
@@ -207,6 +202,8 @@ async function rig(opts: { root?: string; api?: FakeApi; envoy?: FakeEnvoy; live
   const lines: string[] = [];
   const resolver = resolverTables();
   const present = new Set<number>();
+  /** The slots whose check of the VLAN throws, as when the pod's own output to the address fails. */
+  const blind = new Set<number>();
   const control = custodianControl({
     kube: api.kube,
     namespace: NS,
@@ -215,11 +212,14 @@ async function rig(opts: { root?: string; api?: FakeApi; envoy?: FakeEnvoy; live
     admin: envoy.admin,
     root,
     resolver,
-    present: async (slot) => present.has(slot),
+    present: async (slot) => {
+      if (blind.has(slot)) throw new Error("connect ENETUNREACH");
+      return present.has(slot);
+    },
     log: (line) => lines.push(line),
     liveTimeoutMs: opts.liveTimeoutMs ?? 1_000,
   });
-  return { root, api, envoy, lines, resolver, present, control };
+  return { root, api, envoy, lines, resolver, present, blind, control };
 }
 
 const at = (root: string, path: string) => join(root, path.slice(CUSTODIAN_STATE.length + 1));
@@ -667,7 +667,7 @@ test("a VLAN range that has no VLANs is refused at start", async () => {
 });
 
 test("the API takes the dial token alone: no token or another gets 401; GET states the slot and whether a pod is there; POST syncs the slot now", async () => {
-  const { root, api, lines, present, control } = await rig();
+  const { root, api, lines, present, blind, control } = await rig();
   instance(api);
   await control.syncAll();
 
@@ -695,6 +695,15 @@ test("the API takes the dial token alone: no token or another gets 401; GET stat
     active: null,
     present: false,
   });
+  // A check that fails says nothing of the VLAN: no `present`, never `false`.
+  blind.add(7);
+  assert.deepEqual(await (await call(control, "GET", "/slots/7", DIAL)).json(), {
+    slot: 7,
+    version: null,
+    live: false,
+    active: null,
+  });
+  blind.delete(7);
 
   // A new slot is live when POST answers: no wait for the next resync.
   api.secrets.set("jr2-custodian-slot-7", slotSecret(7, { ...sandboxSpec(), owner: { sandbox: "ws-7" } }));
@@ -728,15 +737,17 @@ test("the slot Secret's format: a spec and the files of values/ and tls/ alone, 
   assert.throws(() => readSlotSecret({ [SLOT_SPEC_KEY]: b64(JSON.stringify(owner)) }), /not a slot spec: owner/);
 });
 
-test("present: the neighbour table says a slot's address was resolved on its own interface", () => {
+test("present: the neighbour table says a slot's address was resolved, or asked for with no answer, on its own interface", () => {
   const table = [
     "IP address       HW type     Flags       HW address            Mask     Device",
     "198.19.0.5       0x1         0x2         02:00:00:00:00:05     *        v3",
     "198.19.0.6       0x1         0x0         00:00:00:00:00:00     *        v4",
     "198.19.0.7       0x1         0x2         02:00:00:00:00:07     *        eth0",
+    "198.19.0.8       0x1         0x4         02:00:00:00:00:08     *        v6",
   ].join("\n");
-  assert.equal(neighbourResolved(table, "198.19.0.5", "v3"), true);
-  assert.equal(neighbourResolved(table, "198.19.0.6", "v4"), false, "an address that was asked for and never answered");
-  assert.equal(neighbourResolved(table, "198.19.0.7", "v5"), false, "on another interface");
-  assert.equal(neighbourResolved(table, "198.19.0.9", "v7"), false);
+  assert.equal(neighbourSays(table, "198.19.0.5", "v3"), true);
+  assert.equal(neighbourSays(table, "198.19.0.6", "v4"), false, "an address that was asked for and never answered");
+  assert.equal(neighbourSays(table, "198.19.0.7", "v5"), undefined, "on another interface: nothing of v5");
+  assert.equal(neighbourSays(table, "198.19.0.9", "v7"), undefined, "no entry: no ARP request went out");
+  assert.equal(neighbourSays(table, "198.19.0.8", "v6"), undefined, "other flags say nothing");
 });

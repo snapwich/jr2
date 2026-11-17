@@ -298,6 +298,21 @@ test("a leaf for another name does not verify under a Sandbox's CA, even when it
   assert.ok((await handshake(withAddress.cert, issueLeaf(withAddress, "github.com"), "github.com")) instanceof Error);
 });
 
+test("a constrained CA with addresses alone excludes every DNS name", async () => {
+  const ca = issueConstrainedCa("ip-only", ["10.0.0.5"]);
+  assert.deepEqual(nameConstraintsOf(ca.cert), {
+    critical: true,
+    permitted: ["IP:10.0.0.5/255.255.255.255"],
+    excluded: ["DNS:"],
+  });
+  assert.equal(await handshake(ca.cert, issueLeaf(ca, "10.0.0.5"), "10.0.0.5"), undefined);
+  for (const host of ["github.com", "custodian.jr2.internal"]) {
+    const err = await handshake(ca.cert, issueLeaf(ca, host), host);
+    assert.ok(err instanceof Error, `${host} must not verify`);
+    assert.match(err.message, /subtree violation/, host);
+  }
+});
+
 test("a Sandbox's PKI holds no CA key: the CA is a certificate alone, and each key is a leaf's own", () => {
   const pki = sandboxPki("ws-3", SANDBOX_HOSTS);
   assert.deepEqual(Object.keys(pki).sort(), ["ca", "leaves"]);
