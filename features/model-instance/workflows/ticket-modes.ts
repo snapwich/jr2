@@ -202,6 +202,6 @@ const body = jr2Setup({
 
 export const machine = workspace(body, {
   input: door,
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" } },
   // Nothing is pushed, so a fixed branch collides with nothing (each run's pod cuts its own).
 });

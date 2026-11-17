@@ -21,8 +21,8 @@ import {
   worktree,
 } from "@jr2/orchestrator";
 
-const ECHO = "http://echo.jr2-e2e-seed.svc";
-const SEED = { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" };
+const ECHO = "http://echo.jr2-e2e-seed.svc.cluster.local";
+const SEED = { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" };
 
 const door = z.object({ mode: z.enum(["bearer"]), marker: z.string().regex(/^m-[a-z0-9]+$/) });
 type Door = z.infer<typeof door>;

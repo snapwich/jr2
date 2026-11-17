@@ -75,7 +75,7 @@ test("an LFS repository holds canonical pointers on main and its branches, and n
   assert.equal((await exec("git", ["-C", repo, "rev-list", "--count", "main"])).stdout.trim(), "3");
   assert.match(await show("main:.gitattributes"), /^\*\.bin filter=lfs diff=lfs merge=lfs -text$/m);
   const url = await exec("git", ["config", "--blob", "main:.lfsconfig", "lfs.url"], { cwd: repo });
-  assert.equal(url.stdout.trim(), "http://lfs.jr2-e2e-seed.svc/lfs-x/info/lfs");
+  assert.equal(url.stdout.trim(), "http://lfs.jr2-e2e-seed.svc.cluster.local/lfs-x/info/lfs");
   // git-lfs reads each one as a pointer, when the host has git-lfs.
   const lfs = await exec("git", ["lfs", "version"]).catch(() => undefined);
   if (lfs !== undefined) {
@@ -110,8 +110,8 @@ test("a branch of branchServers names its own LFS server, and a repository with 
   };
   await exec("sh", ["-ec", lfsRepoScript(srv, join(root, "w"), "lfs-y", spec)], { env });
   const y = join(srv, "lfs-y.git");
-  assert.equal(await named(y, "main"), "http://lfs.jr2-e2e-seed.svc/lfs-y/info/lfs");
-  assert.equal(await named(y, "evil"), "http://lfs.jr2-e2e-seed.svc/lfs-other/info/lfs");
+  assert.equal(await named(y, "main"), "http://lfs.jr2-e2e-seed.svc.cluster.local/lfs-y/info/lfs");
+  assert.equal(await named(y, "evil"), "http://lfs.jr2-e2e-seed.svc.cluster.local/lfs-other/info/lfs");
 
   const pure: LfsRepoSpec = { main: [{ "big.bin": a }], lfsconfig: false };
   await exec("sh", ["-ec", lfsRepoScript(srv, join(root, "w"), "lfs-z", pure, { objects: pending })], { env });

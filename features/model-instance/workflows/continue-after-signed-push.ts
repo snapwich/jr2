@@ -152,6 +152,6 @@ const body = jr2Setup({
 
 export const machine = workspace(body, {
   input: door,
-  repos: { app: { url: "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git", ref: "main" } },
+  repos: { app: { url: "ssh://git@seed.jr2-e2e-seed.svc.cluster.local/srv/push.git", ref: "main" } },
   effector: { image: import.meta.resolve("../images/effector") },
 });

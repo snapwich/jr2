@@ -14,5 +14,5 @@ const SEED = [
 
 export const machine = workspace(contextedBody(SEED), {
   image: import.meta.resolve("../images/user-home"),
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" } },
 });

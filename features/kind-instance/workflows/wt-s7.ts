@@ -104,7 +104,7 @@ export const machine = workspace(body, {
   input: runInput,
   effector: { image: import.meta.resolve("../images/effector") },
   repos: {
-    api: { url: "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git", ref: "main" },
-    web: { url: "ssh://git@seed.jr2-e2e-seed.svc/srv/gpg.git", ref: "main" },
+    api: { url: "ssh://git@seed.jr2-e2e-seed.svc.cluster.local/srv/push.git", ref: "main" },
+    web: { url: "ssh://git@seed.jr2-e2e-seed.svc.cluster.local/srv/gpg.git", ref: "main" },
   },
 });

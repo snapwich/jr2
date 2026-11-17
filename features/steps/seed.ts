@@ -1,8 +1,11 @@
 // The seed Repo the @kind tier's workflows bind (ADR-0051): a bare git repository served over
 // HTTP from INSIDE the cluster, so the cache agent on every node can clone it the way it clones
 // anything — by url, with no file baked into an image and no path pinned to a node. The tier's
-// instance names it by that url (`http://seed.jr2-e2e-seed.svc/app.git`), which is its identity;
-// nothing else about it is configured anywhere.
+// instance names it by that url (`http://seed.jr2-e2e-seed.svc.cluster.local/app.git`), which is
+// its identity; nothing else about it is configured anywhere. Each name of the seed is the
+// Service's full name: a Sandbox reaches it through the Custodian, which resolves a name as it is
+// written, with no search list of the cluster (ADR-0084), so `seed.jr2-e2e-seed.svc` reaches
+// nothing from a Sandbox.
 //
 // One namespace, one Deployment, one Service, shared by every scenario and every worker: an init
 // container makes the repository (one commit on `main`, `update-server-info` for the dumb HTTP
@@ -40,14 +43,14 @@ import { pushRemoteLogScript } from "../lib/model-evidence.ts";
 const exec = promisify(execFile);
 
 /** The seed Repo's url — the identity every kind workflow binds and the fence admits. */
-export const SEED_URL = "http://seed.jr2-e2e-seed.svc/app.git";
+export const SEED_URL = "http://seed.jr2-e2e-seed.svc.cluster.local/app.git";
 /** The seed's push remote (ADR-0067): `push.git`, the same content as `app.git`, over ssh. */
-export const PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git";
+export const PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc.cluster.local/srv/push.git";
 /** The seed's GPG push remote (ADR-0068): `gpg.git`, the same content, over ssh. Its own
  * `git.credentials` entry signs with a GPG key the scenario writes (`jr2.config.ts`). */
-export const GPG_PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc/srv/gpg.git";
+export const GPG_PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc.cluster.local/srv/gpg.git";
 /** The host the push remote's known_hosts line names. */
-const PUSH_HOST = "seed.jr2-e2e-seed.svc";
+const PUSH_HOST = "seed.jr2-e2e-seed.svc.cluster.local";
 // Two more urls on the same host appear in kind.feature, spelled there rather than here because
 // the scenarios read them the way a user types them: `other.git` below, an identity no workflow
 // binds (the per-run Repo `jr2 gc` may evict, ADR-0051); and `missing.git`, which nothing serves
@@ -526,7 +529,7 @@ export async function ownSeedRepo(name: string, files: number, branches: readonl
       `git -c safe.directory='*' update-server-info`,
     ].join("\n"),
   );
-  return `http://seed.jr2-e2e-seed.svc/${name}.git`;
+  return `http://seed.jr2-e2e-seed.svc.cluster.local/${name}.git`;
 }
 
 /** Remove a repository of {@link ownSeedRepo}: from now on, its remote fails each fetch. */
@@ -553,7 +556,7 @@ export async function dropSeedRepo(name: string): Promise<void> {
 export const LFS_ALWAYS_UPLOAD = "-always-upload";
 
 /** The LFS server's host, as a pod reaches it. */
-export const LFS_HOST = "lfs.jr2-e2e-seed.svc";
+export const LFS_HOST = "lfs.jr2-e2e-seed.svc.cluster.local";
 
 /**
  * The LFS server: `POST /<repo>/info/lfs/objects/batch`, `GET` and `PUT /<repo>/objects/<oid>`,

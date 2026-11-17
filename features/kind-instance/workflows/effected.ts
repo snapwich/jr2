@@ -44,9 +44,9 @@ import {
   worktree,
 } from "@jr2/orchestrator";
 /** The seed Repo (`steps/seed.ts`), bound as every kind workflow binds it. */
-const SEED = { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" };
+const SEED = { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" };
 
-const ECHO = "http://echo.jr2-e2e-seed.svc";
+const ECHO = "http://echo.jr2-e2e-seed.svc.cluster.local";
 
 const door = z.object({
   mode: z.enum(["file-body", "env", "dirty", "key", "takeover", "stop"]),

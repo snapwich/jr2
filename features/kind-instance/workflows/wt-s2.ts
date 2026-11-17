@@ -14,7 +14,7 @@ const issues = source<Issue>({
 });
 
 const fixer = customize(task, {
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" } },
   agents: { coder: { model: "fake/model-x" } },
 });
 

@@ -9,7 +9,7 @@ import { z } from "zod";
 import { http, jr2Setup, pool, source } from "@jr2/orchestrator";
 
 /** The echo server's in-cluster address (`steps/seed.ts`). */
-const ECHO = "http://echo.jr2-e2e-seed.svc";
+const ECHO = "http://echo.jr2-e2e-seed.svc.cluster.local";
 
 const door = z.object({ marker: z.string().regex(/^m-[a-z0-9]+$/) });
 

@@ -94,7 +94,7 @@ const body = jr2Setup({
 
 const unit = workspace(body, {
   input: door,
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" } },
 });
 
 // The Machine above the Workspace. When its budget fails, the Failure ends `attempt` and not the

@@ -51,6 +51,8 @@ const BIN = fileURLToPath(new URL("../../packages/cli/bin/jr2.js", import.meta.u
  * orchestrator fixture. */
 const SERVER_BIN = fileURLToPath(new URL("../../packages/orchestrator/bin/server.ts", import.meta.url));
 /** Base for per-scenario temp instances; gitignored. */
+/** @kind: the name of the scripted model's Service in each scenario's namespace (`modelService`). */
+const MODEL_SERVICE = "model";
 const TMP_BASE = fileURLToPath(new URL("../.tmp/", import.meta.url));
 /**
  * The kind tier's instance (@kind, ADR-0010): ONE shared workspace package (`jr2 up`'s image build
@@ -198,10 +200,10 @@ export class E2EWorld {
    * `import-<date>@<digest>` only containerd knows, and the bare `sha256:<id>`. The sweep has to
    * take all of them, so the assertion (and the teardown) works from this set, not from the tag. */
   plantedRefs?: Record<string, string[]>;
-  /** @kind: the kind node whose loopback the egress scenario gave the metadata address (ADR-0076),
-   * for the After hook to take it away. */
-  metadataNode?: string;
-  /** @kind: what a connect to the metadata address got from a pod that no egress policy selects. */
+  /** @kind: the kind nodes whose loopback the metadata scenario gave the metadata address
+   * (ADR-0076), for the After hook to take it away. */
+  metadataNodes?: string[];
+  /** @kind: what a connect to the metadata address got from a pod on the cluster's network. */
   metadataControl?: string;
 
   /** @console: the real Chromium the browser tier drives (ADR-0010 as amended) — launched by the
@@ -258,8 +260,11 @@ export class E2EWorld {
   marker?: string;
   /** The unbound echo's url, as a pod reaches it. */
   echoUrl?: string;
-  /** The scripted model's base url, as a pod reaches it. */
+  /** The scripted model's base url, as a pod reaches it: by the name of the `model` Service. */
   providerUrl?: string;
+  /** @kind: where the `model` Service's one endpoint is, this host's address and the scripted
+   * model's port (`modelService`). */
+  modelEndpoint?: { address: string; port: number };
   /** @model: the endpoint profile this scenario's instance converged against (ADR-0066) — what
    * names the model id the scorecard is keyed by, and the trial counts the claim steps use. */
   modelProfile?: ModelEndpointProfile;
@@ -309,15 +314,22 @@ export class E2EWorld {
     this.dir = KIND_DIR;
     // HTTPS under the tier's own CA (the instance's `caBundle`), and a key per scenario (ADR-0059):
     // `harness.provider.apiKey` is a held secret, so the only way a turn reaches this model is
-    // through the pod's Custodian. The leaf names the pod-reachable address as an IP SAN — what the
-    // Custodian verifies against, since the target is that IP.
+    // through the Custodian. The model has a NAME, as a hosted provider has: `model` in the
+    // scenario's namespace, a Service with no selector whose one endpoint is this host
+    // (`modelService`, applied before the first `jr2 up`). The leaf names it, and the Custodian
+    // resolves the full name as it is written (ADR-0084). The unbound echo stays at the address, so
+    // the tier also has a host with no name: its leaf is an IP SAN, and it is an entry of the
+    // instance's Egress list.
     const address = await kindHostAddress();
+    const model = `${MODEL_SERVICE}.${this.namespace}.svc.cluster.local`;
     this.providerKey = randomBytes(16).toString("hex");
     this.provider = await startFakeProvider({
-      tls: issueLeaf(await fakeProviderCa(), address),
+      tls: issueLeaf(await fakeProviderCa(), model),
+      echoTls: issueLeaf(await fakeProviderCa(), address),
       apiKey: this.providerKey,
     });
-    this.providerUrl = `https://${address}:${this.provider.port}/v1`;
+    this.providerUrl = `https://${model}/v1`;
+    this.modelEndpoint = { address, port: this.provider.port };
     this.extraEnv.JR2_FAKE_PROVIDER_URL = this.providerUrl;
     this.extraEnv.JR2_FAKE_PROVIDER_KEY = this.providerKey;
     // `PROBE_KEY` (ADR-0076): a held secret bound to the same host, which the `sibling` workflow
@@ -329,6 +341,7 @@ export class E2EWorld {
     this.echoToken = `echo-${randomBytes(12).toString("hex")}`;
     this.extraEnv.JR2_ECHO_TOKEN = this.echoToken;
     this.echoUrl = `https://${address}:${this.provider.echo.port}/`;
+    this.extraEnv.JR2_ECHO_URL = this.echoUrl;
     // The `dispatched` workflow's target (ADR-0071): this Instance's own Orchestrator, by its
     // Service in this scenario's namespace, and the `self-token` the dispatch names. Set for every
     // scenario, since every converge loads that workflow and places its token; only the dispatch
@@ -360,6 +373,46 @@ export class E2EWorld {
     this.extraEnv.JR2_FAKE_MCP_URL = `https://${address}:${this.mcp.port}${this.mcp.path}`;
     this.extraEnv.JR2_MCP_A_KEY = keyA;
     this.extraEnv.JR2_MCP_B_KEY = keyB;
+  }
+
+  /**
+   * @kind: the scripted model's name, `model` in the scenario's namespace (ADR-0084): a Service with
+   * no selector and an EndpointSlice whose one endpoint is this host, at the model's port, as the
+   * chat Hook's follow-up host is made (`kind-hooks.steps.ts`). Port 443, so the url names no port.
+   * Applied before each `jr2 up`, because the converge's check pod calls the model by that name;
+   * the namespace is made here when it does not exist yet. Idempotent.
+   */
+  async modelService(): Promise<void> {
+    if (!this.namespace || !this.modelEndpoint) return;
+    const { address, port } = this.modelEndpoint;
+    const meta = { name: MODEL_SERVICE, namespace: this.namespace };
+    const list = {
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        { apiVersion: "v1", kind: "Namespace", metadata: { name: this.namespace } },
+        {
+          apiVersion: "v1",
+          kind: "Service",
+          metadata: meta,
+          spec: { ports: [{ name: "https", port: 443, targetPort: port, protocol: "TCP" }] },
+        },
+        {
+          apiVersion: "discovery.k8s.io/v1",
+          kind: "EndpointSlice",
+          metadata: { ...meta, labels: { "kubernetes.io/service-name": MODEL_SERVICE } },
+          addressType: "IPv4",
+          ports: [{ name: "https", port, protocol: "TCP" }],
+          endpoints: [{ addresses: [address] }],
+        },
+      ],
+    };
+    await new Promise<void>((resolve, reject) => {
+      const child = execFile("kubectl", ["apply", "-f", "-"], (err, _out, stderr) =>
+        err ? reject(new Error(`kubectl apply of the model Service: ${stderr || err.message}`)) : resolve(),
+      );
+      child.stdin?.end(JSON.stringify(list));
+    });
   }
 
   /**

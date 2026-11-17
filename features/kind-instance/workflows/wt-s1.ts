@@ -91,7 +91,7 @@ export const machine = workspace(body, {
   // The Size of the whole Sandbox. jr2 reserves all of it on the node.
   repos: {
     // Two Repo Slots. Each one becomes a folder under /work.
-    app: { url: "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git", ref: "main" },
-    handbook: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" },
+    app: { url: "ssh://git@seed.jr2-e2e-seed.svc.cluster.local/srv/push.git", ref: "main" },
+    handbook: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" },
   },
 });

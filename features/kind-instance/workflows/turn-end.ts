@@ -84,5 +84,5 @@ const body = jr2Setup({
 // The one Repo Slot, `app`, BOUND to the seed repository the suite serves in-cluster (ADR-0051):
 // the url is the identity, so this literal is what the walk warms and what the cache clones.
 export const machine = workspace(body, {
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" } },
 });

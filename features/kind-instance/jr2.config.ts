@@ -3,9 +3,11 @@
 // namespace-as-identity makes the scenario the isolation unit, ADR-0019).
 //
 // No Repo is named here (ADR-0051): the tier's workflows bind their one slot to the seed
-// repository the e2e suite serves in-cluster over HTTP (`seed.jr2-e2e-seed.svc`), and this file
-// declares only the credentials FENCE — an entry admitting that host by prefix, with no token and
-// no key, so a per-run url naming it clones anonymously and any other host is refused at attach.
+// repository the e2e suite serves in-cluster over HTTP (`seed.jr2-e2e-seed.svc.cluster.local`),
+// and this file declares only the credentials FENCE — an entry admitting that host by prefix, with
+// no token and no key, so a per-run url naming it clones anonymously and any other host is refused
+// at attach. Each seed name is the Service's full name, because the Custodian resolves a name as
+// it is written (ADR-0084).
 //
 // NO IMAGE IS NAMED HERE (ADR-0038). The `jr2` binary under test runs from this checkout, so its
 // converge builds the Harness, operator, this instance, and `images/default` from source at
@@ -16,7 +18,9 @@
 // Harness and the only fake left is the model behind this endpoint (`features/steps/fake-provider.ts`).
 // It is a provider that wants a key, over HTTPS — so the tier runs every turn through the Custodian
 // (ADR-0059): `apiKey` is a held secret, bound to this endpoint's host, and the Harness container
-// holds only its Stand-in.
+// holds only its Stand-in. The endpoint has a name, `model.<namespace>.svc.cluster.local`: a
+// Service of the scenario's namespace with no selector, whose one endpoint is the host, so a turn
+// takes the path of a hosted provider, by name, through the Fence (ADR-0084).
 
 import { defineConfig, secret } from "@jr2/orchestrator";
 import { github } from "@jr2/orchestrator/hooks/github";
@@ -27,7 +31,7 @@ export default defineConfig({
   name: "jr2-e2e-kind",
   git: {
     credentials: [
-      { match: "seed.jr2-e2e-seed.svc/" },
+      { match: "seed.jr2-e2e-seed.svc.cluster.local/" },
       // The seed's push remote (ADR-0067, ADR-0051): `push.git` over ssh, the `pushed` workflow's
       // Binding. The deploy key clones and pushes (no `push` field); `sign` names the key the
       // Sandbox Effector signs with. A scenario that runs `pushed` writes both Secrets from the
@@ -35,7 +39,7 @@ export default defineConfig({
       // generates a deploy key nothing authorizes, so that namespace's cache of `push.git` fails
       // its probe and serves anyway (ADR-0048), as `unsynced`'s does.
       {
-        match: "seed.jr2-e2e-seed.svc/srv/",
+        match: "seed.jr2-e2e-seed.svc.cluster.local/srv/",
         sshKey: "jr2-e2e-push-key",
         sign: { sshKey: "jr2-e2e-sign-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
       },
@@ -43,7 +47,7 @@ export default defineConfig({
       // The same deploy key; a GPG key the Sandbox Effector signs with, which the scenario writes
       // from a key it makes on the host before `jr2 up`.
       {
-        match: "seed.jr2-e2e-seed.svc/srv/gpg",
+        match: "seed.jr2-e2e-seed.svc.cluster.local/srv/gpg",
         sshKey: "jr2-e2e-push-key",
         sign: { gpgKey: "jr2-e2e-gpg-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
       },
@@ -124,6 +128,20 @@ export default defineConfig({
     lab: gitlab({ secret: secret("GL_HOOK") }),
   },
   sandbox: { resources: { limits: { memory: "1Gi", cpu: "500m" } } },
+  // What a Sandbox may reach with no secret (ADR-0084). A host that a secret is bound to (the model,
+  // the MCP server) and each SSH Repo that a workflow binds need no entry. Each entry here is a
+  // host that a Sandbox calls and that no secret and no binding names:
+  //   - the seed's ssh port, for a per-run Repo over ssh (the handoff and LFS push scenarios): its
+  //     url is run input, so no binding names it when `jr2 up` derives the list;
+  //   - the seed's LFS server, which the Sandbox Effector's push uploads to, with no credential;
+  //   - the unbound echo, by its address and port, as an author permits a host with no name: a
+  //     Stand-in sent there arrives as it left (ADR-0059). Its url rides env like the provider's;
+  //     in-cluster it reads empty, and the entry is left out.
+  egress: [
+    "seed.jr2-e2e-seed.svc.cluster.local:22",
+    "lfs.jr2-e2e-seed.svc.cluster.local:80",
+    ...(process.env.JR2_ECHO_URL ? [new URL(process.env.JR2_ECHO_URL).host] : []),
+  ],
   harness: {
     provider: {
       id: "fake",

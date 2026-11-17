@@ -8,9 +8,11 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   It is also the only tier where the AGENT is real in the way that matters (ADR-0013): the pod
   originates its own tool calls. Since ADR-0038 the pod runs the STOCK Harness — pi, the real Menu
-  read through the Custodian on localhost, the real Working tools — and the ONLY thing still faked
-  is the model: a scripted OpenAI-compatible endpoint the World serves from the host, over HTTPS,
-  behind a key only the Custodian holds (ADR-0059). "The Agent calls X" means that model now
+  read through the Custodian, the real Working tools — and the ONLY thing still faked is the model:
+  a scripted OpenAI-compatible endpoint the World serves from the host, over HTTPS, by the name of a
+  Service of the scenario's namespace, behind a key only the Custodian holds (ADR-0059). Since
+  ADR-0084 a Sandbox's only network is the Fence: each connection and each lookup of the pod goes
+  to the Custodian, outside the pod, and the instance's Egress list says what it may reach. "The Agent calls X" means that model now
   answers with a tool call; the wire, the container boundary, the Custodian and the tool call are
   all real. Which makes this tier a SECOND pi canary beside the conformance suite (ADR-0027): a pi
   bump can break it.
@@ -54,19 +56,19 @@ Feature: a workspace() run drives a real Sandbox on kind
 
     Scenario: an admitted url is cloned onto the node the Sandbox lands on, and jr2 status says so
       Given the kind instance is serving
-      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc/app.git" detached
+      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc.cluster.local/app.git" detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
       # The cache agent's own account, read the way a human reads it — the Sandbox went Ready only
       # once the Repo was present and fetched on its node (ADR-0048/0051).
-      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc/app.git" present on the node
+      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc.cluster.local/app.git" present on the node
 
   Rule: a fetch inside the pod reaches the remote's now
     ADR-0053. `origin`'s fetch url is a COMMAND, not a path: git runs the program on the runtime
-    volume, which asks the Custodian on localhost, waits for the landing, and only then execs
-    `git upload-pack` against the node cache. So the ask crosses a loopback route, a Sandbox-token
-    route, an annotation on the CR, the operator's copy of it onto the pod, a DaemonSet, and a real
-    remote — and every one of those is real only here. What it buys is the case the grill took: a
+    volume, which asks the Custodian at jr2's own name (`custodian.jr2.internal`, ADR-0084), waits
+    for the landing, and only then execs `git upload-pack` against the node cache. So the ask
+    crosses the Fence, a Sandbox-token route, an annotation on the CR, the operator's copy of it
+    onto the pod, a DaemonSet, and a real remote — and every one of those is real only here. What it buys is the case the grill took: a
     human pushes a fix, and the Agent's next `git fetch` has it, in seconds rather than at the
     5-minute interval or the next attach.
 
@@ -89,7 +91,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # The mark and the landing, read off the CR the way a human reads it: the Orchestrator wrote
       # one annotation per Repo key, and the operator's standing entry says which fetch answered it
       # — a fetch that STARTED before the ask does not (ADR-0053).
-      And the Sandbox's ask for repo "http://seed.jr2-e2e-seed.svc/app.git" is answered by the fetch its status reports
+      And the Sandbox's ask for repo "http://seed.jr2-e2e-seed.svc.cluster.local/app.git" is answered by the fetch its status reports
 
     Scenario: origin fetches through the program and pushes to the remote itself
       Given the kind instance is serving
@@ -100,7 +102,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # IDENTITY as its argument — never the cache key, which is a derived directory name (ADR-0004)
       # — and, on the push line, the Binding's own spelling, unchanged. A push still goes to the
       # remote with the caller's own credential, never the Agent's (ADR-0005).
-      Then origin in repo "app" fetches through the program and pushes to "http://seed.jr2-e2e-seed.svc/app.git"
+      Then origin in repo "app" fetches through the program and pushes to "http://seed.jr2-e2e-seed.svc.cluster.local/app.git"
 
     Scenario: the human's seat fetches the same way, from a read-only runtime
       Given the kind instance is serving
@@ -236,7 +238,9 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: an Agent's MCP tools and an mcp Effect reach the server with the value, and the Harness holds only Stand-ins
     ADR-0079, ADR-0059. The fake MCP server runs on the host, over HTTPS under the tier's CA, and
-    the kind config declares it two times, as `lookup-a` and `lookup-b`, each with its own key.
+    the kind config declares it two times, as `lookup-a` and `lookup-b`, each with its own key. It
+    has no name: its url names the host's address and port, so a Sandbox's Custodian intercepts an
+    address, with a leaf for that address, and the bound host needs no entry (ADR-0084).
     Both keys are bound to one host in one header, so the Custodian chooses each value by the
     Stand-in that a request carries. Every converge lists the tools from a check pod, through its
     Custodian, and holds each Agent's allowlist to the live list (ADR-0019). The `tooled` Agent, in a
@@ -528,17 +532,19 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run failed with reason "the Sandbox was lost"
       And no Sandbox was re-provisioned for the run
 
-  Rule: the Agent's only control-plane peer is the Custodian on localhost
-    ADR-0013, ADR-0059. The Agent reaches its Machine through a container it can talk to but whose
-    credential it cannot read: the Harness holds the control token's Stand-in, and the Custodian
-    puts the token on its own routes and no other. Nothing else in the pod can deliver — which is
-    what makes "the Agent never steers the workflow" enforced rather than advertised.
+  Rule: the Agent's only control-plane peer is the Custodian
+    ADR-0013, ADR-0059, ADR-0084. The Agent reaches its Machine through a Custodian that it can
+    talk to but whose credential it cannot read: the Harness holds the control token's Stand-in,
+    and the Custodian puts the token on its own routes and no other. The Custodian is outside the
+    pod, and the Fence is the pod's only network, so nothing in the pod can reach the Orchestrator
+    at all — which is what makes "the Agent never steers the workflow" enforced rather than
+    advertised.
 
     Scenario: the tool call originates inside the pod and drives the Machine
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      And the run's Sandbox runs the Custodian beside the Harness
+      And the run's Sandbox is on the Fence, and its Custodian is outside the pod
       # The pod dialed out and read its Menu before the model ever spoke — visible here as the tool
       # set the Harness put on the provider request (ADR-0015/0028/0029).
       And the model was offered "finish" from the Menu and its Working tools
@@ -552,11 +558,11 @@ Feature: a workspace() run drives a real Sandbox on kind
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      # The Harness container shares the pod's network namespace — so it CAN reach the
-      # Orchestrator, address and all. Even the control Stand-in, which no confined child reads,
-      # is worth nothing there: the control token is the Custodian's alone.
-      When the Harness container posts "finish" straight to the Orchestrator
-      Then the delivery is refused as unauthorized
+      # The Harness container is outside the Agents' domain, so it can read the control Stand-in.
+      # It is worth nothing there: the Orchestrator's name gets the resolver's refusal, and its
+      # address gets the Custodian's, because no entry of the Egress list names it.
+      When the Harness container posts "finish" straight to the Orchestrator, by its name and by its address
+      Then the Orchestrator never answered, and the Fence refused both with jr2's reason
       And the run has not settled
 
   Rule: no Workspace code can act as an Agent
@@ -710,11 +716,12 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's Sandbox is destroyed
 
   Rule: a Harness holds stand-ins, and only the Custodian puts the key on the wire
-    ADR-0059, ADR-0076. Workspace code runs in the Harness container, so a key there is a key it can
-    take away. The Harness holds a secret Stand-in, as a file under /run/jr2 that no confined child
-    reads and in no env; the Custodian, a container the Agent executes nothing in, swaps it for the
-    key toward the provider's host alone. What the Agent can take out of the pod is worth nothing
-    outside it.
+    ADR-0059, ADR-0076, ADR-0084. Workspace code runs in the Harness container, so a key there is a
+    key it can take away. The Harness holds a secret Stand-in, as a file under /run/jr2 that no
+    confined child reads and in no env; the Custodian, outside the pod on the Sandbox's node, swaps
+    it for the key toward the provider's host alone. What the Agent can take out of the pod is worth
+    nothing outside it. The unbound echo is at an address with no name, and the instance's Egress
+    list names that address and its port, so the Custodian carries its TLS untouched.
 
     Scenario: the provider receives the key, and the Harness container holds only the stand-in
       Given the kind instance is serving
@@ -742,26 +749,27 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the model provider received no request without the key
 
   Rule: no Harness pod reaches a cloud metadata address
-    ADR-0076. Where a node's metadata service answers pods, it gives the node's cloud credential,
-    which no workspace() grants. So `jr2 up` converges an egress NetworkPolicy for each Harness pod:
-    every address, except the metadata addresses. kindnet enforces it. kind has no metadata service,
-    so the step gives the address to the node, and a pod that the policy does not select is the
-    control.
+    ADR-0076, ADR-0084, ADR-0059. Where a node's metadata service answers pods, it gives the node's
+    cloud credential, which no workspace() grants. A Harness pod reaches no address but the
+    Custodian, and an address that no entry of the Egress list names is refused, so the metadata
+    address is refused like any other; and no entry can name it, because the Custodian's dial guard
+    never dials a link-local address. kind has no metadata service, so the step gives the address
+    to each node, and a pod on the cluster's network is the control: the node answers it.
 
-    Scenario: an Agent's bash cannot connect to the metadata address, and still reaches the model's host and the Orchestrator
+    Scenario: an Agent's bash gets the Custodian's refusal from the metadata address, and still reaches a host of its Egress list
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      When the Agent's bash connects to the cloud metadata address, the model's host and the Orchestrator
-      Then the metadata address did not answer the Agent's bash, and the model's host and the Orchestrator did
+      When the Agent's bash asks the cloud metadata address and the unbound echo
+      Then the metadata address gave the Agent's bash the Custodian's refusal and no byte of the node's, and the echo answered it
 
   Rule: a Harness answers the Orchestrator alone
     ADR-0058. The Harness wire drives conversations — admit a Turn, read its history, abort it — and
     its iids are derivable (ADR-0013/0057), so a caller that can reach a Harness must also hold the
     bearer the Orchestrator derives for that pod, which no pod holds (the Harness keeps only its
-    digest). And no pod but the Orchestrator reaches a Harness pod at all: an ingress NetworkPolicy
-    per placement, which kindnet enforces. The bearer is the control; the policy bounds where a pod
-    may talk.
+    digest). And a Sandbox reaches no other pod at all: its only network is the Fence (ADR-0084), so
+    the Instance Harness's name gets the resolver's refusal, and each of its addresses the
+    Custodian's. The bearer is the control; the Fence bounds where a Sandbox may talk.
 
     Scenario: the Agent cannot drive its own Harness's wire
       Given the kind instance is serving
@@ -779,7 +787,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # The Instance Harness holds every Menu-only conversation in the Instance (ADR-0031), and the
       # kind instance's advisor converges one in every scenario's namespace.
       When the Harness container dials the Instance Harness
-      Then the connection never completes
+      Then the Instance Harness never answered, and the Fence refused each dial with jr2's reason
 
   Rule: an Agent's turn ends when the state that asked for it stops waiting
     ADR-0024. Leaving an Agent invoke means "I am no longer interested in this answer", so the
@@ -954,9 +962,9 @@ Feature: a workspace() run drives a real Sandbox on kind
 
     Scenario: the instance serves, status names git's error, and the run that needs the Repo faults by name
       Given the kind instance is serving
-      Then jr2 status reports repo "http://seed.jr2-e2e-seed.svc/missing.git" absent with git's error
+      Then jr2 status reports repo "http://seed.jr2-e2e-seed.svc.cluster.local/missing.git" absent with git's error
       When I start the "unsynced" workflow detached
-      Then the run faults naming repo "http://seed.jr2-e2e-seed.svc/missing.git" and git's error
+      Then the run faults naming repo "http://seed.jr2-e2e-seed.svc.cluster.local/missing.git" and git's error
 
   Rule: the Repo sweep takes a Repo nothing binds and no run attached lately, resource and node copy both
     ADR-0051. Eviction is reachability plus age: `jr2 gc --repo-ttl` deletes a `Repo` resource no
@@ -968,17 +976,17 @@ Feature: a workspace() run drives a real Sandbox on kind
 
     Scenario: a per-run Repo outlives its run until the sweep, and the sweep clears it off the node
       Given the kind instance is serving
-      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc/other.git" detached
+      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git" detached
       Then the run's Sandbox becomes Ready
-      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc/other.git" present on the node
+      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git" present on the node
       When the Agent in the Sandbox calls "finish" with summary "done"
       Then the run's body settled as "finished"
       And the run's Sandbox is destroyed
-      And a node still holds the cache of repo "http://seed.jr2-e2e-seed.svc/other.git"
-      When I sweep Repos no run attached within "1m", once repo "http://seed.jr2-e2e-seed.svc/other.git" is that old
-      Then jr2 status no longer lists repo "http://seed.jr2-e2e-seed.svc/other.git"
-      And jr2 status still lists repo "http://seed.jr2-e2e-seed.svc/app.git" as bound
-      And no node holds the cache of repo "http://seed.jr2-e2e-seed.svc/other.git" any more
+      And a node still holds the cache of repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git"
+      When I sweep Repos no run attached within "1m", once repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git" is that old
+      Then jr2 status no longer lists repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git"
+      And jr2 status still lists repo "http://seed.jr2-e2e-seed.svc.cluster.local/app.git" as bound
+      And no node holds the cache of repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git" any more
 
   Rule: a shipped Machine runs as a consumer registers it
     ADR-0054. `@jr2/machines` ships Machines for END USERS, and an example nobody can import is not

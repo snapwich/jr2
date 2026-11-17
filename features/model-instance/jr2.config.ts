@@ -22,13 +22,13 @@ export default defineConfig({
   name: "jr2-e2e-model",
   git: {
     credentials: [
-      { match: "seed.jr2-e2e-seed.svc/" },
+      { match: "seed.jr2-e2e-seed.svc.cluster.local/" },
       // The seed's push remote over ssh (ADR-0067), as the @kind instance names it: the
       // `continue-after-signed-push` claim's Binding. Its scenario writes both Secrets from the
       // seed's keys before `jr2 up`; any other scenario's `jr2 up` generates a deploy key nothing
       // authorizes, and that namespace's cache of `push.git` fails its probe and serves anyway.
       {
-        match: "seed.jr2-e2e-seed.svc/srv/",
+        match: "seed.jr2-e2e-seed.svc.cluster.local/srv/",
         sshKey: "jr2-e2e-push-key",
         sign: { sshKey: "jr2-e2e-sign-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
       },

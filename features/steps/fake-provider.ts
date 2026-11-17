@@ -26,8 +26,9 @@
 //     request with a tool call. It must never be a plain-text answer — a turn that settles
 //     `completed` with no pick burns the no-signal nudge budget and then faults (ADR-0016).
 //  3. Binds 0.0.0.0 and reports its PORT, so the World can publish a pod-reachable base URL
-//     (localhost never works from a pod — ADR-0019 says so in `HarnessProvider.baseUrl`). Its
-//     certificate names that address as an IP SAN, which is what the Custodian verifies.
+//     (localhost never works from a pod — ADR-0019 says so in `HarnessProvider.baseUrl`). The
+//     @kind World gives that address a name, a Service of the scenario's namespace, and its
+//     certificate names it, which is what the Custodian verifies (ADR-0084).
 //  4. Holds the request that FOLLOWS a tool result too: after a Working-tool call, or a pick that
 //     leaves the Turn open, the Harness asks the model again, and that request parks until a step
 //     releases it. After a pick that ENDS the Turn no request follows: the Harness ends the run at
@@ -113,8 +114,10 @@ type Held = {
 const MODEL_ID = "model-x";
 
 export async function startFakeProvider(opts: {
-  /** The leaf this endpoint serves — an IP SAN for the pod-reachable address. */
+  /** The leaf this endpoint serves: for the name the pods reach it by. */
   tls: { cert: string; key: string };
+  /** The unbound echo's leaf, when it is not `tls`: an IP SAN for the address the pods reach it at. */
+  echoTls?: { cert: string; key: string };
   /** The key every request must carry as `Authorization: Bearer <key>`. */
   apiKey: string;
 }): Promise<FakeProvider> {
@@ -213,10 +216,11 @@ export async function startFakeProvider(opts: {
     server.listen(0, "0.0.0.0", () => resolve((server.address() as AddressInfo).port));
   });
 
-  // The unbound echo: same certificate, another port — a target no held secret is bound to, so the
-  // Custodian tunnels to it untouched and whatever the Harness sent is what arrives.
+  // The unbound echo: another port, and its own leaf when the endpoint has a name — a target no
+  // held secret is bound to, so the Custodian tunnels to it untouched and whatever the Harness sent
+  // is what arrives.
   const echoSeen: FakeProvider["echo"]["seen"] = [];
-  const echo: Server = createServer(opts.tls, (req, res) => {
+  const echo: Server = createServer(opts.echoTls ?? opts.tls, (req, res) => {
     echoSeen.push({ url: req.url ?? "", headers: req.headers });
     req.resume();
     res.writeHead(200, { "content-type": "text/plain" });

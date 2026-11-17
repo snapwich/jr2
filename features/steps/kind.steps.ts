@@ -8,8 +8,8 @@
 // asserts the promise instead of trusting the naming function.
 //
 // NOTHING HERE PLAYS THE AGENT (ADR-0013), and since ADR-0038 the reason has inverted. The pod
-// runs the REAL `@jr2/harness`: it reads this state's Menu through the Custodian on localhost, and
-// pi decides. What this file drives is the one thing still faked — the MODEL. "The Agent calls X"
+// runs the REAL `@jr2/harness`: it reads this state's Menu through the Custodian, outside the pod
+// (ADR-0084), and pi decides. What this file drives is the one thing still faked — the MODEL. "The Agent calls X"
 // RELEASES the provider request this pod's Harness is parked on, answering it with a tool call;
 // everything after that (the pick, the Custodian, the delivery, the Machine moving) happens inside
 // the cluster. If this file delivered the pick itself, the pod would never originate it and the leg
@@ -277,6 +277,8 @@ Given("the kind instance is serving", { timeout: 600_000 }, async function (this
   // The Repo the workflows bind must be reachable from the cluster before the Orchestrator boots
   // and the cache agent clones it (ADR-0051) — served in-cluster, once per suite (seed.ts).
   await ensureSeed();
+  // The scripted model's name (ADR-0084): the converge's check pod calls the model by it.
+  await this.modelService();
   // The product's own path (ADR-0010/0019): converge the scenario's fresh namespace with `jr2 up`.
   // The workflows (incl. `sandboxed`) are committed in the kind instance and ride its Assembly,
   // which `jr2 up` publishes to the Orchestrator Kit image after every other layer (ADR-0069). A
@@ -333,7 +335,7 @@ When(
  * submission was admitted by the Machine's own Agent slot, the pod's Harness has been parked on a
  * provider request ever since (which is exactly what "still thinking" looks like from the
  * Machine's side), and this releases it. Everything downstream is real and in-cluster: pi executes
- * `mcp__jr2__<tool>` as a delivery through the Custodian on localhost, which puts the Sandbox token
+ * `mcp__jr2__<tool>` as a delivery through the Custodian, outside the pod, which puts the Sandbox token
  * on it, and the Machine moves. Nothing on this side speaks the Menu routes or the Harness wire.
  *
  * The request is matched by the tool it was OFFERED, never by arrival order — see fake-provider.ts:
@@ -362,32 +364,110 @@ When(
 );
 
 /**
+ * Two probes of the Fence, as plain clients meet it (ADR-0084), run with node in the Harness
+ * container: node, not curl, because the image has it and a bash Working tool would use it, and it
+ * resolves in an `exec` shell because the IMAGE carries it (ADR-0037).
+ *
+ *   named(url, init)       a fetch by name, 5 s: `HTTP <status>`, or `ERR <code>` — `ENOTFOUND` is
+ *                          the resolver's refusal of a name that no entry names
+ *   raw(host, port, req)   a TCP connection to an address that writes `req` and reads for 5 s:
+ *                          what came back, or `timeout`, `closed`, `ERR <code>`. A connection to an
+ *                          address always completes on the Fence, because the uplink gives it to
+ *                          the Custodian; what comes back is the Custodian's refusal or the host's
+ */
+const FENCE_PROBE =
+  `const net=require("net");` +
+  `const named=(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(5000)})` +
+  `.then(r=>"HTTP "+r.status,e=>"ERR "+(e.cause?.code??e.name));` +
+  `const raw=(host,port,req)=>new Promise((r)=>{const s=net.connect({host,port});let got="";` +
+  `const t=setTimeout(()=>{s.destroy();r(got||"timeout")},5000);` +
+  `s.on("connect",()=>s.write(req));s.on("data",(d)=>{got+=d});` +
+  `s.on("end",()=>{clearTimeout(t);r(got||"closed")});` +
+  `s.on("error",(e)=>{clearTimeout(t);r(got||("ERR "+(e.code||e.message)))})});`;
+
+/** An HTTP/1.1 request as text, for `raw`. */
+function rawRequest(method: string, host: string, path: string, headers: Record<string, string>, body = ""): string {
+  const lines = [
+    `${method} ${path} HTTP/1.1`,
+    `host: ${host}`,
+    ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`),
+  ];
+  lines.push(`content-length: ${Buffer.byteLength(body)}`, "connection: close", "", body);
+  return lines.join("\r\n");
+}
+
+/**
  * The attack ADR-0013 exists to stop, run for real: `local()` tools give the Agent code execution
- * in the HARNESS container, which shares the pod's network namespace — so it can reach the
- * Orchestrator directly, and a NetworkPolicy could not tell it apart from the Custodian. Only the
- * token can. The address is no secret (the Service DNS is derivable), and the Agent sends the one
- * bearer its env holds: the Sandbox token's Stand-in (ADR-0059). That is worth nothing here — the
- * Custodian swaps it on its own three routes and nowhere else, and the Orchestrator refuses it.
+ * in the HARNESS container. `kubectl exec` there is outside the Agents' domain, so it can read the
+ * control token's Stand-in, and it sends that. On the Fence (ADR-0084) it reaches no Orchestrator:
+ * the Orchestrator's name is on no Egress list, so the resolver refuses it, and a connection to the
+ * Orchestrator's Service address or pod address goes to the Custodian, which refuses an address that
+ * no entry names. The iid is ONE path segment on the wire, encoded as the Harness's Menu encodes it
+ * (menu.ts).
  */
 When(
-  "the Harness container posts {string} straight to the Orchestrator",
+  "the Harness container posts {string} straight to the Orchestrator, by its name and by its address",
   async function (this: E2EWorld, tool: string): Promise<void> {
     const pod = (await waitForReadySandbox(this)).metadata.name;
     const iid = continuedIid(this.runId!, "body", "coder");
-    const url = `http://jr2-orchestrator.${this.namespace}.svc:4000`;
+    const path = `/agents/${encodeURIComponent(iid)}/events`;
+    const body = JSON.stringify({ type: tool, summary: "self-approved" });
+    const service = (
+      await kubectl(this, ["get", "svc", "jr2-orchestrator", "-o", "jsonpath={.spec.clusterIP}"])
+    ).trim();
+    const orchestratorPod = (
+      await kubectl(this, ["get", "pods", "-l", "app=jr2-orchestrator", "-o", "jsonpath={.items[0].status.podIP}"])
+    ).trim();
+    assert.ok(service && orchestratorPod, `the Orchestrator has a Service address and a pod address`);
+    const headers = { "content-type": "application/json" };
+    const script =
+      FENCE_PROBE +
+      `const bearer=(()=>{try{return require("fs").readFileSync("/run/jr2/control/standin","utf8").trim()}` +
+      `catch{return "jr2-held-JR2_SANDBOX_TOKEN"}})();` +
+      `const req=(host)=>${JSON.stringify(rawRequest("POST", "HOST", path, { ...headers, authorization: "Bearer BEARER" }, body))}` +
+      `.replace("HOST",host).replace("BEARER",bearer);` +
+      `(async()=>{const out={` +
+      `name:await named(${JSON.stringify(`http://jr2-orchestrator.${this.namespace}.svc.cluster.local:4000${path}`)},` +
+      `{method:"POST",headers:{...${JSON.stringify(headers)},authorization:"Bearer "+bearer},body:${JSON.stringify(body)}}),` +
+      `addresses:{}};` +
+      `for(const to of ${JSON.stringify([`${service}:4000`, `${orchestratorPod}:4000`])}){` +
+      `const [host,port]=to.split(":");out.addresses[to]=await raw(host,Number(port),req(to))}` +
+      `console.log("FENCE-PROBE "+JSON.stringify(out))})()`;
+    this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", script]);
+  },
+);
 
-    // node, not curl: it is what the image has, and it is what a bash Working tool would use.
-    // Resolvable in an `exec` shell because the IMAGE carries it — the Harness's PATH append is a
-    // process-level setting (startup.ts) that no exec inherits, and jr2 writes nothing into the
-    // image's env (ADR-0037). The iid is ONE path segment on the wire, encoded as the Harness's
-    // Menu encodes it (menu.ts): pasted raw, its slashes would miss the route and the 404 would be
-    // the router's, not the refusal under test.
-    const probe =
-      `fetch(${JSON.stringify(`${url}/agents/${encodeURIComponent(iid)}/events`)},{method:"POST",` +
-      `headers:{"content-type":"application/json",authorization:"Bearer jr2-held-JR2_SANDBOX_TOKEN"},` +
-      `body:${JSON.stringify(JSON.stringify({ type: tool, summary: "self-approved" }))}})` +
-      `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message))`;
-    this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
+/** The Custodian's refusal of a connection to an address that no entry names (ADR-0084). */
+const NO_ENTRY_REFUSAL = /^jr2 custodian: refused: no entry of the Egress list permits this address/;
+
+/**
+ * What a probe of the Fence saw (`FENCE_PROBE`): a fetch by name, and a raw connection to each
+ * address of the target. Each must be jr2's refusal, never a byte of the target's, and the
+ * Custodian's log names the Sandbox, the reason and each address dialed.
+ */
+async function assertFenceRefused(world: E2EWorld, what: string): Promise<void> {
+  const seen = probeJson<{ name: string; addresses: Record<string, string> }>(world.podSays ?? "", "FENCE-PROBE ");
+  assert.equal(seen.name, "ERR ENOTFOUND", `the resolver refused the ${what}'s name (${JSON.stringify(seen)})`);
+  const addresses = Object.entries(seen.addresses);
+  assert.ok(addresses.length > 0, "the probe dialed an address");
+  for (const [to, reply] of addresses) {
+    assert.match(reply, NO_ENTRY_REFUSAL, `the Custodian refused the ${what} at ${to} (got: ${JSON.stringify(reply)})`);
+    assert.doesNotMatch(reply, /HTTP\/1\.[01] /, `no byte of the ${what} came back from ${to}`);
+  }
+  const sandbox = (await waitForReadySandbox(world)).metadata.name;
+  for (const [to] of addresses) {
+    await custodianLine(
+      world,
+      "envoy",
+      new RegExp(`sandbox=${sandbox} action=refuse reason=no-entry .*to=${to.replace(/\./g, "\\.")} `),
+    );
+  }
+}
+
+Then(
+  "the Orchestrator never answered, and the Fence refused both with jr2's reason",
+  async function (this: E2EWorld): Promise<void> {
+    await assertFenceRefused(this, "Orchestrator");
   },
 );
 
@@ -396,10 +476,10 @@ When(
 // Each probe is the model's own `bash` call, so it runs where planted code runs: a confined child
 // of the Harness, with the env the Harness gave it. Its output comes back the way the model reads
 // it, in the next request to the model. The secret Stand-ins it looks for are read on the host,
-// from the Sandbox's credentials Secret, and never travel in the command as themselves.
+// from the Sandbox's Stand-in Secret, and never travel in the command as themselves.
 
-/** The secret Stand-ins of the run's Sandbox: the control one and the model key's, as its
- * credentials Secret (`<sandbox>-token`) holds them. */
+/** The secret Stand-ins of the run's Sandbox: the control one and the model key's, as its Stand-in
+ * Secret (`<sandbox>-standins`, ADR-0059) holds them. */
 export async function podStandIns(world: E2EWorld): Promise<string[]> {
   const sandbox = (await waitForReadySandbox(world)).metadata.name;
   const keys = ["control-standin", "standin-JR2_PROVIDER_API_KEY"];
@@ -408,12 +488,12 @@ export async function podStandIns(world: E2EWorld): Promise<string[]> {
     const b64 = await kubectl(world, [
       "get",
       "secret",
-      `${sandbox}-token`,
+      `${sandbox}-standins`,
       "-o",
       `jsonpath={.data.${key.replace(/\./g, "\\.")}}`,
     ]);
     const value = Buffer.from(b64.trim(), "base64").toString("utf8").trim();
-    assert.ok(value.length > 20, `the Secret ${sandbox}-token holds "${key}"`);
+    assert.ok(value.length > 20, `the Secret ${sandbox}-standins holds "${key}"`);
     out.push(value);
   }
   return out;
@@ -592,14 +672,15 @@ function plantedTest(iid: string): string {
   return [
     `import { test } from "node:test";`,
     `import { readFileSync, writeFileSync } from "node:fs";`,
-    `import { request } from "node:http";`,
     `test("the change builds", async () => {`,
     `  const bearers = { "fetch-standin": "jr2-held-JR2_SANDBOX_TOKEN" };`,
     `  try { bearers["control-file"] = readFileSync("/run/jr2/control/standin", "utf8").trim(); }`,
     `  catch (e) { bearers["control-file"] = null; }`,
     // Every env value that could be a bearer: a token has no space, no slash and no colon.
     `  for (const [k, v] of Object.entries(process.env)) if (v && v.length >= 16 && !/[\\s\\/:]/.test(v)) bearers["env:" + k] = v;`,
-    `  const base = process.env.JR2_CUSTODIAN_URL || "http://127.0.0.1:8081";`,
+    // The Custodian is outside the pod, at jr2's own name (ADR-0084).
+    `  const base = process.env.JR2_CUSTODIAN_URL;`,
+    `  if (!base) { writeFileSync("/work/planted.json", JSON.stringify([{ from: "env", status: "no JR2_CUSTODIAN_URL" }])); return; }`,
     `  const sent = [];`,
     `  for (const [from, bearer] of Object.entries(bearers)) {`,
     `    if (!bearer) { sent.push({ from, status: "no bearer" }); continue; }`,
@@ -612,16 +693,6 @@ function plantedTest(iid: string): string {
     `      sent.push({ from, status: r.status });`,
     `    } catch (e) { sent.push({ from, status: "ERR " + e.message }); }`,
     `  }`,
-    // The control routes are on the Custodian's socket under /run/jr2 (ADR-0076): try it as well.
-    `  const viaSocket = (bearer) => new Promise((resolve) => {`,
-    `    const req = request({ socketPath: "/run/jr2/custodian/control.sock", method: "POST",`,
-    `      path: "/agents/" + encodeURIComponent(${JSON.stringify(iid)}) + "/events",`,
-    `      headers: { "content-type": "application/json", authorization: "Bearer " + bearer, "x-jr2-slot": "body/reviewer" } },`,
-    `      (r) => { r.resume(); resolve(r.statusCode); });`,
-    `    req.on("error", (e) => resolve("ERR " + e.code));`,
-    `    req.end(JSON.stringify({ type: "approve", summary: "planted" }));`,
-    `  });`,
-    `  sent.push({ from: "control-socket", status: await viaSocket("jr2-held-JR2_SANDBOX_TOKEN") });`,
     `  writeFileSync("/work/planted.json", JSON.stringify(sent));`,
     `});`,
   ].join("\n");
@@ -664,16 +735,9 @@ Then(
     // Not vacuous: the public Stand-in, which any process knows, was sent and answered.
     const fetch = sent.find((s) => s.from === "fetch-standin");
     assert.ok(typeof fetch?.status === "number", `the planted test reached the Custodian (${JSON.stringify(sent)})`);
-    // The control socket is under /run/jr2. Landlock does not limit a connect to a named socket, so
-    // the domain can connect: the Custodian then refuses a request that carries no control Stand-in
-    // (a 403). An error of the connect is a refusal too.
-    const socket = sent.find((s) => s.from === "control-socket");
-    assert.ok(socket, `the planted test tried the control socket (${JSON.stringify(sent)})`);
     for (const s of sent) {
       assert.ok(
-        s.status === "no bearer" ||
-          (typeof s.status === "number" && s.status >= 400) ||
-          (s.from === "control-socket" && typeof s.status === "string" && s.status.startsWith("ERR ")),
+        s.status === "no bearer" || (typeof s.status === "number" && s.status >= 400),
         `the planted test delivered a pick with ${s.from}: ${JSON.stringify(sent)}`,
       );
     }
@@ -1050,22 +1114,27 @@ Then(
   },
 );
 
+/**
+ * The Custodian of the Sandbox's node (ADR-0084) says, when it makes the slot's rules live, which
+ * secrets it holds for that Sandbox, by name. No container of any Custodian pod of the namespace
+ * logs the key itself.
+ */
 Then(
   "the Custodian's log names {string} and never the key",
   { timeout: 60_000 },
   async function (this: E2EWorld, name: string): Promise<void> {
-    const pod = (await waitForReadySandbox(this)).metadata.name;
-    let log = "";
-    // The start-up line names every secret the Custodian holds; an intercepted request names the
-    // one it swapped once it COMPLETES (a parked turn request logs when it ends). The access log
-    // flushes twice a second, so the line is waited for.
-    const names = new RegExp(`jr2\\.custodian .*secrets?=\\S*\\b${name}\\b`);
-    for (const deadline = Date.now() + 30_000; Date.now() < deadline; await sleep(500)) {
-      log = await kubectl(this, ["logs", `pod/${pod}`, "-c", "custodian"]);
-      if (names.test(log)) break;
+    const { pod, slot } = await fenceOf(this);
+    await custodianLine(
+      this,
+      "control",
+      new RegExp(`^jr2\\.custodian ready slot=${slot} sandbox=${pod.metadata.name} .*secrets=\\S*\\b${name}\\b`),
+    );
+    assert.ok(this.providerKey, "setupKind made the provider key");
+    for (const container of ["control", "envoy"] as const) {
+      for (const { pod: custodian, log } of await custodianLogs(this, container)) {
+        assert.ok(!log.includes(this.providerKey), `the key is not in the ${container} log of ${custodian}`);
+      }
     }
-    assert.match(log, names);
-    assert.ok(this.providerKey && !log.includes(this.providerKey), "the key is not in the Custodian's log");
   },
 );
 
@@ -1074,8 +1143,9 @@ When(
   async function (this: E2EWorld, name: string): Promise<void> {
     const pod = (await waitForReadySandbox(this)).metadata.name;
     assert.ok(this.echoUrl, "the scenario's unbound echo is running (World.setupKind)");
-    // Through the container's own HTTPS_PROXY: the Custodian tunnels a target no secret is bound to,
-    // untouched — and the echo's certificate is trusted because the tier's CA is the `caBundle`.
+    // Straight to the echo's address: the uplink gives the connection to the Custodian, which
+    // tunnels an address that an entry names and no secret is bound to, untouched (ADR-0084) — and
+    // the echo's certificate is trusted because the tier's CA is the `caBundle`.
     const probe =
       `fetch(${JSON.stringify(this.echoUrl)},{headers:{authorization:"Bearer "+require("fs").readFileSync("/run/jr2/standins/"+${JSON.stringify(name)},"utf8").trim()}})` +
       `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message,e.cause?.code??""))`;
@@ -1140,38 +1210,51 @@ Then("the Harness refuses it as unauthorized", function (this: E2EWorld): void {
 });
 
 /**
- * Lateral reach (ADR-0058): from the Agent's container to the Instance Harness's Service. With the
- * policy in force the connection never completes; without it the answer would be the bearer's 401
- * — so the assertion is on the TRANSPORT failing, never on a status, which is what tells the two
- * controls apart.
+ * Lateral reach (ADR-0058, ADR-0084): from the Agent's container to the Instance Harness, which
+ * holds every Menu-only conversation of the Instance (ADR-0031). On the Fence a Sandbox has no
+ * route to another pod: the Instance Harness's name gets the resolver's refusal, and its Service
+ * address and its pod address each get the Custodian's. A 401 would be the bearer's, the second
+ * control; no byte of the Harness may come back at all.
  */
 When("the Harness container dials the Instance Harness", async function (this: E2EWorld): Promise<void> {
   const pod = (await waitForReadySandbox(this)).metadata.name;
-  const url = `http://${INSTANCE_HARNESS_SERVICE}.${this.namespace}.svc:8080/agents/advisor/probe?view=history`;
-  const probe =
-    `fetch(${JSON.stringify(url)},{signal:AbortSignal.timeout(5000)})` +
-    `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.name,e.message))`;
-  this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
+  const service = (
+    await kubectl(this, ["get", "svc", INSTANCE_HARNESS_SERVICE, "-o", "jsonpath={.spec.clusterIP}"])
+  ).trim();
+  const harnessPod = (
+    await kubectl(this, ["get", "pod", `${INSTANCE_HARNESS_SERVICE}-0`, "-o", "jsonpath={.status.podIP}"])
+  ).trim();
+  assert.ok(service && harnessPod, "the Instance Harness has a Service address and a pod address");
+  const path = "/agents/advisor/probe?view=history";
+  const script =
+    FENCE_PROBE +
+    `(async()=>{const out={` +
+    `name:await named(${JSON.stringify(`http://${INSTANCE_HARNESS_SERVICE}.${this.namespace}.svc.cluster.local:8080${path}`)}),` +
+    `addresses:{}};` +
+    `for(const to of ${JSON.stringify([`${service}:8080`, `${harnessPod}:8080`])}){` +
+    `const [host,port]=to.split(":");` +
+    `out.addresses[to]=await raw(host,Number(port),${JSON.stringify(rawRequest("GET", "HOST", path, {}))}.replace("HOST",to))}` +
+    `console.log("FENCE-PROBE "+JSON.stringify(out))})()`;
+  this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", script]);
 });
 
-Then("the connection never completes", function (this: E2EWorld): void {
-  assert.match(
-    this.podSays ?? "",
-    /^ERR TimeoutError/m,
-    `a Sandbox must not reach the Instance Harness — the ingress policy admits the Orchestrator alone ` +
-      `(pod said: ${this.podSays?.trim()})`,
-  );
-});
+Then(
+  "the Instance Harness never answered, and the Fence refused each dial with jr2's reason",
+  async function (this: E2EWorld): Promise<void> {
+    await assertFenceRefused(this, "Instance Harness");
+  },
+);
 
-// --- no Harness pod reaches a cloud metadata address (ADR-0076) ---------------------------------
+// --- no Harness pod reaches a cloud metadata address (ADR-0076, ADR-0084) --------------------------
 //
-// kind has no metadata service, and a connect to 169.254.169.254 times out there with no policy at
-// all, so a timeout alone proves nothing. So the step gives the address to the loopback of the
-// Sandbox pod's node: a connect to it from a pod then reaches the node, which refuses a port that
-// nothing listens on. A pod that the policy does not select (the Orchestrator's) gets that refusal.
-// The Agent's bash must not: kindnet drops its packet before the node sees it. The Agent's bash
-// also connects to the model's host, outside the cluster, and to the Orchestrator's Service, inside
-// it, so the step proves the block and not a dead network.
+// kind has no metadata service, and a connect to 169.254.169.254 times out there, so a timeout
+// alone proves nothing. So the step gives the address to the loopback of each node: a connect to it
+// from a pod on the cluster's network then reaches that pod's node, which refuses a port that
+// nothing listens on. The Orchestrator's pod is that control. The Agent's bash is behind the Fence:
+// each of its connections goes to the Custodian, which answers a request to an address that no
+// entry names with its own refusal, and a byte of the node's would say that the Custodian dialed
+// it. The Agent's bash also asks the unbound echo, an address that an entry names, so the step
+// proves the refusal and not a dead network.
 
 /** The address that each metadata service of AWS, GCP and Azure answers on. */
 const METADATA_ADDRESS = "169.254.169.254";
@@ -1184,19 +1267,28 @@ const CONNECT_PROBE =
   `s.on("connect",()=>{clearTimeout(t);s.destroy();r("connected")});` +
   `s.on("error",(e)=>{clearTimeout(t);r(e.code||e.message)})});`;
 
+/** A GET with a 5 s limit, as planted code sends one: `{ status, body }` (the first 300 characters),
+ * or `{ error }`. */
+const GET_PROBE =
+  `const get=(url)=>fetch(url,{signal:AbortSignal.timeout(5000)})` +
+  `.then(async(r)=>({status:r.status,body:(await r.text()).slice(0,300)}),(e)=>({error:String(e.cause?.code??e.name)}));`;
+
 When(
-  "the Agent's bash connects to the cloud metadata address, the model's host and the Orchestrator",
+  "the Agent's bash asks the cloud metadata address and the unbound echo",
   async function (this: E2EWorld): Promise<void> {
     await waitForAttached(this);
-    assert.ok(this.provider && this.providerUrl, "the scenario's scripted model is running (World.setupKind)");
-    const pod = (await waitForReadySandbox(this)).metadata.name;
-    const node = (await kubectl(this, ["get", `pod/${pod}`, "-o", "jsonpath={.spec.nodeName}"])).trim();
-    assert.ok(node, `the Sandbox pod ${pod} is on a node`);
-    // A kind node is a docker container of the same name. The After hook removes the address.
-    this.metadataNode = node;
-    await exec("docker", ["exec", node, "ip", "addr", "replace", `${METADATA_ADDRESS}/32`, "dev", "lo"]);
+    assert.ok(this.provider && this.echoUrl, "the scenario's scripted model and echo are running (World.setupKind)");
+    // Each kind node is a docker container of the same name. The After hook removes the address.
+    const nodes = (await kubectl(this, ["get", "nodes", "-o", "jsonpath={.items[*].metadata.name}"]))
+      .split(/\s+/)
+      .filter((n) => n !== "");
+    assert.ok(nodes.length > 0, "the cluster has nodes");
+    this.metadataNodes = nodes;
+    for (const node of nodes) {
+      await exec("docker", ["exec", node, "ip", "addr", "replace", `${METADATA_ADDRESS}/32`, "dev", "lo"]);
+    }
 
-    // The control: a pod that no egress policy selects reaches the address, and the node refuses it.
+    // The control: a pod on the cluster's network reaches the address, and its node refuses it.
     this.metadataControl = (
       await kubectl(this, [
         "exec",
@@ -1208,45 +1300,45 @@ When(
       ])
     ).trim();
 
-    const provider = new URL(this.providerUrl);
-    const orchestrator = `jr2-orchestrator.${this.namespace}.svc`;
     const script =
-      `${CONNECT_PROBE}(async()=>{const out={` +
-      `metadata:await probe(${JSON.stringify(METADATA_ADDRESS)},80),` +
-      `provider:await probe(${JSON.stringify(provider.hostname)},${Number(provider.port)}),` +
-      `orchestrator:await probe(${JSON.stringify(orchestrator)},4000)};` +
-      `console.log("EGRESS-PROBE "+JSON.stringify(out))})()`;
+      `${GET_PROBE}(async()=>{const out={` +
+      `metadata:await get(${JSON.stringify(`http://${METADATA_ADDRESS}/latest/meta-data/`)}),` +
+      `echo:await get(${JSON.stringify(this.echoUrl)})};` +
+      `console.log("METADATA-PROBE "+JSON.stringify(out))})()`;
     await this.provider.release("bash", { command: `${RUNTIME_NODE} -e '${script}'` });
   },
 );
 
 Then(
-  "the metadata address did not answer the Agent's bash, and the model's host and the Orchestrator did",
+  "the metadata address gave the Agent's bash the Custodian's refusal and no byte of the node's, and the echo answered it",
   { timeout: 360_000 },
   async function (this: E2EWorld): Promise<void> {
-    // Not vacuous: the node answers the address for a pod that no egress policy selects.
+    // Not vacuous: the node answers the address for a pod on the cluster's network.
     assert.equal(
       this.metadataControl,
       "ECONNREFUSED",
-      `the metadata address answers a pod that no egress policy selects (the Orchestrator's got: ${this.metadataControl})`,
+      `the node refuses a pod on the cluster's network at the metadata address (the Orchestrator's got: ${this.metadataControl})`,
     );
-    const seen = probeJson<{ metadata: string; provider: string; orchestrator: string }>(
-      await toolResultWith(this, "EGRESS-PROBE "),
-      "EGRESS-PROBE ",
+    type Got = { status?: number; body?: string; error?: string };
+    const seen = probeJson<{ metadata: Got; echo: Got }>(
+      await toolResultWith(this, "METADATA-PROBE "),
+      "METADATA-PROBE ",
     );
-    assert.ok(
-      seen.metadata !== "connected" && seen.metadata !== "ECONNREFUSED",
-      `the Agent's bash reached the metadata address, which the egress policy blocks (${JSON.stringify(seen)})`,
+    assert.equal(seen.metadata.status, 403, `the Custodian refused the metadata address (${JSON.stringify(seen)})`);
+    assert.match(
+      seen.metadata.body ?? "",
+      /^jr2 custodian: /,
+      `the refusal is the Custodian's (${JSON.stringify(seen)})`,
     );
-    assert.equal(
-      seen.provider,
-      "connected",
-      `the Agent's bash reaches a host outside the cluster (${JSON.stringify(seen)})`,
-    );
-    assert.equal(
-      seen.orchestrator,
-      "connected",
-      `the Agent's bash reaches a Service in the cluster (${JSON.stringify(seen)})`,
+    assert.equal(seen.echo.status, 200, `the Agent's bash reaches a host of its Egress list (${JSON.stringify(seen)})`);
+    // The Custodian's log names the Sandbox, the address and the reason.
+    const sandbox = (await waitForReadySandbox(this)).metadata.name;
+    await custodianLine(
+      this,
+      "envoy",
+      new RegExp(
+        `sandbox=${sandbox} action=refuse target=${METADATA_ADDRESS.replace(/\./g, "\\.")}\\S* .*reason=no-entry`,
+      ),
     );
   },
 );
@@ -1600,22 +1692,124 @@ Then(
   },
 );
 
-Then("the run's Sandbox runs the Custodian beside the Harness", async function (this: E2EWorld): Promise<void> {
-  const pod = (await waitForReadySandbox(this)).metadata.name;
-  const names = (await kubectl(this, ["get", "pod", pod, "-o", "jsonpath={.spec.containers[*].name}"])).split(/\s+/);
-  // ADR-0005's "the pod, not the container, is the isolation unit" has a second resident — and the
-  // operator scheduled it without understanding it (ADR-0001: sidecars are opaque fragments).
-  assert.ok(names.includes("harness"), `the Harness container is there (got: ${names.join(", ")})`);
-  assert.ok(names.includes("custodian"), `the Custodian container is there (got: ${names.join(", ")})`);
-});
+// --- the Fence (ADR-0084) -------------------------------------------------------------------------
+//
+// A Sandbox's only network is the Fence: one interface, on a VLAN of the Instance's range, whose
+// one peer is the Custodian pod of its node. Each fact here is read from outside the pod, the way a
+// human reads it: the pod's network status, the Custodian's own log lines.
 
-Then("the delivery is refused as unauthorized", function (this: E2EWorld): void {
-  assert.match(
-    this.podSays ?? "",
-    /HTTP 401/,
-    `the Orchestrator must refuse an Agent bearing only the Stand-in (pod said: ${this.podSays?.trim()})`,
+/** The names that send a program's requests to a proxy. On the Fence no container has one. */
+const PROXY_NAMES = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY"];
+
+/** jr2's own name: the resolver of each Harness pod answers it with the control routes (ADR-0084). */
+const CUSTODIAN_NAME = "custodian.jr2.internal";
+
+type FencePod = {
+  metadata: { name: string; annotations?: Record<string, string> };
+  spec: { nodeName?: string; containers: Array<{ name: string; env?: Array<{ name: string; value?: string }> }> };
+  status: { podIP?: string };
+};
+
+/** The run's Sandbox on the Fence: its pod, its node, its slot (from its CR's attachment) and its address. */
+async function fenceOf(world: E2EWorld): Promise<{ pod: FencePod; node: string; slot: number; attachment: string }> {
+  const name = (await waitForReadySandbox(world)).metadata.name;
+  const cr = JSON.parse(await kubectl(world, ["get", "sandbox", name, "-o", "json"])) as {
+    spec: { network?: { attachment?: string } };
+  };
+  const attachment = cr.spec.network?.attachment ?? "";
+  const slot = Number(/^jr2-fence-(\d+)$/.exec(attachment)?.[1] ?? NaN);
+  assert.ok(
+    Number.isInteger(slot),
+    `the Sandbox CR names a slot's attachment (got ${JSON.stringify(cr.spec.network)})`,
   );
-});
+  const pod = JSON.parse(await kubectl(world, ["get", "pod", name, "-o", "json"])) as FencePod;
+  assert.ok(pod.spec.nodeName, `the Sandbox pod ${name} is on a node`);
+  return { pod, node: pod.spec.nodeName, slot, attachment };
+}
+
+/** Each Custodian pod of the namespace, its node, and the log of one of its containers. */
+async function custodianLogs(
+  world: E2EWorld,
+  container: "envoy" | "control",
+): Promise<Array<{ pod: string; node: string; log: string }>> {
+  const rows = (
+    await kubectl(world, [
+      "get",
+      "pods",
+      "-l",
+      "app=jr2-custodian",
+      "-o",
+      `jsonpath={range .items[*]}{.metadata.name} {.spec.nodeName}{"\\n"}{end}`,
+    ])
+  )
+    .split("\n")
+    .map((l) => l.trim().split(" "))
+    .filter((r) => r.length === 2 && r[0] !== "");
+  assert.ok(rows.length > 0, "the namespace has a Custodian pod");
+  return Promise.all(
+    rows.map(async ([pod, node]) => ({
+      pod: pod!,
+      node: node!,
+      log: await kubectl(world, ["logs", `pod/${pod}`, "-c", container]).catch(() => ""),
+    })),
+  );
+}
+
+/** Wait until a line of the Custodian pods' `container` logs matches `pattern`; return that line. */
+async function custodianLine(
+  world: E2EWorld,
+  container: "envoy" | "control",
+  pattern: RegExp,
+  ms = 30_000,
+): Promise<string> {
+  let seen = "";
+  // The access log flushes twice a second, so a line is waited for.
+  for (const deadline = Date.now() + ms; Date.now() < deadline; await sleep(500)) {
+    for (const { log } of await custodianLogs(world, container)) {
+      const line = log.split("\n").find((l) => pattern.test(l));
+      if (line) return line;
+      seen = log;
+    }
+  }
+  throw new Error(`no Custodian ${container} line matches ${pattern} (a log ends: ${seen.slice(-2000)})`);
+}
+
+Then(
+  "the run's Sandbox is on the Fence, and its Custodian is outside the pod",
+  async function (this: E2EWorld): Promise<void> {
+    const { pod, node, slot, attachment } = await fenceOf(this);
+    const names = pod.spec.containers.map((c) => c.name);
+    assert.deepEqual(names, ["harness"], `the pod runs the Harness and no Custodian container (got: ${names})`);
+    // The one network Multus reports is the slot's attachment, and it is the pod's default network.
+    const status = JSON.parse(pod.metadata.annotations?.["k8s.v1.cni.cncf.io/network-status"] ?? "[]") as Array<{
+      name: string;
+      default?: boolean;
+      ips?: string[];
+    }>;
+    assert.equal(status.length, 1, `the pod has one network (got: ${JSON.stringify(status)})`);
+    assert.equal(status[0]!.name, `${this.namespace}/${attachment}`, "the network is the slot's attachment");
+    assert.equal(status[0]!.default, true, "the slot's attachment is the pod's default network");
+    const ip = pod.status.podIP ?? "";
+    assert.deepEqual(status[0]!.ips, [ip], "the pod's address is the slot's");
+    // The instance's `fence` keeps the default segment, 198.19.0.0/20.
+    const [a, b, c] = ip.split(".").map(Number);
+    assert.ok(a === 198 && b === 19 && c! < 16, `the address ${ip} is on the Fence's segment`);
+    // The Harness names the Custodian by jr2's own name, and no proxy setting reaches it.
+    const env = pod.spec.containers[0]!.env ?? [];
+    assert.equal(env.find((e) => e.name === "JR2_CUSTODIAN_URL")?.value, `https://${CUSTODIAN_NAME}`);
+    const proxies = env.filter((e) => PROXY_NAMES.includes(e.name.toUpperCase())).map((e) => e.name);
+    assert.deepEqual(proxies, [], "no proxy setting is in the Harness container's env");
+    // The Custodian pod of the Sandbox's node made the slot's rules live, for this Sandbox.
+    const live = new RegExp(`^jr2\\.custodian ready slot=${slot} sandbox=${pod.metadata.name} `);
+    const logs = await custodianLogs(this, "control");
+    const onNode = logs.find((l) => l.node === node);
+    assert.ok(onNode, `a Custodian pod is on the Sandbox's node ${node} (got: ${logs.map((l) => l.node)})`);
+    assert.ok(
+      onNode.log.split("\n").some((l) => live.test(l)),
+      `the Custodian pod ${onNode.pod} says that slot ${slot}'s rules are live for ${pod.metadata.name}`,
+    );
+  },
+);
 
 Then("the run has not settled", async function (this: E2EWorld): Promise<void> {
   const s = await wsStatus(this);
@@ -1992,9 +2186,9 @@ Then("every node still holds the images this instance's map names", async functi
 // --- the fetch inside the pod (ADR-0053) -----------------------------------------------------------
 //
 // `origin`'s fetch url is a PROGRAM on the runtime volume, not a path: git runs it, it asks the
-// Custodian on localhost, the ask rides the Sandbox CR onto the pod, the node's cache agent fetches
-// the remote, and only then does `git upload-pack` serve the cache. Every leg of that exists
-// nowhere else — a static binary on a mounted volume, a loopback route, a CR annotation the
+// Custodian at `custodian.jr2.internal` (ADR-0084), the ask rides the Sandbox CR onto the pod, the
+// node's cache agent fetches the remote, and only then does `git upload-pack` serve the cache. Every
+// leg of that exists nowhere else — a static binary on a mounted volume, the Fence, a CR annotation the
 // operator copies onto the pod, a DaemonSet, and a real remote — so this is the one tier that can
 // watch a commit pushed a moment ago arrive on the next `git fetch`.
 
@@ -3099,11 +3293,9 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
   // for — but the tier must not depend on that to stay clean. Every ref the load added goes, since
   // taking the tag alone is what leaves the bytes behind. `ctr images rm` is delete-if-present.
   if (this.plantedImage) await exec("docker", ["rmi", this.plantedImage]).catch(() => {});
-  // The metadata address that the egress scenario gave to a node's loopback (ADR-0076).
-  if (this.metadataNode) {
-    await exec("docker", ["exec", this.metadataNode, "ip", "addr", "del", "169.254.169.254/32", "dev", "lo"]).catch(
-      () => {},
-    );
+  // The metadata address that the metadata scenario gave to each node's loopback (ADR-0076).
+  for (const node of this.metadataNodes ?? []) {
+    await exec("docker", ["exec", node, "ip", "addr", "del", "169.254.169.254/32", "dev", "lo"]).catch(() => {});
   }
   for (const [node, refs] of Object.entries(this.plantedRefs ?? {})) {
     if (refs.length === 0) continue;

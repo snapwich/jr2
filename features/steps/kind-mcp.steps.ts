@@ -46,6 +46,7 @@ Given("the fake MCP server lists no tool {string}", function (this: E2EWorld, to
 // serving", which asserts success.
 When("I converge the kind instance", { timeout: 600_000 }, async function (this: E2EWorld): Promise<void> {
   await ensureSeed();
+  await this.modelService();
   await this.runCli(["up", "--yes"]);
 });
 
