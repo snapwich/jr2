@@ -2,8 +2,11 @@
 // ADR-0059): the same split as the Custodian's. `jr2 up` reads the Machines, places each Effect
 // secret, and writes two objects per Workspace that places an Effect there:
 //
-//   - the Secret `jr2-effector-<pod>`: each literal Effect secret, and `effector.json` (the targets
-//     its file-body https call, and whether it holds a credentialed command);
+//   - the Secret `jr2-effector-<pod>`: each literal Effect secret it holds as a value, and
+//     `effector.json` (the targets its file-body https call, and whether it holds a credentialed
+//     command). A bearer, Basic or header secret of a file-body http is the Custodian's: its value
+//     is a binding of the pod's held manifest, and the Effector's file holds its Stand-in, which the
+//     provision projects from `<sandbox>-standins`;
 //   - the manifest `effector-<pod>.json` in `jr2-held`: names only, never a value — the projected
 //     sources that make the Effector's `/run/jr2/secrets` (that Secret's keys, and each `valueFrom`
 //     key of the user's own Secret by reference), and its pushes by Repo Slot.
@@ -50,6 +53,10 @@ export type SandboxEffectorManifest = {
   /** Its pushes, by Repo Slot: the provision names each one's entry Secret on the Sandbox CR.
    * `squash`: an unsigned squash, which needs the entry's committer (ADR-0067). */
   pushes?: Array<{ slot: string; sign: boolean; squash?: true }>;
+  /** The secrets the Custodian holds for it (ADR-0068): each one's file in `/run/jr2/secrets` is its
+   * Stand-in, which the provision projects from the Sandbox's `<sandbox>-standins` by its binding
+   * name in the held manifest. */
+  standIns?: Array<{ name: string; binding: string }>;
 };
 
 const secretKey = (name: string): string => `secret.${name}`;
@@ -88,9 +95,16 @@ export function sandboxEffectorObjectsOf(plan: SandboxEffectorPlan): {
     ...[...byRef].map(([secret, items]) => ({ secret: { name: secret, items } })),
   ];
   const pushes = plan.pushes.map(({ slot, sign, squash }) => ({ slot, sign, ...(squash ? { squash } : {}) }));
+  const standIns = plan.custodian.map((c) => ({ name: c.name, binding: c.binding.name }));
   return {
     secret: { name, stringData },
-    manifest: { version: 1, secret: name, sources, ...(pushes.length ? { pushes } : {}) },
+    manifest: {
+      version: 1,
+      secret: name,
+      sources,
+      ...(pushes.length ? { pushes } : {}),
+      ...(standIns.length ? { standIns } : {}),
+    },
   };
 }
 

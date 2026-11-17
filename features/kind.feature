@@ -372,18 +372,21 @@ Feature: a workspace() run drives a real Sandbox on kind
   Rule: a file-body http and a credentialed command run in the Workspace's Sandbox Effector, which the Agent cannot read
     ADR-0067, ADR-0068. The `effected` workflow's body commits a file in the Harness container, then
     runs an Effect that `jr2 up` placed in this Workspace's Sandbox Effector: an `http` whose body is the
-    file to the echo with `bearer(secret("echo-token"))`, or a credentialed `command` whose env names
-    the token by value and by `.path`. The provision adds the `effector` container to the pod; the
-    Harness container mounts none of its volumes. A credentialed command runs against the pinned
-    commit in a scratch of its own, so an uncommitted edit is never seen and the answer says
-    `dirty`; its child is confined with Landlock, so the Effector's key is no file it can read.
-    Every string that comes back is scrubbed. The Orchestrator reaches the Effector by the headless
-    Service the provision writes beside it, which resolves to the pod's own address.
+    file to the echo with `bearer(secret("echo-bearer"))`, or a credentialed `command` whose env names
+    `echo-token` by value and by `.path`. The provision adds the `effector` container to the pod; the
+    Harness container mounts none of its volumes. The Custodian holds the bearer: the Effector's
+    file of it is its Stand-in, and the Custodian puts the value in its place toward the echo. A
+    credentialed command runs against the pinned commit in a scratch of its own, so an uncommitted
+    edit is never seen and the answer says `dirty`; its child is confined with Landlock, so the
+    Effector's key is no file it can read. Every string that comes back is scrubbed of each value
+    the Effector holds. The Orchestrator reaches the Effector through the Custodian's uplink, at its
+    slot's address.
 
-    Scenario: an http whose body is a committed Worktree file sends it, and the answer names the secret
+    Scenario: an http whose body is a committed Worktree file sends it, and the Custodian puts the bearer in
       Given the kind instance is serving
       When I start the "effected" workflow in mode "file-body" detached
       Then the run's Sandbox pod has a Sandbox Effector beside the Agent
+      And the Sandbox Effector holds the bearer's Stand-in, and no file or env of its container holds the value
       When the held Effect is released
       Then the file-body http's answer is a response from the echo, whose body is the committed file
 

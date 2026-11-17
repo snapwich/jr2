@@ -12,8 +12,9 @@
 // default gate needs no infrastructure (ADR-0010).
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { connect, type Socket } from "node:net";
+import { execFile, spawn } from "node:child_process";
+import { connect, createServer as createNetServer, type Socket } from "node:net";
+import { promisify } from "node:util";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
@@ -60,6 +61,9 @@ const VALUES = {
   LITELLM_KEY: "ll-value-three",
   UNTRUSTED_KEY: "un-value-four",
   SECOND_SERVICE_TOKEN: "svc-value-five",
+  // A token push's token, and one toward a host that the Egress list also names (ADR-0068).
+  push_git: "ghp-git-token-value-six",
+  push_open: "ghp-open-token-value-seven",
 };
 /** Slot 4's value of the one secret it shares with slot 3. */
 const SLOT4_KEY = "sk-ant-value-of-slot-four";
@@ -70,6 +74,9 @@ let b: Upstream; // the LAN address: a paths-narrowed secret bound by address
 let c: Upstream; // c.test: Tunneled
 let d: Upstream; // d.test: bound, but its CA is not in upstream.crt
 let wild: Upstream; // x.wild.test, under `*.wild.test`
+let git: Upstream; // git.test: a smart-HTTP git server, its token bound in Basic (a push, ADR-0068)
+let open: Upstream; // open.test: a token bound in Basic, and an entry names the host too
+let gitRoot: string; // git.test's repositories
 let web: Awaited<ReturnType<typeof startHttpTarget>>; // plain HTTP, under `*`
 let echo: Awaited<ReturnType<typeof startTcpTarget>>; // raw.test and an address entry: echoes
 let ssh: Awaited<ReturnType<typeof startTcpTarget>>; // ssh.test: speaks first
@@ -87,6 +94,63 @@ const binding = (name: string, host: string, port: number, headers: string[], pa
   ...(paths ? { paths } : {}),
 });
 
+/** git in `cwd`, with no config of the host's: the suite's own. */
+async function gitIn(cwd: string, ...args: string[]): Promise<string> {
+  const env = { PATH: process.env.PATH ?? "", HOME: cwd, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
+  const { stdout } = await promisify(execFile)("git", args, { cwd, env });
+  return stdout;
+}
+
+/** A smart-HTTP git server (`git http-backend`, CGI) for the repositories under `root`, which takes
+ * only the `Authorization` given, and answers 401 to any other, as a forge does. */
+function gitHttpBackend(root: string, authorization: string): Upstream["handler"] {
+  return (req, res) => {
+    // The scheme's name is case-insensitive (RFC 9110); the pair is not.
+    if (req.headers.authorization?.replace(/^basic /i, "Basic ") !== authorization) {
+      res.writeHead(401, { "www-authenticate": 'Basic realm="git.test"' });
+      res.end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "https://git.test");
+    const child = spawn("git", ["http-backend"], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        GIT_PROJECT_ROOT: root,
+        GIT_HTTP_EXPORT_ALL: "1",
+        GIT_CONFIG_NOSYSTEM: "1",
+        HOME: root,
+        REMOTE_USER: "x-access-token",
+        REQUEST_METHOD: req.method ?? "GET",
+        PATH_INFO: url.pathname,
+        QUERY_STRING: url.search.slice(1),
+        CONTENT_TYPE: String(req.headers["content-type"] ?? ""),
+        HTTP_CONTENT_ENCODING: String(req.headers["content-encoding"] ?? ""),
+        HTTP_GIT_PROTOCOL: String(req.headers["git-protocol"] ?? ""),
+      },
+    });
+    req.pipe(child.stdin);
+    let head = Buffer.alloc(0);
+    let sent = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (sent) return void res.write(chunk);
+      head = Buffer.concat([head, chunk]);
+      const end = head.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const headers: Record<string, string> = {};
+      let status = 200;
+      for (const line of head.subarray(0, end).toString().split("\r\n")) {
+        const [k, ...v] = line.split(":");
+        if (k!.toLowerCase() === "status") status = Number(v.join(":").trim().split(" ")[0]);
+        else headers[k!] = v.join(":").trim();
+      }
+      res.writeHead(status, headers);
+      sent = true;
+      res.write(head.subarray(end + 4));
+    });
+    child.stdout.on("end", () => res.end());
+  };
+}
+
 /** Envoy flushes its access log on an interval, so a line is waited for, not read at once. */
 async function line(pattern: RegExp): Promise<void> {
   for (let i = 0; i < 50 && !pattern.test(pod.output()); i++) await new Promise((r) => setTimeout(r, 100));
@@ -103,11 +167,16 @@ function slot3(): RigSlot {
       binding("SECOND_SERVICE_TOKEN", "a.test", a.port, ["authorization"]),
       binding("LITELLM_KEY", LAN, b.port, ["authorization", "x-api-key"], ["/v1/messages"]),
       binding("UNTRUSTED_KEY", "d.test", d.port, ["x-api-key"]),
+      // The token of a push over https, which git sends in a Basic pair (ADR-0068).
+      { ...binding("push_git", "git.test", git.port, ["authorization"]), holder: "effector", basic: true },
+      { ...binding("push_open", "open.test", open.port, ["authorization"]), holder: "effector", basic: true },
     ],
     egress: [
       rule("a.test", a.port, "name", true, "held"),
       rule(LAN, b.port, "address", true, "held"),
       rule("d.test", d.port, "name", true, "held"),
+      rule("git.test", git.port, "name", true, "effector"),
+      rule("open.test", open.port, "name", true, "effector", "entry"),
       rule("c.test", c.port, "name", false, "entry"),
       rule("raw.test", echo.port, "name", false, "entry"),
       rule("ssh.test", ssh.port, "name", false, "repo"),
@@ -152,13 +221,18 @@ const slot0: RigSlot = {
 };
 
 before(async () => {
-  [a, b, c, d, wild] = await Promise.all([
+  [a, b, c, d, wild, git, open] = await Promise.all([
     startUpstream("a.test"),
     startUpstream(),
     startUpstream("c.test"),
     startUpstream("d.test"),
     startUpstream("x.wild.test"),
+    startUpstream("git.test"),
+    startUpstream("open.test"),
   ]);
+  gitRoot = await mkdtemp(join(tmpdir(), "jr2-custodian-git-"));
+  await gitIn(gitRoot, "init", "-q", "--bare", "app.git");
+  git.handler = gitHttpBackend(gitRoot, `Basic ${Buffer.from(`x-access-token:${VALUES.push_git}`).toString("base64")}`);
   [web, orchestrator, harness] = await Promise.all([
     startHttpTarget(),
     startHttpTarget(),
@@ -171,13 +245,15 @@ before(async () => {
   slots = [slot0, slot3(), slot4()];
   pod = await startCustodianPod({
     slots,
-    upstreamCas: [a.ca.cert, b.ca.cert, c.ca.cert, wild.ca.cert],
+    upstreamCas: [a.ca.cert, b.ca.cert, c.ca.cert, wild.ca.cert, git.ca.cert, open.ca.cert],
     orchestrator: { host: LAN, port: orchestrator.port },
     names: {
       "a.test": LAN,
       "c.test": LAN,
       "d.test": LAN,
       "x.wild.test": LAN,
+      "git.test": LAN,
+      "open.test": LAN,
       "loop.wild.test": "127.0.0.1",
       "raw.test": LAN,
       "ssh.test": LAN,
@@ -196,7 +272,8 @@ before(async () => {
 
 after(async () => {
   await pod?.stop();
-  await Promise.all([a, b, c, d, wild].map((u) => u?.close()));
+  await Promise.all([a, b, c, d, wild, git, open].map((u) => u?.close()));
+  if (gitRoot) await rm(gitRoot, { recursive: true, force: true });
   await Promise.all([web, orchestrator, harness, echo, ssh].map((t) => t?.close()));
 });
 
@@ -422,6 +499,111 @@ describe("toward a bound host (an Intercepted host of the slot)", () => {
     const r = await viaA({ headers: { "x-api-key": key("ANTHROPIC_API_KEY"), "x-jr2-slot": "body/coder" } });
     assert.equal(r.status, 200, r.body);
     assert.equal(a.seen.at(-1)?.headers["x-jr2-slot"], undefined);
+  });
+});
+
+describe("a secret that rides Basic: a push's token (ADR-0068, ADR-0059)", () => {
+  const basicOf = (user: string, password: string) => `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
+  const viaGit = (opts: Omit<Parameters<typeof httpsVia>[2], "ca"> = {}) =>
+    httpsVia(pod.at(3, "git.test", git.port), "git.test", {
+      authority: `git.test:${git.port}`,
+      ca: pod.trust(3),
+      path: "/app.git/info/refs?service=git-receive-pack",
+      ...opts,
+    });
+
+  test("B1. a Basic pair whose password is the Stand-in: the password becomes the value, and the user stays", async () => {
+    for (const scheme of ["Basic", "basic"]) {
+      const r = await viaGit({
+        headers: { authorization: basicOf("x-access-token", key("push_git")).replace("Basic", scheme) },
+      });
+      assert.equal(r.status, 200, r.body);
+      assert.equal(
+        git.seen.at(-1)?.headers.authorization,
+        `${scheme} ${basicOf("x-access-token", VALUES.push_git).slice(6)}`,
+      );
+    }
+    // Another user is kept as it is: only the password is swapped.
+    await viaGit({ headers: { authorization: basicOf("bot", key("push_git")) } });
+    assert.equal(git.seen.at(-1)?.headers.authorization, basicOf("bot", VALUES.push_git));
+    // A pair whose password is not the Stand-in, or one that is no base64, swaps nothing: 403.
+    const before = git.seen.length;
+    for (const value of [basicOf(key("push_git"), "x"), basicOf("x-access-token", "wrong"), "Basic %%%"]) {
+      const r = await viaGit({ headers: { authorization: value } });
+      assert.equal(r.status, 403, value);
+      assert.match(r.body, /needs the stand-in of push_git in authorization/);
+    }
+    assert.equal(git.seen.length, before, "nothing reached the target");
+  });
+
+  test("B2. no credential → 401 with WWW-Authenticate: Basic, and nothing reaches the target; toward a host that an entry also names, it is carried with no credential", async () => {
+    const before = git.seen.length;
+    const r = await viaGit();
+    assert.equal(r.status, 401, r.body);
+    assert.equal(r.headers["www-authenticate"], 'Basic realm="jr2"');
+    assert.match(r.body, /git\.test:\d+ needs a credential/);
+    assert.equal(git.seen.length, before);
+    // Open: carried, with every credential header removed; the host answers for itself.
+    const carried = await httpsVia(pod.at(3, "open.test", open.port), "open.test", {
+      authority: `open.test:${open.port}`,
+      ca: pod.trust(3),
+      headers: { "x-api-key": "not-a-stand-in" },
+    });
+    assert.equal(carried.status, 200, carried.body);
+    assert.equal(open.seen.at(-1)?.headers["x-api-key"], undefined);
+    assert.equal(open.seen.at(-1)?.headers.authorization, undefined);
+  });
+
+  test("B3. git push over https through the Custodian: the first request gets the 401, the helper's pair carries the Stand-in, and the server gets the token", async () => {
+    const work = await mkdtemp(join(tmpdir(), "jr2-custodian-push-"));
+    // The Fence brings a connection to the slot's listener whatever address a client dials; here a
+    // relay on a loopback address of its own, on the target's port, does it, so git's url and Host
+    // name the target as a Sandbox's git would.
+    const to = pod.at(3, "git.test", git.port);
+    const relay = createNetServer((inbound) => {
+      const outbound = connect(to.port, to.host);
+      inbound.pipe(outbound).pipe(inbound);
+      inbound.on("error", () => outbound.destroy());
+      outbound.on("error", () => inbound.destroy());
+    });
+    await new Promise<void>((resolve) => relay.listen(git.port, "127.66.0.1", resolve));
+    try {
+      const ca = join(work, "ca.crt");
+      await writeFile(ca, pod.trust(3));
+      await gitIn(work, "init", "-q", "-b", "main", "src");
+      const src = join(work, "src");
+      await writeFile(join(src, "README.md"), "pushed through the Custodian\n");
+      await gitIn(src, "add", "README.md");
+      await gitIn(src, "-c", "user.name=suite", "-c", "user.email=suite@jr2.test", "commit", "-q", "-m", "first");
+      const helper = `!f() { echo username=x-access-token; echo password=${key("push_git")}; }; f`;
+      const before = git.seen.length;
+      await gitIn(
+        src,
+        "-c",
+        `http.sslCAInfo=${ca}`,
+        "-c",
+        `http.curloptResolve=git.test:${git.port}:127.66.0.1`,
+        "-c",
+        "credential.helper=",
+        "-c",
+        `credential.helper=${helper}`,
+        "push",
+        `https://git.test:${git.port}/app.git`,
+        "HEAD:refs/heads/main",
+      );
+      const sent = git.seen.slice(before);
+      const expected = basicOf("x-access-token", VALUES.push_git);
+      assert.ok(sent.length >= 2, `git sent ${sent.length} requests`);
+      assert.ok(
+        sent.every((r) => r.headers.authorization === expected),
+        "each request the server got carried the token, never the Stand-in, and none came with no credential",
+      );
+      const log = await gitIn(join(gitRoot, "app.git"), "log", "--format=%s", "main");
+      assert.equal(log.trim(), "first", "the server holds the pushed commit");
+    } finally {
+      await new Promise((r) => relay.close(r));
+      await rm(work, { recursive: true, force: true });
+    }
   });
 });
 

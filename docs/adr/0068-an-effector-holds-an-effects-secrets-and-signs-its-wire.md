@@ -318,6 +318,15 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   inside the connection. A credentialed command's secrets and a secret in a url's path stay values there too. Workspace
   code in the pod can reach a Stand-in of the Effector only as it can reach the Effector's other files: not at all,
   because it executes nothing in that container (ADR-0005).
+  - The Stand-in of a header secret is the Sandbox's own, which the provision writes into `<sandbox>-standins` and
+    projects into the Effector's `/run/jr2/secrets` alone, never into the Harness container. The Stand-in of a push
+    token is its `git.credentials` entry's: `jr2 up` writes it as `password` in the entry's push Secret, which the
+    operator projects, and writes the token as `token`, which the operator does not project and the Custodian reads.
+  - The Custodian swaps only what it can find (ADR-0059): the Stand-in alone, one scheme and the Stand-in, or the
+    password of a Basic pair. `jr2 up` refuses, with the fix, a header of a file-body `http` that holds a secret in
+    another form (a Basic user from a secret, text on both sides of it), and a secret that such a header holds and that
+    a credentialed command or a url's path of the same Effector also names: one file cannot hold both the value and the
+    Stand-in. Name two secrets.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
   in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
@@ -438,7 +447,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
     — the targets its file-body `http`s call, and `commands: true` when it holds a credentialed command;
   - the **manifest** `effector-<pod>.json` in `jr2-held` beside the pod's Held manifest: names only — the projected
     sources of the Effector's `/run/jr2/secrets` (that Secret's keys, and each `valueFrom` key of the user's own Secret
-    by reference) and its pushes by Repo Slot (`pushes: [{ slot, sign }]`).
+    by reference), its pushes by Repo Slot (`pushes: [{ slot, sign }]`), and each secret whose file is its Stand-in
+    (`standIns`), by its binding in the pod's Held manifest.
 
   No push credential is placed per Workspace (ADR-0051). `jr2 up` writes each `git.credentials` entry's push and sign
   credentials into that entry's own Secret (ADR-0051), and at provision the Orchestrator matches each pushed slot's url

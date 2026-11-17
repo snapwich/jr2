@@ -235,6 +235,9 @@ export class E2EWorld {
   /** This scenario's Effect secret (ADR-0068): the kind instance's `echo-token`, which only the
    * Instance Effector holds. The steps look for every form of it in what came back. */
   echoToken?: string;
+  /** This scenario's `echo-bearer` (ADR-0068): the bearer of the `effected` workflow's file-body
+   * http, which the Custodian holds for that Sandbox Effector; the Effector holds its Stand-in. */
+  echoBearer?: string;
   /** @kind and @model: the fake remote MCP server this scenario's pods reach (ADR-0079), on the
    * host. See `fake-mcp.ts`. */
   mcp?: FakeMcp;
@@ -340,6 +343,8 @@ export class E2EWorld {
     // `called` and `asked` workflows name it, so every converge places it in the Instance Effector.
     this.echoToken = `echo-${randomBytes(12).toString("hex")}`;
     this.extraEnv.JR2_ECHO_TOKEN = this.echoToken;
+    this.echoBearer = `bearer-${randomBytes(12).toString("hex")}`;
+    this.extraEnv.JR2_ECHO_BEARER = this.echoBearer;
     this.echoUrl = `https://${address}:${this.provider.echo.port}/`;
     this.extraEnv.JR2_ECHO_URL = this.echoUrl;
     // The `dispatched` workflow's target (ADR-0071): this Instance's own Orchestrator, by its

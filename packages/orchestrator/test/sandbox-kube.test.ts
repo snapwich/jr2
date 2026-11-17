@@ -1395,6 +1395,8 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
     targets: [],
     pushes: [{ slot: "app", sign: false }],
     commands: true,
+    custodian: [],
+    custodianValues: {},
     effects: ["w/publish"],
   };
   const { manifest } = sandboxEffectorObjectsOf(plan);
@@ -1502,6 +1504,8 @@ async function pushingHeld(slot: string, sign: boolean, push = PUSH_MANIFEST): P
     targets: [],
     pushes: [{ slot, sign }],
     commands: false,
+    custodian: [],
+    custodianValues: {},
     effects: ["w/publish"],
   };
   await writeFile(
@@ -2837,6 +2841,8 @@ test("a secret named `git` takes no path of the push credentials, which the oper
     targets: [],
     pushes: [{ slot: "app", sign: false }],
     commands: false,
+    custodian: [],
+    custodianValues: {},
     effects: ["w/publish", "w/send"],
   };
   const { manifest, secret } = sandboxEffectorObjectsOf(plan);

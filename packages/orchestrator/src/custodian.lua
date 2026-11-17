@@ -81,22 +81,64 @@ local function tag(handle, key, value)
 end
 
 -- `mark`, when given, is the `x-jr2-custodian` header of the answer: the Orchestrator's dial reads
--- it to tell the Custodian's own refusal from a Harness pod's answer (ADR-0084).
-local function refuse(handle, status, reason, body, mark)
+-- it to tell the Custodian's own refusal from a Harness pod's answer (ADR-0084). `extra` adds
+-- headers to the answer (the 401's `www-authenticate`).
+local function refuse(handle, status, reason, body, mark, extra)
   tag(handle, "action", "refuse")
   tag(handle, "reason", reason)
   tag(handle, "log", true)
   local headers = { [":status"] = tostring(status), ["content-type"] = "text/plain" }
   if mark ~= nil then headers["x-jr2-custodian"] = mark end
+  for k, v in pairs(extra or {}) do headers[k] = v end
   handle:respond(headers, "jr2 custodian: " .. body .. "\n")
 end
 
--- The swap, in the two forms a client writes a key in: the Stand-in alone (`x-api-key`), or one
--- auth scheme then the Stand-in (`Authorization: Bearer`). Nothing else is ever rewritten.
+-- Base64 of RFC 4648, the standard alphabet, padded: what a Basic header holds. Arithmetic only,
+-- so it needs no library of the Lua state.
+local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_INDEX = {}
+for i = 1, 64 do B64_INDEX[B64:sub(i, i)] = i - 1 end
+
+local function b64encode(s)
+  local out = {}
+  for i = 1, #s, 3 do
+    local a, b, c = s:byte(i, i + 2)
+    local n = a * 65536 + (b or 0) * 256 + (c or 0)
+    local q = { math.floor(n / 262144) % 64, math.floor(n / 4096) % 64, math.floor(n / 64) % 64, n % 64 }
+    out[#out + 1] = B64:sub(q[1] + 1, q[1] + 1) .. B64:sub(q[2] + 1, q[2] + 1) ..
+      (b == nil and "=" or B64:sub(q[3] + 1, q[3] + 1)) .. (c == nil and "=" or B64:sub(q[4] + 1, q[4] + 1))
+  end
+  return table.concat(out)
+end
+
+-- The bytes of a padded base64 text, or nil when it is not one.
+local function b64decode(s)
+  if #s == 0 or #s % 4 ~= 0 or not s:match("^[A-Za-z0-9+/]+=?=?$") then return nil end
+  local out = {}
+  for i = 1, #s, 4 do
+    local chunk = s:sub(i, i + 3)
+    local pad = select(2, chunk:gsub("=", ""))
+    local n = 0
+    for j = 1, 4 do n = n * 64 + (B64_INDEX[chunk:sub(j, j)] or 0) end
+    local bytes = string.char(math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256)
+    out[#out + 1] = bytes:sub(1, 3 - pad)
+  end
+  return table.concat(out)
+end
+
+-- The swap, in the three forms a client writes a key in: the Stand-in alone (`x-api-key`), one auth
+-- scheme then the Stand-in (`Authorization: Bearer`), or a Basic pair whose password is the
+-- Stand-in (git's token push, ADR-0068): the pair is decoded, its password becomes the value, and it
+-- is encoded again. Nothing else is ever rewritten.
 local function swapped(value, standIn, secret)
   if value == standIn then return secret end
   local scheme, rest = value:match("^([A-Za-z][A-Za-z0-9._~+/-]*) (.+)$")
   if scheme ~= nil and rest == standIn then return scheme .. " " .. secret end
+  if scheme ~= nil and scheme:lower() == "basic" then
+    local pair = b64decode(rest)
+    local user, password = (pair or ""):match("^([^:]*):(.*)$")
+    if password ~= nil and password == standIn then return scheme .. " " .. b64encode(user .. ":" .. secret) end
+  end
   return nil
 end
 
@@ -104,12 +146,18 @@ end
 -- product of a swap or gone, and a request that swapped nothing never leaves, unless the target is
 -- `open`: an Intercepted host that no secret is bound to, or a bound host that the Egress list also
 -- names (ADR-0084). Such a request leaves with every credential header removed.
+--
+-- A request that carries no credential header at all, to a target that is not open and whose
+-- secret rides Basic, gets 401 with `WWW-Authenticate: Basic`: git sends no credential before a
+-- 401, and only then asks its helper for the Stand-in (ADR-0059).
 local function hold(handle, headers, bound, target, path, open)
   local creds = credentialHeaders(bound)
+  local sent = false
   for h in pairs(creds) do
     if headers:getNumValues(h) > 1 then
       return refuse(handle, 400, "credential", target .. " got header " .. h .. " more than once")
     end
+    if headers:get(h) ~= nil then sent = true end
   end
   local done = {}
   local names = {}
@@ -145,6 +193,14 @@ local function hold(handle, headers, bound, target, path, open)
     tag(handle, "secret", "")
     tag(handle, "log", true)
     return
+  end
+  if #names == 0 and not sent then
+    for _, s in ipairs(bound) do
+      if s.basic then
+        return refuse(handle, 401, "basic", target .. " needs a credential", nil,
+          { ["www-authenticate"] = 'Basic realm="jr2"' })
+      end
+    end
   end
   if #names == 0 then
     local wanted, where = {}, {}

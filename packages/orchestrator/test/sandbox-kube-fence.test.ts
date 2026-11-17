@@ -13,7 +13,10 @@ import { join } from "node:path";
 import type { CustodianClient } from "../src/custodian-client.ts";
 import { FENCE_PLACEHOLDERS, FENCE_SEGMENT } from "../src/egress.ts";
 import type { SlotReport } from "../src/fence-slots.ts";
-import { EMPTY_HELD, workspaceHeldPod } from "../src/held-secrets.ts";
+import { EMPTY_HELD, gitPushStandIn, workspaceHeldPod } from "../src/held-secrets.ts";
+import { GIT_PUSH_MANIFEST_KEY, gitPushSecretName } from "../src/git-push.ts";
+import { effectorManifestKey, sandboxEffectorObjectsOf } from "../src/sandbox-effector.ts";
+import { readSlotSecret } from "../src/custodian-slot.ts";
 import { kubeClient } from "../src/kube-client.ts";
 import { issueCa } from "../src/pki.ts";
 import type { PlacementRoute } from "../src/parts.ts";
@@ -324,4 +327,71 @@ test("sandboxSidecars: the in-pod Custodian when the composition has one, never 
     sandboxSidecars(inPod, user, effector).map((s) => s.name),
     ["custodian", "user", "effector"],
   );
+});
+
+test("a push over https on the Fence: the slot binds the entry's token toward the url's host, with the entry's Stand-in (ADR-0068)", async () => {
+  const c = custodian();
+  const k = cluster(c.client);
+  const heldDir = await mkHeld();
+  const pod = workspaceHeldPod({ workflow: "coding", route: [] });
+  const plan = {
+    placement: "sandbox" as const,
+    pod,
+    label: "coding",
+    secrets: [],
+    values: {},
+    custodian: [],
+    custodianValues: {},
+    targets: [],
+    pushes: [{ slot: "app", sign: false }],
+    commands: false,
+    effects: ["coding/publish"],
+  };
+  await writeFile(join(heldDir, effectorManifestKey(pod)), JSON.stringify(sandboxEffectorObjectsOf(plan).manifest));
+  const secret = gitPushSecretName("*");
+  await writeFile(
+    join(heldDir, GIT_PUSH_MANIFEST_KEY),
+    JSON.stringify({ version: 1, entries: [{ match: "*", order: 0, secret, push: ["token"] }] }),
+  );
+  const p = kubeSandbox({
+    imagesPath: await mkImages(),
+    heldDir,
+    signingKey: Buffer.from("k"),
+    repos,
+    client: k.client,
+    watch: k.watch,
+    harnessFetch: k.harnessFetch,
+    fence: k.fence,
+    credentials: [{ match: "*", token: "T" }],
+  });
+  await p.place(
+    {
+      name: "ws-push",
+      runId: "run-1",
+      workflow: "coding",
+      path: "ws",
+      route: [] as PlacementRoute,
+      repos: [{ slot: "app", url: "https://git.example.test:8443/acme/app.git", perRun: true }],
+    },
+    { onWait: () => {} },
+  );
+  const data = k.api.object("secrets", "jr2-custodian-slot-3").data as Record<string, string>;
+  const { spec } = readSlotSecret(data);
+  const binding = spec.manifest.secrets.find((s) => s.push);
+  assert.deepEqual(
+    [binding?.source, binding?.hosts.map((h) => `${h.host}:${h.port}`), binding?.basic, binding?.holder],
+    [{ kind: "secret", secret, key: "token" }, ["git.example.test:8443"], true, "effector"],
+  );
+  assert.deepEqual(
+    spec.manifest.egress.find((r) => r.host === "git.example.test"),
+    { host: "git.example.test", port: 8443, match: "name", intercept: true, from: ["effector"] },
+  );
+  assert.equal(
+    Buffer.from(data[`values.${binding!.name}.standin`]!, "base64").toString(),
+    gitPushStandIn(Buffer.from("k"), secret),
+    "the entry's Stand-in, which its push Secret holds as `password`",
+  );
+  // The operator projects the entry's Secret into the Effector; the CR names it.
+  const cr = applies(k.api, "sandboxes/ws-push")[0]!.body;
+  assert.deepEqual(cr.spec.gitCredentials, [{ name: secret }]);
 });

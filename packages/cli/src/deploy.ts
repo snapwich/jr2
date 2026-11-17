@@ -1061,12 +1061,13 @@ export const ANNOTATION_CUSTODIAN_CONFIG_DIGEST = "jr2.dev/custodian-config-dige
 
 /**
  * Each Secret that the Custodian's control process may read, other than the slot Secrets and the
- * dial token (ADR-0084): each pod's `jr2-held-secrets-<pod>` that holds a literal, and each Secret of
- * the user's that a held secret's `secretKeyRef` names. Sorted, once each. Its Role names these and
+ * dial token (ADR-0084): each pod's `jr2-held-secrets-<pod>` that holds a literal, each Secret of
+ * the user's that a held secret's `secretKeyRef` names, and each push Secret in `pushes`, whose
+ * `token` the Custodian swaps into a push (ADR-0068). Sorted, once each. Its Role names these and
  * no other Secret, so it cannot read `jr2-instance`, the signing key.
  */
-export function custodianValueSecrets(held: HeldObjects): string[] {
-  const names = new Set<string>();
+export function custodianValueSecrets(held: HeldObjects, pushes: readonly string[] = []): string[] {
+  const names = new Set<string>(pushes);
   for (const pod of held.pods) {
     if (Object.keys(pod.values).length > 0) names.add(heldSecretsSecret(pod.pod));
     for (const binding of pod.manifest.secrets) {

@@ -222,6 +222,12 @@ push, a secret in the path of a url, and each secret of a `command`. The Effecto
 call, or into the environment of a `command`. The Agent executes nothing in the Effector, and the Orchestrator never
 holds the value. [Effects](effects.md) tells which Effects run in which Effector.
 
+The Custodian swaps a Stand-in in three forms: the Stand-in alone, one scheme and the Stand-in (`Bearer <Stand-in>`),
+and the password of a Basic credential. `jr2 up` refuses a header that holds an Effect secret in another form, such as a
+Basic user name from a secret. It also refuses a secret that a header of a Sandbox Effector's `http` holds and that a
+`command` or a url path of the same Effector names, because one file cannot hold both the value and the Stand-in. Give
+each use its own secret.
+
 A `command` that names an Effect secret can run the Agent's code, such as `npm run deploy`. It runs on a copy of one
 commit of the Agent's branch, in its scratch folder. Because the command can run the Agent's code, the Effector confines
 the process of the command with Landlock. The process can read and run the system files of the image. It can use its own

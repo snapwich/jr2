@@ -3773,6 +3773,37 @@ Then("the run's Sandbox pod has a Sandbox Effector beside the Agent", async func
   for (const m of harness.volumeMounts ?? []) assert.ok(!m.name.startsWith("effector"), `the Harness mounts ${m.name}`);
 });
 
+/** The Custodian holds a Sandbox Effector's bearer (ADR-0068): the Effector container's file of
+ * `echo-bearer` is its Stand-in, and no file and no process env of that container holds the value. */
+Then(
+  "the Sandbox Effector holds the bearer's Stand-in, and no file or env of its container holds the value",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    assert.ok(this.echoBearer, "setupKind made this scenario's bearer");
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const file = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "effector",
+      "--",
+      RUNTIME_NODE,
+      "-e",
+      'process.stdout.write(require("fs").readFileSync("/run/jr2/secrets/echo-bearer","utf8"))',
+    ]);
+    assert.match(file, /^jr2-held-effector_echo_2dbearer\.[A-Za-z0-9_-]+$/, "the file is the bearer's Stand-in");
+    const out = await kubectlInput(
+      this,
+      ["exec", "-i", `pod/${pod}`, "-c", "effector", "--", RUNTIME_NODE, "-e", KEY_SCAN],
+      this.echoBearer,
+    );
+    assert.equal(out.trim(), "CLEAN", `the Effector container holds the bearer's value: ${out}`);
+  },
+);
+
+/** The echo answers each header it got: the Authorization it got is the bearer's VALUE, which the
+ * Custodian put in place of the Stand-in that the Effector sent (ADR-0068, ADR-0059). The Effector
+ * holds only the Stand-in, so the value that the echo hands back is not the Effector's to scrub. */
 Then(
   "the file-body http's answer is a response from the echo, whose body is the committed file",
   async function (this: E2EWorld): Promise<void> {
@@ -3780,8 +3811,11 @@ Then(
     assert.equal(output.outcome, "response", JSON.stringify(output));
     assert.equal(output.status, 200);
     assert.match(String(output.body), /\nbody report of the run\n/, "the Worktree file was the body");
-    assert.ok(this.echoToken);
-    assert.equal(leakOf(JSON.stringify(output), this.echoToken), undefined, "the answer holds no form of the token");
+    assert.ok(this.echoBearer);
+    assert.ok(
+      String(output.body).split("\n").includes(`header authorization raw Bearer ${this.echoBearer}`),
+      `the echo got the bearer's value: ${String(output.body)}`,
+    );
   },
 );
 
@@ -4110,10 +4144,10 @@ Then(
     assert.ok(seen, "what the takeover was sent was read while the run was live");
     assert.match(seen, /^POST \/effects\//m, "it received the start");
     assert.match(seen, /x-jr2-signature:/i, "the start was signed");
-    assert.match(seen, /"secret":"echo-token"/, "it names the secret");
-    assert.ok(this.echoToken);
-    assert.equal(leakOf(seen, this.echoToken), undefined, "no form of the secret reached it");
-    assert.equal(leakOf(JSON.stringify(output), this.echoToken), undefined);
+    assert.match(seen, /"secret":"echo-bearer"/, "it names the secret");
+    assert.ok(this.echoBearer);
+    assert.equal(leakOf(seen, this.echoBearer), undefined, "no form of the secret reached it");
+    assert.equal(leakOf(JSON.stringify(output), this.echoBearer), undefined);
   },
 );
 

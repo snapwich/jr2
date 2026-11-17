@@ -589,6 +589,9 @@ export type CarriedEffect = {
         /** The secrets that sit in its url's path alone, never in a header or its auth. The
          * Effector holds each, so they bind no host of the Custodian's (ADR-0068, ADR-0084). */
         urlSecrets?: string[];
+        /** Each secret that rides a header (its auth: `authorization`), by the header's lowercase
+         * name, and the form it rides in: what the Custodian swaps for a Sandbox Effector (ADR-0068). */
+        headerSecrets?: HeaderSecret[];
         idempotent: boolean;
         file?: true;
         open?: Array<"url" | "secret">;
@@ -988,6 +991,50 @@ export function placedEffectsOf(root: AnyStateMachine): CarriedEffect[] {
   return effects;
 }
 
+/**
+ * One secret in one header of an http Effect, and its form (ADR-0059's swap): `value` (the secret
+ * alone), `scheme` (one auth scheme, a space, the secret), `basic` (the password of a `basic` auth
+ * whose user is text), or `other` (any other mix of text and secrets, which the Custodian cannot
+ * swap: a Sandbox Effector refuses it).
+ */
+export type HeaderSecret = { secret: string; header: string; form: "value" | "scheme" | "basic" | "other" };
+
+/** The form a header's parts give a secret in it (`HeaderSecret`). */
+function headerForms(header: string, text: readonly TextPart[]): HeaderSecret[] {
+  const secrets = [...new Set(text.flatMap((p) => ("secret" in p ? [p.secret] : [])))];
+  const one = secrets.length === 1 ? secrets[0]! : undefined;
+  const last = text.at(-1);
+  const lead = text.length === 2 && "text" in text[0]! ? text[0].text : undefined;
+  const form: HeaderSecret["form"] =
+    one === undefined
+      ? "other"
+      : text.length === 1
+        ? "value"
+        : lead !== undefined && last !== undefined && "secret" in last && /^[A-Za-z][A-Za-z0-9._~+/-]* $/.test(lead)
+          ? "scheme"
+          : "other";
+  return secrets.map((secret) => ({ secret, header, form }));
+}
+
+/** Each secret that rides a header of an http Effect, with its form (`CarriedEffect.headerSecrets`). */
+function headerSecretsOf(parts: Extract<EffectParts, { kind: "http" }>): { headerSecrets?: HeaderSecret[] } {
+  const out: HeaderSecret[] = [];
+  for (const [name, text] of Object.entries(parts.headers)) out.push(...headerForms(name.toLowerCase(), text));
+  const auth = parts.auth;
+  if (auth !== undefined) {
+    if ("bearer" in auth) out.push({ secret: auth.bearer.secret, header: "authorization", form: "scheme" });
+    else if ("basic" in auth) {
+      const user = auth.basic.user.flatMap((p) => ("secret" in p ? [p.secret] : []));
+      const password = headerForms("authorization", auth.basic.password);
+      for (const s of user) out.push({ secret: s, header: "authorization", form: "other" });
+      for (const p of password) {
+        out.push({ ...p, form: p.form === "value" && user.length === 0 ? "basic" : "other" });
+      }
+    } else out.push(...headerForms("authorization", auth.text));
+  }
+  return out.length ? { headerSecrets: out } : {};
+}
+
 /** The secrets of an http Effect that sit in its url alone (`CarriedEffect.urlSecrets`), when any. */
 function urlSecretsOf(parts: Extract<EffectParts, { kind: "http" }>): { urlSecrets?: string[] } {
   if (parts.url === open) return {};
@@ -1045,6 +1092,8 @@ export function carriedEffectOf(
       ...(openParts.length ? { open: openParts as Array<"url" | "secret"> } : {}),
       secrets: [...parts.secrets],
       ...urlSecretsOf(parts),
+      // Only a Sandbox Effector needs it: the Custodian holds its header secrets (ADR-0068).
+      ...(parts.file ? headerSecretsOf(parts) : {}),
       idempotent: parts.idempotent,
       timeoutMs: parts.timeoutMs,
       ...(parts.file ? { file: true as const } : {}),

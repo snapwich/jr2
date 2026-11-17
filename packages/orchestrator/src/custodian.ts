@@ -1121,7 +1121,10 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
               name: opts.credentials.secret,
               items: [
                 { key: keys.controlStandIn, path: "control/standin" },
-                ...manifest.secrets.map((s) => ({ key: heldStandInKey(s.name), path: `standins/${s.name}` })),
+                // A secret the Custodian holds for the Sandbox Effector is none of the Harness's (ADR-0068).
+                ...manifest.secrets
+                  .filter((s) => s.holder === undefined)
+                  .map((s) => ({ key: heldStandInKey(s.name), path: `standins/${s.name}` })),
               ],
             },
           },

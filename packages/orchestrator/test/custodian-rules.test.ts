@@ -589,6 +589,19 @@ test("the Lua table names the slot's values folder, its Sandbox, the control cre
   assert.match(CUSTODIAN_PROGRAM, /HELD\.open/);
 });
 
+test("a secret that rides Basic is marked in the Lua table, so a request with no credential gets the 401 git waits for (ADR-0068)", () => {
+  const manifest = {
+    ...SANDBOX_MANIFEST,
+    secrets: SANDBOX_MANIFEST.secrets.map((s) =>
+      s.name === "GH_TOKEN" ? { ...s, holder: "effector" as const, basic: true as const } : s,
+    ),
+  };
+  const t = renderSlot(inputsOf(3, manifest, { sandbox: "ticket-a1b2c" })).lua.text;
+  assert.match(t, /\{ name = "GH_TOKEN", headers = \{ "authorization" \}, basic = true \}/);
+  assert.doesNotMatch(t, /name = "ANTHROPIC_API_KEY"[^\n]*basic/);
+  assert.match(CUSTODIAN_PROGRAM, /"www-authenticate"\] = 'Basic realm="jr2"'/);
+});
+
 test("the rules hold no value and no secret Stand-in: only names, paths and the public fetch Stand-in", () => {
   const all = JSON.stringify(THREE_SLOTS.map(renderSlot));
   assert.doesNotMatch(all, /jr2-held-(?!JR2_SANDBOX_TOKEN)[A-Z_]+/);

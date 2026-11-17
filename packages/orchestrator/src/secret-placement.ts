@@ -11,8 +11,11 @@
 //   - an Effector: what its Effects name with `secret("name")` — the Instance Effector what its
 //     `http` Effects name and the token of each `dispatch` with a target (ADR-0071; a dispatch with
 //     no target runs in the Orchestrator's own process and names nothing); a Workspace's Sandbox Effector what its file-body `http`s and
-//     credentialed `command`s name. The push credential its `push`es spend is not placed here: the provision
-//     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, ADR-0051);
+//     credentialed `command`s name. Of these, the Custodian holds each bearer, Basic or header secret
+//     of a file-body `http` for it: the secret is a binding of the Workspace's held manifest, toward
+//     the Effect's target, and the Effector's file holds its Stand-in. The push credential its
+//     `push`es spend is not placed here: the provision names the entry the slot's url matches on the
+//     Sandbox, by reference, and binds its token in the Custodian (git-push.ts, ADR-0051);
 //   - the Instance Effector also holds the secret of each Hook with a `mac` verifier, and its fence
 //     takes each host that a Hook's kind declares in `posts`, with no secret (ADR-0068, ADR-0078);
 //   - the Orchestrator gets only the sha-256 digest of the secret of each Hook with a `token`
@@ -34,6 +37,8 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import {
+  effectorBindingName,
+  leafStem,
   parseTarget,
   providerClaims,
   sourceOf,
@@ -131,6 +136,9 @@ export type HeldPodPlan = {
   /** What its Egress list is made of (ADR-0084), beside the hosts its Held secrets are bound to,
    * which `heldSecretsOf` resolves: `egressRulesOf` joins the two. */
   egress: PodEgress;
+  /** The secrets the Custodian holds for its Sandbox Effector (ADR-0068), as bindings of its held
+   * manifest, and the literal values among them by binding name. Absent when there is none. */
+  effector?: { bindings: HeldBinding[]; values: Record<string, string> };
 };
 
 /**
@@ -166,10 +174,18 @@ export type SandboxEffectorPlan = {
   /** The `workspace()`'s Sandbox Image, as written; absent → `images/default`, then the stock
    * Harness. What the Effector runs in when it names no image of its own. */
   sandboxImage?: string;
-  /** Every Effect secret its Effects name, in list order. */
+  /** Every Effect secret its Effects name that it holds as a value, in list order: a credentialed
+   * command's, and one in a url's path. */
   secrets: EffectSecret[];
-  /** The literal values, by name — host-side only. */
+  /** The literal values of `secrets`, by name — host-side only. */
   values: Record<string, string>;
+  /** Every Effect secret that rides a header of its file-body `http`s (a bearer, a Basic password, a
+   * header secret), in list order: the Custodian holds its value toward the Effect's target, and its
+   * file holds its Stand-in (ADR-0068). `binding` is its name in the held manifest. */
+  custodian: Array<{ name: string; binding: HeldBinding }>;
+  /** The literal values of `custodian`, by binding name — host-side only, for the pod's
+   * `jr2-held-secrets-<pod>`. */
+  custodianValues: Record<string, string>;
   /** The targets its file-body `http`s name, with their secrets. */
   targets: EffectorTargetConfig[];
   /** Its pushes, by Repo Slot: what the provision resolves to an entry's push Secret. */
@@ -220,6 +236,7 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk, opts
   for (const ws of walk.workspaces) {
     refuseWithNoSlot(ws);
     pushesOf(config, ws);
+    custodianHeldOf(ws);
   }
 }
 
@@ -358,7 +375,13 @@ export function secretPlacementsOf(
     // Two plans of one pod key would give a Workspace's Effector another's secrets (ADR-0059).
     if (sandbox.some((p) => p.pod === plan.pod)) throw sharedPodKey(plan.pod, plan.label);
     sandbox.push(plan);
+    // The Custodian of the Workspace's pod holds the Effector's header secrets (ADR-0068).
+    const held = pods.find((p) => p.pod === plan.pod);
+    if (held !== undefined && plan.custodian.length > 0) {
+      held.effector = { bindings: plan.custodian.map((c) => c.binding), values: plan.custodianValues };
+    }
     const holds = plan.secrets.map((s) => s.name);
+    const forIt = plan.custodian.map((c) => c.name);
     // Exact for a slot the Machine binds; for one the run or a customize() binds, the entry is
     // the one its url matches at provision (ADR-0051).
     const pushes = plan.pushes.map(
@@ -371,6 +394,7 @@ export function secretPlacementsOf(
     report.push(
       `${plan.label}: Sandbox Effector (image ${plan.image ?? "the Sandbox Image"}) holds ` +
         `${holds.length ? holds.join(", ") : "no Effect secret"}` +
+        `${forIt.length ? `; the Custodian holds ${forIt.join(", ")} for it` : ""}` +
         `${pushes.length ? `; pushes ${pushes.join(", ")}` : ""}`,
     );
   }
@@ -386,7 +410,24 @@ function sandboxPlanOf(
   values: Record<string, string>,
 ): SandboxEffectorPlan {
   const named = new Set(ws.pod.effects.flatMap((e) => e.secrets ?? []));
-  const own = secrets.filter((s) => named.has(s.name));
+  const custodian = custodianHeldOf(ws);
+  const own = secrets.filter((s) => named.has(s.name) && !custodian.has(s.name));
+  const bindings: Array<{ name: string; binding: HeldBinding }> = [];
+  const custodianValues: Record<string, string> = {};
+  for (const s of secrets) {
+    const held = custodian.get(s.name);
+    if (held === undefined) continue;
+    const binding: HeldBinding = {
+      name: effectorBindingName(s.name),
+      source: s.source,
+      hosts: held.hosts.map((h) => ({ ...h, leaf: leafStem(h.host, h.port) })),
+      headers: held.headers,
+      holder: "effector",
+      ...(held.basic ? { basic: true as const } : {}),
+    };
+    bindings.push({ name: s.name, binding });
+    if (s.source.kind === "literal" && values[s.name] !== undefined) custodianValues[binding.name] = values[s.name]!;
+  }
   const targets: EffectorTargetConfig[] = [];
   for (const effect of ws.pod.effects) {
     if (effect.kind !== "http") continue;
@@ -407,12 +448,68 @@ function sandboxPlanOf(
     ...(ws.pod.effector ? { image: ws.pod.effector.image } : {}),
     ...(ws.pod.image !== undefined ? { sandboxImage: ws.pod.image } : {}),
     secrets: own,
-    values: Object.fromEntries(Object.entries(values).filter(([name]) => named.has(name))),
+    values: Object.fromEntries(Object.entries(values).filter(([name]) => own.some((s) => s.name === name))),
+    custodian: bindings,
+    custodianValues,
     targets,
     pushes,
     commands,
     effects: ws.pod.effects.map((e) => `${ws.workflow}/${e.name}`),
   };
+}
+
+/** The longest binding name the Custodian's control process takes (an env name, ADR-0059). */
+const BINDING_NAME_MAX = 128;
+
+type CustodianHeld = { hosts: Array<{ host: string; port: number }>; headers: string[]; basic: boolean };
+
+/**
+ * The secrets that ride a header of the Workspace's file-body `http`s (ADR-0068), by name: the
+ * targets and headers the Custodian binds each to, and whether it rides Basic. Throws, with the fix,
+ * on a form the Custodian cannot swap (ADR-0059: the Stand-in alone, one scheme and the Stand-in, or
+ * a Basic pair whose password is the Stand-in), on a secret that the Effector must also hold as a
+ * value (in a url's path, or in a credentialed command's env: its file holds one of the two), and on
+ * a name too long for a binding.
+ */
+function custodianHeldOf(ws: PlacedWorkspace): Map<string, CustodianHeld> {
+  const out = new Map<string, CustodianHeld>();
+  const asValue = new Map<string, string>();
+  for (const effect of ws.pod.effects) {
+    if (effect.kind === "command") for (const s of effect.secrets ?? []) asValue.set(s, `the command "${effect.name}"`);
+    if (effect.kind === "http") for (const s of effect.urlSecrets ?? []) asValue.set(s, `the url of "${effect.name}"`);
+  }
+  for (const effect of ws.pod.effects) {
+    if (effect.kind !== "http" || effect.target === undefined) continue;
+    const t = effect.target;
+    for (const h of effect.headerSecrets ?? []) {
+      const at = `workflow "${ws.workflow}": the http Effect "${effect.name}" runs in ${workspaceLabel(ws)}`;
+      if (h.form === "other") {
+        throw new Error(
+          `${at}, and its ${h.header} header holds secret("${h.secret}") in a form the Custodian cannot swap: ` +
+            "the Custodian holds a Sandbox Effector's header secret, and swaps its Stand-in when the header is the " +
+            'secret alone, one scheme and the secret ("Token " + secret), or a Basic pair whose user is text and ' +
+            "whose password is the secret (ADR-0068, ADR-0059)",
+        );
+      }
+      const also = asValue.get(h.secret);
+      if (also !== undefined) {
+        throw new Error(
+          `${at}, and secret("${h.secret}") rides its ${h.header} header, where the Custodian holds it, and ${also}, ` +
+            "where the Sandbox Effector holds its value: one file cannot hold both. Name two secrets (ADR-0068)",
+        );
+      }
+      if (effectorBindingName(h.secret).length > BINDING_NAME_MAX) {
+        throw new Error(`${at}, and the name of secret("${h.secret}") is too long for the Custodian (ADR-0068)`);
+      }
+      const known = out.get(h.secret) ?? { hosts: [], headers: [], basic: false };
+      if (!known.hosts.some((x) => x.host === t.host && x.port === t.port))
+        known.hosts.push({ host: t.host, port: t.port });
+      if (!known.headers.includes(h.header)) known.headers.push(h.header);
+      known.basic ||= h.form === "basic";
+      out.set(h.secret, known);
+    }
+  }
+  return out;
 }
 
 /**

@@ -92,7 +92,17 @@ and that holds when Workspace code is root in the Sandbox.
   carries the bytes, and the client sees the real host's certificate or host key.
 - **A bound host needs no entry.** Each host that the Custodian holds a secret for, for a pod's Harness or its Sandbox
   Effector, is permitted for that pod, and it is an Intercepted host. The Custodian refuses a request to it that carries
-  no Stand-in. So Workspace code cannot use the model's host unless its Workspace grants a secret for it.
+  no Stand-in. So Workspace code cannot use the model's host unless its Workspace grants a secret for it. When an entry
+  of the list also names a bound host, the Custodian carries a request with no Stand-in to it, with every credential
+  header removed, so Workspace code can read a public repository on the host that the Sandbox Effector pushes to over
+  HTTPS. A host whose secret rides a Basic pair answers a request with no credential with 401, as ADR-0059 states, so
+  git asks its helper.
+- **The Custodian holds the Sandbox Effector's header secrets.** Each bearer, Basic or header secret of a file-body
+  `http` is a binding of the pod's held manifest toward the Effect's target, and the token of each push over HTTPS is
+  one toward the url's host, which the provision adds, because only the provision knows the url of a slot that the run
+  binds (ADR-0068). The Effector holds the Stand-in of each. The Custodian cannot tell the Effector's connection from
+  the Harness's, because both have the pod's one address, so each such Stand-in is secret, and Workspace code cannot
+  read it.
 - **A host with no secret needs an entry, also when jr2 itself uses it.** Examples are a model endpoint with no key, an
   MCP server with no token and the url of an Effect with no secret. A secret in a url's path stays in the Effector
   (ADR-0068), so the Custodian holds no secret for that host, and it needs an entry too. `jr2 up` refuses to converge

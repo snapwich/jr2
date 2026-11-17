@@ -195,7 +195,42 @@ export type HeldBinding = {
   hosts: HeldHost[];
   headers: string[];
   paths?: string[];
+  /** A secret of the pod's Sandbox Effector (ADR-0068), which the Custodian holds for it: its Stand-in
+   * is a file of the Effector's container, never of the Harness's. Absent: a Held secret of the
+   * Harness. Its name is {@link effectorBindingName} or {@link pushBindingName}. */
+  holder?: "effector";
+  /** It rides a Basic pair (an http Effect's `basic` auth, a token push): a request to its host with
+   * no credential gets 401 with `WWW-Authenticate: Basic`, so git sends its helper's pair. */
+  basic?: true;
+  /** A push token (ADR-0051): its value is the `token` key of the entry's push Secret, and its
+   * Stand-in is the entry's own ({@link gitPushStandIn}), which the push Secret holds as `password`. */
+  push?: true;
 };
+
+/**
+ * The binding name of an Effect secret that the Custodian holds for a Sandbox Effector (ADR-0068):
+ * `effector_` and the secret's name, each character outside `[A-Za-z0-9]` written `_` and its two
+ * hex digits. A Held secret's name is upper case, so no Held name takes this form, and the form is
+ * one to one. It is an env name, as the Custodian's files of values need.
+ */
+export function effectorBindingName(secret: string): string {
+  return `effector_${secret.replace(/[^A-Za-z0-9]/g, (c) => `_${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}`;
+}
+
+/** The binding name of the token of an entry's push Secret (`jr2-git-push-<hash>`): `push_<hash>`. */
+export function pushBindingName(pushSecret: string): string {
+  return `push_${pushSecret.replace(/^jr2-git-push-/, "").replace(/[^A-Za-z0-9]/g, "_")}`;
+}
+
+/**
+ * The Stand-in of an entry's push token (ADR-0068): what `jr2 up` writes as `password` in the
+ * entry's push Secret, which the operator projects into each Sandbox Effector that pushes with the
+ * entry, and what the Custodian swaps for the token (the `token` key). One for each entry, minted
+ * with the signing key, so no process can guess it.
+ */
+export function gitPushStandIn(key: Buffer, pushSecret: string): string {
+  return heldStandIn(key, `@git/${pushSecret}`, "password");
+}
 
 export type HeldHost = { host: string; port: number; leaf: string };
 

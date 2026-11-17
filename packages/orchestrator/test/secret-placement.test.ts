@@ -9,15 +9,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import type { JR2Config } from "../src/config.ts";
-import { heldSecretsOf, workspaceHeldPod } from "../src/held-secrets.ts";
+import { effectorBindingName, heldSecretsOf, leafStem, workspaceHeldPod } from "../src/held-secrets.ts";
 import { partsOf, placedEffectsOf, workspacePodsOf, type CarriedEffect, type WorkspacePod } from "../src/parts.ts";
-import { bearer, file, http, secret } from "../src/http-effect.ts";
+import { basic, bearer, file, http, secret, text } from "../src/http-effect.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { dispatch } from "../src/dispatch-effect.ts";
 import { workspace } from "../src/workspace.ts";
 import { pool, source } from "../src/pool.ts";
 import { fromPromise } from "xstate";
 import { agent } from "../src/harness-client.ts";
+import { sandboxEffectorObjectsOf } from "../src/sandbox-effector.ts";
 import {
   refuseEffectSecrets,
   secretPlacementsOf,
@@ -760,12 +761,17 @@ test("two Workspaces composed through inline plain Machines each get their own S
     ],
   };
   const out = secretPlacementsOf(config, placementOf("w", root));
+  // A bearer of a file-body http: the Custodian of each Workspace's own pod holds it (ADR-0068).
   assert.deepEqual(
-    out.sandbox.map((p) => [p.label, p.secrets.map((s) => s.name)]),
+    out.sandbox.map((p) => [p.label, p.custodian.map((s) => s.name), p.secrets]),
     [
-      ['Workspace of workflow "w" → invoked inline in state "w.one" → "ws"', ["alpha"]],
-      ['Workspace of workflow "w" → invoked inline in state "w.two" → "ws"', ["bravo"]],
+      ['Workspace of workflow "w" → invoked inline in state "w.one" → "ws"', ["alpha"], []],
+      ['Workspace of workflow "w" → invoked inline in state "w.two" → "ws"', ["bravo"], []],
     ],
+  );
+  assert.deepEqual(
+    out.sandbox.map((p) => out.held.find((h) => h.pod === p.pod)?.effector?.bindings.map((b) => b.name)),
+    [["effector_alpha"], ["effector_bravo"]],
   );
   assert.notEqual(out.sandbox[0]!.pod, out.sandbox[1]!.pod, "two pod keys");
   assert.match(
@@ -974,4 +980,129 @@ test("the walk reads which MCP servers a Workspace's Agents and the 'none' Agent
   const [pod] = workspacePodsOf(machine);
   assert.deepEqual(pod?.mcp, [{ slot: "coder", path: [], entry: { server: "slack-acme", tools: ["post_message"] } }]);
   assert.deepEqual(partsOf([machine]).instanceHarness?.servers, ["slack-partner"]);
+});
+
+/** A workflow whose Workspace runs `actors` as file-body https and commands (ADR-0068). */
+const effectorWorkspace = (actors: Record<string, unknown>) => {
+  const inner = jr2Setup({ events: [], actors: actors as never }).createMachine({
+    on: { "workspace.lost": {} },
+    id: "inner",
+  });
+  const ws = workspace(inner, { repos: { app: "https://example.test/app.git" } });
+  return placementOf("w", jr2Setup({ events: [], actors: { ws } }).createMachine({ id: "w", invoke: { src: "ws" } }));
+};
+
+test("the Custodian holds a file-body http's bearer, Basic password and header secret for the Sandbox Effector, whose file holds the Stand-in (ADR-0068)", () => {
+  const put = (auth: unknown, headers?: Record<string, unknown>) =>
+    http({ method: "PUT", url: "https://files.example.com/r", body: file("r"), auth, headers } as never);
+  const placed = effectorWorkspace({
+    one: put(bearer(secret("files"))),
+    two: http({
+      method: "PUT",
+      url: "http://legacy.example.com:8080/r",
+      body: file("r"),
+      auth: basic("deploy", secret("legacy")),
+    }),
+    three: put(undefined, { "x-api-key": text`${secret("key-one")}`, "x-token": text`Token ${secret("key-two")}` }),
+  });
+  const config: JR2Config = {
+    secrets: [
+      { name: "files", value: VALUE },
+      { name: "legacy", valueFrom: { secretKeyRef: { name: "team", key: "legacy" } } },
+      { name: "key-one", value: VALUE },
+      { name: "key-two", value: VALUE },
+    ],
+  };
+  const out = secretPlacementsOf(config, placed, { secretKeys: () => ["legacy"], valueLength: () => 20 });
+  const plan = out.sandbox[0]!;
+  assert.deepEqual(plan.secrets, [], "the Effector holds no value of them");
+  assert.deepEqual(plan.values, {});
+  assert.deepEqual(
+    plan.custodian.map((c) => [c.name, c.binding.name]),
+    [
+      ["files", "effector_files"],
+      ["legacy", "effector_legacy"],
+      ["key-one", "effector_key_2done"],
+      ["key-two", "effector_key_2dtwo"],
+    ],
+  );
+  const binding = (name: string) => plan.custodian.find((c) => c.name === name)!.binding;
+  assert.deepEqual(binding("files"), {
+    name: "effector_files",
+    source: { kind: "literal" },
+    hosts: [{ host: "files.example.com", port: 443, leaf: leafStem("files.example.com", 443) }],
+    headers: ["authorization"],
+    holder: "effector",
+  });
+  assert.deepEqual(binding("legacy").source, { kind: "secret", secret: "team", key: "legacy" });
+  assert.deepEqual(
+    binding("legacy").hosts.map((h) => [h.host, h.port]),
+    [["legacy.example.com", 8080]],
+  );
+  assert.equal(binding("legacy").basic, true, "a Basic password: a request with no credential gets the 401");
+  assert.deepEqual(binding("key-one").headers, ["x-api-key"]);
+  assert.deepEqual(binding("key-two").headers, ["x-token"]);
+  assert.deepEqual(plan.custodianValues, {
+    effector_files: VALUE,
+    effector_key_2done: VALUE,
+    effector_key_2dtwo: VALUE,
+  });
+  // The Workspace's pod: its Custodian holds them, beside its own Held secrets.
+  const held = out.held.find((h) => h.pod === plan.pod)!;
+  assert.deepEqual(
+    held.effector?.bindings.map((b) => b.name),
+    plan.custodian.map((c) => c.binding.name),
+  );
+  // The Effector's objects: no value in its Secret; the provision projects each Stand-in by name.
+  const { secret: own, manifest } = sandboxEffectorObjectsOf(plan);
+  assert.deepEqual(Object.keys(own.stringData), ["effector.json"]);
+  assert.deepEqual(manifest.sources, []);
+  assert.deepEqual(manifest.standIns, [
+    { name: "files", binding: "effector_files" },
+    { name: "legacy", binding: "effector_legacy" },
+    { name: "key-one", binding: "effector_key_2done" },
+    { name: "key-two", binding: "effector_key_2dtwo" },
+  ]);
+  assert.match(
+    out.report.join("\n"),
+    /Sandbox Effector \(image the Sandbox Image\) holds no Effect secret; the Custodian holds files, legacy, key-one, key-two for it/,
+  );
+  assert.notEqual(effectorBindingName("a-b"), effectorBindingName("a_b"), "one to one");
+});
+
+test("a header secret the Custodian cannot swap, or one the Sandbox Effector must also hold as a value, is refused with the fix (ADR-0068)", () => {
+  const config: JR2Config = {
+    secrets: [
+      { name: "user", value: VALUE },
+      { name: "pass", value: VALUE },
+      { name: "aws", value: VALUE },
+    ],
+  };
+  const put = (def: Record<string, unknown>) =>
+    http({ method: "PUT", url: "https://files.example.com/r", body: file("r"), ...def } as never);
+  assert.throws(
+    () => refuseEffectSecrets(config, effectorWorkspace({ up: put({ auth: basic(secret("user"), secret("pass")) }) })),
+    /the http Effect "up" .* authorization header holds secret\("user"\) in a form the Custodian cannot swap/,
+  );
+  assert.throws(
+    () =>
+      refuseEffectSecrets(config, effectorWorkspace({ up: put({ headers: { "x-k": text`a ${secret("aws")} b` } }) })),
+    /its x-k header holds secret\("aws"\) in a form the Custodian cannot swap/,
+  );
+  const deploy = {
+    name: "deploy",
+    path: [],
+    route: [],
+    kind: "command",
+    placement: "sandbox",
+    argv: ["deploy"],
+    timeoutMs: 1000,
+    secrets: ["aws"],
+  } as CarriedEffect;
+  const placed = effectorWorkspace({ up: put({ auth: bearer(secret("aws")) }) });
+  placed.workspaces[0]!.pod.effects.push(deploy);
+  assert.throws(
+    () => secretPlacementsOf(config, placed),
+    /secret\("aws"\) rides its authorization header, where the Custodian holds it, and the command "deploy", where the Sandbox Effector holds its value/,
+  );
 });

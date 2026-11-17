@@ -92,6 +92,7 @@ import {
   LABEL_GIT_CLONE,
   gitCloneSecretsOf,
   gitPushPlansOf,
+  gitPushSecretName,
   repoIdentity,
   type GitPushManifest,
   type SandboxEffectorPlan,
@@ -1010,7 +1011,7 @@ export async function up(args: string[], io: Io): Promise<number> {
         orchestratorImage: refs.orchestrator,
         envoyImage: custodianImage,
         dialToken: custodianDialToken(Buffer.from(signingKey, "base64")),
-        valueSecrets: custodianValueSecrets(held.objects),
+        valueSecrets: custodianValueSecrets(held.objects, pushTokenSecrets(config, placements.sandbox, io.env)),
         upstreamTrust: trustBundles("", caPem).upstream,
         ...(config.sandbox ? { placement: config.sandbox } : {}),
         ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
@@ -1184,7 +1185,15 @@ export async function up(args: string[], io: Io): Promise<number> {
   // --- push credentials (ADR-0051): one Secret per git.credentials entry, never per pod ----
   // After the deploy keys exist (a generated one included), before anything else is applied: a
   // static Binding whose entry cannot push is refused here.
-  const gitPush = await resolveGitPush(io, kube, config, placements.sandbox, namespace, ctx);
+  const gitPush = await resolveGitPush(
+    io,
+    kube,
+    config,
+    placements.sandbox,
+    namespace,
+    ctx,
+    Buffer.from(signingKey, "base64"),
+  );
 
   // --- dispatch preflight (ADR-0071): each foreign target's door, from the host ------------------
   await preflightDispatch(io, carried.effects);
@@ -1889,16 +1898,19 @@ async function resolveHeld(
   // bound to: each is an Intercepted host, which needs no entry. A bound or SSH Repo host that the
   // Fence cannot carry gets no rule, and a warning.
   const ranges = fenceRangesOf(config.fence);
+  // The secrets the Custodian holds for the pod's Sandbox Effector (ADR-0068) are bindings of the same
+  // manifest, after the Harness's own; their hosts are in the Egress parts already (`effector`).
   const pods: HeldPodObjects[] = opts.pods.map((plan) => {
     const secrets = manifest.secrets.filter((b) => plan.names.includes(b.name));
     const parts = { ...plan.egress, held: secrets.flatMap((b) => b.hosts) };
     for (const warning of uncarriedHosts(plan.label, parts, ranges)) activity(io, `warning: ${warning}`);
     const egress = egressRulesOf(parts, ranges);
     activity(io, `${plan.label}: Egress list ${egressText(egress)}`);
-    const own: HeldManifest = { version: 1, secrets, egress };
-    const literals = Object.fromEntries(
-      own.secrets.filter((b) => b.source.kind === "literal").map((b) => [b.name, values[b.name] as string]),
-    );
+    const own: HeldManifest = { version: 1, secrets: [...secrets, ...(plan.effector?.bindings ?? [])], egress };
+    const literals = Object.fromEntries([
+      ...secrets.filter((b) => b.source.kind === "literal").map((b) => [b.name, values[b.name] as string]),
+      ...Object.entries(plan.effector?.values ?? {}),
+    ]);
     return { pod: plan.pod, manifest: own, values: literals };
   });
   if (manifest.secrets.length === 0 && opts.fenced !== true) return { objects: { pods, leaves: {} } };
@@ -1931,6 +1943,23 @@ async function resolveHeld(
     for (const p of pods) for (const t of leafTargets(p.manifest)) leafOf(t.host, leafStem(t.host, t.port));
   }
   return { objects: { pods, ca, leaves }, bundles: trustBundles(ca.cert, opts.caBundle) };
+}
+
+/**
+ * The push Secrets whose `token` the Custodian may read (ADR-0068): each `git.credentials` entry
+ * whose token is set, when a Workspace pushes. Any of them can be the entry that a slot's url
+ * matches at provision, a per-run url included, so the Role names each one.
+ */
+function pushTokenSecrets(
+  config: JR2Config,
+  sandbox: readonly SandboxEffectorPlan[],
+  env: Record<string, string | undefined>,
+): string[] {
+  if (!sandbox.some((p) => p.pushes.length > 0)) return [];
+  return (config.git?.credentials ?? []).flatMap((entry) => {
+    const token = entry.push ? ("token" in entry.push ? entry.push.token : undefined) : entry.token;
+    return token !== undefined && env[token] ? [gitPushSecretName(entry.match)] : [];
+  });
 }
 
 /**
@@ -2149,10 +2178,11 @@ async function resolveGitPush(
   sandbox: readonly SandboxEffectorPlan[],
   namespace: string,
   ctx: { context?: string },
+  signingKey: Buffer,
 ): Promise<GitPushObjects> {
   const none: GitPushObjects = { secrets: [], manifest: { version: 1, entries: [] } };
   if (!sandbox.some((p) => p.pushes.length > 0)) return none;
-  const { plans, skipped } = gitPushPlansOf(config.git?.credentials ?? [], (n) => io.env[n]);
+  const { plans, skipped } = gitPushPlansOf(config.git?.credentials ?? [], (n) => io.env[n], signingKey);
   const read = new Map<string, Record<string, string> | undefined>();
   const dataOf = async (secret: string) => {
     if (!read.has(secret)) {

@@ -171,19 +171,21 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   `jr2 up` refuses an unsigned squash whose entry has neither `sign` nor `committer`.
 - **The pod's maker places the push credential, by reference, when the url is known.** When a registered Machine pushes,
   `jr2 up` writes each entry's push and sign credentials into that entry's own Secret, `jr2-git-push-<hash of match>`
-  (labelled, and deleted when the entry no longer has one), never per Workspace: the token from `.env` in Flux's key
-  names (`username`, `password`); the keys of the Secret its ssh key names, copied as data and never decoded
-  (`identity`, `identity.pub`, `known_hosts`); the signing key as `sign.identity` or `sign.private.asc`; and
-  `entry.json`, what the entry is (its match, what it pushes with, the committer it signs as). An entry with no `push`
-  field pushes with its clone credentials, each over its own scheme, so the scaffold's wildcard holds both. An entry
-  with nothing it can place — its token unset, its key's Secret absent — gets no Secret, and `jr2 up` says why. It
-  writes `git-push.json` in `jr2-held` beside them: which entries have a Secret and what each can spend, names only. At
-  provision the Orchestrator matches each pushed slot's url — static, per-run or `customize()`-bound, one path — against
-  the list (longest prefix, the attach match), and the Sandbox CR carries the matched entry's Secret name
-  (`gitCredentials`, the `secretRef` shape); the operator projects it into the Sandbox Effector alone (ADR-0005). The
-  Custodian holds the value of a push token, and the Effector holds its Stand-in (ADR-0068). The Orchestrator reads no
-  value. The Effector holds only the entries named there and matches a push's url as the provision does, longest match
-  first, and refuses a url outside the entry.
+  (labelled, and deleted when the entry no longer has one), never per Workspace: a token in Flux's key names
+  (`username`, and `password`, which holds the entry's Stand-in), and the token from `.env` as `token`, which the
+  operator does not project and the Custodian swaps into the push
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)); the keys of the Secret its ssh key
+  names, copied as data and never decoded (`identity`, `identity.pub`, `known_hosts`); the signing key as
+  `sign.identity` or `sign.private.asc`; and `entry.json`, what the entry is (its match, what it pushes with, the
+  committer it signs as). An entry with no `push` field pushes with its clone credentials, each over its own scheme, so
+  the scaffold's wildcard holds both. An entry with nothing it can place — its token unset, its key's Secret absent —
+  gets no Secret, and `jr2 up` says why. It writes `git-push.json` in `jr2-held` beside them: which entries have a
+  Secret and what each can spend, names only. At provision the Orchestrator matches each pushed slot's url — static,
+  per-run or `customize()`-bound, one path — against the list (longest prefix, the attach match), and the Sandbox CR
+  carries the matched entry's Secret name (`gitCredentials`, the `secretRef` shape); the operator projects it into the
+  Sandbox Effector alone (ADR-0005). The Custodian holds the value of a push token, and the Effector holds its Stand-in
+  (ADR-0068). The Orchestrator reads no value. The Effector holds only the entries named there and matches a push's url
+  as the provision does, longest match first, and refuses a url outside the entry.
 - **A push is refused with a fix that works, at `jr2 up` for a static Binding and at provision for any url.** One rule
   (`pushRefusal`), and the fix each refusal names is one the same rule then accepts: a url no entry matches (the entry
   to add, its `match` the url's host and directories, so always a prefix of the url); a local path (git's local

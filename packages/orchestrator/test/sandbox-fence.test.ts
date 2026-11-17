@@ -10,7 +10,18 @@ import { createPrivateKey, createPublicKey, X509Certificate } from "node:crypto"
 import { renderSlot } from "../src/custodian-rules.ts";
 import { readSlotSecret, SLOT_SPEC_KEY } from "../src/custodian-slot.ts";
 import { JR2_CUSTODIAN_NAME } from "../src/custodian.ts";
-import { CONTROL_TOKEN_NAME, heldStandIn, leafStem, SANDBOX_TOKEN_NAME } from "../src/held-secrets.ts";
+import {
+  CONTROL_TOKEN_NAME,
+  effectorBindingName,
+  gitPushStandIn,
+  heldStandIn,
+  leafStem,
+  pushBindingName,
+  SANDBOX_TOKEN_NAME,
+  type HeldManifest,
+} from "../src/held-secrets.ts";
+import { heldStandInKey, standInValueFile } from "../src/custodian.ts";
+import { sandboxEffectorVolumes } from "../src/sandbox-kube.ts";
 import { checkAppendOnly, placeholderOf } from "../src/placeholders.ts";
 import {
   fenceComposition,
@@ -20,6 +31,7 @@ import {
   leafTargets,
   podFenceObjects,
   sandboxFenceObjects,
+  withPushTokens,
 } from "../src/sandbox-fence.ts";
 import { issueCa, issueLeaf } from "../src/pki.ts";
 import { sandboxCr, sandboxEffectorContainer } from "../src/sandbox-kube.ts";
@@ -405,4 +417,100 @@ test("a pod that jr2 up makes: Multus's default network is its slot's attachment
     dnsConfig: { nameservers: ["198.19.0.1"], searches: [], options: [{ name: "ndots", value: "1" }] },
   });
   assert.deepEqual(harnessHealthcheck(8080), ["/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8080/healthz"]);
+});
+
+/** A Sandbox's manifest with a secret that the Custodian holds for its Sandbox Effector (ADR-0068). */
+const EFFECTOR_MANIFEST: HeldManifest = {
+  ...SANDBOX_MANIFEST,
+  secrets: [
+    ...SANDBOX_MANIFEST.secrets,
+    {
+      name: effectorBindingName("files-token"),
+      source: { kind: "literal" },
+      hosts: [{ host: "files.example.com", port: 443, leaf: leafStem("files.example.com", 443) }],
+      headers: ["authorization"],
+      holder: "effector",
+    },
+  ],
+  egress: [...SANDBOX_MANIFEST.egress, rule("files.example.com", 443, "name", true, "effector")],
+};
+
+test("a secret the Custodian holds for the Sandbox Effector: its Stand-in is in the Sandbox's Stand-ins and the slot, and the Harness mounts none of it (ADR-0068)", () => {
+  const name = effectorBindingName("files-token");
+  assert.equal(name, "effector_files_2dtoken");
+  const { standIns, slotSecret } = objectsOf({ manifest: EFFECTOR_MANIFEST });
+  const standIn = heldStandIn(KEY, "ws-3", name);
+  assert.equal(text(standIns.data[heldStandInKey(name)]!), standIn);
+  assert.equal(text(slotSecret.data[`values.${standInValueFile(name)}`]!), standIn);
+  const composed = fenceComposition(EFFECTOR_MANIFEST, { sandbox: "ws-3", slot: 7, ranges: RANGES, granted: [name] });
+  const mounted = JSON.stringify(composed.volumes);
+  assert.ok(!mounted.includes(heldStandInKey(name)), "the Harness container mounts no Stand-in of the Effector's");
+  assert.ok(!composed.harnessEnv.some((e) => (e.value ?? "").includes(name)), "and no workspace() grants it");
+  // The Effector's own volume projects it as the file of the secret's own name, beside its trust:
+  // the Sandbox's bundle.crt, with the Sandbox's CA.
+  const volumes = sandboxEffectorVolumes({
+    sandbox: "ws-3",
+    manifest: { version: 1, secret: "jr2-effector-p", sources: [], standIns: [{ name: "files-token", binding: name }] },
+    caBundle: false,
+    fence: true,
+  }) as Array<{ name: string; projected?: { sources: unknown[] }; configMap?: unknown }>;
+  assert.deepEqual(volumes.find((v) => v.name === "effector-secrets")?.projected?.sources, [
+    { secret: { name: "ws-3-standins", items: [{ key: heldStandInKey(name), path: "files-token" }] } },
+  ]);
+  assert.deepEqual(volumes.find((v) => v.name === "effector-ca")?.configMap, {
+    name: "ws-3-trust",
+    items: [{ key: "bundle.crt", path: "ca.crt" }],
+  });
+});
+
+test("a push over https: the provision binds the entry's token toward the url's host, which becomes Intercepted, with the entry's Stand-in (ADR-0068, ADR-0051)", () => {
+  const secret = "jr2-git-push-0a1b2c3d";
+  const pushed = withPushTokens(
+    SANDBOX_MANIFEST,
+    [
+      { secret, host: "git.example.com", port: 443 },
+      { secret, host: "github.com", port: 443 },
+    ],
+    RANGES,
+  );
+  const binding = pushed.secrets.find((s) => s.name === pushBindingName(secret))!;
+  assert.deepEqual(binding, {
+    name: "push_0a1b2c3d",
+    source: { kind: "secret", secret, key: "token" },
+    hosts: [
+      { host: "git.example.com", port: 443, leaf: leafStem("git.example.com", 443) },
+      { host: "github.com", port: 443, leaf: leafStem("github.com", 443) },
+    ],
+    headers: ["authorization"],
+    holder: "effector",
+    basic: true,
+    push: true,
+  });
+  // A new host gets an Intercepted rule; github.com:443, a Tunneled entry, becomes Intercepted and
+  // keeps its entry, so a request with no Stand-in is still carried there (ADR-0084).
+  assert.deepEqual(
+    pushed.egress.find((r) => r.host === "git.example.com"),
+    rule("git.example.com", 443, "name", true, "effector"),
+  );
+  assert.deepEqual(
+    pushed.egress.find((r) => r.host === "github.com" && r.port === 443),
+    rule("github.com", 443, "name", true, "entry", "effector"),
+  );
+  assert.equal(
+    SANDBOX_MANIFEST.egress.find((r) => r.host === "github.com" && r.port === 443)?.intercept,
+    false,
+    "the manifest given is not changed",
+  );
+  assert.equal(withPushTokens(SANDBOX_MANIFEST, [], RANGES), SANDBOX_MANIFEST);
+  assert.throws(
+    () => withPushTokens(SANDBOX_MANIFEST, [{ secret, host: "localhost", port: 443 }], RANGES),
+    /the push to localhost:443 cannot go through the Fence/,
+  );
+  // The slot holds the entry's Stand-in, which the push Secret holds as `password`; the Sandbox's
+  // Stand-ins hold none of it: the operator projects the entry's own.
+  const { standIns, slotSecret } = objectsOf({ manifest: pushed });
+  assert.equal(text(slotSecret.data[`values.${standInValueFile("push_0a1b2c3d")}`]!), gitPushStandIn(KEY, secret));
+  assert.equal(standIns.data[heldStandInKey("push_0a1b2c3d")], undefined);
+  const spec = readSlotSecret(slotSecret.data).spec;
+  assert.equal(spec.manifest.secrets.find((s) => s.name === "push_0a1b2c3d")?.basic, true);
 });

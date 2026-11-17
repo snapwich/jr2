@@ -53,11 +53,15 @@ export default defineConfig({
       },
     ],
   },
-  // The tier's one Effect secret (ADR-0068): the `called` and `asked` workflows' http Effects name
-  // it, so it is placed in the Instance Effector, and the `effected` workflow's file-body http and
-  // credentialed command name it, so it is placed in that Workspace's Sandbox Effector — no
-  // `workspace()` lists it and no provider reads it, so no Custodian holds it. Per scenario, from env like the provider key; in-cluster it reads undefined, which is
-  // safe: the Orchestrator never sees an Effect secret.
+  // The tier's Effect secrets (ADR-0068). `echo-token`: the `called` and `asked` workflows' http
+  // Effects name it, so it is placed in the Instance Effector, and the `effected` workflow's
+  // credentialed commands name it, so that Workspace's Sandbox Effector holds its value. The
+  // `shared` workflow's file-body http sends it as a bearer, so the Custodian of that Workspace's pod
+  // holds it, and its Sandbox Effector holds its Stand-in. `echo-bearer`: the `effected` workflow's
+  // file-body http sends it as a bearer, so the Custodian holds it for that Sandbox Effector — a
+  // second name, because one file of the Effector cannot hold both the value a command reads and the
+  // Stand-in the Custodian swaps. Per scenario, from env like the provider key; in-cluster each
+  // reads undefined, which is safe: the Orchestrator never sees an Effect secret.
   //
   // `self-token` is the `dispatched` workflow's (ADR-0071): the target token its dispatch names,
   // so it is placed in the Instance Effector beside `echo-token`. A literal from env, per scenario:
@@ -87,6 +91,7 @@ export default defineConfig({
   // in `jr2-hook-digests`, and a step sends the value in the header.
   secrets: [
     { name: "echo-token", value: process.env.JR2_ECHO_TOKEN },
+    { name: "echo-bearer", value: process.env.JR2_ECHO_BEARER },
     { name: "GH_HOOK", value: process.env.JR2_GH_HOOK },
     { name: "CHAT_SIGNING", value: process.env.JR2_CHAT_SIGNING },
     { name: "GL_HOOK", value: process.env.JR2_GL_HOOK },

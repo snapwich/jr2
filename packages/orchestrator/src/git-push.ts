@@ -6,8 +6,10 @@
 //     `jr2-git-push-<hash of match>`, never per Workspace: Flux's key names where Flux has them
 //     (`username`/`password` for a token, `identity`/`identity.pub`/`known_hosts` for an ssh key),
 //     `sign.identity` or `sign.private.asc` for the signing key, and `entry.json` — what the entry
-//     is, names only. A token is the `.env` value; a key is copied as data from the Secret the entry
-//     names, never decoded. And it writes the manifest `git-push.json` in `jr2-held`: which entries
+//     is, names only. A token's `password` is its Stand-in (`gitPushStandIn`), and the `.env` value
+//     is `token`, which the operator never projects: the Custodian holds it and swaps it into the
+//     push's Basic pair (ADR-0068). A key is copied as data from the Secret the entry names, never
+//     decoded. And it writes the manifest `git-push.json` in `jr2-held`: which entries
 //     it wrote and what each can spend, names only.
 //   - At provision the Orchestrator resolves each pushed slot's url against the fence and names the
 //     matched entry's Secret on the Sandbox CR (`gitCredentials`, the Repo CR's `secretRef` shape);
@@ -20,6 +22,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { matchCredential, type GitCredential } from "./config.ts";
+import { gitPushStandIn } from "./held-secrets.ts";
 import { repoIdentity } from "./repo-identity.ts";
 
 /** The `jr2-held` key of the push manifest. */
@@ -34,11 +37,13 @@ export function gitPushSecretName(match: string): string {
   return `jr2-git-push-${createHash("sha256").update(match).digest("hex").slice(0, 8)}`;
 }
 
-/** The keys of an entry's push Secret — the operator projects exactly these, each when present. */
+/** The keys of an entry's push Secret — the operator projects each when present, except `token`,
+ * which only the Custodian reads (ADR-0068). */
 export const GIT_PUSH_KEYS = {
   entry: "entry.json",
   username: "username",
   password: "password",
+  token: "token",
   identity: "identity",
   identityPub: "identity.pub",
   knownHosts: "known_hosts",
@@ -262,6 +267,7 @@ export type GitPushPlan = {
 export function gitPushPlansOf(
   list: readonly GitCredential[],
   env: (name: string) => string | undefined,
+  signingKey: Buffer,
 ): { plans: GitPushPlan[]; skipped: Map<string, string> } {
   const plans: GitPushPlan[] = [];
   const skipped = new Map<string, string>();
@@ -282,9 +288,11 @@ export function gitPushPlansOf(
       const value = env(token);
       if (value) {
         push.push("token");
+        // The Effector's helper answers the Stand-in; the Custodian swaps the token in (ADR-0068).
         sources.push(
           { key: GIT_PUSH_KEYS.username, literal: "x-access-token" },
-          { key: GIT_PUSH_KEYS.password, literal: value },
+          { key: GIT_PUSH_KEYS.password, literal: gitPushStandIn(signingKey, gitPushSecretName(entry.match)) },
+          { key: GIT_PUSH_KEYS.token, literal: value },
         );
       } else {
         skipped.set(entry.match, `its token's variable ${token} is not set — set it in .env`);

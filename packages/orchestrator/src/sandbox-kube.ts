@@ -110,9 +110,9 @@ import {
 } from "./custodian.ts";
 import { dialFetch, neverDelivered, routabilityLine, transportCode, transportDetail } from "./dial.ts";
 import { fenceRouted, fenceSlotAddress, LIVE_WAIT_MS, type CustodianClient } from "./custodian-client.ts";
-import type { FenceRanges } from "./egress.ts";
+import { httpHostOf, type FenceRanges } from "./egress.ts";
 import { slotAllocator, slotOfAttachment, type SlotAllocator } from "./fence-slots.ts";
-import { fenceComposition, sandboxFenceObjects } from "./sandbox-fence.ts";
+import { fenceComposition, sandboxFenceObjects, withPushTokens, type PushToken } from "./sandbox-fence.ts";
 import { heldStandIn, readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
 import { markHarnessEnv } from "./harness-env.ts";
 import {
@@ -148,6 +148,8 @@ import {
   PRIORITY_CLASS_SANDBOX,
   REPOS_MOUNT,
   sandboxCustodianConfigMap,
+  sandboxStandInSecret,
+  sandboxTrustConfigMap,
   ANNOTATION_HOLD,
   ANNOTATION_KEEPALIVE,
   ANNOTATION_WORKSPACE_PATH,
@@ -345,14 +347,45 @@ const EFFECTOR_HEALTHCHECK = [
   `http://127.0.0.1:${SANDBOX_EFFECTOR_PORT}/healthz`,
 ];
 
-/** The Sandbox Effector's volumes, by the names its container mounts. */
+/**
+ * The Sandbox Effector's volumes, by the names its container mounts. On the Fence (ADR-0084):
+ * `/run/jr2/secrets` also holds the Stand-in of each secret the Custodian holds for it, from the
+ * Sandbox's `<sandbox>-standins` (ADR-0068); and its trust is the Sandbox's `bundle.crt` (the
+ * Instance's upstream roots and the Sandbox's CA), because each host whose secret the Custodian
+ * holds is an Intercepted host, whose TLS a leaf of that CA ends.
+ */
 export function sandboxEffectorVolumes(opts: {
   sandbox: string;
   manifest: SandboxEffectorManifest;
   caBundle: boolean;
+  fence?: boolean;
 }) {
+  const standIns = opts.fence ? (opts.manifest.standIns ?? []) : [];
+  const sources = [
+    ...opts.manifest.sources,
+    ...(standIns.length
+      ? [
+          {
+            secret: {
+              name: sandboxStandInSecret(opts.sandbox),
+              items: standIns.map((s) => ({ key: heldStandInKey(s.binding), path: s.name })),
+            },
+          },
+        ]
+      : []),
+  ];
+  const ca = opts.fence
+    ? [
+        {
+          name: "effector-ca",
+          configMap: { name: sandboxTrustConfigMap(opts.sandbox), items: [{ key: "bundle.crt", path: "ca.crt" }] },
+        },
+      ]
+    : opts.caBundle
+      ? [{ name: "effector-ca", configMap: { name: CA_CONFIGMAP } }]
+      : [];
   return [
-    { name: "effector-secrets", projected: { defaultMode: 0o400, sources: opts.manifest.sources } },
+    { name: "effector-secrets", projected: { defaultMode: 0o400, sources } },
     {
       name: "effector-own",
       projected: {
@@ -364,7 +397,7 @@ export function sandboxEffectorVolumes(opts: {
       },
     },
     { name: "effector-scratch", emptyDir: {} },
-    ...(opts.caBundle ? [{ name: "effector-ca", configMap: { name: CA_CONFIGMAP } }] : []),
+    ...ca,
   ];
 }
 
@@ -1111,10 +1144,15 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
         secretVolume: "effector-secrets",
         keyVolume: "effector-own",
         scratchVolume: "effector-scratch",
-        ...(cfg().caBundle ? { caVolume: "effector-ca" } : {}),
+        ...(cfg().caBundle || fence ? { caVolume: "effector-ca" } : {}),
         ...(fence ? { fence: true } : {}),
       }),
-      volumes: sandboxEffectorVolumes({ sandbox: req.name, manifest, caBundle: cfg().caBundle === true }),
+      volumes: sandboxEffectorVolumes({
+        sandbox: req.name,
+        manifest,
+        caBundle: cfg().caBundle === true,
+        ...(fence ? { fence: true } : {}),
+      }),
     };
   };
 
@@ -1461,10 +1499,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
     name: string,
     repos: readonly ProvisionedRepo[],
     pushes: ReadonlyArray<{ slot: string; sign: boolean; squash?: true }>,
-  ): Promise<string[]> => {
-    if (pushes.length === 0) return [];
+  ): Promise<{ names: string[]; tokens: PushToken[] }> => {
+    if (pushes.length === 0) return { names: [], tokens: [] };
     const manifest = await readGitPushManifest(join(heldDir, GIT_PUSH_MANIFEST_KEY));
     const names: string[] = [];
+    const tokens: PushToken[] = [];
     for (const { slot, sign, squash } of pushes) {
       const repo = repos.find((r) => r.slot === slot);
       if (repo === undefined) {
@@ -1481,8 +1520,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
       );
       if ("refusal" in out) throw new Error(out.refusal);
       if (!names.includes(out.entry.secret)) names.push(out.entry.secret);
+      // A push over https spends the entry's token, which the Custodian holds (ADR-0068).
+      const https = /^https:\/\//i.test(repo.url) ? httpHostOf(repo.url) : undefined;
+      if (https !== undefined) tokens.push({ secret: out.entry.secret, ...https });
     }
-    return names;
+    return { names, tokens };
   };
 
   /**
@@ -1682,14 +1724,27 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
       // process reads that pod's manifest, never its own config, whose `.env` values are absent
       // in-cluster. A Workspace `jr2 up` never walked has none, and is refused by name.
       const pod = workspaceHeldPod({ workflow: req.workflow, route: req.route });
-      const manifest = await readHeldManifest(join(heldDir, heldManifestKey(pod)));
+      const placed = await readHeldManifest(join(heldDir, heldManifestKey(pod)));
       // The Sandbox Effector (ADR-0068): present when `jr2 up` placed an Effect of this Workspace
       // there, and declared it in the pod's manifest beside the Held one; absent otherwise.
       const effectorManifest = await readSandboxEffectorManifest(join(heldDir, effectorManifestKey(pod)));
       // Its pushes' credentials (ADR-0051): each pushed slot's url, as this run binds it, is
       // matched against the fence, and the entry's push Secret is named on the CR — or the push is
       // refused here, before anything is written, as a per-run url outside the fence is.
-      const gitCredentials = await gitCredentialsFor(req.name, req.repos, effectorManifest?.pushes ?? []);
+      const { names: gitCredentials, tokens } = await gitCredentialsFor(
+        req.name,
+        req.repos,
+        effectorManifest?.pushes ?? [],
+      );
+      // On the Fence, the Custodian holds each push's token toward its url's host (ADR-0068).
+      let manifest = placed;
+      if (fence !== undefined) {
+        try {
+          manifest = withPushTokens(placed, tokens, fence.ranges);
+        } catch (err) {
+          throw new Error(`Sandbox "${req.name}" cannot be provisioned: ${(err as Error).message}`);
+        }
+      }
       // On the Fence, a slot last (ADR-0084): each refusal above costs no slot. The Sandbox keeps it
       // for its life; its CR names it, so a provision again takes the same one.
       // No Fence in a deployed Orchestrator: refused here, as the refusals above, before anything

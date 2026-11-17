@@ -6066,6 +6066,8 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
           targets: [],
           pushes: [{ slot: "app", sign: true, url: "https://github.com/acme/app.git", match: "*" }],
           commands: true,
+          custodian: [],
+          custodianValues: {},
           effects: ["ticket/deploy", "ticket/publish"],
         },
       ],
@@ -6373,7 +6375,15 @@ test("jr2 up writes one push Secret per git.credentials entry — the token, the
     Object.entries(secret.data as Record<string, string>).map(([k, v]) => [k, Buffer.from(v, "base64").toString()]),
   );
   assert.equal(data.username, "x-access-token");
-  assert.equal(data.password, "ghp_0123456789abcdef");
+  // The operator projects `password`, the entry's Stand-in, into the Effector; the token is `token`,
+  // which only the Custodian reads, and its Role names this Secret (ADR-0068).
+  assert.match(data.password!, /^jr2-held-password\./);
+  assert.equal(data.token, "ghp_0123456789abcdef");
+  const role = [...objects.values()].find((o) => o.kind === "Role" && o.metadata.name === "jr2-custodian");
+  assert.ok(
+    (role as { rules: Array<{ resourceNames: string[] }> } | undefined)?.rules[0]!.resourceNames.includes(name),
+    "the Custodian may read the entry's push Secret",
+  );
   assert.equal(data.identity, "PRIVATE-PUSH");
   assert.equal(data.known_hosts, "github.com ssh-ed25519 AAAA");
   assert.equal(data["sign.identity"], "PRIVATE-SIGN");
@@ -6482,6 +6492,26 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   const own = items.find((i) => i.kind === "Secret" && String(i.metadata.name).startsWith("jr2-effector-"))!;
   assert.ok(own, "the Workspace's Effector Secret");
   const pod = own.metadata.labels["jr2.dev/effector-pod"] as string;
+  // A bearer of a file-body http is the Custodian's (ADR-0068): its value is in the pod's held
+  // values, bound toward the Effect's host; the Effector's own Secret holds none of it, and its
+  // manifest names the Stand-in to project.
+  assert.ok(!JSON.stringify(own).includes(Buffer.from("aws-secret-value-0123").toString("base64")));
+  assert.ok(!JSON.stringify(own).includes("aws-secret-value-0123"));
+  const values = items.find((i) => i.kind === "Secret" && i.metadata.name === `jr2-held-secrets-${pod}`)!;
+  const value = values.stringData?.effector_aws ?? Buffer.from(values.data.effector_aws, "base64").toString();
+  assert.equal(value, "aws-secret-value-0123");
+  const heldMap = appliedObjects(first).get("ConfigMap/jr2-held")!;
+  const manifest = JSON.parse(heldMap.data[`held-${pod}.json`]) as {
+    secrets: Array<{ name: string; holder?: string; hosts: Array<{ host: string; port: number }>; headers: string[] }>;
+  };
+  assert.deepEqual(
+    manifest.secrets.map((b) => [b.name, b.holder, b.hosts.map((h) => `${h.host}:${h.port}`), b.headers]),
+    [["effector_aws", "effector", ["files.example.com:443"], ["authorization"]]],
+  );
+  assert.deepEqual(JSON.parse(heldMap.data[`effector-${pod}.json`]).standIns, [
+    { name: "aws", binding: "effector_aws" },
+  ]);
+  assert.match(first.err.join("\n"), /holds no Effect secret; the Custodian holds aws for it/);
 
   const w = mkWorld(root);
   w.kube.set("myinst", "secret", own.metadata.name, {

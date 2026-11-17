@@ -538,7 +538,11 @@ function slotLua(inputs: SlotInputs, rules: readonly EgressRule[]): string {
   const offset = control.length + 1;
   inputs.manifest.secrets.forEach((s, i) => {
     const paths = s.paths ? `, paths = ${luaList(s.paths)}` : "";
-    lines.push(`HELD.secrets[${i + offset}] = { name = ${lua(s.name)}, headers = ${luaList(s.headers)}${paths} }`);
+    // A secret that rides Basic (ADR-0068): a request with no credential gets the 401 git waits for.
+    const basic = s.basic ? ", basic = true" : "";
+    lines.push(
+      `HELD.secrets[${i + offset}] = { name = ${lua(s.name)}, headers = ${luaList(s.headers)}${paths}${basic} }`,
+    );
   });
   for (const r of intercepted) {
     const target = targetOf(r);

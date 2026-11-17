@@ -12,7 +12,10 @@
 //                            The CA's certificate is the only part of the PKI that the pod gets.
 //   <sandbox>-standins       Secret, owned by the CR: the secret control Stand-in and each held
 //                            secret's Stand-in, which the Harness container reads as files under
-//                            `/run/jr2/`. No token and no value.
+//                            `/run/jr2/`, and the Stand-in of each secret that the Custodian holds
+//                            for the Sandbox Effector, which only the Effector's container mounts
+//                            (ADR-0068). No token and no value. A push token's Stand-in is the
+//                            entry's, in its push Secret (`gitPushStandIn`), and is not here.
 //
 // The Sandbox's CA is made here (`sandboxPki`) and its key goes with the call: no object holds it,
 // so no key that can sign a leaf for the Sandbox exists while its Agents run.
@@ -41,8 +44,18 @@ import {
 } from "./custodian.ts";
 import { slotAddress } from "./custodian-rules.ts";
 import { slotSecretData, type SlotSpec } from "./custodian-slot.ts";
-import type { FenceRanges, HostPort } from "./egress.ts";
-import { CONTROL_TOKEN_NAME, heldStandIn, leafStem, SANDBOX_TOKEN_NAME, type HeldManifest } from "./held-secrets.ts";
+import { isIP } from "node:net";
+import { uncarried, type EgressMatch, type EgressRule, type FenceRanges, type HostPort } from "./egress.ts";
+import {
+  CONTROL_TOKEN_NAME,
+  gitPushStandIn,
+  heldStandIn,
+  leafStem,
+  pushBindingName,
+  SANDBOX_TOKEN_NAME,
+  type HeldBinding,
+  type HeldManifest,
+} from "./held-secrets.ts";
 import type { KubeObject } from "./kube-client.ts";
 import {
   CA_CONFIGMAP,
@@ -58,6 +71,68 @@ import { controlStandIn, controlToken, sandboxToken } from "./tokens.ts";
 
 /** The Custodian's address as a Harness on the Fence calls it (ADR-0059): HTTPS at jr2's own name. */
 export const FENCE_CUSTODIAN_URL = `https://${JR2_CUSTODIAN_NAME}`;
+
+/** A binding's Stand-in in a Sandbox (ADR-0059, ADR-0068): a push token's is its entry's, minted
+ * from the push Secret's name; each other one is the Sandbox's own. */
+function standInOf(signingKey: Buffer, pod: string, s: HeldBinding): string {
+  if (s.push && s.source.kind === "secret") return gitPushStandIn(signingKey, s.source.secret);
+  return heldStandIn(signingKey, pod, s.name);
+}
+
+/** One token push of a Sandbox, as the provision resolved it: the push Secret of the entry that
+ * the slot's url matches, and the url's host and port. */
+export type PushToken = { secret: string; host: string; port: number };
+
+/**
+ * A Sandbox's held manifest with the token of each of its pushes over HTTPS (ADR-0068, ADR-0051):
+ * a binding that the Custodian holds for the Sandbox Effector, whose value is the `token` key of the
+ * entry's push Secret and which rides Basic, toward the url's host, which is then an Intercepted
+ * host of the Sandbox. The provision adds it, because only the provision knows the url of a slot that
+ * the run or a `customize()` binds. Throws when the Fence cannot carry the host. Pure: the manifest
+ * given is not changed.
+ */
+export function withPushTokens(
+  manifest: HeldManifest,
+  pushes: readonly PushToken[],
+  ranges: FenceRanges,
+): HeldManifest {
+  if (pushes.length === 0) return manifest;
+  const secrets = manifest.secrets.map((s) => ({ ...s, hosts: [...s.hosts] }));
+  const egress = manifest.egress.map((r) => ({ ...r, from: [...r.from] }));
+  for (const p of pushes) {
+    const why = uncarried(p.host, ranges);
+    if (why !== undefined) {
+      throw new Error(`the push to ${p.host}:${p.port} cannot go through the Fence: the host ${why} (ADR-0084)`);
+    }
+    const host = { host: p.host, port: p.port, leaf: leafStem(p.host, p.port) };
+    const name = pushBindingName(p.secret);
+    const known = secrets.find((s) => s.name === name);
+    if (known === undefined) {
+      secrets.push({
+        name,
+        source: { kind: "secret", secret: p.secret, key: "token" },
+        hosts: [host],
+        headers: ["authorization"],
+        holder: "effector",
+        basic: true,
+        push: true,
+      });
+    } else if (!known.hosts.some((h) => h.host === p.host && h.port === p.port)) known.hosts.push(host);
+    const match: EgressMatch = isIP(p.host) === 0 ? "name" : "address";
+    const rule = egress.find((r) => r.match === match && r.host === p.host && r.port === p.port);
+    if (rule === undefined) egress.push({ host: p.host, port: p.port, match, intercept: true, from: ["effector"] });
+    else {
+      rule.intercept = true;
+      if (!rule.from.includes("effector")) rule.from.push("effector");
+    }
+  }
+  const order: Record<EgressMatch, number> = { name: 0, address: 1, below: 2, any: 3 };
+  egress.sort(
+    (a: EgressRule, b: EgressRule) =>
+      order[a.match] - order[b.match] || a.host.localeCompare(b.host) || a.port - b.port,
+  );
+  return { ...manifest, secrets, egress };
+}
 
 /** The TLS targets of a pod whose Custodian ends TLS with a leaf of the pod's CA: jr2's own name on
  * port 443, then each Intercepted rule of its manifest on a port other than 80 (port 80 of an
@@ -137,7 +212,7 @@ export function sandboxFenceObjects(input: SandboxFenceInput): SandboxFenceObjec
     [`values/${standInValueFile(CONTROL_TOKEN_NAME)}`, controlStandIn(signingKey, sandbox)],
     [`values/${SANDBOX_TOKEN_NAME}`, sandboxToken(signingKey, sandbox)],
     ...manifest.secrets.map(
-      (s) => [`values/${standInValueFile(s.name)}`, heldStandIn(signingKey, sandbox, s.name)] as [string, string],
+      (s) => [`values/${standInValueFile(s.name)}`, standInOf(signingKey, sandbox, s)] as [string, string],
     ),
   ]);
   for (const { host, port } of targets) {
@@ -195,7 +270,9 @@ export function sandboxFenceObjects(input: SandboxFenceInput): SandboxFenceObjec
       data: base64Values({
         [CREDENTIAL_KEYS.controlStandIn]: controlStandIn(signingKey, sandbox),
         ...Object.fromEntries(
-          manifest.secrets.map((s) => [heldStandInKey(s.name), heldStandIn(signingKey, sandbox, s.name)]),
+          manifest.secrets
+            .filter((s) => !s.push)
+            .map((s) => [heldStandInKey(s.name), heldStandIn(signingKey, sandbox, s.name)]),
         ),
       }),
     },
@@ -372,7 +449,9 @@ export function fenceComposition(
     caBundleFrom?: string;
   },
 ): FenceComposition {
-  const held = new Set(manifest.secrets.map((s) => s.name));
+  // The Harness's own: a secret the Custodian holds for the Sandbox Effector is none of its (ADR-0068).
+  const harness = manifest.secrets.filter((s) => s.holder === undefined);
+  const held = new Set(harness.map((s) => s.name));
   const granted = (opts.granted ?? []).filter((n) => held.has(n));
   return {
     network: { attachment: fenceSlotAttachment(opts.slot), nameserver: slotAddress(opts.ranges.segment, 1) },
@@ -426,7 +505,7 @@ export function fenceComposition(
                 name: sandboxStandInSecret(opts.sandbox),
                 items: [
                   { key: CREDENTIAL_KEYS.controlStandIn, path: "control/standin" },
-                  ...manifest.secrets.map((s) => ({ key: heldStandInKey(s.name), path: `standins/${s.name}` })),
+                  ...harness.map((s) => ({ key: heldStandInKey(s.name), path: `standins/${s.name}` })),
                 ],
               },
             },

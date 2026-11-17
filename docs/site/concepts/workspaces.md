@@ -284,7 +284,9 @@ Orchestrator, the fetch of a Repo, and the calls of the Sandbox Effector. jr2 pe
 ssh, jr2 permits the ssh port (22 by default) of the host of each ssh Repo that the Workspace binds. The url of a
 per-run Repo, or of a slot that `customize()` binds, is not known to `jr2 up` when it makes the list, so its ssh host
 needs an entry, such as `"git.example.com:22"`. A `git push` that you or an Agent run by hand needs an entry for its
-host, such as `github.com`.
+host, such as `github.com`. When the Sandbox Effector pushes to that host over `https://`, the Custodian holds the token
+for that host. Then a request from the Sandbox that carries no Stand-in goes to the host with each credential removed: a
+clone of a public repository works, and a push with your own token does not.
 
 A host with no secret needs an entry, also when jr2 itself uses it: a model endpoint with no key, an MCP server with no
 token, or a url that the Sandbox Effector calls with no secret. A secret in the path of a url does not count, because
