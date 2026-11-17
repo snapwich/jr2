@@ -20,8 +20,8 @@
 //
 //   CA         CN=jr2 held-secret CA (<instance>)  CA:true pathLen:0, keyCertSign+cRLSign, SKI   10 years
 //   Sandbox CA CN=jr2 Sandbox CA (<sandbox>)       the same, and critical nameConstraints        10 years
-//   leaf       CN=<host> (an address: jr2 leaf (<a>)) one DNS or IP SAN, CA:false, digitalSignature,  1 year
-//                                                  serverAuth, AKI, SKI
+//   leaf       CN=<host> (an address: no subject)  one DNS or IP SAN (critical for an address),     1 year
+//                                                  CA:false, digitalSignature, serverAuth, AKI, SKI
 //
 // Keys are ECDSA P-256. Serials are 16 random bytes, top bit clear. `notBefore` is an hour back,
 // for clock skew between this host and a node.
@@ -269,14 +269,16 @@ export function issueLeaf(ca: Pem, host: string, now: Date = new Date()): Pem {
     ECDSA_SHA256,
     issuerName(caCert),
     seq(time(new Date(now.getTime() - HOUR)), time(new Date(now.getTime() + 365 * DAY))),
-    // An address is no host name: OpenSSL checks a CN that reads as a host name against a CA's DNS
-    // constraints when the leaf has no DNS SAN, and "10.0.0.5" reads as one.
-    name(isIP(host) === 0 ? host : `jr2 leaf (${host})`),
+    // An address leaf has an empty subject: a verifier checks the CN of a leaf with no DNS SAN
+    // against a CA's DNS constraints — OpenSSL a CN that reads as a host name ("10.0.0.5" does),
+    // GnuTLS any CN — and refuses the leaf. With an empty subject the SAN must be critical
+    // (RFC 5280 §4.2.1.6).
+    isIP(host) === 0 ? name(host) : seq(),
     key.publicKeyDer,
     context(
       3,
       seq(
-        extension("2.5.29.17", false, seq(subjectAltName(host))),
+        extension("2.5.29.17", isIP(host) !== 0, seq(subjectAltName(host))),
         extension("2.5.29.19", false, seq()),
         // digitalSignature (bit 0): 0b1000_0000, seven unused bits.
         extension("2.5.29.15", true, bits(Buffer.from([0x80]), 7)),

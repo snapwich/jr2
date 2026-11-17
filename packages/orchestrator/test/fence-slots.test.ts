@@ -114,6 +114,14 @@ test("at start: each CR keeps its slot; a slot Secret with no CR waits 2 minutes
   assert.equal(await slots.take("d"), 4);
 });
 
+test("the 2-minute wait is on the monotonic clock: a forward step of the wall clock gives no slot early", async (t) => {
+  let step = 0;
+  t.mock.method(Date, "now", () => new Date().getTime() + step);
+  const slots = slotAllocator({ sandboxes: holdersFrom(4), secrets: [3], reports: custodians().reports });
+  step = 5 * 60_000;
+  await assert.rejects(slots.take("a"), /1 wait 120 s after their Sandbox went/);
+});
+
 test("a slot never used is given before a slot whose Sandbox went", async () => {
   const t = clock();
   const slots = slotAllocator({ sandboxes: [], secrets: [], reports: custodians().reports, now: t.now });

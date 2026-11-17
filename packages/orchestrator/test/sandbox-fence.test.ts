@@ -210,7 +210,7 @@ test("the placeholder table grows append-only: a known name keeps its address, a
   assert.throws(() => objectsOf({ placeholders: { range: "198.18.16.0/20", rows: [] } }), /not the Instance's/);
 });
 
-test("the Fence composition: the slot's attachment and nameserver, the Custodian by name over HTTPS, the trust, no proxy", () => {
+test("the Fence composition: the slot's attachment and nameserver, the Custodian by name over HTTPS, the trust, no proxy variable", () => {
   const fence = fenceComposition(SANDBOX_MANIFEST, {
     sandbox: "ws-3",
     slot: 7,

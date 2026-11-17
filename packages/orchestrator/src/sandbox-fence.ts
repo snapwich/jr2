@@ -108,7 +108,8 @@ const base64Values = (values: Record<string, string>): Record<string, string> =>
 /**
  * A Sandbox's slot Secret, trust ConfigMap and Stand-in Secret (above), each owned by its CR. Each
  * call makes a new CA and new leaves, so a write of these objects for a pod that runs must keep the
- * CA that the pod trusts. Each `data` is base64, as a server-side apply owns it.
+ * CA that the pod trusts. The `data` of each Secret is base64, as a server-side apply owns it; the
+ * `data` of the ConfigMap is plain text.
  */
 export function sandboxFenceObjects(input: SandboxFenceInput): SandboxFenceObjects {
   const { namespace, sandbox, slot, manifest, signingKey } = input;

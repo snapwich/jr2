@@ -28,8 +28,8 @@ and that holds when Workspace code is root in the Sandbox.
   the check pod and the node probes, and the Orchestrator gives each Sandbox one of the other slots for the Sandbox's
   life. The Custodian knows a pod only by its VLAN, so the Orchestrator gives a slot again only when the Sandbox that
   had it has been gone for 2 minutes and each Custodian pod of the Instance says that it holds no rules of the slot and
-  that no pod answers on the slot's VLAN. A Custodian pod that does not answer stops the slot's reuse. The uplink of an
-  Instance has the trunk of its own range only, and no port of the bridge is a member of VLAN 1, so a frame of one
+  that no pod answers on the slot's VLAN. A Custodian pod that does not answer stops the reuse of every slot. The uplink
+  of an Instance has the trunk of its own range only, and no port of the bridge is a member of VLAN 1, so a frame of one
   Instance never reaches the uplink or a Harness pod of another. An Instance keeps its range until `jr2 down`, also
   while it has no Harness pod, because a pod of it can still be on a VLAN of the range: a held run's Sandbox
   ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), or an Instance Harness
@@ -209,11 +209,12 @@ and that holds when Workspace code is root in the Sandbox.
   new Kit version, a changed `fence` or `caBundle`, or a `jr2 up` from a host whose Node.js has other root certificates,
   because the Custodian trusts upstream the roots of the Node.js that runs `jr2 up`) replaces the pod of each node in
   turn, and cuts each open connection of that node's Harness pods. So a Harness pod's rules change through the
-  Custodian's control process, never through its pod template.
+  Custodian's control process, never through its pod template. Also, while a Custodian pod of the Instance does not
+  answer, no Sandbox of the Instance gets a slot, on any node: the pod could hold rules of any slot.
 - **A cluster has 31 VLAN ranges.** So at most 31 Instances with a Harness pod share a cluster, and an Instance has at
-  most 128 Harness pods at once. Each Custodian pod of an Instance holds the VLAN interfaces of its whole range and the
-  rules of each of its slots, so it is sized for a full range: about 1.9 GiB of memory on each Sandbox node for each
-  Instance ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
+  most 125 Sandboxes at once, beside its Instance Harness. Each Custodian pod of an Instance holds the VLAN interfaces
+  of its whole range and the rules of each of its slots, so it is sized for a full range: about 1.9 GiB of memory on
+  each Sandbox node for each Instance ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
 - **The cluster needs a second pod network and a rule set on each Sandbox node.** On Cilium, the node's config must let
   another CNI plugin run. A managed cluster that permits neither cannot have the segment.
 - **An Instance with no Workspace needs the Fence too,** because its Instance Harness is behind one. So the first model

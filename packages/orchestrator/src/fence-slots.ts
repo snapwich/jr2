@@ -101,6 +101,8 @@ export type SlotAllocatorOptions = {
   secrets: readonly number[];
   /** What each Custodian pod of the Instance (each one, Ready or not) says of a slot. */
   reports: (slot: number) => Promise<SlotReport[]>;
+  /** A monotonic clock in ms (default `performance.now`): a step of the wall clock (NTP, a resumed
+   * VM) must not shorten the 2-minute wait. */
   now?: () => number;
   reuseMs?: number;
 };
@@ -121,7 +123,7 @@ type Flight = { promise: Promise<number>; released: boolean };
 
 /** The slot allocator of an Instance's Orchestrator, made again from the API's state (above). */
 export function slotAllocator(opts: SlotAllocatorOptions): SlotAllocator {
-  const now = opts.now ?? Date.now;
+  const now = opts.now ?? (() => performance.now());
   const reuseMs = opts.reuseMs ?? SLOT_REUSE_MS;
   const bySandbox = new Map<string, number>();
   /** The Sandboxes that name each slot. One, except when two CRs named one slot at start: the slot

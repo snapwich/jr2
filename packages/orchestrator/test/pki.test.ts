@@ -51,7 +51,7 @@ test("a leaf: one SAN, DNS or IP, chained to the CA, a server certificate, one y
   ] as const) {
     const leaf = issueLeaf(ca, host);
     const cert = new X509Certificate(leaf.cert);
-    assert.equal(cert.subject, isIP(host) === 0 ? `CN=${host}` : `CN=jr2 leaf (${host})`);
+    assert.equal(cert.subject, isIP(host) === 0 ? `CN=${host}` : undefined, "an address leaf has no subject");
     assert.equal(cert.issuer, caCert.subject);
     assert.equal(cert.subjectAltName, san);
     assert.ok(check(cert), `${host} matches its own SAN`);
@@ -311,6 +311,62 @@ test("a constrained CA with addresses alone excludes every DNS name", async () =
     assert.ok(err instanceof Error, `${host} must not verify`);
     assert.match(err.message, /subtree violation/, host);
   }
+});
+
+/** The leaf's subject (the sixth field of the TBS) and whether its subjectAltName is critical. */
+function subjectAndSan(certPem: string): { subject: Buffer; sanCritical: boolean } {
+  const tbs = elements(element(new X509Certificate(certPem).raw, 0).content)[0]!.content;
+  const fields = elements(tbs);
+  const ext = fields.find((e) => e.tag === 0xa3)!;
+  for (const one of elements(elements(ext.content)[0]!.content)) {
+    const [id, ...rest] = elements(one.content);
+    if (!id!.content.equals(Buffer.from([0x55, 0x1d, 0x11]))) continue;
+    const sanCritical = rest.length === 2 && rest[0]!.tag === 0x01 && rest[0]!.content[0] === 0xff;
+    return { subject: fields[5]!.content, sanCritical };
+  }
+  throw new Error("no subjectAltName");
+}
+
+test("an address leaf has an empty subject and a critical SAN, so no verifier checks a CN against the CA's DNS constraints", () => {
+  // GnuTLS checks the CN of a leaf with no DNS SAN against the DNS constraints, and refuses it.
+  const ca = issueConstrainedCa("ip", ["10.0.0.5", "custodian.jr2.internal"]);
+  for (const host of ["10.0.0.5", "fd00::1"]) {
+    const { subject, sanCritical } = subjectAndSan(issueLeaf(ca, host).cert);
+    assert.equal(subject.length, 0, `${host}: the subject is an empty SEQUENCE`);
+    assert.equal(sanCritical, true, `${host}: an empty subject needs a critical SAN (RFC 5280 §4.2.1.6)`);
+  }
+  const dns = subjectAndSan(issueLeaf(ca, "custodian.jr2.internal").cert);
+  assert.ok(dns.subject.length > 0, "a DNS leaf keeps its CN");
+  assert.equal(dns.sanCritical, false);
+});
+
+test("an address leaf under a Sandbox's CA verifies as OpenSSL verifies an address, and another address does not", async (t) => {
+  let openssl = true;
+  try {
+    execFileSync("openssl", ["version"]);
+  } catch {
+    openssl = false;
+  }
+  if (!openssl) return t.skip("no openssl on this host");
+  const ca = issueConstrainedCa("ip", ["10.0.0.5", "custodian.jr2.internal"]);
+  const dir = await mkdtemp(join(tmpdir(), "jr2-pki-"));
+  await writeFile(join(dir, "ca.pem"), ca.cert);
+  const leaf = issueLeaf(ca, "10.0.0.5").cert;
+  await writeFile(join(dir, "leaf.pem"), leaf);
+  await writeFile(join(dir, "other.pem"), issueLeaf(ca, "10.0.0.6").cert);
+  assert.match(
+    execFileSync("openssl", ["x509", "-noout", "-text"], { input: leaf }).toString(),
+    /X509v3 Subject Alternative Name: critical\s+IP Address:10\.0\.0\.5/,
+  );
+  const verify = (file: string, ip: string) =>
+    execFileSync(
+      "openssl",
+      ["verify", "-CAfile", join(dir, "ca.pem"), "-purpose", "sslserver", "-verify_ip", ip, join(dir, file)],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    ).toString();
+  assert.match(verify("leaf.pem", "10.0.0.5"), /leaf\.pem: OK/);
+  assert.throws(() => verify("other.pem", "10.0.0.6"), /permitted subtree violation|excluded subtree violation/);
+  assert.throws(() => verify("leaf.pem", "10.0.0.6"), /IP address mismatch/);
 });
 
 test("a Sandbox's PKI holds no CA key: the CA is a certificate alone, and each key is a leaf's own", () => {
