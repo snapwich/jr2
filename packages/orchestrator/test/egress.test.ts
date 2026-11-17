@@ -131,6 +131,12 @@ test('"*." is a `*.` entry with no domain and is refused, not read as "*"; a `*.
     /is not an IPv4 address a\.b\.c\.d, and a name whose last label is a number/,
   );
   assert.throws(() => parseEgressList("egress", ["*.127.0.0.1"]), /a name whose last label is a number/);
+  // A label of more than 63 characters: no name has one (RFC 1035), and a Sandbox's CA could not
+  // state it in a name constraint, so each provision with it would fail.
+  const long = `${"a".repeat(64)}.example.com`;
+  assert.throws(() => parseEgressList("egress", [{ host: long, intercept: true }]), /is not a DNS name/);
+  assert.throws(() => parseEgressList("egress", [`*.${long}`]), /is not \* and then a DNS name/);
+  assert.equal(parseEgressList("egress", [`${"a".repeat(63)}.example.com`]).length, 1);
 });
 
 test("jr2 up warns for `*` and for each `*.` entry, by its config path", () => {

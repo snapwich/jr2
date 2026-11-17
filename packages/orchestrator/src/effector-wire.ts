@@ -14,6 +14,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { z } from "zod";
+import { routedFetch } from "./custodian-client.ts";
 import type { LaterOutcome } from "./effect.ts";
 
 // --- The request (POST /effects/<id>) ------------------------------------------------------------
@@ -906,9 +907,15 @@ function shuffle<T>(items: T[]): T[] {
  * addresses its name resolves to — every pod, a stopping one included, because the Service
  * publishes addresses that are not ready (a stopping replica still answers for the Effects
  * it finishes). A request goes to one pod's address over plain HTTP: the signature, not TLS, is
- * what an answer is trusted by.
+ * what an answer is trusted by. A Sandbox Effector on the Fence has no Service: `service` is then
+ * a function that answers its one address (`<slot address>:8082`), and the request goes through the
+ * Custodian pod on its node (`fenceRouted`, ADR-0084).
  */
-export function nodeEffectorTransport(service: string, fetchImpl: typeof fetch = fetch): EffectorTransport {
+export function nodeEffectorTransport(
+  service: EffectorService,
+  fetchImpl: typeof fetch = routedFetch,
+): EffectorTransport {
+  if (typeof service === "function") return { replicas: service, send: sendTo(fetchImpl) };
   const cut = service.lastIndexOf(":");
   const host = service.slice(0, cut);
   const port = service.slice(cut + 1);
@@ -916,19 +923,28 @@ export function nodeEffectorTransport(service: string, fetchImpl: typeof fetch =
     // `lookup` (getaddrinfo), not `resolve4`: it reads the pod's resolv.conf search list, so the
     // namespace-relative name resolves as every other in-cluster address the Orchestrator dials.
     replicas: async () => (await lookup(host, { all: true, family: 4 })).map((a) => `${a.address}:${port}`),
-    send: async (address, method, path, headers, body, signal) => {
-      const res = await fetchImpl(`http://${address}${path}`, {
-        method,
-        headers,
-        ...(method === "POST" ? { body } : {}),
-        ...(signal ? { signal } : {}),
-      });
-      const text = await res.text();
-      const out: Record<string, string> = {};
-      res.headers.forEach((value, name) => {
-        out[name.toLowerCase()] = value;
-      });
-      return { status: res.status, headers: out, body: text };
-    },
+    send: sendTo(fetchImpl),
+  };
+}
+
+/** Where a placement's replicas are: a Service's `host:port`, or a function that answers each
+ * replica's `host:port`. */
+export type EffectorService = string | (() => Promise<string[]>);
+
+/** One request to one replica, over plain HTTP. */
+function sendTo(fetchImpl: typeof fetch): EffectorTransport["send"] {
+  return async (address, method, path, headers, body, signal) => {
+    const res = await fetchImpl(`http://${address}${path}`, {
+      method,
+      headers,
+      ...(method === "POST" ? { body } : {}),
+      ...(signal ? { signal } : {}),
+    });
+    const text = await res.text();
+    const out: Record<string, string> = {};
+    res.headers.forEach((value, name) => {
+      out[name.toLowerCase()] = value;
+    });
+    return { status: res.status, headers: out, body: text };
   };
 }

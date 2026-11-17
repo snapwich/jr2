@@ -186,6 +186,16 @@ export const FENCE_TRUNK_ATTACHMENT = "jr2-fence-uplink";
 export function fenceRangeClaim(range: number): string {
   return `jr2-fence-range-${range}`;
 }
+/** The ConfigMap of what the Orchestrator needs of the Fence (ADR-0084, ADR-0020), written by `jr2 up`
+ * when the Instance has a Custodian: `upstream.crt` (the roots of the Node that ran `jr2 up`, and the
+ * user's `caBundle`) and, when the Instance ships one, `ca.crt` (the `caBundle` alone). The
+ * Orchestrator reads both per provision for a Sandbox's trust files. Certificates only. */
+export const FENCE_CONFIGMAP = "jr2-fence";
+/** Where the Orchestrator mounts {@link FENCE_CONFIGMAP}. */
+export const FENCE_MOUNT = "/etc/jr2/fence";
+/** The mark on a Sandbox CR that its Fence objects are written (ADR-0059): the pod trusts the CA of
+ * that write, and the CA's key is gone, so no later provision of the Sandbox writes them again. */
+export const ANNOTATION_FENCE_OBJECTS = "jr2.dev/fence-objects";
 /** The Instance Harness's pod, as its held objects are keyed. A Workspace's is `ws-<digest>`
  * (`workspaceHeldPod`), so the two cannot collide. */
 export const INSTANCE_HARNESS_HELD_POD = "instance";

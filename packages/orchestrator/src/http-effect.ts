@@ -67,6 +67,7 @@ import {
   MAX_START_BYTES,
   nodeEffectorTransport,
   type EffectorPort,
+  type EffectorService,
   type EffectState,
   type HttpMethod,
   type HttpOutput,
@@ -1039,7 +1040,7 @@ export function startRequestOf(parts: HttpParts, run: HttpRequestParts): HttpSta
 export type EffectorPlacement = "instance" | { sandbox: string };
 
 /** Where a placement's Effector is, as the host knows it (ADR-0068): its Service and its key. */
-export type EffectorTarget = { placement: "instance" | "sandbox"; service: string; key: Buffer | string };
+export type EffectorTarget = { placement: "instance" | "sandbox"; service: EffectorService; key: Buffer | string };
 export type EffectorPortFactory = (target: EffectorTarget) => EffectorPort;
 
 type Settle = { type: "jr2.effect.settle"; output: unknown };

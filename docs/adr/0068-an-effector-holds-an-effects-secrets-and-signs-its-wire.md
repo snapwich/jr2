@@ -273,7 +273,9 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   replica gets one too, the Effect settles `unknown`, with that reason, and is not sent again, `idempotent` or not: no
   retry changes the key the answer is checked with. So a key that is not the Effector's, or another process on its
   address, makes the call fail and never holds the run in its state. A signed answer that is not the wire's shape is a
-  jr2 defect: the Effect errors.
+  jr2 defect: the Effect errors. The Custodian's own answer to a dial is not an answer lost either: when the uplink
+  answers that it sent nothing on to the Effector (ADR-0042), the replica was never reached, and a start goes to the
+  next replica or settles as not sent.
 - **Replica-aware.** Every answer names the replica that holds the Effect — its pod name and its address, as the
   signature names it (above). A poll to a replica that does not hold the Effect gets 404 with `state: unknown` and that
   replica's name. A replica that gets SIGTERM refuses a new Effect (503, `error: stopping`, which starts nothing),

@@ -190,7 +190,17 @@ export function fakeKube(opts: { token?: string } = {}) {
           return written(plural, put(plural, body, "ADDED"), call);
         }
         // Server-side apply, as far as a test needs it: the applied fields replace, the rest stays.
-        const next = { ...existing, ...body, metadata: { ...existing.metadata, ...body.metadata } } as Obj;
+        // A label or an annotation that another writer set (a merge patch) stays, as the API keeps
+        // a key of a map that another field manager owns.
+        const maps = (key: "labels" | "annotations") =>
+          existing.metadata[key] === undefined && body.metadata[key] === undefined
+            ? {}
+            : { [key]: { ...existing.metadata[key], ...body.metadata[key] } };
+        const next = {
+          ...existing,
+          ...body,
+          metadata: { ...existing.metadata, ...body.metadata, ...maps("labels"), ...maps("annotations") },
+        } as Obj;
         next.metadata.uid = existing.metadata.uid;
         if (existing["status"] !== undefined) next["status"] = existing["status"];
         return written(plural, put(plural, next, "MODIFIED"), call);

@@ -584,8 +584,10 @@ export function httpHostOf(url: string): HostPort | undefined {
 
 type Cidr = { base: number; prefix: number };
 
+/** A DNS name as a Sandbox's CA can state it in a name constraint (`pki.ts`): labels of at most 63
+ * characters (RFC 1035), at most 253 in all. */
 function isDnsName(host: string): boolean {
-  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(host) && host.length <= 253;
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/.test(host) && host.length <= 253;
 }
 
 function ownName(host: string): boolean {

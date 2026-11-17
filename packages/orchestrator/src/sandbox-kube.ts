@@ -75,10 +75,20 @@
 // Workspace — the Held secrets its `workspace()` lists and its Agents' providers claim (ADR-0059) —
 // read per provision from the `jr2-held` mount (custodian.ts builds both placements' pods alike).
 //
-// On the Fence (ADR-0084) the pod has no Custodian container: `fenceComposition` (sandbox-fence.ts)
-// gives the CR its slot's attachment and nameserver, and the Harness container its env and mounts,
-// and `sandboxCr` composes the CR from either one (`PodComposition`). The Sandbox Effector then gets
-// exec probes. The provision does not use it yet.
+// On the Fence (ADR-0084), when the Instance has a Custodian (`fence`), the pod has no Custodian
+// container and no address on the cluster's network. The provision is then:
+//
+//   slot      the slot allocator gives the Sandbox a slot of the Instance's VLAN range (fence-slots.ts)
+//   CR        `fenceComposition` (sandbox-fence.ts) gives it the slot's attachment and nameserver, and
+//             the Harness container its env and mounts; the Sandbox Effector gets exec probes
+//   objects   the slot Secret, the Stand-in Secret and the trust ConfigMap, with a new CA for the
+//             Sandbox whose key goes with the call, written once for the Sandbox's life
+//   live      each ready Custodian pod makes the slot's rules live (custodian-client.ts)
+//   Ready     the operator's word, as off the Fence
+//   attach    `http://<slot address>:8080`, through the Custodian pod on the pod's node (`fenceRouted`)
+//
+// The Sandbox Effector is reached the same way, at `<slot address>:8082`, the address its requests
+// are signed for (ADR-0068). With no `fence`, the in-pod Custodian of ADR-0013 stays.
 
 import { join } from "node:path";
 import {
@@ -98,6 +108,10 @@ import {
   CUSTODIAN_SCRIPT_KEY,
 } from "./custodian.ts";
 import { dialFetch, neverDelivered, routabilityLine, transportCode, transportDetail } from "./dial.ts";
+import { fenceRouted, fenceSlotAddress, LIVE_WAIT_MS, type CustodianClient } from "./custodian-client.ts";
+import type { FenceRanges } from "./egress.ts";
+import { slotAllocator, slotOfAttachment, type SlotAllocator } from "./fence-slots.ts";
+import { fenceComposition, sandboxFenceObjects } from "./sandbox-fence.ts";
 import { heldStandIn, readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
 import { markHarnessEnv } from "./harness-env.ts";
 import {
@@ -124,6 +138,7 @@ import {
   USER_CONTEXT_VOLUME,
   HELD_MOUNT,
   CA_CONFIGMAP,
+  ANNOTATION_FENCE_OBJECTS,
   heldManifestKey,
   IMAGES_KEY,
   IMAGES_MOUNT,
@@ -148,6 +163,7 @@ import {
   SANDBOXES,
   SECRETS,
   SERVICES,
+  isAlreadyExists,
   isNotFound,
   kubeClient,
   type KubeClient,
@@ -232,6 +248,9 @@ const HARDENED = {
 
 /** The Sandbox Effector's port in its pod (ADR-0068's default). */
 export const SANDBOX_EFFECTOR_PORT = 8082;
+
+/** The Harness's port in a Sandbox pod (the operator's default, ADR-0001). */
+const HARNESS_PORT = 8080;
 
 export { sandboxEffectorSecret } from "./sandbox-effector.ts";
 
@@ -536,6 +555,22 @@ export type PodComposition = {
   network?: { attachment: string; nameserver: string };
 };
 
+/** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim), in order:
+ * the in-pod Custodian when the composition has one, the User Container when the spec named one,
+ * the Sandbox Effector when `jr2 up` placed an Effect there. On the Fence there is no Custodian
+ * container: the Custodian is outside the pod (ADR-0084). */
+export function sandboxSidecars(
+  pod: PodComposition,
+  user?: Record<string, unknown>,
+  effector?: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  return [
+    ...(pod.custodianContainer !== undefined ? [pod.custodianContainer] : []),
+    ...(user !== undefined ? [user] : []),
+    ...(effector !== undefined ? [effector] : []),
+  ];
+}
+
 /** What `sandboxCr` composes a Sandbox CR from: each part resolved, so the composition is pure. */
 export type SandboxCrInput = {
   namespace: string;
@@ -816,6 +851,32 @@ export type KubeSandboxOptions = {
    * hashes, because the map holds the current Assembly's contexts only. Absent → no current
    * Assembly is known, and such a failure names none. */
   currentAssembly?: () => string | undefined;
+  /** The Instance's Custodian (ADR-0084): with it, each Sandbox goes behind the Fence (above). */
+  fence?: FenceWiring;
+};
+
+/** What a provision on the Fence needs (ADR-0084): the Instance's VLAN range, its two ranges, its
+ * Custodian, and the trust texts that each Sandbox's trust files start with (ADR-0020). */
+export type FenceWiring = {
+  /** The Instance's VLAN range (`jr2-fence-range-<k>`). */
+  range: number;
+  ranges: FenceRanges;
+  custodian: CustodianClient;
+  /** The text of the Instance's `upstream.crt`, read per provision. */
+  upstream: () => Promise<string>;
+  /** The text of the user's `caBundle`, read per provision; undefined when there is none. */
+  caBundle: () => Promise<string | undefined>;
+  /** How long a provision waits for the Custodian to make the slot's rules live. Default 60 s. */
+  liveTimeoutMs?: number;
+};
+
+/** The port, and on the Fence where its pods are (ADR-0084). */
+export type KubeSandboxPort = SandboxPort & {
+  /** The node of the Sandbox on a Fence slot, or undefined when no Sandbox of the slot has a node. */
+  fenceNode(slot: number): Promise<string | undefined>;
+  /** The Sandbox Effector's address (`<slot address>:8082`, what its requests are signed for), or
+   * undefined when the Sandbox names no Fence slot. */
+  fenceEffector(sandbox: string): Promise<string | undefined>;
 };
 
 /** The options of {@link KubeSandboxOptions} that come from the Instance's config. */
@@ -824,7 +885,7 @@ export type KubeSandboxSettings = Pick<
   "credentials" | "env" | "envFrom" | "caBundle" | "placement" | "defaultSize" | "priorityClassName"
 >;
 
-export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
+export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
   // The config-derived options, read per use (ADR-0069): `cfg().credentials`, never a copy.
   const cfg = (): KubeSandboxSettings => (opts.settings ? opts.settings() : opts);
   const ns = opts.namespace ?? "default";
@@ -833,7 +894,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const repoTimeoutMs = opts.repoTimeoutMs ?? 25 * 60_000;
   const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
-  const harnessFetch = opts.harnessFetch ?? dialFetch();
+  // On the Fence, a slot address goes through the Custodian pod on the pod's node.
+  const harnessFetch = opts.harnessFetch ?? fenceRouted(dialFetch());
+  const fence = opts.fence;
   const attachWindowMs = opts.attachWindowMs ?? ATTACH_WINDOW_MS;
   const log = opts.log ?? ((line: string) => console.warn(line));
 
@@ -843,6 +906,105 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const kube = () => (client ??= kubeClient());
   let watch: SandboxWatch | undefined = opts.watch;
   const sandboxes = () => (watch ??= watchSandboxes(kube(), { namespace: ns }));
+
+  // --- the Fence (ADR-0084) ----------------------------------------------------------------------
+
+  /** The slot allocator, made again from the API on first use: each Sandbox CR keeps the slot it
+   * names. The Orchestrator may not list Secrets, so a slot whose CR went before this process
+   * started waits for the Custodian's word alone (fence-slots.ts, ADR-0084). */
+  let allocator: Promise<SlotAllocator> | undefined;
+  /** The Sandboxes whose CR the watch has shown, so that the watch's word that one is gone frees
+   * its slot. A take before the CR exists hears "absent" first, which is not a deletion. */
+  const watched = new Map<string, { seen: boolean; stop: () => void }>();
+  const watchSlot = (name: string, slots: SlotAllocator): void => {
+    if (watched.has(name)) return;
+    const entry = { seen: false, stop: () => {} };
+    watched.set(name, entry);
+    entry.stop = sandboxes().subscribe(name, (sandbox) => {
+      if (sandbox !== undefined) {
+        entry.seen = true;
+        return;
+      }
+      if (!entry.seen) return;
+      entry.stop();
+      watched.delete(name);
+      slots.release(name);
+    });
+  };
+  const slots = (): Promise<SlotAllocator> => {
+    if (fence === undefined) throw new Error("kubeSandbox: no Fence");
+    allocator ??= (async () => {
+      const list = await kube().list<SandboxObject>(SANDBOXES, ns);
+      const held = list.items.flatMap((sb) => {
+        const name = sb.metadata?.name;
+        const slot = slotOfAttachment(sb.spec?.network?.attachment);
+        return name !== undefined && slot !== undefined ? [{ name, slot }] : [];
+      });
+      const made = slotAllocator({ sandboxes: held, secrets: [], reports: (slot) => fence.custodian.reports(slot) });
+      for (const { name } of held) watchSlot(name, made);
+      return made;
+    })();
+    // A list that failed is not kept: the next provision asks again.
+    allocator.catch(() => (allocator = undefined));
+    return allocator;
+  };
+  /** The slot a Sandbox CR names, if it is on the Fence. */
+  const slotOfCr = (sandbox: SandboxObject | undefined): number | undefined =>
+    slotOfAttachment(sandbox?.spec?.network?.attachment);
+  /** The Harness's address of a Sandbox: its slot's address on the Fence, else the operator's. */
+  const endpointOf = (sandbox: SandboxObject | undefined): string | undefined => {
+    if (fence === undefined) return sandbox?.status?.endpoint;
+    const slot = slotOfCr(sandbox);
+    return slot === undefined
+      ? undefined
+      : `http://${fenceSlotAddress(fence.ranges, fence.range, slot)}:${HARNESS_PORT}`;
+  };
+
+  /**
+   * The Sandbox's Fence objects (sandbox-fence.ts): its slot Secret, its Stand-ins and its trust
+   * ConfigMap, owned by the CR. Written once for the Sandbox's life, and the CR is then marked: each
+   * write makes a new CA, and the pod trusts the CA of the write it started with, whose key is gone.
+   * The trust ConfigMap is last, because the pod cannot start without it, and it is a create: a
+   * trust ConfigMap that is there with no mark on the CR is of a write that did not finish, whose CA
+   * the pod may trust already, so the provision fails and names it.
+   */
+  const writeFenceObjects = async (
+    name: string,
+    applied: SandboxObject,
+    slot: number,
+    manifest: HeldManifest,
+    heldPod: string,
+  ): Promise<void> => {
+    if (fence === undefined || !opts.signingKey) throw new Error("kubeSandbox: the Fence needs a signingKey");
+    if (applied.metadata?.annotations?.[ANNOTATION_FENCE_OBJECTS] !== undefined) return;
+    const uid = applied.metadata?.uid;
+    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its Fence objects`);
+    const caBundle = await fence.caBundle();
+    const objects = sandboxFenceObjects({
+      namespace: ns,
+      sandbox: name,
+      uid,
+      slot,
+      manifest,
+      heldPod,
+      ranges: fence.ranges,
+      signingKey: opts.signingKey,
+      upstream: await fence.upstream(),
+      ...(caBundle !== undefined ? { caBundle } : {}),
+    });
+    await kube().apply(SECRETS, ns, objects.slotSecret);
+    await kube().apply(SECRETS, ns, objects.standIns);
+    try {
+      await kube().create(CONFIGMAPS, ns, objects.trust);
+    } catch (err) {
+      if (!isAlreadyExists(err)) throw err;
+      throw new Error(
+        `Sandbox "${name}" cannot be provisioned: its trust ConfigMap is of an earlier provision that did not ` +
+          "finish, and the pod may trust that CA, whose key is gone. The Sandbox must be made again (ADR-0059)",
+      );
+    }
+    await kube().patch(SANDBOXES, ns, name, { metadata: { annotations: { [ANNOTATION_FENCE_OBJECTS]: "written" } } });
+  };
 
   /** The Sandbox's token Secret — mounted into the Custodian container, and nothing else in the pod. */
   const secretName = (name: string) => `${name}-token`;
@@ -896,10 +1058,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     ...(split.user ? { resources: split.user } : {}),
   });
 
-  /** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim). The
-   * Custodian is ALWAYS here: a Sandbox without one is a pod that comes up Ready and then parks its
-   * Machine forever on a Menu it cannot read (ADR-0013). The User Container joins it only when the
-   * spec named one. */
+  /** The pod's sidecar list (`sandboxSidecars`), with the User Container's image resolved. */
   const sidecarsFor = async (
     pod: PodComposition,
     refs: ImageRefs,
@@ -908,11 +1067,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     held: HeldImageScope | undefined,
     user?: string,
     effector?: Record<string, unknown>,
-  ) => [
-    ...(pod.custodianContainer !== undefined ? [pod.custodianContainer] : []),
-    ...(user !== undefined ? [await userSidecar(refs, user, keys, split, held)] : []),
-    ...(effector !== undefined ? [effector] : []),
-  ];
+  ) =>
+    sandboxSidecars(pod, user !== undefined ? await userSidecar(refs, user, keys, split, held) : undefined, effector);
 
   /**
    * The Sandbox Effector (ADR-0068), when `jr2 up` placed an Effect there: its
@@ -1523,16 +1679,6 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // in-cluster. A Workspace `jr2 up` never walked has none, and is refused by name.
       const pod = workspaceHeldPod({ workflow: req.workflow, route: req.route });
       const manifest = await readHeldManifest(join(heldDir, heldManifestKey(pod)));
-      const custodian = custodianComposition(manifest, {
-        image: refs.custodian,
-        pod,
-        config: sandboxCustodianConfigMap(req.name),
-        credentials: { secret: secretName(req.name) },
-        sandbox: req.name,
-        ...(req.secrets?.length ? { granted: req.secrets } : {}),
-        caBundle: cfg().caBundle === true,
-        resources: split.custodian,
-      });
       // The Sandbox Effector (ADR-0068): present when `jr2 up` placed an Effect of this Workspace
       // there, and declared it in the pod's manifest beside the Held one; absent otherwise.
       const effectorManifest = await readSandboxEffectorManifest(join(heldDir, effectorManifestKey(pod)));
@@ -1540,7 +1686,29 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // matched against the fence, and the entry's push Secret is named on the CR — or the push is
       // refused here, before anything is written, as a per-run url outside the fence is.
       const gitCredentials = await gitCredentialsFor(req.name, req.repos, effectorManifest?.pushes ?? []);
-      const cr = await crFor(req, refs, repos, custodian, split, effectorManifest, gitCredentials);
+      // On the Fence, a slot last (ADR-0084): each refusal above costs no slot. The Sandbox keeps it
+      // for its life; its CR names it, so a provision again takes the same one.
+      const slot = fence ? await (await slots()).take(req.name) : undefined;
+      const composition: PodComposition =
+        fence && slot !== undefined
+          ? fenceComposition(manifest, {
+              sandbox: req.name,
+              slot,
+              ranges: fence.ranges,
+              ...(req.secrets?.length ? { granted: req.secrets } : {}),
+              caBundle: cfg().caBundle === true,
+            })
+          : custodianComposition(manifest, {
+              image: refs.custodian,
+              pod,
+              config: sandboxCustodianConfigMap(req.name),
+              credentials: { secret: secretName(req.name) },
+              sandbox: req.name,
+              ...(req.secrets?.length ? { granted: req.secrets } : {}),
+              caBundle: cfg().caBundle === true,
+              resources: split.custodian,
+            });
+      const cr = await crFor(req, refs, repos, composition, split, effectorManifest, gitCredentials);
 
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
       // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
@@ -1559,12 +1727,26 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // be reached fails the apply below at once, rather than hanging on a list.
       sandboxes();
       const applied = await kube().apply(SANDBOXES, ns, cr).catch(noOperator(req.name, "Sandbox"));
-      // After the CR: its uid owns both, so they go when it goes.
-      await applyTokenSecret(req.name, applied, manifest);
-      await applyCustodianConfig(req.name, applied, manifest);
-      if (effectorManifest) {
-        await applyEffectorKey(req.name, applied);
-        await applyEffectorService(req.name, applied);
+      if (fence && slot !== undefined) {
+        watchSlot(req.name, await slots());
+        // After the CR: its uid owns them, so they go when it goes. No Service: the Orchestrator
+        // reaches the pod's Effector at its slot's address, through the Custodian (ADR-0084).
+        await writeFenceObjects(req.name, applied as SandboxObject, slot, manifest, pod);
+        if (effectorManifest) await applyEffectorKey(req.name, applied);
+        // A provision waits until the rules are live on each node (ADR-0084): a Harness pod that
+        // starts before its rules are live is refused by the Custodian.
+        await fence.custodian.makeLive(slot, {
+          ...(signal ? { signal } : {}),
+          timeoutMs: fence.liveTimeoutMs ?? LIVE_WAIT_MS,
+        });
+      } else {
+        // After the CR: its uid owns both, so they go when it goes.
+        await applyTokenSecret(req.name, applied, manifest);
+        await applyCustodianConfig(req.name, applied, manifest);
+        if (effectorManifest) {
+          await applyEffectorKey(req.name, applied);
+          await applyEffectorService(req.name, applied);
+        }
       }
 
       // The wait for a node, with no deadline (ADR-0064): jr2 cannot tell "full now" from "never
@@ -1634,15 +1816,23 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           if (status?.phase !== "Ready" && effector !== undefined) throw new Error(effectorStartError(name, effector));
           if (ready?.reason !== undefined && REPO_HELD.has(ready.reason)) held = true;
           if (status?.phase !== "Ready") return undefined;
-          // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
-          if (!status.endpoint) throw new Error(`Sandbox "${name}" is Ready but reports no endpoint`);
+          // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001). On the
+          // Fence, the address is the slot's, which the CR names (ADR-0084).
+          const endpoint = endpointOf(sandbox);
+          if (!endpoint) {
+            throw new Error(
+              fence
+                ? `Sandbox "${name}" is Ready but names no Fence slot`
+                : `Sandbox "${name}" is Ready but reports no endpoint`,
+            );
+          }
           // Freshness degrades, absence does not (ADR-0051): Ready with `ReposFresh=False` is a
           // Sandbox whose caches exist but could not be fetched since it asked. Remembered for the
           // attach, which is where a slot can be named; forgotten when the caches are fresh.
           const fresh = conditionOf(sandbox, "ReposFresh");
           if (fresh?.status === "False" && fresh.message) staleByName.set(name, fresh.message);
           else staleByName.delete(name);
-          return { endpoint: status.endpoint };
+          return { endpoint };
         },
         () => ({
           deadline: at + (held ? repoTimeoutMs : readyTimeoutMs),
@@ -1664,7 +1854,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // own, off the watch — the one provision just waited on, or a restore's first list — or the
       // API server's, for one the watch has not listed yet.
       const sandbox = sandboxes().get(req.name) ?? (await kube().get<SandboxObject>(SANDBOXES, ns, req.name));
-      const endpoint = sandbox?.status?.endpoint;
+      const endpoint = endpointOf(sandbox);
       if (!endpoint) throw new Error(`Sandbox "${req.name}" has no endpoint to attach through — is it gone?`);
       if (req.repos.length === 0) {
         throw new Error(
@@ -1761,10 +1951,32 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           (await kube()
             .get<SandboxObject>(SANDBOXES, ns, name)
             .catch(() => undefined)) === undefined
-        )
+        ) {
+          // The CR and its pod are gone: the slot waits its 2 minutes, then may be given again.
+          if (allocator !== undefined) (await allocator.catch(() => undefined))?.release(name);
+          watched.get(name)?.stop();
+          watched.delete(name);
           return;
+        }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
+    },
+
+    async fenceNode(slot) {
+      if (fence === undefined) return undefined;
+      const name = (await slots()).holder(slot);
+      if (name === undefined) return undefined;
+      const sandbox = sandboxes().get(name) ?? (await kube().get<SandboxObject>(SANDBOXES, ns, name));
+      return slotOfCr(sandbox) === slot ? sandbox?.status?.node : undefined;
+    },
+
+    async fenceEffector(name) {
+      if (fence === undefined) return undefined;
+      const sandbox = sandboxes().get(name) ?? (await kube().get<SandboxObject>(SANDBOXES, ns, name));
+      const slot = slotOfCr(sandbox);
+      return slot === undefined
+        ? undefined
+        : `${fenceSlotAddress(fence.ranges, fence.range, slot)}:${SANDBOX_EFFECTOR_PORT}`;
     },
   };
 }

@@ -77,17 +77,21 @@ import {
   HOOK_DIGESTS_KEY,
   HOOK_DIGESTS_MOUNT,
   HOOK_DIGESTS_SECRET,
+  FENCE_MOUNT,
 } from "./names.ts";
 import type { AnyStateMachine } from "xstate";
 import { partsOf, type CarriedRepo } from "./parts.ts";
 import { kubeClient, type KubeClient } from "./kube-client.ts";
 import { kubeRepoFetches, type LfsAsk, type RepoFetches } from "./repo-fetch.ts";
 import { kubeRepos, type RepoResources } from "./repos.ts";
-import { SANDBOX_EFFECTOR_PORT, kubeSandbox } from "./sandbox-kube.ts";
+import { SANDBOX_EFFECTOR_PORT, kubeSandbox, type FenceWiring, type KubeSandboxPort } from "./sandbox-kube.ts";
+import { custodianClient, installFenceRoute, slotOfAddress } from "./custodian-client.ts";
+import { slotVlan } from "./custodian-rules.ts";
+import { fenceRangesOf } from "./egress.ts";
+import { readFile } from "node:fs/promises";
 import { sandboxEffectorService } from "./sandbox-effector.ts";
 import { watchSandboxes, type SandboxWatch } from "./sandbox-watch.ts";
-import { loadSigningKey, mintInstanceToken, watchCallerDigests } from "./tokens.ts";
-import type { SandboxPort } from "./workspace.ts";
+import { custodianDialToken, loadSigningKey, mintInstanceToken, watchCallerDigests } from "./tokens.ts";
 
 export type ServerMainOptions = {
   /** The instance folder (deployed: the image's WORKDIR, with the state volume at `.jr2`;
@@ -167,7 +171,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // whether to DEPLOY the operator; a provision on a cluster with none fails naming `jr2 up`
   // (sandbox-kube.ts). A host-booted process has no cluster: its `workspace()` runs fault pointedly.
   const dataPlane = namespace !== undefined;
-  let sandbox: SandboxPort | undefined;
+  let sandbox: KubeSandboxPort | undefined;
+  let fence: FenceWiring | undefined;
   let repos: RepoResources | undefined;
   let fetches: RepoFetches | undefined;
   let watch: LazyWatch | undefined;
@@ -185,6 +190,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // ONE client for the process (ADR-0063): one write cap over every port that writes, and the
     // token read fresh on every request. Nothing is dialed until a port first asks.
     const client = opts.kube ?? kubeClient({ env });
+    // The Instance's Custodian (ADR-0084), when `jr2 up` installed one: the VLAN range it claimed for
+    // the Instance, the two ranges, and the trust texts in `jr2-fence`, read per provision.
+    fence = fenceWiring(env, namespace, signingKey, client);
     // The Repo resources (ADR-0051): created by this process, cloned by the operator's cache agent
     // on every node that needs them. The port resolves `git.credentials` into each resource's
     // `secretRef` and only names the Secret: `jr2 up` wrote each token's clone Secret and listed
@@ -247,7 +255,19 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       namespace,
       client,
       watch,
+      ...(fence ? { fence } : {}),
     });
+    // The process's route to a Harness pod behind the Fence (ADR-0084): each client of a Harness or
+    // a Sandbox Effector that dials a slot address goes through the Custodian pod on its node.
+    if (fence) {
+      const kube = sandbox;
+      const { ranges, range } = fence;
+      installFenceRoute({
+        custodian: fence.custodian,
+        slotOf: (host) => slotOfAddress(ranges, range, host),
+        nodeOf: (slot) => kube.fenceNode(slot),
+      });
+    }
   }
 
   // The Repo passes run one after another on one chain, so the newest pass always finishes last:
@@ -351,8 +371,16 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // the headless Service the provision writes beside it when `jr2 up` placed an Effect there.
     ...(namespace
       ? {
-          sandboxEffector: (sandbox: string) =>
-            `${sandboxEffectorService(sandbox)}.${namespace}.svc:${SANDBOX_EFFECTOR_PORT}`,
+          // On the Fence, its slot's address, which its requests are signed for, through the
+          // Custodian pod on its node (ADR-0084).
+          sandboxEffector: (name: string) =>
+            fence && sandbox
+              ? async () => {
+                  const address = await sandbox!.fenceEffector(name);
+                  if (address === undefined) throw new Error(`Sandbox "${name}" names no Fence slot`);
+                  return [address];
+                }
+              : `${sandboxEffectorService(name)}.${namespace}.svc:${SANDBOX_EFFECTOR_PORT}`,
         }
       : {}),
   });
@@ -406,6 +434,50 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // unlabeling every Repo would let `jr2 gc` evict them until the publish.
   if (repos && inst.assembly) repoPass(repos);
   return inst;
+}
+
+/**
+ * The Fence of a deployed Orchestrator (ADR-0084), from the env that `jr2 up` sets when it installs
+ * the Instance's Custodian: `JR2_FENCE_RANGE` (the claimed VLAN range), and `JR2_FENCE_SEGMENT` and
+ * `JR2_FENCE_PLACEHOLDERS` when the Instance's `fence` moves them. Undefined with no range: the
+ * Instance has no Custodian, and a Sandbox keeps its in-pod one. The trust texts come from the
+ * `jr2-fence` mount, read per provision, so a converge from a host with other roots reaches the next
+ * Sandbox with no roll.
+ */
+export function fenceWiring(
+  env: Record<string, string | undefined>,
+  namespace: string,
+  signingKey: Buffer,
+  kube: KubeClient,
+): FenceWiring | undefined {
+  if (env.JR2_FENCE_RANGE === undefined) return undefined;
+  const range = Number(env.JR2_FENCE_RANGE);
+  // A range that gives no VLAN is a defect of the deploy: refused at boot, by name.
+  slotVlan(range, 0);
+  const read = async (key: string): Promise<string | undefined> =>
+    readFile(join(FENCE_MOUNT, key), "utf8").catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return undefined;
+      throw err;
+    });
+  return {
+    range,
+    ranges: fenceRangesOf({
+      ...(env.JR2_FENCE_SEGMENT ? { segment: env.JR2_FENCE_SEGMENT } : {}),
+      ...(env.JR2_FENCE_PLACEHOLDERS ? { placeholders: env.JR2_FENCE_PLACEHOLDERS } : {}),
+    }),
+    custodian: custodianClient({ kube, namespace, dialToken: custodianDialToken(signingKey) }),
+    upstream: async () => {
+      const text = await read("upstream.crt");
+      if (text === undefined) {
+        throw new Error(
+          `the Orchestrator has no ${FENCE_MOUNT}/upstream.crt, which each Sandbox's trust files start with ` +
+            "(ADR-0020): run `jr2 up` again",
+        );
+      }
+      return text;
+    },
+    caBundle: () => read("ca.crt"),
+  };
 }
 
 /** What a port that reads the config says while no current Assembly binds one (ADR-0069). */

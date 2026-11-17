@@ -82,7 +82,13 @@ import {
 import type { SandboxPort } from "./workspace.ts";
 import { jwtAuthenticator } from "./callers.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
-import { WORKFLOW_NAME, createMacClient, nodeEffectorTransport, type HookMac } from "./effector-wire.ts";
+import {
+  WORKFLOW_NAME,
+  createMacClient,
+  nodeEffectorTransport,
+  type EffectorService,
+  type HookMac,
+} from "./effector-wire.ts";
 import { createHookPost, hookDoor, type HookPost } from "./hooks.ts";
 
 export type InstanceOptions = {
@@ -163,7 +169,7 @@ export type InstanceOptions = {
   /** A Sandbox Effector's address, `host:port`, by its Sandbox's name (ADR-0068) — where a push, an
    * file-body http or a credentialed command is sent. The entrypoint derives it from the pod's namespace and
    * the Service the provision writes; absent, those Effects fault pointedly. */
-  sandboxEffector?: (sandbox: string) => string;
+  sandboxEffector?: (sandbox: string) => EffectorService;
   /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.jr2/secret`, minted on
    * first boot. Supply it when the instance folder must stay untouched (tests), or when the same
    * key must reach a `kubeSandbox` built before this call (it mints the tokens). */

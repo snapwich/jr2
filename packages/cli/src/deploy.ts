@@ -14,6 +14,8 @@ import {
   callerTokenDigest,
   callerTokenSecret,
   CA_CONFIGMAP,
+  FENCE_CONFIGMAP,
+  FENCE_MOUNT,
   CA_MOUNT,
   EFFECTOR_PORT,
   INSTANCE_EFFECTOR,
@@ -567,6 +569,9 @@ export function instanceObjects(opts: {
   /** Each `git.credentials` entry's clone Secret (ADR-0068): the token the cache agent spends. The
    * Orchestrator names it from `git-clone.json` and never holds it. */
   gitClone?: readonly GitCloneSecret[];
+  /** The Instance's Custodian (ADR-0084), when it has one: the Orchestrator provisions each Sandbox
+   * on the Fence and dials it through the Custodian. Its env changes with it, so the pod rolls. */
+  fence?: { range: number; ranges: FenceRanges };
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const priority = priorityClassNames(opts.priorityClasses);
@@ -601,13 +606,15 @@ export function instanceObjects(opts: {
       rules: [
         { apiGroups: ["core.jr2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
         // Secrets: create and patch, nothing else (ADR-0068). The Orchestrator server-side
-        // applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, owned by the CR,
+        // applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, and on the Fence
+        // the slot Secret and `<sandbox>-standins` (ADR-0084), each owned by the CR,
         // and holds no git credential and no Effect secret (ADR-0068): no get, no list, so it cannot read or enumerate the Effect
         // secrets, the clone and push Secrets, or a user's Secret through the API. RBAC cannot
         // pin `create` to a name, and `resourceNames` has no prefix form.
         { apiGroups: [""], resources: ["secrets"], verbs: ["create", "patch"] },
-        // A Sandbox's Custodian files, rendered at provision and server-side applied (ADR-0059);
-        // owned by the CR, so the garbage collector deletes them with the pod.
+        // A Sandbox's Custodian files, rendered at provision and server-side applied (ADR-0059), or
+        // on the Fence its trust ConfigMap (ADR-0084); owned by the CR, so the garbage collector
+        // deletes them with the pod.
         { apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] },
         // A Sandbox Effector's headless Service, written at provision beside its key (ADR-0068): how
         // this process reaches the pod's own address. Owned by the CR, like the ConfigMap.
@@ -789,6 +796,19 @@ export function instanceObjects(opts: {
                   // The claim's size as this converge applied it (ADR-0065): the space guard
                   // measures against it, because a hostPath class's `statfs` gives the node's disk.
                   { name: "JR2_STATE_VOLUME", value: opts.stateVolume ?? STATE_VOLUME_DEFAULT },
+                  // The Fence (ADR-0084): the VLAN range this Instance claimed, and its two ranges
+                  // when `fence` moves them. With them, each Sandbox is on the Fence.
+                  ...(opts.fence
+                    ? [
+                        { name: "JR2_FENCE_RANGE", value: String(opts.fence.range) },
+                        ...(opts.fence.ranges.segment !== FENCE_SEGMENT
+                          ? [{ name: "JR2_FENCE_SEGMENT", value: opts.fence.ranges.segment }]
+                          : []),
+                        ...(opts.fence.ranges.placeholders !== FENCE_PLACEHOLDERS
+                          ? [{ name: "JR2_FENCE_PLACEHOLDERS", value: opts.fence.ranges.placeholders }]
+                          : []),
+                      ]
+                    : []),
                 ],
                 // The Orchestrator creates Repo resources and never clones (ADR-0051) — the cache
                 // agent on each node does, reading the credential Secret a Repo's `secretRef`
@@ -810,6 +830,9 @@ export function instanceObjects(opts: {
                   // The digests of the `token` Hooks' secrets (ADR-0078), read again in the same
                   // way: a new or changed secret costs one kubelet propagation window. Never a value.
                   { name: "hooks", mountPath: HOOK_DIGESTS_MOUNT, readOnly: true },
+                  // The trust texts of each Sandbox on the Fence (`jr2-fence`, ADR-0020), read per
+                  // provision. Certificates only.
+                  ...(opts.fence ? [{ name: "fence", mountPath: FENCE_MOUNT, readOnly: true }] : []),
                 ],
                 resources: sized(KIT_POD_SIZES.orchestrator),
                 // The period, not the boot, is what `up`'s rollout wait measures. Measured: the
@@ -849,6 +872,7 @@ export function instanceObjects(opts: {
               { name: "held", configMap: { name: HELD_CONFIGMAP } },
               { name: "callers", secret: { secretName: CALLER_DIGESTS_SECRET } },
               { name: "hooks", secret: { secretName: HOOK_DIGESTS_SECRET } },
+              ...(opts.fence ? [{ name: "fence", configMap: { name: FENCE_CONFIGMAP } }] : []),
             ],
           },
         },
@@ -1393,6 +1417,31 @@ export function custodianObjects(opts: {
     },
   ];
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/**
+ * What the Orchestrator reads of the Fence (ADR-0084, ADR-0020): `jr2-fence`, with `upstream.crt` (the
+ * roots of the Node that runs `jr2 up`, and the user's `caBundle`) and the `caBundle` alone as
+ * `ca.crt`. Each Sandbox's `bundle.crt` and `extra.crt` start with them. Its own manifest, apart
+ * from the List: the roots are past what client-side apply's annotation can hold, so `jr2 up`
+ * applies it server-side, before the Orchestrator that mounts it.
+ */
+export function fenceConfigObject(opts: {
+  name: string;
+  namespace: string;
+  upstream: string;
+  caBundle?: string;
+}): string {
+  return JSON.stringify({
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: {
+      name: FENCE_CONFIGMAP,
+      namespace: opts.namespace,
+      labels: { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" },
+    },
+    data: { "upstream.crt": opts.upstream, ...(opts.caBundle !== undefined ? { "ca.crt": opts.caBundle } : {}) },
+  });
 }
 
 /** The label on each pod's `jr2-held-secrets-<pod>` Secret: its pod, so `jr2 up` finds and deletes

@@ -50,6 +50,15 @@ test("the bound is on the connect only: a connection that opens in time waits pa
   assert.ok(raw.endsWith(JSON.stringify({ slots: [] })), "the body is sent");
 });
 
+test("a Host header that the caller gives goes on the wire in place of the URL's (the Fence's hop, ADR-0084)", async () => {
+  const socket = fakeConnection({ lookupMs: 1, connectMs: 1, answer: "{}" });
+  const fetch = dialFetch({ connect: () => socket });
+  await fetch("http://10.0.0.12:18080/attach", { method: "POST", headers: { host: "198.19.1.7:8080" }, body: "{}" });
+  const raw = await socket.request;
+  assert.match(raw, /\r\nhost: 198\.19\.1\.7:8080\r\n/i);
+  assert.doesNotMatch(raw, /10\.0\.0\.12:18080/);
+});
+
 test("the bound starts when the name lookup answers: a slow lookup is not cut", async () => {
   // Node cannot cancel a getaddrinfo, so a bound that cut it would leave it holding a pool thread.
   const socket = fakeConnection({ lookupMs: 100, connectMs: 120, answer: "{}" });

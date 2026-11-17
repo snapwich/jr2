@@ -79,6 +79,13 @@ windows more often. That is why the flake was degree-independent and serial runs
     `fetch` and refuses what it does not take: a `Request` input, or a body that is not a string or a `ReadableStream`.
     A `ReadableStream` body goes in chunks, as it is read: an error of the body ends the request, and the end of the
     request cancels the body.
+- **Through the uplink, "never delivered" is the Custodian's word.** A TCP connect to the uplink always succeeds,
+  because Envoy accepts it. When the Harness pod does not answer, the uplink answers 503 with
+  `x-jr2-custodian: unreachable` and Envoy's flags, and when the Custodian refuses the dial itself, it answers with
+  `x-jr2-custodian: refused` or `not-ready` ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The
+  Orchestrator reads such an answer as the transport failure it is, never as the Harness's: "never delivered" when the
+  Custodian refused the dial or when each flag is `UF`, `UH`, `DF` or `URX`, and "may have been delivered" for any other
+  flag. A dial to a slot whose pod has no node, or whose node has no ready Custodian pod, is never delivered too.
 - **Only never-delivered.** Admission is accept-and-queue
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)): a POST the Harness received but
   could not answer has already queued a Submission, so re-sending it would run the turn **twice** — a worse failure than

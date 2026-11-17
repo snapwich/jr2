@@ -1993,13 +1993,16 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   );
   const orch = items.find((i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator")!;
   const podSpec = orch.spec.template.spec;
+  // This Instance has a Sandbox, so it is on the Fence (ADR-0084): the VLAN range it claimed, and
+  // the trust texts of each Sandbox (`jr2-fence`, certificates only).
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
-    ["state", "images", "held", "callers", "hooks"],
+    ["state", "images", "held", "callers", "hooks", "fence"],
   );
+  assert.deepEqual(podSpec.volumes.at(-1), { name: "fence", configMap: { name: "jr2-fence" } });
   assert.deepEqual(
     podSpec.containers[0].env.map((e: { name: string }) => e.name),
-    ["JR2_NAMESPACE", "NODE_EXTRA_CA_CERTS", "JR2_STATE_VOLUME"],
+    ["JR2_NAMESPACE", "NODE_EXTRA_CA_CERTS", "JR2_STATE_VOLUME", "JR2_FENCE_RANGE"],
   );
   // The space guard measures against the claim's size as this converge applied it (ADR-0065).
   assert.equal(podSpec.containers[0].env.find((e: { name: string }) => e.name === "JR2_STATE_VOLUME").value, "5Gi");
@@ -3108,7 +3111,11 @@ test("provider apiKey is a held secret: the Custodian's Secret holds it, the Har
     !trust.data["upstream.crt"].includes(ca.stringData["ca.crt"]),
     "the Custodian never trusts its own CA upstream",
   );
-  assert.deepEqual(w.kube.serverSide, ["jr2-ca"]);
+  // The Orchestrator's trust texts of each Sandbox on the Fence: the roots and no jr2 CA.
+  const fence = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"jr2-fence"`))!);
+  assert.equal(fence.data["upstream.crt"], trust.data["upstream.crt"]);
+  assert.equal(fence.data["ca.crt"], undefined, "no caBundle, no ca.crt");
+  assert.deepEqual(w.kube.serverSide, ["jr2-ca", "jr2-fence"]);
 });
 
 test("the CA is kept, a leaf that still fits is reused, and a converge holding nothing drops the Custodian's Secrets", async () => {
@@ -7043,6 +7050,42 @@ test("an Instance with no Harness pod claims no range and installs no Custodian;
   assert.equal(await up(["--yes"], again.io), 0);
   assert.match(again.err.join("\n"), /custodian: converging on each Sandbox node \(VLAN range 4\)/);
   assert.ok(!again.kube.created.some((c) => c.includes("/lease/")));
+});
+
+/** The Orchestrator's env of a converge, by name. */
+function orchestratorEnv(w: World): Record<string, { value?: string }> {
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"name":"jr2-orchestrator"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const orch = items.find((i) => i.kind === "Deployment")!;
+  return Object.fromEntries(orch.spec.template.spec.containers[0].env.map((e: { name: string }) => [e.name, e]));
+}
+
+test("the Orchestrator gets the Instance's VLAN range, claimed before it is applied, while a Custodian is kept (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  // The claim comes first: the Orchestrator that dials through the Custodian starts with its range.
+  assert.equal(orchestratorEnv(w).JR2_FENCE_RANGE?.value, "0");
+
+  // A converge with no Harness pod that keeps the Custodian for a held run's Sandbox keeps the range
+  // on the Orchestrator, which still dials that Sandbox through it.
+  const bare = await mkInstance(`export default { name: "myinst" };\n`);
+  const held = mkWorld(bare);
+  held.kube.set("myinst", "daemonset", "jr2-custodian", {});
+  held.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+  held.kube.sandboxes = [{ metadata: { name: "ticket-a1b2c", namespace: "myinst" } }];
+  assert.equal(await up(["--yes"], held.io), 0);
+  assert.equal(orchestratorEnv(held).JR2_FENCE_RANGE?.value, "4");
+  assert.ok(held.kube.applied.some((m) => m.includes(`"name":"jr2-fence"`)));
+
+  // With no Harness pod left, the Custodian goes, and the Orchestrator has no Fence.
+  const gone = mkWorld(bare);
+  gone.kube.set("myinst", "daemonset", "jr2-custodian", {});
+  gone.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+  assert.equal(await up(["--yes"], gone.io), 0);
+  assert.equal(orchestratorEnv(gone).JR2_FENCE_RANGE, undefined);
+  assert.ok(gone.kube.deleted.includes("myinst/configmap/jr2-fence"));
+  assert.ok(!gone.kube.applied.some((m) => m.includes(`"name":"jr2-fence"`)));
 });
 
 test("after the Custodian is Ready, jr2 up probes the bridge and the rule set on each node of a Custodian pod (ADR-0084)", async () => {

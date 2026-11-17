@@ -38,6 +38,7 @@
 // observability, though jr2 never reads it (the actor is stopped by then; see actor.ts).
 
 import { agentActorWith } from "./actor.ts";
+import { fenceRouted, routedFetch } from "./custodian-client.ts";
 import { dialFetch, neverDelivered, routabilityLine, transportCode, transportDetail } from "./dial.ts";
 import type {
   AgentAdmission,
@@ -288,8 +289,8 @@ function isTimeout(reason: unknown): boolean {
 /** Build the real wire client from connection options. */
 export function createHarnessClient(options: HarnessClientOptions): HarnessClient {
   const { baseUrl } = options;
-  const fetchImpl = options.fetch ?? fetch;
-  const admitFetch = options.fetch ?? dialFetch();
+  const fetchImpl = options.fetch ?? routedFetch;
+  const admitFetch = options.fetch ?? fenceRouted(dialFetch());
   const backoffInitialMs = options.backoffInitialMs ?? 250;
   const backoffMaxMs = options.backoffMaxMs ?? 5_000;
   const admitWindowMs = options.admitWindowMs ?? 90_000;
@@ -704,7 +705,7 @@ export function createEchoPush(options: {
   /** Injectable for socket-free tests. Default: global `fetch`. */
   fetch?: typeof fetch;
 }): (events: EchoEvent[]) => Promise<void> {
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchImpl = options.fetch ?? routedFetch;
   return async (events) => {
     const url = new URL("/echo", options.baseUrl).toString();
     // The echo is log-only, un-retried, and fires at workspace attach — which makes it the FIRST
@@ -742,7 +743,7 @@ export function createLiveSetPush(options: {
   /** Injectable for socket-free tests. Default: global `fetch`. */
   fetch?: typeof fetch;
 }): (live: LiveConversation[]) => Promise<LiveSetResponse> {
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchImpl = options.fetch ?? routedFetch;
   return async (live) => {
     const url = new URL("/agents", options.baseUrl).toString();
     const res = await fetchImpl(url, {
@@ -932,7 +933,7 @@ export function createExecPort(options: {
   /** Injectable for socket-free tests. Default: global `fetch`. */
   fetch?: typeof fetch;
 }): ExecPort {
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchImpl = options.fetch ?? routedFetch;
   const headers = {
     "content-type": "application/json",
     ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),

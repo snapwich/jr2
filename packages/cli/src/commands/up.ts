@@ -125,6 +125,7 @@ import {
   uncarriedHosts,
   custodianDialToken,
   CUSTODIAN_SERVICE,
+  FENCE_CONFIGMAP,
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { awaitMounts, digestSecretsOf, mountedDigests, staleLine } from "../mount-wait.ts";
@@ -190,6 +191,7 @@ import {
   PROVIDER_PREFLIGHT,
   CHECK_CONTAINER,
   custodianObjects,
+  fenceConfigObject,
   custodianValueSecrets,
 } from "../deploy.ts";
 import { claimRange } from "../fence.ts";
@@ -1062,11 +1064,44 @@ export async function up(args: string[], io: Io): Promise<number> {
   // --- dispatch preflight (ADR-0071): each foreign target's door, from the host ------------------
   await preflightDispatch(io, carried.effects);
 
+  // --- the Fence's range (ADR-0084), before the Orchestrator, which dials through it -------------
+  // An Instance with a Harness pod (a Sandbox, or the Instance Harness) has a Custodian; an Instance
+  // with none, such as one whose runs have no Agent, claims no VLAN range. A Custodian that a
+  // converge keeps for a Harness pod that is left keeps its range, and the Orchestrator still dials
+  // through it.
+  const fenced = carried.composesSandbox || carried.instanceHarness !== undefined;
+  const custodianLeft =
+    !fenced && (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx }))
+      ? await harnessPodsLeft(kube, namespace, ctx)
+      : undefined;
+  let fenceRange: number | undefined;
+  if (fenced) {
+    // The parts of the Fence that `jr2 up` does not install (ADR-0084): first what the API shows,
+    // because without them the Custodian's attachments cannot be applied and its pods do not start.
+    const fenceNodes = sandboxNodes(
+      nodes.length > 0 ? nodes : await kube.listJson<NodeObject>({ kind: "node", ...ctx }),
+      config.sandbox,
+    ).nodes.map((n) => n.metadata.name);
+    await checkFenceApi(kube, { nodes: fenceNodes, ...ctx });
+  }
+  if (fenced || custodianLeft !== undefined) {
+    fenceRange = await claimRange(kube, { namespace, ...ctx, log: (line) => activity(io, line) });
+  }
+
   // --- apply + rollout ---------------------------------------------------------------------------
   // The trust bundles first, and server-side: every pod that mounts them must find them, and they
   // carry every root certificate — past what client-side apply's annotation can hold.
   const trust = trustObject({ name, namespace, caBundle: caPem, bundles: held.bundles });
   if (trust) await kube.apply({ manifest: trust, serverSide: true, ...ctx });
+  // What the Orchestrator reads for each Sandbox's trust files on the Fence (ADR-0020), also
+  // server-side, before the Orchestrator that mounts it.
+  if (fenceRange !== undefined) {
+    await kube.apply({
+      manifest: fenceConfigObject({ name, namespace, upstream: trustBundles("", caPem).upstream, caBundle: caPem }),
+      serverSide: true,
+      ...ctx,
+    });
+  }
   const instanceList = instanceObjects({
     name,
     namespace,
@@ -1085,6 +1120,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     sandboxEffectors: placements.sandbox,
     gitPush,
     gitClone,
+    ...(fenceRange !== undefined ? { fence: { range: fenceRange, ranges: fenceRangesOf(config.fence) } } : {}),
   });
   activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
   await kube.apply({ manifest: instanceList, warn: (line) => activity(io, line), ...ctx });
@@ -1208,15 +1244,8 @@ export async function up(args: string[], io: Io): Promise<number> {
   // --- the Custodian (ADR-0084): its uplink and its resolver, on each Sandbox node ----------------
   // An Instance with a Harness pod (a Sandbox, or the Instance Harness) has it; an Instance with
   // none, such as one whose runs have no Agent, installs nothing and claims no VLAN range.
-  if (carried.composesSandbox || carried.instanceHarness !== undefined) {
-    // The parts of the Fence that `jr2 up` does not install (ADR-0084): first what the API shows,
-    // because without them the Custodian's attachments cannot be applied and its pods do not start.
-    const fenceNodes = sandboxNodes(
-      nodes.length > 0 ? nodes : await kube.listJson<NodeObject>({ kind: "node", ...ctx }),
-      config.sandbox,
-    ).nodes.map((n) => n.metadata.name);
-    await checkFenceApi(kube, { nodes: fenceNodes, ...ctx });
-    const range = await claimRange(kube, { namespace, ...ctx, log: (line) => activity(io, line) });
+  if (fenced && fenceRange !== undefined) {
+    const range = fenceRange;
     activity(io, `custodian: converging on each Sandbox node (VLAN range ${range})`);
     await kube.apply({
       manifest: custodianObjects({
@@ -1272,7 +1301,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     // Harness pod of the namespace is left: no Sandbox (a held run keeps its own, ADR-0069) and no
     // Instance Harness pod (its layer below deletes it, and it drains). Else a later converge
     // deletes it.
-    const left = await harnessPodsLeft(kube, namespace, ctx);
+    const left = custodianLeft;
     if (left !== undefined) {
       activity(io, `custodian: kept — ${left} still on the Fence; a later \`jr2 up\` deletes it`);
     } else {
@@ -1291,6 +1320,7 @@ export async function up(args: string[], io: Io): Promise<number> {
         }),
         ...ctx,
       });
+      await kube.deleteObject({ kind: "configmap", name: FENCE_CONFIGMAP, namespace, ...ctx });
     }
   }
 

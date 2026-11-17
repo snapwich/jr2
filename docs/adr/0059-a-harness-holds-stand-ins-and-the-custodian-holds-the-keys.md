@@ -319,12 +319,14 @@ and it replaces the Adapter.
   Before the pod starts, it issues one leaf for each of them and gives the leaves to the Custodian in the Sandbox's slot
   Secret ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The CA's key is never written, and it
   goes when the provision's call ends. The pod gets the CA's certificate only. So no key that can sign a leaf for a
-  Sandbox exists while its Agents run, and the CA cannot vouch for a host outside its constraints. The Instance Harness
-  and the check pods are not Sandboxes and run no Workspace code. `jr2 up` keeps the Instance's CA for them in the
-  `jr2-held-ca` Secret, which no pod mounts, and issues their leaves from it before the pod starts. It never rotates
-  that CA; a human deletes the Secret to rotate it. Such a leaf is reused while its SAN is the same, it chains to the
-  current CA, and more than 30 days remain. Keys are ECDSA P-256, written by jr2's own small DER writer over
-  `node:crypto`: no dependency, and no `openssl`.
+  Sandbox exists while its Agents run, and the CA cannot vouch for a host outside its constraints. The CA is made once
+  for the Sandbox's life: a later provision of the Sandbox, after a restart of the Orchestrator, keeps the objects that
+  the first one wrote, because the pod trusts their CA and no key can sign for it again, and a first write that did not
+  finish fails the provision. The Instance Harness and the check pods are not Sandboxes and run no Workspace code.
+  `jr2 up` keeps the Instance's CA for them in the `jr2-held-ca` Secret, which no pod mounts, and issues their leaves
+  from it before the pod starts. It never rotates that CA; a human deletes the Secret to rotate it. Such a leaf is
+  reused while its SAN is the same, it chains to the current CA, and more than 30 days remain. Keys are ECDSA P-256,
+  written by jr2's own small DER writer over `node:crypto`: no dependency, and no `openssl`.
 - **Trust is in variables only.** jr2 mounts no file over the image's own CA bundle, so the bundle of a brought image
   stays as its owner made it. The `jr2-ca` ConfigMap carries `ca.crt` (the user's `caBundle`) and `upstream.crt` (the
   roots + `caBundle`, and never a jr2 CA, for the Custodian). "Roots" are the Mozilla roots of the Node that runs
