@@ -256,6 +256,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       client,
       watch,
       ...(fence ? { fence } : {}),
+      // Deployed, a Sandbox goes behind the Fence or is refused (ADR-0084).
+      requireFence: true,
     });
     // The process's route to a Harness pod behind the Fence (ADR-0084): each client of a Harness or
     // a Sandbox Effector that dials a slot address goes through the Custodian pod on its node.
@@ -367,8 +369,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // Where an http Effect runs (ADR-0068): the Instance Effector's headless Service. `jr2 up`
     // converges it whenever a registered Machine carries an http Effect.
     ...(instanceEffector !== undefined ? { instanceEffector } : {}),
-    // Where a push, a file-body http or a credentialed command runs (ADR-0068): a Sandbox's Effector, by
-    // the headless Service the provision writes beside it when `jr2 up` placed an Effect there.
+    // Where a push, a file-body http or a credentialed command runs (ADR-0068): a Sandbox's Effector,
+    // when `jr2 up` placed an Effect there.
     ...(namespace
       ? {
           // On the Fence, its slot's address, which its requests are signed for, through the
@@ -440,9 +442,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
  * The Fence of a deployed Orchestrator (ADR-0084), from the env that `jr2 up` sets when it installs
  * the Instance's Custodian: `JR2_FENCE_RANGE` (the claimed VLAN range), and `JR2_FENCE_SEGMENT` and
  * `JR2_FENCE_PLACEHOLDERS` when the Instance's `fence` moves them. Undefined with no range: the
- * Instance has no Custodian, and a Sandbox keeps its in-pod one. The trust texts come from the
- * `jr2-fence` mount, read per provision, so a converge from a host with other roots reaches the next
- * Sandbox with no roll.
+ * Instance has no Custodian, and a Sandbox provision is refused (`requireFence`). The trust texts
+ * come from the `jr2-fence` mount, read per provision, so a converge from a host with other roots
+ * reaches the next Sandbox with no roll.
  */
 export function fenceWiring(
   env: Record<string, string | undefined>,

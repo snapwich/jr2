@@ -88,7 +88,8 @@
 //   attach    `http://<slot address>:8080`, through the Custodian pod on the pod's node (`fenceRouted`)
 //
 // The Sandbox Effector is reached the same way, at `<slot address>:8082`, the address its requests
-// are signed for (ADR-0068). With no `fence`, the in-pod Custodian of ADR-0013 stays.
+// are signed for (ADR-0068). With no `fence`, a deployed Orchestrator refuses the provision
+// (`requireFence`); elsewhere the in-pod Custodian of ADR-0013 stays.
 
 import { join } from "node:path";
 import {
@@ -853,6 +854,9 @@ export type KubeSandboxOptions = {
   currentAssembly?: () => string | undefined;
   /** The Instance's Custodian (ADR-0084): with it, each Sandbox goes behind the Fence (above). */
   fence?: FenceWiring;
+  /** A provision with no `fence` is refused (ADR-0084): no Sandbox has an address on the cluster's
+   * network. A deployed Orchestrator sets it. Default false: the in-pod Custodian of ADR-0013. */
+  requireFence?: boolean;
 };
 
 /** What a provision on the Fence needs (ADR-0084): the Instance's VLAN range, its two ranges, its
@@ -1688,6 +1692,18 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
       const gitCredentials = await gitCredentialsFor(req.name, req.repos, effectorManifest?.pushes ?? []);
       // On the Fence, a slot last (ADR-0084): each refusal above costs no slot. The Sandbox keeps it
       // for its life; its CR names it, so a provision again takes the same one.
+      // No Fence in a deployed Orchestrator: refused here, as the refusals above, before anything
+      // is written (ADR-0084). `jr2 up` claims no range when the current Assembly composes no
+      // Harness pod, and deletes the Custodian when none is left; a held run's next Sandbox then has
+      // no slot to go on.
+      if (fence === undefined && opts.requireFence) {
+        throw new Error(
+          `Sandbox "${req.name}" cannot be provisioned: this Orchestrator has no Fence (ADR-0084), so the ` +
+            "Sandbox would have an address on the cluster's network. `jr2 up` installs the Custodian and " +
+            "claims a VLAN range only while the current Assembly composes a Harness pod: run `jr2 up` " +
+            "again with a config whose workflows compose a Sandbox",
+        );
+      }
       const slot = fence ? await (await slots()).take(req.name) : undefined;
       const composition: PodComposition =
         fence && slot !== undefined

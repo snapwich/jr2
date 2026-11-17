@@ -275,6 +275,35 @@ test("the Sandbox's slot Secret and objects are not written for a Sandbox refuse
   assert.deepEqual(k.api.writes, []);
 });
 
+test("a deployed Orchestrator with no Fence refuses a provision, names `jr2 up`, and writes nothing", async () => {
+  const k = cluster(custodian().client);
+  const p = kubeSandbox({
+    imagesPath: await mkImages(),
+    heldDir: await mkHeld(),
+    signingKey: Buffer.from("k"),
+    repos,
+    client: k.client,
+    watch: k.watch,
+    harnessFetch: k.harnessFetch,
+    requireFence: true,
+  });
+  await assert.rejects(
+    p.place(
+      {
+        name: "ws-off",
+        runId: "run-1",
+        workflow: "coding",
+        path: "ws",
+        route: [] as PlacementRoute,
+        repos: [{ slot: "app", url: APP_URL, perRun: false }],
+      },
+      { onWait: () => {} },
+    ),
+    /Sandbox "ws-off" cannot be provisioned: this Orchestrator has no Fence \(ADR-0084\).*run `jr2 up` again/,
+  );
+  assert.deepEqual(k.api.writes, []);
+});
+
 test("sandboxSidecars: the in-pod Custodian when the composition has one, never on the Fence", () => {
   const manifest = EMPTY_HELD;
   const fence = fenceComposition(manifest, { sandbox: "ws-x", slot: 9, ranges: RANGES });

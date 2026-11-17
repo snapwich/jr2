@@ -14,9 +14,11 @@
 //     all, nothing says that a VLAN is empty. Such a reason is about the Custodian pod, not about
 //     a slot, so the `take` ends at once and gives no slot a new wait.
 //
-// The allocator keeps no record of its own. At start it is made again from what the API holds: each
-// Sandbox CR names its slot (its `spec.network.attachment`), and a slot Secret with no CR is the
-// slot of a Sandbox that went at a time this process did not see, so its 2 minutes start then.
+// The allocator keeps no record of its own. At start it is made again from the Sandbox CRs: each
+// names its slot (its `spec.network.attachment`). The Orchestrator may not read Secrets, so it
+// passes no slot Secret, and a slot whose Sandbox went before the start waits for the word of the
+// Custodian pods alone (ADR-0084). A slot Secret given in `secrets` with no CR is the slot of a
+// Sandbox that went at a time this process did not see, so its 2 minutes start then.
 
 import type { SlotStatus } from "./custodian-control.ts";
 import { FENCE_SLOTS } from "./custodian.ts";

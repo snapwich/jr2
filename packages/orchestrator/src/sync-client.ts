@@ -22,7 +22,8 @@ export function createSyncPort(options: {
   baseUrl: string;
   /** The Workspace's Harness bearer (ADR-0058). */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: `routedFetch` (through the Custodian to a slot
+   * address, ADR-0084). */
   fetch?: typeof fetch;
 }): SyncPort {
   const fetchImpl = options.fetch ?? routedFetch;

@@ -440,6 +440,11 @@ test("R13: the kit's Secrets never reach the Harness, by env or envFrom, whateve
     // Each pod's own credentials (ADR-0076): the real control token beside the Stand-ins.
     "jr2-instance-harness-token",
     "ws-run-1-token",
+    // Each Sandbox's credentials on the Fence (ADR-0084): its slot Secret (the real tokens, the
+    // control Stand-in, the leaf keys) and its Stand-ins, and the Instance's dial token.
+    "jr2-custodian-slot-3",
+    "ws-run-1-standins",
+    "jr2-custodian-dial",
   ]) {
     assert.match(
       refusal({ harness: { env: [{ name: "X", valueFrom: { secretKeyRef: { name: secret, key: "k" } } }] } }),

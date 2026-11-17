@@ -167,8 +167,8 @@ export type InstanceOptions = {
    * The entrypoint derives it from the pod's namespace; absent, an http Effect faults pointedly. */
   instanceEffector?: string;
   /** A Sandbox Effector's address, `host:port`, by its Sandbox's name (ADR-0068) — where a push, an
-   * file-body http or a credentialed command is sent. The entrypoint derives it from the pod's namespace and
-   * the Service the provision writes; absent, those Effects fault pointedly. */
+   * file-body http or a credentialed command is sent. On the Fence it is the Sandbox's slot address, port 8082,
+   * reached through the Custodian pod on its node (ADR-0084); absent, those Effects fault pointedly. */
   sandboxEffector?: (sandbox: string) => EffectorService;
   /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.jr2/secret`, minted on
    * first boot. Supply it when the instance folder must stay untouched (tests), or when the same

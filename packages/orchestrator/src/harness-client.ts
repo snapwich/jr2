@@ -165,9 +165,9 @@ export type HarnessClientOptions = {
    * every call, the long-poll included. Absent only where no placement exists: an explicit-
    * `endpoint` run against the stub Harness, which checks nothing. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`, and `dialFetch()` for the
-   * admission, whose connect is bounded (ADR-0042) because it can be the first call to reach a
-   * Service. */
+  /** Injectable for socket-free tests. Default: `routedFetch`, and `fenceRouted(dialFetch())` for
+   * the admission, whose connect is bounded (ADR-0042) because it can be the first call to reach a
+   * Harness pod. Each goes to a slot address through the Custodian pod on its node (ADR-0084). */
   fetch?: typeof fetch;
   /** Reconnect backoff floor/ceiling (capped exponential, jittered per rung — see `jittered`;
    * network failures only, an answered long-poll re-polls immediately). Defaults 250ms → 5s; tests
@@ -702,7 +702,8 @@ export function createEchoPush(options: {
   baseUrl: string;
   /** The Workspace's Harness bearer (ADR-0058). Absent only against the stub Harness. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: `routedFetch` (through the Custodian to a slot
+   * address, ADR-0084). */
   fetch?: typeof fetch;
 }): (events: EchoEvent[]) => Promise<void> {
   const fetchImpl = options.fetch ?? routedFetch;
@@ -740,7 +741,8 @@ export function createLiveSetPush(options: {
   baseUrl: string;
   /** The Instance Harness's bearer (ADR-0058). Absent only against the stub Harness. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: `routedFetch` (through the Custodian to a slot
+   * address, ADR-0084). */
   fetch?: typeof fetch;
 }): (live: LiveConversation[]) => Promise<LiveSetResponse> {
   const fetchImpl = options.fetch ?? routedFetch;
@@ -930,7 +932,8 @@ export function createExecPort(options: {
   baseUrl: string;
   /** The Workspace's Harness bearer (ADR-0058). Absent only against a Harness that checks nothing. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: `routedFetch` (through the Custodian to a slot
+   * address, ADR-0084). */
   fetch?: typeof fetch;
 }): ExecPort {
   const fetchImpl = options.fetch ?? routedFetch;

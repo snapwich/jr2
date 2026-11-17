@@ -228,13 +228,13 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   commit-signing key and no Effect secret is in its process, its env or its own Secret. What it does hold is jr2's own:
   its Secret `jr2-instance` (its env) carries the signing key, the Instance token and the Instance Harness's token
   (ADR-0013, ADR-0058), and from the signing key it derives, at provision, each Sandbox's token and each Sandbox
-  Effector's per-pod key, which it writes into that Sandbox's own `<sandbox>-token` and `<sandbox>-effector` (below; the
-  Role section). A trusted jr2 component beside the Agent spends: the operator's cache agent for a fetch (ADR-0051,
-  ADR-0053: at provision and on a pod's `git fetch`), the Sandbox Effector for a push, a file-body `http` and a
-  credentialed command, on a pick. The Agent's container holds nothing on either side. A clone is not an Effect: nothing
-  in the Machine picks it, and the cache is per node, made before the pod exists, so the cache agent stays its spender.
-  A rotated token reaches the cache at the next `jr2 up`. A bearer, Basic or header secret of a file-body `http` is
-  spent through the Custodian, which holds its value (below).
+  Effector's per-pod key, which it writes into that Sandbox's own slot Secret `jr2-custodian-slot-<i>` (ADR-0084) and
+  `<sandbox>-effector` (below; the Role section). A trusted jr2 component beside the Agent spends: the operator's cache
+  agent for a fetch (ADR-0051, ADR-0053: at provision and on a pod's `git fetch`), the Sandbox Effector for a push, a
+  file-body `http` and a credentialed command, on a pick. The Agent's container holds nothing on either side. A clone is
+  not an Effect: nothing in the Machine picks it, and the cache is per node, made before the pod exists, so the cache
+  agent stays its spender. A rotated token reaches the cache at the next `jr2 up`. A bearer, Basic or header secret of a
+  file-body `http` is spent through the Custodian, which holds its value (below).
 - **Hand-written types, and golden fixtures.** There is no code generator. The types are Go structs in
   `effector/internal/wire` and zod schemas in `@jr2/orchestrator`, the one definition each TypeScript type is inferred
   from. Go decodes with unknown fields disallowed. The golden fixtures in `effector/testdata/wire/` keep the two equal:
@@ -537,11 +537,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   scrubbed, says `dirty` over an uncommitted edit, a child of its child cannot read the Effector's key, and a command
   whose state exited is gone from the Effector container.
 - **The Orchestrator's Role reads no Secret.** On Secrets it has `create` and `patch` only — it server-side applies its
-  own per-Sandbox `<sandbox>-token` and `<sandbox>-effector` — and no `get` and no `list`; on ConfigMaps `create` and
-  `patch` (a Sandbox's Custodian files, ADR-0059). A test holds the Role to that list. RBAC cannot pin `create` to a
-  name and `resourceNames` has no prefix form, so the per-Sandbox names cannot be enumerated. What it closes: the
-  enumeration of Secrets and the plain read, so a fault that gives code execution in the Orchestrator does not reach the
-  Effect secrets, the clone and push Secrets or a user's Secret through `get`
+  own per-Sandbox slot Secret `jr2-custodian-slot-<i>`, Stand-in Secret `<sandbox>-standins` and `<sandbox>-effector`
+  (ADR-0084) — and no `get` and no `list`; on ConfigMaps `create` and `patch` (a Sandbox's trust ConfigMap
+  `<sandbox>-trust`, ADR-0059). A test holds the Role to that list. RBAC cannot pin `create` to a name and
+  `resourceNames` has no prefix form, so the per-Sandbox names cannot be enumerated. What it closes: the enumeration of
+  Secrets and the plain read, so a fault that gives code execution in the Orchestrator does not reach the Effect
+  secrets, the clone and push Secrets or a user's Secret through `get`
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). Two residuals stay: a PATCH answers with the object,
   so a caller that knows a Secret's name can still read it; and a Role that creates pods (the operator makes the
   Sandbox's pod from the CR it writes) can mount a Secret into one — the shape every Kubernetes operator shares. Closing
