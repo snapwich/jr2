@@ -330,7 +330,14 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
     a credentialed command or a url's path of the same Effector also names: one file cannot hold both the value and the
     Stand-in. Name two secrets. It also refuses such a header secret toward `http://` on a port other than 80, or toward
     `https://` on port 80: the Custodian reads plain HTTP on port 80 alone and ends TLS on each other port of an
-    Intercepted host (ADR-0084), so the call cannot work.
+    Intercepted host (ADR-0084), so the call cannot work. And it refuses a secret whose binding name (`effector_` and
+    the name, each character other than a letter or a digit written as three) is longer than the 128 characters that the
+    Custodian's control process takes: use a shorter name.
+  - An LFS upload of a push over https spends the token as the push does. A server on the push url's host that puts the
+    batch request's pair into its upload and verify actions (Gitea does) hands the value back into the Effector's
+    container, and git-lfs sends it as given; the Custodian carries that pair toward the same host alone (ADR-0059). A
+    server that makes a credential of its own for such an action is not served: the Custodian refuses it with 403, and
+    the push is `rejected` at `upload` (ADR-0067). Such a server takes the push over ssh.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
   in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
@@ -503,7 +510,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   echo, a side channel. The claim is that an Effector does not return a secret it holds, in the forms it sent or in
   common encodings.
 - **A value that the Custodian holds is not the Sandbox Effector's to scrub.** The Effector holds only its Stand-in, so
-  an upstream that echoes the value hands it back unscrubbed, as ADR-0059's response echo says.
+  an upstream that echoes the value hands it back unscrubbed, as ADR-0059's response echo says. An LFS server that puts
+  the push's pair into its actions is such an upstream: the token is then in the Effector's memory for the upload.
 - **What a credentialed command's child can still do.** It reads the secret the command names — the author put it there,
   and a file the Agent wrote that the argv runs reads it too — and it reaches each host that its Sandbox's Egress list
   permits (ADR-0084), so the claim is the three of ADR-0067: the Agent never reads or spends the secret from its own

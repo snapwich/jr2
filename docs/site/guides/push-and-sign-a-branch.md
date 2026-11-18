@@ -244,7 +244,11 @@ server does not speak it, they use `git-lfs-authenticate`. Thus a server that sp
 
 The upload uses the push credential. The token goes only to the origin of the push URL: its scheme, its host and its
 port. A URL on a different origin in the batch answer, such as the object store of GitHub, gets only the batch answer's
-headers. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the same rule for the clone.
+headers. The [Custodian](../reference/glossary.md#custodian) holds the token of a push over https. An LFS server on the
+push URL's host that puts the push's own credential into its upload actions, as Gitea does, takes the upload: the
+Custodian sends that credential back to the same host only. An LFS server that makes a different credential for its
+upload actions does not take the upload over https. The push is `rejected` with `stage` `upload`. Push to such a server
+over ssh. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the same rule for the clone.
 
 When an upload fails, the push is `rejected` with `stage` `upload`, and jr2 pushes nothing. The branch does not move,
 but an object that went up stays on the server. See [Rules](#rules).

@@ -141,10 +141,12 @@ and it replaces the Adapter.
   - The swap: in each header the secret names, the Stand-in alone, one auth scheme and the Stand-in
     (`Bearer <Stand-in>`), or a Basic pair whose password is the Stand-in, becomes the value. The Custodian decodes a
     Basic pair, puts the value in place of the password, keeps the user, and encodes the pair again: git sends a push
-    token that way ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). Nothing else is
-    rewritten. The Stand-in chooses the secret: when several secrets are bound to one target and one header, the header
-    gets the value of the secret whose Stand-in it carries. So two MCP servers of one service, with two tokens, can be
-    in one pod
+    token that way ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A Basic pair whose
+    password is already the value of a secret that rides Basic is carried unchanged, toward that secret's own host
+    alone: the host handed back the product of the swap, as an LFS server puts the batch request's pair into its upload
+    and verify actions, which git-lfs sends as they are. Nothing else is rewritten. The Stand-in chooses the secret:
+    when several secrets are bound to one target and one header, the header gets the value of the secret whose Stand-in
+    it carries. So two MCP servers of one service, with two tokens, can be in one pod
     ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)).
   - Every credential header that is not the product of a swap is removed, also on a host that the Egress list marks
     `intercept: true` and that no secret is bound to. A request to a host that a held secret is bound to gets 403 when
@@ -156,7 +158,8 @@ and it replaces the Adapter.
     - When a secret bound to that host rides a Basic pair, a request that carries no credential header at all gets 401
       with `WWW-Authenticate: Basic`, and it never leaves the Custodian, unless an entry also names the host: then the
       first case applies, and the host answers for itself. git sends no credential before a 401, and only then asks its
-      helper, which answers the Stand-in. A request with a credential that is not a Stand-in still gets 403.
+      helper, which answers the Stand-in. A request with a credential that is neither a Stand-in nor such a handed-back
+      pair still gets 403.
   - Envoy opens its own TLS to the target, verifies the chain against `upstream.crt` and the name against the target's
     SAN (DNS or IP), and adds no header either way (`server`, `x-envoy-*`, `x-request-id` and `x-forwarded-*` are off).
     A failure gives 502 and a body that names the target and the reason. Redirects pass back unchanged.
@@ -496,20 +499,21 @@ and it replaces the Adapter.
   ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)): the image moves only with its
   pin, but the configuration jr2 renders moves with any release. About two and a half minutes. It checks the swap, the
   Basic swap, the 401 to a request with no credential toward a Basic host, the carry of such a request when an entry
-  also names the host, a git push over HTTPS through the Custodian, the strip, 403 with no Stand-in, 405 on a method,
-  400 on an underscore header, a header `Connection` names, two `Host` headers, idle connections on the health listener,
-  421, 400 and 403 on paths, a secret bound to an address, the Stand-ins and values of two slots kept apart, a Tunneled
-  name, an address entry, raw TCP by name, a wildcard that carries TLS and HTTP only, the dial guard by every spelling,
-  by resolved name and by each address of a name, 502 on an untrusted upstream, SSE timing, abort, a 302, the refusal of
-  a bad value, the log, a TLS name or a `Host` header that does not agree with the name of the address, another slot's
-  placeholder, a wildcard's `Host` that names another port than the entry's, a Tunneled name with an exact entry carried
-  at its own placeholder as a wildcard permits, the six routes of jr2's own name and the fetch to the slot's own
-  Sandbox, the Orchestrator's dial (the dial token, the slot targets, 503 with `x-jr2-custodian: unreachable`, a duplex
-  body and SSE), the dial listener's own bound, the refusal of a new name while the cache of names is full, an update of
-  one slot that does not cut a stream of another, the time of one update of one slot in a pod of 128 slots of 30 entries
-  (about 0.3 seconds), the Anthropic SDK with no proxy setting, and the control process of a Custodian pod: it makes
-  each slot live by Envoy's own admin, takes a changed value live, and removes a slot whose Secret is gone or whose
-  rules Envoy refuses. The first SSE event arrives through the Custodian about half a millisecond later than direct.
+  also names the host, a git push over HTTPS through the Custodian, an LFS upload in such a push to a server that hands
+  back the pair, the strip, 403 with no Stand-in, 405 on a method, 400 on an underscore header, a header `Connection`
+  names, two `Host` headers, idle connections on the health listener, 421, 400 and 403 on paths, a secret bound to an
+  address, the Stand-ins and values of two slots kept apart, a Tunneled name, an address entry, raw TCP by name, a
+  wildcard that carries TLS and HTTP only, the dial guard by every spelling, by resolved name and by each address of a
+  name, 502 on an untrusted upstream, SSE timing, abort, a 302, the refusal of a bad value, the log, a TLS name or a
+  `Host` header that does not agree with the name of the address, another slot's placeholder, a wildcard's `Host` that
+  names another port than the entry's, a Tunneled name with an exact entry carried at its own placeholder as a wildcard
+  permits, the six routes of jr2's own name and the fetch to the slot's own Sandbox, the Orchestrator's dial (the dial
+  token, the slot targets, 503 with `x-jr2-custodian: unreachable`, a duplex body and SSE), the dial listener's own
+  bound, the refusal of a new name while the cache of names is full, an update of one slot that does not cut a stream of
+  another, the time of one update of one slot in a pod of 128 slots of 30 entries (about 0.3 seconds), the Anthropic SDK
+  with no proxy setting, and the control process of a Custodian pod: it makes each slot live by Envoy's own admin, takes
+  a changed value live, and removes a slot whose Secret is gone or whose rules Envoy refuses. The first SSE event
+  arrives through the Custodian about half a millisecond later than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses the Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

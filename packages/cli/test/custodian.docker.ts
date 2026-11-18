@@ -77,6 +77,7 @@ let wild: Upstream; // x.wild.test, under `*.wild.test`
 let git: Upstream; // git.test: a smart-HTTP git server, its token bound in Basic (a push, ADR-0068)
 let open: Upstream; // open.test: a token bound in Basic, and an entry names the host too
 let gitRoot: string; // git.test's repositories
+const lfsHeld = new Map<string, Buffer>(); // the LFS objects git.test holds
 let web: Awaited<ReturnType<typeof startHttpTarget>>; // plain HTTP, under `*`
 let echo: Awaited<ReturnType<typeof startTcpTarget>>; // raw.test and an address entry: echoes
 let ssh: Awaited<ReturnType<typeof startTcpTarget>>; // ssh.test: speaks first
@@ -148,6 +149,63 @@ function gitHttpBackend(root: string, authorization: string): Upstream["handler"
       res.write(head.subarray(end + 4));
     });
     child.stdout.on("end", () => res.end());
+  };
+}
+
+/** A Git LFS server at `/app.git/info/lfs/` of the same origin, which answers as Gitea 1.24 does: it
+ * takes only the `Authorization` given (401 to any other), and puts the batch request's own
+ * `Authorization` into each upload and verify action, on its own origin. `held` maps an oid to the
+ * bytes it holds. */
+function lfsServer(held: Map<string, Buffer>, authorization: string): Upstream["handler"] {
+  return (req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const auth = req.headers.authorization?.replace(/^basic /i, "Basic ");
+      if (auth !== authorization) {
+        res.writeHead(401, { "www-authenticate": 'Basic realm="git.test"' });
+        return void res.end();
+      }
+      const path = new URL(req.url ?? "/", "https://git.test").pathname;
+      const lfsJson = { "content-type": "application/vnd.git-lfs+json" };
+      if (req.method === "POST" && path === "/app.git/info/lfs/objects/batch") {
+        const { operation, objects } = JSON.parse(Buffer.concat(chunks).toString()) as {
+          operation: string;
+          objects: Array<{ oid: string; size: number }>;
+        };
+        const origin = `https://${req.headers.host}`;
+        const header = { Authorization: req.headers.authorization! };
+        const out = objects.map(({ oid, size }) => {
+          if (held.has(oid)) {
+            const href = `${origin}/app.git/info/lfs/objects/${oid}`;
+            return { oid, size, actions: operation === "download" ? { download: { href, header } } : {} };
+          }
+          if (operation === "download") return { oid, size, error: { code: 404, message: "not found" } };
+          return {
+            oid,
+            size,
+            actions: {
+              upload: { href: `${origin}/app.git/info/lfs/objects/${oid}`, header },
+              verify: { href: `${origin}/app.git/info/lfs/verify`, header },
+            },
+          };
+        });
+        res.writeHead(200, lfsJson);
+        return void res.end(JSON.stringify({ transfer: "basic", objects: out }));
+      }
+      if (req.method === "PUT" && path.startsWith("/app.git/info/lfs/objects/")) {
+        held.set(path.split("/").at(-1)!, Buffer.concat(chunks));
+        res.writeHead(200);
+        return void res.end();
+      }
+      if (req.method === "POST" && path === "/app.git/info/lfs/verify") {
+        const { oid } = JSON.parse(Buffer.concat(chunks).toString()) as { oid: string };
+        res.writeHead(held.has(oid) ? 200 : 404, lfsJson);
+        return void res.end("{}");
+      }
+      res.writeHead(404, lfsJson);
+      res.end(JSON.stringify({ message: "not found" }));
+    });
   };
 }
 
@@ -232,7 +290,10 @@ before(async () => {
   ]);
   gitRoot = await mkdtemp(join(tmpdir(), "jr2-custodian-git-"));
   await gitIn(gitRoot, "init", "-q", "--bare", "app.git");
-  git.handler = gitHttpBackend(gitRoot, `Basic ${Buffer.from(`x-access-token:${VALUES.push_git}`).toString("base64")}`);
+  const pushPair = `Basic ${Buffer.from(`x-access-token:${VALUES.push_git}`).toString("base64")}`;
+  const backend = gitHttpBackend(gitRoot, pushPair);
+  const lfs = lfsServer(lfsHeld, pushPair);
+  git.handler = (req, res, seen) => (req.url?.startsWith("/app.git/info/lfs/") ? lfs : backend)(req, res, seen);
   [web, orchestrator, harness] = await Promise.all([
     startHttpTarget(),
     startHttpTarget(),
@@ -512,7 +573,7 @@ describe("a secret that rides Basic: a push's token (ADR-0068, ADR-0059)", () =>
       ...opts,
     });
 
-  test("B1. a Basic pair whose password is the Stand-in: the password becomes the value, and the user stays", async () => {
+  test("B1. a Basic pair whose password is the Stand-in: the password becomes the value, and the user stays; a pair whose password is the value is carried toward its host alone", async () => {
     for (const scheme of ["Basic", "basic"]) {
       const r = await viaGit({
         headers: { authorization: basicOf("x-access-token", key("push_git")).replace("Basic", scheme) },
@@ -534,6 +595,16 @@ describe("a secret that rides Basic: a push's token (ADR-0068, ADR-0059)", () =>
       assert.match(r.body, /needs the stand-in of push_git in authorization/);
     }
     assert.equal(git.seen.length, before, "nothing reached the target");
+    // A pair whose password is the value itself, as the host hands it back in an LFS action, is
+    // carried unchanged toward that host, and toward no other bound host (ADR-0059).
+    const handedBack = basicOf("x-access-token", VALUES.push_git);
+    const r = await viaGit({ headers: { authorization: handedBack } });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(git.seen.at(-1)?.headers.authorization, handedBack);
+    const seenA = a.seen.length;
+    const elsewhere = await viaA({ headers: { authorization: handedBack } });
+    assert.equal(elsewhere.status, 403, elsewhere.body);
+    assert.equal(a.seen.length, seenA, "the value went to no other host");
   });
 
   test("B2. no credential → 401 with WWW-Authenticate: Basic, and nothing reaches the target; toward a host that an entry also names, it is carried with no credential", async () => {
@@ -611,6 +682,91 @@ describe("a secret that rides Basic: a push's token (ADR-0068, ADR-0059)", () =>
       );
       const log = await gitIn(join(gitRoot, "app.git"), "log", "--format=%s", "main");
       assert.equal(log.trim(), "first", "the server holds the pushed commit");
+    } finally {
+      await new Promise((r) => relay.close(r));
+      await rm(work, { recursive: true, force: true });
+    }
+  });
+
+  test("B4. a push over https with an LFS object, to an LFS server on the push origin that answers as Gitea does: the batch, the upload and the verify carry the token, and the server holds the object", async () => {
+    const work = await mkdtemp(join(tmpdir(), "jr2-custodian-lfs-"));
+    // git-lfs resolves names itself and reads no curl option, so here a CONNECT relay, which git and
+    // git-lfs reach through the `HTTPS_PROXY` variable, brings each connection, whatever name it asks
+    // for, to the slot's listener, as the Fence does in a pod. The TLS name and the Host stay `git.test`.
+    const to = pod.at(3, "git.test", git.port);
+    const relay = createNetServer((inbound) => {
+      let head = Buffer.alloc(0);
+      const onData = (chunk: Buffer) => {
+        head = Buffer.concat([head, chunk]);
+        const end = head.indexOf("\r\n\r\n");
+        if (end < 0) return;
+        inbound.off("data", onData);
+        const outbound = connect(to.port, to.host, () => {
+          inbound.write("HTTP/1.1 200 Connection established\r\n\r\n");
+          if (head.length > end + 4) outbound.write(head.subarray(end + 4));
+          inbound.pipe(outbound).pipe(inbound);
+        });
+        inbound.on("error", () => outbound.destroy());
+        outbound.on("error", () => inbound.destroy());
+      };
+      inbound.on("data", onData);
+    });
+    await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+    const relayPort = (relay.address() as { port: number }).port;
+    try {
+      const ca = join(work, "ca.crt");
+      await writeFile(ca, pod.trust(3));
+      await gitIn(work, "init", "-q", "-b", "main", "src");
+      const src = join(work, "src");
+      const helper = `!f() { echo username=x-access-token; echo password=${key("push_git")}; }; f`;
+      for (const [k, v] of [
+        ["http.sslCAInfo", ca],
+        ["credential.helper", helper],
+        ["user.name", "suite"],
+        ["user.email", "suite@jr2.test"],
+        ["lfs.locksverify", "false"],
+      ]) {
+        await gitIn(src, "config", k!, v!);
+      }
+      await gitIn(src, "lfs", "install", "--local");
+      await gitIn(src, "lfs", "track", "*.bin");
+      const bytes = Buffer.from(`a large file, pushed through the Custodian ${Date.now()}\n`);
+      await writeFile(join(src, "big.bin"), bytes);
+      await gitIn(src, "add", ".gitattributes", "big.bin");
+      await gitIn(src, "commit", "-q", "-m", "lfs");
+      const oid = (await gitIn(src, "lfs", "ls-files", "--long")).trim().split(" ")[0]!;
+      const before = git.seen.length;
+      const { stderr } = await promisify(execFile)(
+        "git",
+        ["push", `https://git.test:${git.port}/app.git`, "HEAD:refs/heads/lfs"],
+        {
+          cwd: src,
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: src,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_TERMINAL_PROMPT: "0",
+            HTTPS_PROXY: `http://127.0.0.1:${relayPort}`,
+          },
+        },
+      ).catch((e: { stderr?: string }) => assert.fail(`the push failed: ${e.stderr ?? e}`));
+      const sent = git.seen.slice(before).filter((r) => r.url.startsWith("/app.git/info/lfs/"));
+      const expected = basicOf("x-access-token", VALUES.push_git);
+      const asked = sent.map((r) => `${r.method} ${new URL(r.url, "https://git.test").pathname}`);
+      for (const route of [
+        "POST /app.git/info/lfs/objects/batch",
+        `PUT /app.git/info/lfs/objects/${oid}`,
+        "POST /app.git/info/lfs/verify",
+      ]) {
+        assert.ok(asked.includes(route), `${route} reached the server (it got: ${asked.join(", ")}; ${stderr})`);
+      }
+      assert.ok(
+        sent.every((r) => r.headers.authorization === expected),
+        "each LFS request the server got carried the token, and none came with no credential or the Stand-in",
+      );
+      assert.deepEqual(lfsHeld.get(oid), bytes, "the server holds the object");
+      const log = await gitIn(join(gitRoot, "app.git"), "log", "--format=%s", "lfs");
+      assert.equal(log.trim(), "lfs", "the server holds the pushed commit");
     } finally {
       await new Promise((r) => relay.close(r));
       await rm(work, { recursive: true, force: true });

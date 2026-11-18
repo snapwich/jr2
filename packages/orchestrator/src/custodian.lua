@@ -130,7 +130,12 @@ end
 -- scheme then the Stand-in (`Authorization: Bearer`), or a Basic pair whose password is the
 -- Stand-in (git's token push, ADR-0068): the pair is decoded, its password becomes the value, and it
 -- is encoded again. Nothing else is ever rewritten.
-local function swapped(value, standIn, secret)
+--
+-- For a secret that rides Basic, a pair whose password is already the value is carried as it is:
+-- the bound host handed it back, as an LFS server puts the batch request's pair into its upload and
+-- verify actions, and git-lfs sends an action's header as given (ADR-0059). It goes only to this
+-- host, because the caller is a request toward a target this secret is bound to.
+local function swapped(value, standIn, secret, basic)
   if value == standIn then return secret end
   local scheme, rest = value:match("^([A-Za-z][A-Za-z0-9._~+/-]*) (.+)$")
   if scheme ~= nil and rest == standIn then return scheme .. " " .. secret end
@@ -138,6 +143,7 @@ local function swapped(value, standIn, secret)
     local pair = b64decode(rest)
     local user, password = (pair or ""):match("^([^:]*):(.*)$")
     if password ~= nil and password == standIn then return scheme .. " " .. b64encode(user .. ":" .. secret) end
+    if basic and password ~= nil and secret ~= nil and password == secret then return value end
   end
   return nil
 end
@@ -165,7 +171,7 @@ local function hold(handle, headers, bound, target, path, open)
     for _, h in ipairs(s.headers) do
       local v = headers:get(h)
       if v ~= nil and not done[h] then
-        local out = swapped(v, STAND_IN[s.name], VALUE[s.name])
+        local out = swapped(v, STAND_IN[s.name], VALUE[s.name], s.basic)
         if out ~= nil then
           if s.paths ~= nil then
             local allowed = false
