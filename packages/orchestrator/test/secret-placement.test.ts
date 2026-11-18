@@ -1124,4 +1124,14 @@ test("a header secret the Custodian cannot swap, or one the Sandbox Effector mus
       /secret\("aws"\) rides its authorization header, where the Custodian holds it, and the url of "up", where the Sandbox Effector holds its value: one file cannot hold both\. Name two secrets/,
     );
   }
+  // A name whose binding name is longer than the Custodian takes: refused, with the fix. 119 letters
+  // fit ("effector_" + 119 = 128); 120 do not.
+  const named = (name: string) => ({ secrets: [{ name, value: VALUE }] }) as JR2Config;
+  const longest = "a".repeat(119);
+  refuseEffectSecrets(named(longest), effectorWorkspace({ up: put({ auth: bearer(secret(longest)) }) }));
+  const tooLong = "a".repeat(120);
+  assert.throws(
+    () => refuseEffectSecrets(named(tooLong), effectorWorkspace({ up: put({ auth: bearer(secret(tooLong)) }) })),
+    /the name of secret\("a{120}"\) is too long for the Custodian, which holds it: .* may have at most 128 characters\. Use a shorter name \(ADR-0068\)/,
+  );
 });

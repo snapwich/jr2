@@ -508,7 +508,11 @@ function custodianHeldOf(ws: PlacedWorkspace): Map<string, CustodianHeld> {
         );
       }
       if (effectorBindingName(h.secret).length > BINDING_NAME_MAX) {
-        throw new Error(`${at}, and the name of secret("${h.secret}") is too long for the Custodian (ADR-0068)`);
+        throw new Error(
+          `${at}, and the name of secret("${h.secret}") is too long for the Custodian, which holds it: the binding ` +
+            `name "effector_" + the name, where each character other than a letter or a digit takes three, may have ` +
+            `at most ${BINDING_NAME_MAX} characters. Use a shorter name (ADR-0068)`,
+        );
       }
       const known = out.get(h.secret) ?? { hosts: [], headers: [], basic: false };
       if (!known.hosts.some((x) => x.host === t.host && x.port === t.port))

@@ -314,7 +314,11 @@ When you call `secret()`, `bearer()` or `text`, they refuse:
   `workflow "<workflow>": the http Effect "<slot>" runs in Workspace of workflow "<workflow>", and its <header> header holds secret("<name>"), which the Custodian holds, toward <scheme>://<host>:<port>: the Custodian reads plain HTTP on port 80 alone and ends TLS on each other port of a host it holds a secret for, so this call cannot work. Use https on a port other than 80, or http on port 80 (ADR-0068, ADR-0084)`
 - in an `http` whose body is a Worktree file, a header secret that a credentialed `command` or a url's path of the same
   Workspace also names. Name two secrets:
-  `workflow "<workflow>": the http Effect "<slot>" runs in Workspace of workflow "<workflow>", and secret("<name>") rides its <header> header, where the Custodian holds it, and the command "<slot>", where the Sandbox Effector holds its value: one file cannot hold both. Name two secrets (ADR-0068)`
+  `workflow "<workflow>": the http Effect "<slot>" runs in Workspace of workflow "<workflow>", and secret("<name>") rides its <header> header, where the Custodian holds it, and the command "<slot>", where the Sandbox Effector holds its value: one file cannot hold both. Name two secrets (ADR-0068)`.
+  When a url's path holds the secret, the text says `the url of "<slot>"` in place of `the command "<slot>"`.
+- in an `http` whose body is a Worktree file, a header secret whose name is too long for the Custodian. Use a shorter
+  name:
+  `workflow "<workflow>": the http Effect "<slot>" runs in Workspace of workflow "<workflow>", and the name of secret("<name>") is too long for the Custodian, which holds it: the binding name "effector_" + the name, where each character other than a letter or a digit takes three, may have at most 128 characters. Use a shorter name (ADR-0068)`
 - an Effect secret with a value shorter than 8 characters:
   `secrets[<i>] (<name>) is an Effect secret shorter than 8 characters — the Effector replaces every match of a secret in what it returns, and a value this short would match ordinary text. Use the whole credential; the value itself is not shown (ADR-0068)`
 
