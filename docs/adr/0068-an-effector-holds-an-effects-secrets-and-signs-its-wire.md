@@ -328,7 +328,9 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
     password of a Basic pair. `jr2 up` refuses, with the fix, a header of a file-body `http` that holds a secret in
     another form (a Basic user from a secret, text on both sides of it), and a secret that such a header holds and that
     a credentialed command or a url's path of the same Effector also names: one file cannot hold both the value and the
-    Stand-in. Name two secrets.
+    Stand-in. Name two secrets. It also refuses such a header secret toward `http://` on a port other than 80, or toward
+    `https://` on port 80: the Custodian reads plain HTTP on port 80 alone and ends TLS on each other port of an
+    Intercepted host (ADR-0084), so the call cannot work.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
   in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
