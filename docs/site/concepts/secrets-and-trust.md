@@ -226,7 +226,8 @@ The Custodian swaps a Stand-in in three forms: the Stand-in alone, one scheme an
 and the password of a Basic credential. `jr2 up` refuses a header that holds an Effect secret in another form, such as a
 Basic user name from a secret. It also refuses a secret that a header of a Sandbox Effector's `http` holds and that a
 `command` or a url path of the same Effector names, because one file cannot hold both the value and the Stand-in. Give
-each use its own secret.
+each use its own secret. The Custodian reads plain HTTP on port 80 only, and it ends TLS on each other port. Thus
+`jr2 up` also refuses such a header secret toward `http://` on a port other than 80, and toward `https://` on port 80.
 
 A `command` that names an Effect secret can run the Agent's code, such as `npm run deploy`. It runs on a copy of one
 commit of the Agent's branch, in its scratch folder. Because the command can run the Agent's code, the Effector confines

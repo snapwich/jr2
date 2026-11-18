@@ -95,8 +95,8 @@ and that holds when Workspace code is root in the Sandbox.
   no Stand-in. So Workspace code cannot use the model's host unless its Workspace grants a secret for it. When an entry
   of the list also names a bound host, the Custodian carries a request with no Stand-in to it, with every credential
   header removed, so Workspace code can read a public repository on the host that the Sandbox Effector pushes to over
-  HTTPS. A host whose secret rides a Basic pair answers a request with no credential with 401, as ADR-0059 states, so
-  git asks its helper.
+  HTTPS. A host whose secret rides a Basic pair, and that no entry names, answers a request with no credential with 401,
+  as ADR-0059 states, so git asks its helper.
 - **The Custodian holds the Sandbox Effector's header secrets.** Each bearer, Basic or header secret of a file-body
   `http` is a binding of the pod's held manifest toward the Effect's target, and the token of each push over HTTPS is
   one toward the url's host, which the provision adds, because only the provision knows the url of a slot that the run

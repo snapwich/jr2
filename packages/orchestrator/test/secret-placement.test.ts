@@ -999,7 +999,7 @@ test("the Custodian holds a file-body http's bearer, Basic password and header s
     one: put(bearer(secret("files"))),
     two: http({
       method: "PUT",
-      url: "http://legacy.example.com:8080/r",
+      url: "http://legacy.example.com/r",
       body: file("r"),
       auth: basic("deploy", secret("legacy")),
     }),
@@ -1037,7 +1037,7 @@ test("the Custodian holds a file-body http's bearer, Basic password and header s
   assert.deepEqual(binding("legacy").source, { kind: "secret", secret: "team", key: "legacy" });
   assert.deepEqual(
     binding("legacy").hosts.map((h) => [h.host, h.port]),
-    [["legacy.example.com", 8080]],
+    [["legacy.example.com", 80]],
   );
   assert.equal(binding("legacy").basic, true, "a Basic password: a request with no credential gets the 401");
   assert.deepEqual(binding("key-one").headers, ["x-api-key"]);
@@ -1105,4 +1105,23 @@ test("a header secret the Custodian cannot swap, or one the Sandbox Effector mus
     () => secretPlacementsOf(config, placed),
     /secret\("aws"\) rides its authorization header, where the Custodian holds it, and the command "deploy", where the Sandbox Effector holds its value/,
   );
+  // A plain-HTTP target on a port other than 80, or https on port 80: the Custodian reads plain HTTP
+  // on port 80 alone and ends TLS on each other port, so the call cannot work.
+  for (const url of ["http://legacy.example.com:8080/r", "https://files.example.com:80/r"]) {
+    assert.throws(
+      () => refuseEffectSecrets(config, effectorWorkspace({ up: put({ url, auth: bearer(secret("aws")) }) })),
+      /holds secret\("aws"\), which the Custodian holds, toward https?:\/\/[a-z.]+:(8080|80): the Custodian reads plain HTTP on port 80 alone .* Use https on a port other than 80, or http on port 80/,
+      url,
+    );
+  }
+  // One Effect that names the secret in its url's path and in its auth: the same refusal.
+  const both = effectorWorkspace({
+    up: put({ url: text`https://files.example.com/u/${secret("aws")}/r`, auth: bearer(secret("aws")) }),
+  });
+  for (const run of [() => refuseEffectSecrets(config, both), () => secretPlacementsOf(config, both)]) {
+    assert.throws(
+      run,
+      /secret\("aws"\) rides its authorization header, where the Custodian holds it, and the url of "up", where the Sandbox Effector holds its value: one file cannot hold both\. Name two secrets/,
+    );
+  }
 });

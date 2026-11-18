@@ -34,6 +34,7 @@ import {
   withPushTokens,
 } from "../src/sandbox-fence.ts";
 import { issueCa, issueLeaf } from "../src/pki.ts";
+import { gitPushTokenSecretName } from "../src/git-push.ts";
 import { sandboxCr, sandboxEffectorContainer } from "../src/sandbox-kube.ts";
 import { resolveSize, splitSize } from "../src/size.ts";
 import { controlStandIn, controlToken, sandboxToken } from "../src/tokens.ts";
@@ -476,7 +477,7 @@ test("a push over https: the provision binds the entry's token toward the url's 
   const binding = pushed.secrets.find((s) => s.name === pushBindingName(secret))!;
   assert.deepEqual(binding, {
     name: "push_0a1b2c3d",
-    source: { kind: "secret", secret, key: "token" },
+    source: { kind: "secret", secret: gitPushTokenSecretName(secret), key: "token" },
     hosts: [
       { host: "git.example.com", port: 443, leaf: leafStem("git.example.com", 443) },
       { host: "github.com", port: 443, leaf: leafStem("github.com", 443) },
@@ -484,7 +485,7 @@ test("a push over https: the provision binds the entry's token toward the url's 
     headers: ["authorization"],
     holder: "effector",
     basic: true,
-    push: true,
+    push: secret,
   });
   // A new host gets an Intercepted rule; github.com:443, a Tunneled entry, becomes Intercepted and
   // keeps its entry, so a request with no Stand-in is still carried there (ADR-0084).

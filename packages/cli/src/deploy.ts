@@ -663,7 +663,8 @@ export function instanceObjects(opts: {
     ),
     // Each entry's push Secret (ADR-0051): what it pushes and signs with, in Flux's key names where
     // Flux has them. The operator projects one into the Sandbox Effector of a Sandbox whose push
-    // the entry's match covers; nothing else mounts it.
+    // the entry's match covers; nothing else mounts it. And each entry's token Secret, which holds
+    // the push token alone: only the Custodian reads it (ADR-0068).
     ...(opts.gitPush?.secrets ?? []).map(
       (s): KubeManifest => ({
         apiVersion: "v1",
@@ -1062,9 +1063,10 @@ export const ANNOTATION_CUSTODIAN_CONFIG_DIGEST = "jr2.dev/custodian-config-dige
 /**
  * Each Secret that the Custodian's control process may read, other than the slot Secrets and the
  * dial token (ADR-0084): each pod's `jr2-held-secrets-<pod>` that holds a literal, each Secret of
- * the user's that a held secret's `secretKeyRef` names, and each push Secret in `pushes`, whose
+ * the user's that a held secret's `secretKeyRef` names, and each token Secret in `pushes`, whose
  * `token` the Custodian swaps into a push (ADR-0068). Sorted, once each. Its Role names these and
- * no other Secret, so it cannot read `jr2-instance`, the signing key.
+ * no other Secret, so it cannot read `jr2-instance`, the signing key, or an entry's push Secret,
+ * which holds the ssh push key and the commit-signing key.
  */
 export function custodianValueSecrets(held: HeldObjects, pushes: readonly string[] = []): string[] {
   const names = new Set<string>(pushes);

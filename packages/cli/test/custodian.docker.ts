@@ -552,6 +552,17 @@ describe("a secret that rides Basic: a push's token (ADR-0068, ADR-0059)", () =>
     assert.equal(carried.status, 200, carried.body);
     assert.equal(open.seen.at(-1)?.headers["x-api-key"], undefined);
     assert.equal(open.seen.at(-1)?.headers.authorization, undefined);
+    // With no credential header at all, the carry toward the open host comes before the 401 of its
+    // Basic binding: the request reaches the host, which answers for itself (ADR-0059).
+    const seen = open.seen.length;
+    const bare = await httpsVia(pod.at(3, "open.test", open.port), "open.test", {
+      authority: `open.test:${open.port}`,
+      ca: pod.trust(3),
+    });
+    assert.equal(bare.status, 200, bare.body);
+    assert.equal(bare.headers["www-authenticate"], undefined);
+    assert.equal(open.seen.length, seen + 1, "the request reached the open host");
+    assert.equal(open.seen.at(-1)?.headers.authorization, undefined);
   });
 
   test("B3. git push over https through the Custodian: the first request gets the 401, the helper's pair carries the Stand-in, and the server gets the token", async () => {

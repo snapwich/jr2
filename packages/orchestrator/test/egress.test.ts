@@ -493,18 +493,29 @@ test("an http Effect whose secrets sit in its url alone binds no host: its targe
     rule("api.telegram.org", 80),
     rule("api.telegram.org", 443),
   ]);
-  // The same secret in its auth too: the Custodian holds it, so the host is bound.
+  // The same secret in its auth too: it is no url secret alone, but the Sandbox Effector would hold
+  // its value for the url and its Stand-in for the header in one file, so it is refused (ADR-0068).
   const both = http({
     method: "POST",
     url: text`https://api.telegram.org/bot${secret("tg")}/sendMessage`,
     body: file("m"),
     auth: bearer(secret("tg")),
   });
-  const bound = placementWalkOf([{ name: "ticket", machine: body({ notify: both }) }]);
-  assert.equal((bound.workspaces[0]!.pod.effects[0] as { urlSecrets?: string[] }).urlSecrets, undefined);
-  assert.deepEqual(rulesOf(config, bound)[ROOT], [
-    rule("api.telegram.org", 443, { intercept: true, from: ["effector"] }),
-  ]);
+  const same = placementWalkOf([{ name: "ticket", machine: body({ notify: both }) }]);
+  assert.equal((same.workspaces[0]!.pod.effects[0] as { urlSecrets?: string[] }).urlSecrets, undefined);
+  assert.throws(() => secretPlacementsOf(config, same), /one file cannot hold both\. Name two secrets/);
+  // A second secret in its auth: the Custodian holds that one, so the host is bound and needs no entry.
+  const two = http({
+    method: "POST",
+    url: text`https://api.telegram.org/bot${secret("tg")}/sendMessage`,
+    body: file("m"),
+    auth: bearer(secret("tg-auth")),
+  });
+  const bound = placementWalkOf([{ name: "ticket", machine: body({ notify: two }) }]);
+  assert.deepEqual(
+    rulesOf({ secrets: [...config.secrets!, { name: "tg-auth", value: "another-long-key" }] }, bound)[ROOT],
+    [rule("api.telegram.org", 443, { intercept: true, from: ["effector"] })],
+  );
 });
 
 test("an SSH Repo that the Workspace binds gets its port, 22 by default, as a Tunneled host with no entry", () => {

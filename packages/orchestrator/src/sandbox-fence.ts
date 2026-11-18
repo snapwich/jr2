@@ -44,6 +44,7 @@ import {
 } from "./custodian.ts";
 import { slotAddress } from "./custodian-rules.ts";
 import { slotSecretData, type SlotSpec } from "./custodian-slot.ts";
+import { GIT_PUSH_TOKEN_KEY, gitPushTokenSecretName } from "./git-push.ts";
 import { isIP } from "node:net";
 import { uncarried, type EgressMatch, type EgressRule, type FenceRanges, type HostPort } from "./egress.ts";
 import {
@@ -75,7 +76,7 @@ export const FENCE_CUSTODIAN_URL = `https://${JR2_CUSTODIAN_NAME}`;
 /** A binding's Stand-in in a Sandbox (ADR-0059, ADR-0068): a push token's is its entry's, minted
  * from the push Secret's name; each other one is the Sandbox's own. */
 function standInOf(signingKey: Buffer, pod: string, s: HeldBinding): string {
-  if (s.push && s.source.kind === "secret") return gitPushStandIn(signingKey, s.source.secret);
+  if (s.push !== undefined) return gitPushStandIn(signingKey, s.push);
   return heldStandIn(signingKey, pod, s.name);
 }
 
@@ -86,7 +87,8 @@ export type PushToken = { secret: string; host: string; port: number };
 /**
  * A Sandbox's held manifest with the token of each of its pushes over HTTPS (ADR-0068, ADR-0051):
  * a binding that the Custodian holds for the Sandbox Effector, whose value is the `token` key of the
- * entry's push Secret and which rides Basic, toward the url's host, which is then an Intercepted
+ * entry's token Secret (never its push Secret, which holds the ssh push key and the signing key) and
+ * which rides Basic, toward the url's host, which is then an Intercepted
  * host of the Sandbox. The provision adds it, because only the provision knows the url of a slot that
  * the run or a `customize()` binds. Throws when the Fence cannot carry the host. Pure: the manifest
  * given is not changed.
@@ -110,12 +112,12 @@ export function withPushTokens(
     if (known === undefined) {
       secrets.push({
         name,
-        source: { kind: "secret", secret: p.secret, key: "token" },
+        source: { kind: "secret", secret: gitPushTokenSecretName(p.secret), key: GIT_PUSH_TOKEN_KEY },
         hosts: [host],
         headers: ["authorization"],
         holder: "effector",
         basic: true,
-        push: true,
+        push: p.secret,
       });
     } else if (!known.hosts.some((h) => h.host === p.host && h.port === p.port)) known.hosts.push(host);
     const match: EgressMatch = isIP(p.host) === 0 ? "name" : "address";

@@ -14,7 +14,7 @@ import type { CustodianClient } from "../src/custodian-client.ts";
 import { FENCE_PLACEHOLDERS, FENCE_SEGMENT } from "../src/egress.ts";
 import type { SlotReport } from "../src/fence-slots.ts";
 import { EMPTY_HELD, gitPushStandIn, workspaceHeldPod } from "../src/held-secrets.ts";
-import { GIT_PUSH_MANIFEST_KEY, gitPushSecretName } from "../src/git-push.ts";
+import { GIT_PUSH_MANIFEST_KEY, gitPushSecretName, gitPushTokenSecretName } from "../src/git-push.ts";
 import { effectorManifestKey, sandboxEffectorObjectsOf } from "../src/sandbox-effector.ts";
 import { readSlotSecret } from "../src/custodian-slot.ts";
 import { kubeClient } from "../src/kube-client.ts";
@@ -380,7 +380,12 @@ test("a push over https on the Fence: the slot binds the entry's token toward th
   const binding = spec.manifest.secrets.find((s) => s.push);
   assert.deepEqual(
     [binding?.source, binding?.hosts.map((h) => `${h.host}:${h.port}`), binding?.basic, binding?.holder],
-    [{ kind: "secret", secret, key: "token" }, ["git.example.test:8443"], true, "effector"],
+    [
+      { kind: "secret", secret: gitPushTokenSecretName(secret), key: "token" },
+      ["git.example.test:8443"],
+      true,
+      "effector",
+    ],
   );
   assert.deepEqual(
     spec.manifest.egress.find((r) => r.host === "git.example.test"),

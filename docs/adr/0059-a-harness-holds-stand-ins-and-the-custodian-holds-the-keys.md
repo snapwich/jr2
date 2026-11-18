@@ -21,17 +21,19 @@ and it replaces the Adapter.
 - **Every Stand-in is secret, except the fetch Stand-in.** The pod's maker mints each Stand-in for its pod with the
   signing key, and no process can guess it: the Orchestrator for a Sandbox, and `jr2 up` for the Instance Harness, as it
   writes that pod's other Secrets (the Instance Effector's key too), and for a check pod
-  ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). Only the Harness process holds the
-  Stand-ins. It holds each one, the control Stand-in included, as a file under `/run/jr2/` that no process it confines
-  can read, and never in the Harness container's env. It gives a model key's Stand-in to the engine in-process. A
-  process that the Harness confines gets in its env only the Stand-ins of the secrets that its `workspace()`'s `secrets`
-  list grants ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). So the
-  Stand-in of a model key is in reach of the Harness process alone, unless the author grants that key. Secrecy matters
-  because confinement makes it hold: a Stand-in that Workspace code can guess lets that code spend the secret. A call
-  that code in `/work` makes to the model directly is outside the Turn's Settlement, so it escapes the usage that jr2
-  records ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)) and each
-  ceiling on spend. A project whose own code needs a model gets a key that the author grants on purpose. The fetch
-  Stand-in stays public (below): it can only ask for a fetch, for its own Sandbox.
+  ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). Only the Harness process, and a Sandbox
+  Effector for the secrets that the Custodian holds for it
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), hold the Stand-ins. The Harness holds
+  each one, the control Stand-in included, as a file under `/run/jr2/` that no process it confines can read, and never
+  in the Harness container's env. It gives a model key's Stand-in to the engine in-process. A process that the Harness
+  confines gets in its env only the Stand-ins of the secrets that its `workspace()`'s `secrets` list grants
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). So the Stand-in of a model
+  key is in reach of the Harness process alone, unless the author grants that key. Secrecy matters because confinement
+  makes it hold: a Stand-in that Workspace code can guess lets that code spend the secret. A call that code in `/work`
+  makes to the model directly is outside the Turn's Settlement, so it escapes the usage that jr2 records
+  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)) and each ceiling on
+  spend. A project whose own code needs a model gets a key that the author grants on purpose. The fetch Stand-in stays
+  public (below): it can only ask for a fetch, for its own Sandbox.
 - **The Custodian holds them, outside every Sandbox.** There is one Custodian for each Instance
   ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). It holds the held secrets of each Harness pod
   (below), and for a Sandbox Effector the value of each bearer, Basic or header secret and of its HTTPS push token
@@ -152,9 +154,9 @@ and it replaces the Adapter.
       header removed. So Workspace code can read a public repository on a host that the Sandbox Effector pushes to, and
       it still cannot spend the push's token.
     - When a secret bound to that host rides a Basic pair, a request that carries no credential header at all gets 401
-      with `WWW-Authenticate: Basic`, and it never leaves the Custodian. git sends no credential before a 401, and only
-      then asks its helper, which answers the Stand-in. A request with a credential that is not a Stand-in still
-      gets 403.
+      with `WWW-Authenticate: Basic`, and it never leaves the Custodian, unless an entry also names the host: then the
+      first case applies, and the host answers for itself. git sends no credential before a 401, and only then asks its
+      helper, which answers the Stand-in. A request with a credential that is not a Stand-in still gets 403.
   - Envoy opens its own TLS to the target, verifies the chain against `upstream.crt` and the name against the target's
     SAN (DNS or IP), and adds no header either way (`server`, `x-envoy-*`, `x-request-id` and `x-forwarded-*` are off).
     A failure gives 502 and a body that names the target and the reason. Redirects pass back unchanged.

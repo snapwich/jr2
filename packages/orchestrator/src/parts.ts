@@ -995,9 +995,15 @@ export function placedEffectsOf(root: AnyStateMachine): CarriedEffect[] {
  * One secret in one header of an http Effect, and its form (ADR-0059's swap): `value` (the secret
  * alone), `scheme` (one auth scheme, a space, the secret), `basic` (the password of a `basic` auth
  * whose user is text), or `other` (any other mix of text and secrets, which the Custodian cannot
- * swap: a Sandbox Effector refuses it).
+ * swap: a Sandbox Effector refuses it). `url`: the url's path of the same Effect also names the
+ * secret, so a Sandbox Effector must hold its value too, and refuses it (ADR-0068).
  */
-export type HeaderSecret = { secret: string; header: string; form: "value" | "scheme" | "basic" | "other" };
+export type HeaderSecret = {
+  secret: string;
+  header: string;
+  form: "value" | "scheme" | "basic" | "other";
+  url?: true;
+};
 
 /** The form a header's parts give a secret in it (`HeaderSecret`). */
 function headerForms(header: string, text: readonly TextPart[]): HeaderSecret[] {
@@ -1032,7 +1038,9 @@ function headerSecretsOf(parts: Extract<EffectParts, { kind: "http" }>): { heade
       }
     } else out.push(...headerForms("authorization", auth.text));
   }
-  return out.length ? { headerSecrets: out } : {};
+  if (out.length === 0) return {};
+  const inUrl = new Set(parts.url === open ? [] : parts.url.flatMap((p) => ("secret" in p ? [p.secret] : [])));
+  return { headerSecrets: out.map((h) => (inUrl.has(h.secret) ? { ...h, url: true as const } : h)) };
 }
 
 /** The secrets of an http Effect that sit in its url alone (`CarriedEffect.urlSecrets`), when any. */

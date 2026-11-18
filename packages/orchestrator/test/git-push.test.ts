@@ -45,9 +45,13 @@ test("each entry's push Secret: what it pushes and signs with, in Flux's key nam
       ["username", "x-access-token"],
       // The Effector's helper answers the Stand-in; the Custodian holds the token (ADR-0068).
       ["password", gitPushStandIn(key, gitPushSecretName("*"))],
-      ["token", "ghp_0123456789abcdef"],
     ],
   );
+  // The token is not a key of the push Secret, which holds the ssh push key: it goes into the
+  // entry's token Secret, the one Secret of the entry that the Custodian reads (ADR-0068).
+  assert.ok(!wild!.sources.some((s) => s.key === "token" || ("literal" in s && s.literal.includes("ghp_"))));
+  assert.equal(wild!.token, "ghp_0123456789abcdef");
+  assert.equal(ours!.token, undefined, "an entry with no token has no token Secret");
   assert.match(gitPushStandIn(key, gitPushSecretName("*")), /^jr2-held-password\./);
   assert.notEqual(gitPushStandIn(key, gitPushSecretName("*")), gitPushStandIn(key, gitPushSecretName("github.com/")));
   // A `push` field is the push credential alone; the signing key rides the same Secret.

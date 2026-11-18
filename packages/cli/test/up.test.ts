@@ -16,6 +16,7 @@ import {
   custodianRef,
   effectorKey,
   gitPushSecretName,
+  gitPushTokenSecretName,
   gitTokenSecretName,
   KIT_VERSION,
   harnessTokenDigest,
@@ -6375,15 +6376,27 @@ test("jr2 up writes one push Secret per git.credentials entry — the token, the
     Object.entries(secret.data as Record<string, string>).map(([k, v]) => [k, Buffer.from(v, "base64").toString()]),
   );
   assert.equal(data.username, "x-access-token");
-  // The operator projects `password`, the entry's Stand-in, into the Effector; the token is `token`,
-  // which only the Custodian reads, and its Role names this Secret (ADR-0068).
+  // The operator projects `password`, the entry's Stand-in, into the Effector. The token is in the
+  // entry's token Secret alone, which only the Custodian reads: its Role names that Secret and
+  // never the push Secret, which holds the ssh push key and the signing key (ADR-0068).
   assert.match(data.password!, /^jr2-held-password\./);
-  assert.equal(data.token, "ghp_0123456789abcdef");
-  const role = [...objects.values()].find((o) => o.kind === "Role" && o.metadata.name === "jr2-custodian");
-  assert.ok(
-    (role as { rules: Array<{ resourceNames: string[] }> } | undefined)?.rules[0]!.resourceNames.includes(name),
-    "the Custodian may read the entry's push Secret",
+  assert.equal(data.token, undefined, "the push Secret holds no token");
+  const tokenSecret = objects.get(`Secret/${gitPushTokenSecretName(name)}`)!;
+  assert.ok(tokenSecret, "the entry's token Secret");
+  assert.equal(tokenSecret.metadata.labels?.["jr2.dev/git-push"], "true", "labelled, so a stale one is deleted");
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(tokenSecret.data as Record<string, string>).map(([k, v]) => [
+        k,
+        Buffer.from(v, "base64").toString(),
+      ]),
+    ),
+    { token: "ghp_0123456789abcdef" },
   );
+  const role = [...objects.values()].find((o) => o.kind === "Role" && o.metadata.name === "jr2-custodian");
+  const readable = (role as { rules: Array<{ resourceNames: string[] }> } | undefined)?.rules[0]!.resourceNames ?? [];
+  assert.ok(readable.includes(gitPushTokenSecretName(name)), "the Custodian may read the entry's token Secret");
+  assert.ok(!readable.includes(name), "the Custodian may not read the entry's push Secret");
   assert.equal(data.identity, "PRIVATE-PUSH");
   assert.equal(data.known_hosts, "github.com ssh-ed25519 AAAA");
   assert.equal(data["sign.identity"], "PRIVATE-SIGN");

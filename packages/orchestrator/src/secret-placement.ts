@@ -467,9 +467,10 @@ type CustodianHeld = { hosts: Array<{ host: string; port: number }>; headers: st
  * The secrets that ride a header of the Workspace's file-body `http`s (ADR-0068), by name: the
  * targets and headers the Custodian binds each to, and whether it rides Basic. Throws, with the fix,
  * on a form the Custodian cannot swap (ADR-0059: the Stand-in alone, one scheme and the Stand-in, or
- * a Basic pair whose password is the Stand-in), on a secret that the Effector must also hold as a
- * value (in a url's path, or in a credentialed command's env: its file holds one of the two), and on
- * a name too long for a binding.
+ * a Basic pair whose password is the Stand-in), on a target whose scheme does not agree with its
+ * port (the Custodian reads plain HTTP on port 80 alone, ADR-0084), on a secret that the Effector
+ * must also hold as a value (in a url's path, or in a credentialed command's env: its file holds one
+ * of the two), and on a name too long for a binding.
  */
 function custodianHeldOf(ws: PlacedWorkspace): Map<string, CustodianHeld> {
   const out = new Map<string, CustodianHeld>();
@@ -491,7 +492,15 @@ function custodianHeldOf(ws: PlacedWorkspace): Map<string, CustodianHeld> {
             "whose password is the secret (ADR-0068, ADR-0059)",
         );
       }
-      const also = asValue.get(h.secret);
+      if ((t.scheme === "http") !== (t.port === 80)) {
+        throw new Error(
+          `${at}, and its ${h.header} header holds secret("${h.secret}"), which the Custodian holds, toward ` +
+            `${t.scheme}://${t.host}:${t.port}: the Custodian reads plain HTTP on port 80 alone and ends TLS on each ` +
+            "other port of a host it holds a secret for, so this call cannot work. Use https on a port other than 80, " +
+            "or http on port 80 (ADR-0068, ADR-0084)",
+        );
+      }
+      const also = h.url ? `the url of "${effect.name}"` : asValue.get(h.secret);
       if (also !== undefined) {
         throw new Error(
           `${at}, and secret("${h.secret}") rides its ${h.header} header, where the Custodian holds it, and ${also}, ` +

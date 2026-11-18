@@ -202,9 +202,10 @@ export type HeldBinding = {
   /** It rides a Basic pair (an http Effect's `basic` auth, a token push): a request to its host with
    * no credential gets 401 with `WWW-Authenticate: Basic`, so git sends its helper's pair. */
   basic?: true;
-  /** A push token (ADR-0051): its value is the `token` key of the entry's push Secret, and its
-   * Stand-in is the entry's own ({@link gitPushStandIn}), which the push Secret holds as `password`. */
-  push?: true;
+  /** A push token (ADR-0051): the name of the entry's push Secret. The value is the `token` key of
+   * the entry's token Secret (`gitPushTokenSecretName`), and the Stand-in is the entry's own
+   * ({@link gitPushStandIn}, minted from this name), which the push Secret holds as `password`. */
+  push?: string;
 };
 
 /**
@@ -225,7 +226,7 @@ export function pushBindingName(pushSecret: string): string {
 /**
  * The Stand-in of an entry's push token (ADR-0068): what `jr2 up` writes as `password` in the
  * entry's push Secret, which the operator projects into each Sandbox Effector that pushes with the
- * entry, and what the Custodian swaps for the token (the `token` key). One for each entry, minted
+ * entry, and what the Custodian swaps for the token (the `token` key of the entry's token Secret). One for each entry, minted
  * with the signing key, so no process can guess it.
  */
 export function gitPushStandIn(key: Buffer, pushSecret: string): string {

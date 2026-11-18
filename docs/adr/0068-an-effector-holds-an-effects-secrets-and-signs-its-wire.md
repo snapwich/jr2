@@ -321,7 +321,9 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   - The Stand-in of a header secret is the Sandbox's own, which the provision writes into `<sandbox>-standins` and
     projects into the Effector's `/run/jr2/secrets` alone, never into the Harness container. The Stand-in of a push
     token is its `git.credentials` entry's: `jr2 up` writes it as `password` in the entry's push Secret, which the
-    operator projects, and writes the token as `token`, which the operator does not project and the Custodian reads.
+    operator projects, and writes the token alone into the entry's token Secret, `jr2-git-push-<hash>-token`, which the
+    operator does not project and the Custodian reads. The Custodian's Role names the token Secret and never the push
+    Secret: the push Secret holds the ssh push key and the signing key, which stay the Effector's.
   - The Custodian swaps only what it can find (ADR-0059): the Stand-in alone, one scheme and the Stand-in, or the
     password of a Basic pair. `jr2 up` refuses, with the fix, a header of a file-body `http` that holds a secret in
     another form (a Basic user from a secret, text on both sides of it), and a secret that such a header holds and that

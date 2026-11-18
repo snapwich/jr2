@@ -28,7 +28,8 @@ import {
   type SlotRules,
 } from "../src/custodian-rules.ts";
 import { fenceRangesOf, GUARDED_RANGES } from "../src/egress.ts";
-import { leafStem } from "../src/held-secrets.ts";
+import { effectorBindingName, leafStem } from "../src/held-secrets.ts";
+import { withPushTokens } from "../src/sandbox-fence.ts";
 import { emptyPlaceholders, withPlaceholders } from "../src/placeholders.ts";
 import {
   INSTANCE_MANIFEST,
@@ -603,8 +604,32 @@ test("a secret that rides Basic is marked in the Lua table, so a request with no
 });
 
 test("the rules hold no value and no secret Stand-in: only names, paths and the public fetch Stand-in", () => {
-  const all = JSON.stringify(THREE_SLOTS.map(renderSlot));
-  assert.doesNotMatch(all, /jr2-held-(?!JR2_SANDBOX_TOKEN)[A-Z_]+/);
+  // A Sandbox whose Effector holds a header secret and pushes over https: both bindings are the
+  // Effector's, and their Stand-ins are lower case (ADR-0068).
+  const effector = withPushTokens(
+    {
+      ...SANDBOX_MANIFEST,
+      secrets: [
+        ...SANDBOX_MANIFEST.secrets,
+        {
+          name: effectorBindingName("files-token"),
+          source: { kind: "literal" },
+          hosts: [{ host: "files.example.com", port: 443, leaf: leafStem("files.example.com", 443) }],
+          headers: ["authorization"],
+          holder: "effector",
+        },
+      ],
+      egress: [...SANDBOX_MANIFEST.egress, rule("files.example.com", 443, "name", true, "effector")],
+    },
+    [{ secret: "jr2-git-push-0a1b2c3d", host: "git.example.com", port: 443 }],
+    RANGES,
+  );
+  const slots = [...THREE_SLOTS, inputsOf(4, effector, { sandbox: "ticket-d4e5f" })];
+  const all = JSON.stringify(slots.map(renderSlot));
+  assert.match(all, /effector_files_2dtoken/, "the Effector's binding is in the rules, by name");
+  assert.match(all, /push_0a1b2c3d/, "the push binding is in the rules, by name");
+  const standIns = [...all.matchAll(/jr2-held-[A-Za-z0-9_]+/g)].map((m) => m[0]);
+  assert.deepEqual([...new Set(standIns)], ["jr2-held-JR2_SANDBOX_TOKEN"], "only the public fetch Stand-in");
   assert.doesNotMatch(all, /sk-ant|value-of/);
 });
 

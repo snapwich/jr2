@@ -431,8 +431,8 @@ _Avoid_: masked secret, injected secret, proxied key, secret (unqualified)
 The value that a Harness holds in place of a Held secret, or that a Sandbox Effector holds in place of an Effect secret
 that the Custodian holds. It means something only to the Custodian, and only toward a
 host or a route that the secret is bound to; sent to a Tunneled host, it arrives as it left. It is secret, and only the
-Harness itself holds it: Workspace code gets a Stand-in only for a secret that its Workspace grants, and never the one
-for the control token. The one public Stand-in is the fetch token's, which can only ask for a fetch.
+Harness itself holds it, or the Sandbox Effector for an Effect secret: Workspace code gets a Stand-in only for a secret
+that its Workspace grants, and never the one for the control token. The one public Stand-in is the fetch token's, which can only ask for a fetch.
 _Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
 
 **Sandbox token**:

@@ -93,6 +93,8 @@ import {
   gitCloneSecretsOf,
   gitPushPlansOf,
   gitPushSecretName,
+  gitPushTokenSecretName,
+  GIT_PUSH_TOKEN_KEY,
   repoIdentity,
   type GitPushManifest,
   type SandboxEffectorPlan,
@@ -1946,9 +1948,10 @@ async function resolveHeld(
 }
 
 /**
- * The push Secrets whose `token` the Custodian may read (ADR-0068): each `git.credentials` entry
+ * The token Secrets that the Custodian may read (ADR-0068): the one of each `git.credentials` entry
  * whose token is set, when a Workspace pushes. Any of them can be the entry that a slot's url
- * matches at provision, a per-run url included, so the Role names each one.
+ * matches at provision, a per-run url included, so the Role names each one. Never a push Secret:
+ * it holds the ssh push key and the signing key.
  */
 function pushTokenSecrets(
   config: JR2Config,
@@ -1958,7 +1961,7 @@ function pushTokenSecrets(
   if (!sandbox.some((p) => p.pushes.length > 0)) return [];
   return (config.git?.credentials ?? []).flatMap((entry) => {
     const token = entry.push ? ("token" in entry.push ? entry.push.token : undefined) : entry.token;
-    return token !== undefined && env[token] ? [gitPushSecretName(entry.match)] : [];
+    return token !== undefined && env[token] ? [gitPushTokenSecretName(gitPushSecretName(entry.match))] : [];
   });
 }
 
@@ -2248,6 +2251,14 @@ async function resolveGitPush(
     }
     if (entry.push.length === 0) continue;
     out.secrets.push({ name: entry.secret, data });
+    // The token alone, in a Secret of its own: the Custodian's Role names it, and never the push
+    // Secret, which holds the ssh push key and the signing key (ADR-0068).
+    if (plan.token !== undefined) {
+      out.secrets.push({
+        name: gitPushTokenSecretName(entry.secret),
+        data: { [GIT_PUSH_TOKEN_KEY]: Buffer.from(plan.token).toString("base64") },
+      });
+    }
     out.manifest.entries.push(entry);
     activity(
       io,
