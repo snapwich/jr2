@@ -209,11 +209,6 @@ export const ANNOTATION_HARNESS_CONFIG_DIGEST = "jr2.dev/harness-config-digest";
  * same reason: a group every container is granted, which the Stand-in files are readable by. */
 const INSTANCE_HARNESS_FS_GROUP = 2000;
 
-/** The Secret of the Instance Harness's credentials before the Fence (ADR-0076): its control token
- * and its Stand-ins, which the in-pod Custodian read. On the Fence the token is in slot 0's Secret
- * and the Stand-ins in `jr2-instance-harness-standins`, so `jr2 up` deletes this one. */
-export const INSTANCE_HARNESS_CREDENTIALS = `${INSTANCE_HARNESS_SERVICE}-token`;
-
 /** How long the Instance Harness pod is given to stop (ADR-0031's drain): on SIGTERM it stops
  * admitting and finishes the Turns it holds, so the grace is a Turn's worst case. `jr2 up` waits
  * out a rollout that long, and no longer. */
@@ -222,52 +217,6 @@ export const INSTANCE_HARNESS_DRAIN_SECONDS = 600;
 /** The Instance Harness's conversations volume (ADR-0031): the StatefulSet's one claim, and the
  * PVC ordinal 0 gets from it — `<claim>-<statefulset>-<ordinal>`. */
 export const INSTANCE_HARNESS_PVC = `${CONVERSATIONS_VOLUME}-${INSTANCE_HARNESS_SERVICE}-0`;
-
-/** The two ingress NetworkPolicies (ADR-0058) — see `harnessIngressPolicies`. */
-export const SANDBOX_INGRESS_POLICY = "jr2-sandbox-ingress";
-export const INSTANCE_HARNESS_INGRESS_POLICY = "jr2-instance-harness-ingress";
-/** The two egress NetworkPolicies (ADR-0076) — see `metadataEgress`. */
-export const SANDBOX_EGRESS_POLICY = "jr2-sandbox-egress";
-export const INSTANCE_HARNESS_EGRESS_POLICY = "jr2-instance-harness-egress";
-
-/**
- * The cloud metadata addresses that a Harness pod does not reach (ADR-0076): where a node's
- * metadata service answers pods, it gives the node's own cloud credential, which no `workspace()`
- * grants. AWS's IMDS (IPv4 and IPv6), ECS's and EKS Pod Identity's credential agents, the
- * metadata service of GCP and Azure (the same 169.254.169.254), and Alibaba's. Each is a single
- * address: all of 169.254.0.0/16 would cut NodeLocal DNSCache (169.254.20.10). The list is not
- * complete for every provider, so the shared-cluster guide tells the admin to check theirs.
- */
-export const METADATA_ADDRESSES_V4 = [
-  "169.254.169.254/32",
-  "169.254.170.2/32",
-  "169.254.170.23/32",
-  "100.100.100.200/32",
-] as const;
-export const METADATA_ADDRESSES_V6 = ["fd00:ec2::254/128"] as const;
-
-/**
- * The egress of a Harness pod (ADR-0076): everything, except the cloud metadata addresses.
- * NetworkPolicy has no deny rule, so the rule allows every address but those, and every pod of the
- * cluster as a peer of its own. A CNI that matches an `ipBlock` against a pod's address too (Cilium)
- * would otherwise cut DNS, the Orchestrator and each Service. The policy needs a CNI that enforces
- * NetworkPolicy; on one that does not, nothing is blocked.
- */
-export function metadataEgress(podSelector: Record<string, unknown>): Record<string, unknown> {
-  return {
-    podSelector,
-    policyTypes: ["Egress"],
-    egress: [
-      {
-        to: [
-          { ipBlock: { cidr: "0.0.0.0/0", except: [...METADATA_ADDRESSES_V4] } },
-          { ipBlock: { cidr: "::/0", except: [...METADATA_ADDRESSES_V6] } },
-          { namespaceSelector: {} },
-        ],
-      },
-    ],
-  };
-}
 
 /** The operator's install location — per-cluster, shared by every instance (ADR-0019). */
 export const OPERATOR_NAMESPACE = "jr2-system";
@@ -316,8 +265,6 @@ export const KIT_POD_SIZES = {
   orchestrator: { requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "1Gi" } },
   /** It holds the conversations its live runs hold, and frees the rest on the live set (ADR-0031). */
   instanceHarness: { requests: { cpu: "250m", memory: "1Gi" }, limits: { memory: "1Gi" } },
-  /** The Instance Harness pod's Custodian: the same 64Mi/50m slice a Sandbox's takes, kit-sized. */
-  instanceCustodian: { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } },
   repoCache: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "1Gi" } },
   /** The Instance Effector (ADR-0068): one http call at a time per Effect, its text body bounded. */
   instanceEffector: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "128Mi" } },
@@ -566,8 +513,8 @@ export function instanceObjects(opts: {
       rules: [
         { apiGroups: ["core.jr2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
         // Secrets: create and patch, nothing else (ADR-0068). The Orchestrator server-side
-        // applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, and on the Fence
-        // the slot Secret and `<sandbox>-standins` (ADR-0084), each owned by the CR,
+        // applies its own per-Sandbox `<sandbox>-effector`, slot Secret and `<sandbox>-standins`
+        // (ADR-0084), each owned by the CR,
         // and holds no git credential and no Effect secret (ADR-0068): no get, no list, so it cannot read or enumerate the Effect
         // secrets, the clone and push Secrets, or a user's Secret through the API. RBAC cannot
         // pin `create` to a name, and `resourceNames` has no prefix form.
@@ -626,7 +573,6 @@ export function instanceObjects(opts: {
       metadata: meta(HELD_CONFIGMAP),
       data: {
         ...Object.fromEntries(opts.held.pods.map((p) => [heldManifestKey(p.pod), JSON.stringify(p.manifest, null, 2)])),
-        [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
         // Each Sandbox Effector's manifest (ADR-0068): the sources of its secrets mount, by name.
         // The provision adds the container only for a pod whose manifest is here.
         ...Object.fromEntries(
@@ -848,8 +794,6 @@ export function instanceObjects(opts: {
         ports: [{ port: ORCHESTRATOR_PORT, targetPort: ORCHESTRATOR_PORT }],
       },
     },
-    ...harnessIngressPolicies(opts.name, meta),
-    ...harnessEgressPolicies(meta),
     ...(opts.repoCache
       ? repoCacheObjects({
           ...opts.repoCache,
@@ -862,64 +806,6 @@ export function instanceObjects(opts: {
   ];
 
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
-}
-
-/** The operator's label on every Sandbox pod (operator/internal/controller/helpers.go) — and on no
- * other pod, which is what lets one selector mean "every Sandbox, now and later". */
-const SANDBOX_POD_LABEL = "sandbox.jr2.dev/name";
-
-/**
- * Ingress to every Harness pod is the Orchestrator's alone (ADR-0058) — the NetworkPolicy half of
- * the wire's defense; the bearer is the other, and the control (ADR-0013: policy bounds where a pod
- * may talk, only a token bounds what it may do). One policy per placement: every Sandbox pod, by
- * the label the operator stamps on each, and the Instance Harness.
- *
- * Converged UNCONDITIONALLY, not only when a Machine composes a Sandbox or declares a `"none"`
- * Agent: a policy that selects nothing costs nothing, and a pod born before its policy would be a
- * window. The peer is this instance's Orchestrator and no other — a `podSelector` never crosses the
- * namespace, and the instance label pins it within one. What is NOT here, on purpose:
- *
- * - The Orchestrator is not selected. Every route there is token-gated, and a Custodian in any
- *   Harness pod must reach it; a policy could not tell the Custodian's packets from the Agent's.
- * - No egress. That is `harnessEgressPolicies`: open, except the cloud metadata addresses (ADR-0076).
- * - No port. The Orchestrator speaks only the Harness wire to these pods, and a port here would
- *   have to track the CR's `port`; `kubectl port-forward` (the CLI, a human's shell into the User
- *   Container — ADR-0005) and kubelet probes never cross a policy at all.
- */
-function harnessIngressPolicies(instance: string, meta: (name: string) => KubeManifest): KubeManifest[] {
-  const fromOrchestrator = [
-    { from: [{ podSelector: { matchLabels: { app: ORCHESTRATOR_SERVICE, [LABEL_INSTANCE]: instance } } }] },
-  ];
-  const policy = (name: string, podSelector: Record<string, unknown>): KubeManifest => ({
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    metadata: meta(name),
-    spec: { podSelector, policyTypes: ["Ingress"], ingress: fromOrchestrator },
-  });
-  return [
-    policy(SANDBOX_INGRESS_POLICY, { matchExpressions: [{ key: SANDBOX_POD_LABEL, operator: "Exists" }] }),
-    policy(INSTANCE_HARNESS_INGRESS_POLICY, { matchLabels: { app: INSTANCE_HARNESS_SERVICE } }),
-  ];
-}
-
-/**
- * No Harness pod reaches a cloud metadata address (ADR-0076, `metadataEgress`). A Sandbox runs
- * Workspace code, and the node's credential is one that no `workspace()` grants. The Instance
- * Harness runs no Workspace code, but it gets the same rule: a check pod of the provider preflight
- * stands for every Harness pod (ADR-0019), so a model that only the node's credential reaches must
- * fail the check, not a Turn. Converged unconditionally, for the reason the ingress policies are.
- */
-function harnessEgressPolicies(meta: (name: string) => KubeManifest): KubeManifest[] {
-  const policy = (name: string, podSelector: Record<string, unknown>): KubeManifest => ({
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    metadata: meta(name),
-    spec: metadataEgress(podSelector),
-  });
-  return [
-    policy(SANDBOX_EGRESS_POLICY, { matchExpressions: [{ key: SANDBOX_POD_LABEL, operator: "Exists" }] }),
-    policy(INSTANCE_HARNESS_EGRESS_POLICY, { matchLabels: { app: INSTANCE_HARNESS_SERVICE } }),
-  ];
 }
 
 /** Where the cache agent's pod sees the node's directory: `--cache-dir`'s default. */
@@ -1779,7 +1665,6 @@ export function checkPodObjectNames(object: string): Array<{ kind: string; name:
  *
  * - `<object>` (ConfigMap): the harness config (`harnessConfigJson`).
  * - `<object>-env` (Secret): the literal `harness.env` values, which `jr2-harness-env` would carry.
- * - `<object>` (NetworkPolicy): the egress of a Harness pod before the Fence (`metadataEgress`).
  *
  * Its Fence objects are not in this List (`podFenceObjects`: slot 1's Secret, with the copy of the
  * literal values of the keys it holds, `<object>-trust` and `<object>-standins`): `jr2 up` applies
@@ -1906,12 +1791,6 @@ export function checkPodObjects(opts: {
       data: { [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness, opts.mcp) },
     },
     { apiVersion: "v1", kind: "Secret", metadata: meta(`${o}-env`), type: "Opaque", stringData: opts.harnessEnvData },
-    {
-      apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicy",
-      metadata: meta(o),
-      spec: metadataEgress({ matchLabels: { app: PROVIDER_PREFLIGHT, [LABEL_PROVIDER_PREFLIGHT]: opts.run } }),
-    },
     pod,
   ];
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
@@ -1972,7 +1851,7 @@ export const effectorGraceSeconds = (plan: EffectorPlan): number =>
  *   the Effects placed there, plus a margin for the outcome to be read.
  * - A headless Service that publishes addresses that are not ready: "ask every replica" is its
  *   name's addresses, a stopping replica included.
- * - A NetworkPolicy of `jr2-sandbox-ingress`'s form: ingress from this Instance's Orchestrator only.
+ * - A NetworkPolicy: ingress from this Instance's Orchestrator only.
  *   No egress rule: the pod holds real values and calls the hosts its Effects name.
  * - The Secret `jr2-instance-effector`: the literal Effect secrets placed here, the placement's key,
  *   and `effector.json` (the targets). A secret from the user's own Secret is projected from there

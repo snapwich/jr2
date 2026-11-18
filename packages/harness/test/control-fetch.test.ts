@@ -2,8 +2,7 @@
 // real TLS server whose leaf is from a test CA. The Menu is read, a pick is delivered, and a notice
 // is acknowledged, each with the bearer and the stated slot. A peer that does not show a leaf of the
 // trusted CA for jr2's name gets no request at all, so the control Stand-in never leaves. And the
-// pod's env chooses the path: the control socket while `JR2_CUSTODIAN_SOCKET` names one, else
-// HTTPS, and never a plain-HTTP URL.
+// pod's env chooses the URL, and never a plain-HTTP one.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -145,29 +144,20 @@ test("a leaf of the trusted CA for another name gets no request", async () => {
   }
 });
 
-test("an abort ends a request at once, and a plain-HTTP URL with no control socket is refused", async () => {
+test("an abort ends a request at once, and a plain-HTTP URL is refused", async () => {
   const controller = new AbortController();
   controller.abort(new Error("stop"));
   await assert.rejects(controlFetch()(`${CUSTODIAN_URL}/x`, { signal: controller.signal }), /stop/);
-  await assert.rejects(controlFetch()("http://custodian.jr2.internal/x"), /over HTTPS or the control socket/);
+  await assert.rejects(controlFetch()("http://custodian.jr2.internal/x"), /over HTTPS, not to/);
 });
 
-test("the pod's env chooses the path: the control socket while JR2_CUSTODIAN_SOCKET names one, else HTTPS at JR2_CUSTODIAN_URL or jr2's own name", () => {
+test("the pod's env chooses the URL: HTTPS at JR2_CUSTODIAN_URL, else jr2's own name", () => {
   assert.equal(CUSTODIAN_URL, "https://custodian.jr2.internal");
   assert.equal(controlReachOf({}).url, CUSTODIAN_URL);
   assert.equal(controlReachOf({ JR2_CUSTODIAN_URL: "" }).url, CUSTODIAN_URL);
   assert.equal(
     controlReachOf({ JR2_CUSTODIAN_URL: "https://custodian.jr2.internal:8443" }).url,
     "https://custodian.jr2.internal:8443",
-  );
-  // A pod with a Custodian container names its socket, and its JR2_CUSTODIAN_URL is the fetch
-  // listener's: the socket wins.
-  assert.equal(
-    controlReachOf({
-      JR2_CUSTODIAN_SOCKET: "/run/jr2/custodian/control.sock",
-      JR2_CUSTODIAN_URL: "http://127.0.0.1:8081",
-    }).url,
-    "http://jr2-custodian",
   );
   for (const url of ["http://custodian.jr2.internal", "http://127.0.0.1:8081", "not a url"]) {
     assert.throws(() => controlReachOf({ JR2_CUSTODIAN_URL: url }), /is not an https URL.*only over TLS/);

@@ -84,7 +84,7 @@ import { partsOf, type CarriedRepo } from "./parts.ts";
 import { kubeClient, type KubeClient } from "./kube-client.ts";
 import { kubeRepoFetches, type LfsAsk, type RepoFetches } from "./repo-fetch.ts";
 import { kubeRepos, type RepoResources } from "./repos.ts";
-import { SANDBOX_EFFECTOR_PORT, kubeSandbox, type FenceWiring, type KubeSandboxPort } from "./sandbox-kube.ts";
+import { kubeSandbox, type FenceWiring, type KubeSandboxPort } from "./sandbox-kube.ts";
 import {
   custodianClient,
   fenceSlotAddress,
@@ -96,7 +96,6 @@ import { INSTANCE_HARNESS_SLOT } from "./fence-slots.ts";
 import { slotVlan } from "./custodian-rules.ts";
 import { fenceRangesOf } from "./egress.ts";
 import { readFile } from "node:fs/promises";
-import { sandboxEffectorService } from "./sandbox-effector.ts";
 import { watchSandboxes, type SandboxWatch } from "./sandbox-watch.ts";
 import { custodianDialToken, loadSigningKey, mintInstanceToken, watchCallerDigests } from "./tokens.ts";
 
@@ -262,9 +261,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       namespace,
       client,
       watch,
+      // A Sandbox goes behind the Fence, or is refused when there is none (ADR-0084).
       ...(fence ? { fence } : {}),
-      // Deployed, a Sandbox goes behind the Fence or is refused (ADR-0084).
-      requireFence: true,
     });
     // The process's route to a Harness pod behind the Fence (ADR-0084): each client of a Harness or
     // a Sandbox Effector that dials a slot address goes through the Custodian pod on its node.
@@ -383,18 +381,15 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     ...(instanceEffector !== undefined ? { instanceEffector } : {}),
     // Where a push, a file-body http or a credentialed command runs (ADR-0068): a Sandbox's Effector,
     // when `jr2 up` placed an Effect there.
-    ...(namespace
+    // Its slot's address, which its requests are signed for, through the Custodian pod on its node
+    // (ADR-0084). With no Fence there is no Sandbox, and so no Sandbox Effector.
+    ...(fence && sandbox
       ? {
-          // On the Fence, its slot's address, which its requests are signed for, through the
-          // Custodian pod on its node (ADR-0084).
-          sandboxEffector: (name: string) =>
-            fence && sandbox
-              ? async () => {
-                  const address = await sandbox!.fenceEffector(name);
-                  if (address === undefined) throw new Error(`Sandbox "${name}" names no Fence slot`);
-                  return [address];
-                }
-              : `${sandboxEffectorService(name)}.${namespace}.svc:${SANDBOX_EFFECTOR_PORT}`,
+          sandboxEffector: (name: string) => async () => {
+            const address = await sandbox!.fenceEffector(name);
+            if (address === undefined) throw new Error(`Sandbox "${name}" names no Fence slot`);
+            return [address];
+          },
         }
       : {}),
   });
@@ -454,7 +449,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
  * The Fence of a deployed Orchestrator (ADR-0084), from the env that `jr2 up` sets when it installs
  * the Instance's Custodian: `JR2_FENCE_RANGE` (the claimed VLAN range), and `JR2_FENCE_SEGMENT` and
  * `JR2_FENCE_PLACEHOLDERS` when the Instance's `fence` moves them. Undefined with no range: the
- * Instance has no Custodian, and a Sandbox provision is refused (`requireFence`). The trust texts
+ * Instance has no Custodian, and a Sandbox provision is refused (`kubeSandbox`). The trust texts
  * come from the `jr2-fence` mount, read per provision, so a converge from a host with other roots
  * reaches the next Sandbox with no roll.
  */

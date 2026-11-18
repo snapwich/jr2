@@ -11,10 +11,10 @@
 // The rules are `confine.ForHarness`'s, which `effector harness-rules --deny /run/jr2 --read
 // /run/jr2/output` writes once at start: every right on every path except `/run/jr2`, and read alone
 // in `/run/jr2/output` (and in `/run/jr2/user-context`, when the pod mounts the image user's context
-// there, ADR-0062). That folder holds the control Stand-in, each held secret's Stand-in, the
-// folder of a Custodian container's control socket, and the Harness's conversations; its `output`
-// folder holds the whole output of a long `bash` call, which the model reads (`OUTPUT_DIR`). A confined process cannot ptrace one outside its domain, so `/proc/<harness>/environ`
-// and `/mem` stay closed.
+// there, ADR-0062). That folder holds the control Stand-in, each held secret's Stand-in and the
+// Harness's conversations; its `output` folder holds the whole output of a long `bash` call, which
+// the model reads (`OUTPUT_DIR`). A confined process cannot ptrace one outside its domain, so
+// `/proc/<harness>/environ` and `/mem` stay closed.
 //
 // The domain's env is the env that the container STARTED with — the image's `ENV`, `harness.env`,
 // `envFrom`, the CA variables — with startup.ts's PATH, HOME and git identity, without jr2's own
@@ -52,10 +52,6 @@ export const RUNTIME_SECRETS = "/run/jr2";
 export const CONTROL_STANDIN_FILE = `${RUNTIME_SECRETS}/control/standin`;
 /** Where each held secret's Stand-in is mounted, one file a name (ADR-0059). */
 export const STANDINS_DIR = `${RUNTIME_SECRETS}/standins`;
-/** The control socket of a Custodian container in the pod (ADR-0076), as the pod names it in
- * `JR2_CUSTODIAN_SOCKET`. A pod on the Fence has none: its Harness speaks HTTPS to the Custodian
- * (`control-fetch.ts`). */
-export const CONTROL_SOCKET = `${RUNTIME_SECRETS}/custodian/control.sock`;
 /** Where a Harness keeps its conversations (ADR-0031): under `/run/jr2`, so no process of the
  * domain reads another Agent's conversation (ADR-0076). */
 export const CONVERSATIONS_DIR = `${RUNTIME_SECRETS}/conversations`;

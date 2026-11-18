@@ -23,8 +23,8 @@ func TestSplitGivesTheHarnessJr2sNamesAndTheDomainEverything(t *testing.T) {
 		"PATH=/usr/local/bin:/usr/bin", "NODE_OPTIONS=--require /app/hook.cjs", "LD_LIBRARY_PATH=/app/lib",
 		"AWS_CONFIG_FILE=/app/aws", "SHARED=from-the-image", "ONLY_IMAGE=1", "TZ=/app/zone",
 		// The container's env, as jr2 composed it.
-		"JR2_HARNESS_ENV_NAMES=JR2_HARNESS_JSON,HTTPS_PROXY,NODE_EXTRA_CA_CERTS,LD_PRELOAD,SHARED,PORT",
-		"JR2_HARNESS_JSON={}", "HTTPS_PROXY=http://127.0.0.1:8080", "NODE_EXTRA_CA_CERTS=/etc/jr2/ca/ca.crt",
+		"JR2_HARNESS_ENV_NAMES=JR2_HARNESS_JSON,JR2_CUSTODIAN_URL,NODE_EXTRA_CA_CERTS,LD_PRELOAD,SHARED,PORT",
+		"JR2_HARNESS_JSON={}", "JR2_CUSTODIAN_URL=https://custodian.jr2.internal", "NODE_EXTRA_CA_CERTS=/etc/jr2/ca/ca.crt",
 		"LD_PRELOAD=/app/evil.so", "SHARED=from-env", "PORT=8080",
 		// harness.envFrom, prefixed by the Orchestrator.
 		"JR2_ENVFROM_GOOGLE_CLOUD_PROJECT=p", "JR2_ENVFROM_SHARED=from-envFrom", "JR2_ENVFROM_ONLY_IMAGE=2",
@@ -41,7 +41,7 @@ func TestSplitGivesTheHarnessJr2sNamesAndTheDomainEverything(t *testing.T) {
 	}
 	delete(harness, StartEnvName)
 	want := map[string]string{
-		"JR2_HARNESS_JSON": "{}", "HTTPS_PROXY": "http://127.0.0.1:8080", "NODE_EXTRA_CA_CERTS": "/etc/jr2/ca/ca.crt",
+		"JR2_HARNESS_JSON": "{}", "JR2_CUSTODIAN_URL": "https://custodian.jr2.internal", "NODE_EXTRA_CA_CERTS": "/etc/jr2/ca/ca.crt",
 		"SHARED": "from-env", "PORT": "8080", "GOOGLE_CLOUD_PROJECT": "p", "ONLY_IMAGE": "2", "TZ": "Europe/Paris",
 		"HOME": HarnessHome,
 	}

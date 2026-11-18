@@ -244,6 +244,10 @@ class FakeCluster implements KubeAdmin {
     metadata: { name: string; namespace?: string };
     spec?: { containers?: Array<{ image?: string }> };
   }> = [];
+  /** The NetworkPolicies of jr2 in the namespace, as a read by label lists them. */
+  policies: Array<{ metadata: { name: string } }> = [];
+  /** The selectors of those reads. */
+  policySelectors: string[] = [];
   /** Kinds whose `listJson` read throws, as a read does on an API blip or an RBAC refusal. */
   listFails = new Set<string>();
   async listJson<T>(opts: {
@@ -295,6 +299,10 @@ class FakeCluster implements KubeAdmin {
         }) as T[];
     }
     if (opts.kind === "configmap") return this.imageMaps as T[];
+    if (opts.kind === "networkpolicy") {
+      this.policySelectors.push(opts.selector ?? "");
+      return this.policies as T[];
+    }
     // The cluster-wide pod read is the sweep's; the selected one is a layer's image verification.
     // Distinguished explicitly, because falling through to the verification branch would answer a
     // keep-set question with whatever the last apply happened to name.
@@ -419,7 +427,6 @@ class FakeCluster implements KubeAdmin {
       phase: failed ? "Failed" : "Succeeded",
       started: true,
       output: lines.join("\n"),
-      custodian: "",
       reasons: [],
     };
   }
@@ -3178,12 +3185,8 @@ test("the CA is kept, a leaf that still fits is reused, and a converge holding n
   const cm = (JSON.parse(none.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held",
   )!;
-  assert.deepEqual(
-    cm.data,
-    { "program.lua": CUSTODIAN_PROGRAM },
-    "the ConfigMap is applied always — here with no Harness pod to hold for, and the program once",
-  );
-  // No Instance Harness: no pod to render Custodian files for, and a stale one's go with it.
+  assert.deepEqual(cm.data ?? {}, {}, "the ConfigMap is applied always — here with no Harness pod to hold for");
+  // No Instance Harness: the objects of its Custodian of before the Fence go.
   assert.ok(none.kube.deleted.includes("myinst/configmap/jr2-held-custodian"));
   assert.ok(!none.kube.applied.some((m) => m.includes(`"jr2-held-custodian"`)), "nothing rendered for no pod");
 });
@@ -3587,39 +3590,25 @@ test("checkVerdicts reads every line provider-preflight.ts writes: the format is
   );
 });
 
-test("podFault: the hint follows the kubelet's reason, and quotes the Custodian's refusal", () => {
-  const images = { harnessImage: "ghcr.io/x/jr2-harness:1", custodianImage: "envoyproxy/envoy@sha256:abc" };
+test("podFault: the hint follows the kubelet's reason", () => {
+  const images = { harnessImage: "ghcr.io/x/jr2-harness:1" };
   const where = { where: "the Sandbox nodes" };
   const end = (over: Partial<PodEnd>): PodEnd => ({
     phase: "stuck",
     started: false,
     output: "",
-    custodian: "",
     reasons: [],
     ...over,
   });
-  const pull = podFault(end({ stuck: "custodian: ImagePullBackOff" }), where, images);
-  assert.match(pull, /cannot pull envoyproxy\/envoy@sha256:abc/);
-  assert.ok(!/held value/.test(pull), "no Custodian-value hint for an image a node cannot pull");
   assert.match(
     podFault(end({ stuck: "check: ErrImagePull" }), where, images),
     /cannot pull ghcr\.io\/x\/jr2-harness:1/,
   );
-  assert.match(
-    podFault(
-      end({
-        stuck: "custodian: restarted",
-        custodian: "[critical] script load error: jr2.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value",
-      }),
-      where,
-      images,
-    ),
-    /Custodian did not start: jr2\.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value — .*missing, empty/,
-  );
   assert.match(podFault(end({ stuck: "check: CreateContainerConfigError" }), where, images), /harness\.envFrom/);
-  const oom = podFault(end({ stuck: "custodian: restarted (last ended OOMKilled)" }), where, images);
-  assert.match(oom, /ran out of memory: custodian: restarted \(last ended OOMKilled\).*64Mi/);
-  assert.ok(!/held value/.test(oom), "an OOMKilled Custodian is not a held value it refused");
+  assert.match(
+    podFault(end({ stuck: 'FailedMount: MountVolume.SetUp failed for volume "ca"' }), where, images),
+    /its trust ConfigMap or its Stand-in Secret is missing; a jr2 defect/,
+  );
   assert.match(
     podFault(end({ phase: "Failed", reasons: ["check: terminated OOMKilled"] }), where, images),
     /the check container's limit is 512Mi/,
@@ -3629,23 +3618,6 @@ test("podFault: the hint follows the kubelet's reason, and quotes the Custodian'
     /did not start in 300s .*no node on the Sandbox nodes fits it/,
   );
 });
-
-/** The egress rule of every Harness pod (ADR-0076): all but the cloud metadata addresses, and
- * every pod of the cluster as its own peer. */
-const METADATA_EGRESS = [
-  {
-    to: [
-      {
-        ipBlock: {
-          cidr: "0.0.0.0/0",
-          except: ["169.254.169.254/32", "169.254.170.2/32", "169.254.170.23/32", "100.100.100.200/32"],
-        },
-      },
-      { ipBlock: { cidr: "::/0", except: ["fd00:ec2::254/128"] } },
-      { namespaceSelector: {} },
-    ],
-  },
-];
 
 test("checkPodObjects: the check pod is on slot 1 of the Fence with the Sandbox placement, labels that select no Harness pod, and no Custodian in it", () => {
   const object = "jr2-provider-preflight-ab12cd34-0";
@@ -3709,11 +3681,9 @@ test("checkPodObjects: the check pod is on slot 1 of the Fence with the Sandbox 
     ],
   );
 
-  // The egress policy of a Harness pod before the Fence stays in the List until the in-pod
-  // Custodian goes; its deletion goes with the check pod's other objects.
-  const policy = list.items.find((i) => i.kind === "NetworkPolicy")!;
-  assert.equal(policy.metadata.name, object);
-  assert.deepEqual(policy.spec.egress, METADATA_EGRESS);
+  // No NetworkPolicy: the pod is on the Fence (ADR-0084). The name stays among the leftovers that
+  // a later run deletes, for a check pod of before the Fence.
+  assert.ok(!list.items.some((i) => i.kind === "NetworkPolicy"));
   const names = checkPodObjectNames(object).map((o) => `${o.kind}/${o.name}`);
   for (const name of [
     `pod/${object}`,
@@ -3768,7 +3738,6 @@ test("provider preflight: a Harness-shaped pod on slot 1 with its own objects, a
     [
       `ConfigMap/${o}`,
       `ConfigMap/${o}-trust`,
-      `NetworkPolicy/${o}`,
       `Pod/${o}`,
       `Secret/${o}-env`,
       `Secret/${o}-standins`,
@@ -3879,7 +3848,7 @@ test("provider preflight: before the first check, only the namespace, the Priori
   assert.match(kinds[4]!, /^List Pod\/jr2-fence-probe-[0-9a-f]+,Pod\/jr2-fence-route-[0-9a-f]+$/);
   assert.deepEqual(kinds.slice(5), [
     `List Secret/jr2-custodian-slot-1,ConfigMap/${o}-trust,Secret/${o}-standins`,
-    `List ConfigMap/${o},Secret/${o}-env,NetworkPolicy/${o},Pod/${o}`,
+    `List ConfigMap/${o},Secret/${o}-env,Pod/${o}`,
   ]);
   assert.deepEqual(labeledBefore, [], "no label either: the operator's comes after the check");
   // …and both come after it.
@@ -4039,7 +4008,6 @@ test("catalog provider preflight: a pod that never ran says why, from the kubele
     started: false,
     stuck: "check: ErrImagePull",
     output: "",
-    custodian: "",
     reasons: [],
   };
   await assert.rejects(
@@ -4119,7 +4087,6 @@ test("provider preflight: each result is said as it comes, with the worst-case t
     phase: "Failed",
     started: true,
     output: "jr2.preflight model=anthropic/claude-haiku-5-5 start",
-    custodian: "",
     reasons: ["check: terminated DeadlineExceeded"],
   };
   await assert.rejects(
@@ -4196,7 +4163,7 @@ test("provider preflight: an empty last log read still knows which model the che
       reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
     }),
   );
-  w.kube.checkEnd = { phase: "Failed", started: true, output: "", custodian: "", reasons: [] };
+  w.kube.checkEnd = { phase: "Failed", started: true, output: "", reasons: [] };
   w.kube.checkLive = "jr2.preflight model=anthropic/claude-haiku-5-5 start";
   await assert.rejects(
     () => up(["--yes"], w.io),
@@ -4212,7 +4179,7 @@ test("provider preflight: a result said while the pod ran stands when the last l
   const w = mkWorld(
     await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
   );
-  w.kube.checkEnd = { phase: "Succeeded", started: true, output: "", custodian: "", reasons: [] };
+  w.kube.checkEnd = { phase: "Succeeded", started: true, output: "", reasons: [] };
   w.kube.checkLive =
     "jr2.preflight model=anthropic/claude-haiku-5-5 start\njr2.preflight model=anthropic/claude-haiku-5-5 ok";
   assert.equal(await up(["--yes"], w.io), 0);
@@ -4239,7 +4206,7 @@ test("provider preflight: a check pod whose log cannot be read says so, and is n
   const w = mkWorld(
     await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
   );
-  w.kube.checkEnd = { phase: "Succeeded", started: true, output: "", custodian: "", reasons: [] };
+  w.kube.checkEnd = { phase: "Succeeded", started: true, output: "", reasons: [] };
   await assert.rejects(() => up(["--yes"], w.io), /the check pod ended Succeeded, and jr2 up could not read its log/);
 });
 
@@ -4778,11 +4745,11 @@ test('a workspace: "none" definition converges the Instance Harness — the Harn
   assert.ok(w.kube.deleted.includes("myinst/configmap/jr2-held-custodian"));
   assert.ok(w.kube.deleted.includes("myinst/secret/jr2-instance-harness-token"));
   assert.equal(objects.get("ConfigMap/jr2-held-custodian"), undefined);
-  // `jr2-held` DECLARES: each pod's manifest and the program once — nothing rendered per pod.
+  // `jr2-held` DECLARES: each pod's manifest — nothing rendered per pod. The program is the
+  // Custodian's, in its own ConfigMap (ADR-0084).
   const heldCm = objects.get("ConfigMap/jr2-held")!;
   const keys = Object.keys(heldCm.data);
-  assert.ok(keys.includes("held-instance.json") && keys.includes("program.lua"), keys.join(", "));
-  assert.equal(heldCm.data["program.lua"], CUSTODIAN_PROGRAM);
+  assert.deepEqual(keys, ["held-instance.json"]);
   assert.ok(statefulSet.spec.template.metadata.annotations["jr2.dev/held-digest"], "a new trust rolls this pod");
 });
 
@@ -4817,74 +4784,29 @@ function policiesOf(w: World): Record<string, Record<string, any>> {
   return Object.fromEntries(items.filter((i) => i.kind === "NetworkPolicy").map((i) => [i.metadata.name, i]));
 }
 
-test("ingress to every Harness pod is the Orchestrator's alone — Sandboxes and the Instance Harness (ADR-0058)", async () => {
+test("no NetworkPolicy selects a Harness pod, and each one jr2 made before the Fence goes on an upgrade (ADR-0084)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
   const w = mkWorld(root);
-  assert.equal(await up(["--yes"], w.io), 0);
-  const policies = policiesOf(w);
-
-  // Only the Orchestrator's pods, and only this instance's: a second instance's Orchestrator in
-  // another namespace is not a peer — `podSelector` alone never crosses a namespace.
-  const fromOrchestrator = [
-    { from: [{ podSelector: { matchLabels: { app: "jr2-orchestrator", "jr2.dev/instance": "myinst" } } }] },
-  ];
-  const sandboxes = policies["jr2-sandbox-ingress"]!;
-  assert.equal(sandboxes.metadata.namespace, "myinst");
-  // Every pod the operator makes for a Sandbox carries this label (helpers.go) — and only those.
-  assert.deepEqual(sandboxes.spec.podSelector, {
-    matchExpressions: [{ key: "sandbox.jr2.dev/name", operator: "Exists" }],
-  });
-  assert.deepEqual(sandboxes.spec.policyTypes, ["Ingress"], "egress is not decided here (ADR-0058)");
-  assert.deepEqual(sandboxes.spec.ingress, fromOrchestrator);
-
-  const instanceHarness = policies["jr2-instance-harness-ingress"]!;
-  assert.deepEqual(instanceHarness.spec.podSelector, { matchLabels: { app: "jr2-instance-harness" } });
-  assert.deepEqual(instanceHarness.spec.policyTypes, ["Ingress"]);
-  assert.deepEqual(instanceHarness.spec.ingress, fromOrchestrator);
-
-  // The Orchestrator itself is NOT selected: every route there is token-gated (ADR-0013), and a
-  // Custodian in any Harness pod must reach it.
-  for (const policy of Object.values(policies)) {
-    assert.notDeepEqual(policy.spec.podSelector, { matchLabels: { app: "jr2-orchestrator" } });
-  }
-});
-
-test("the ingress policies converge with the instance, whatever it composes — a Harness pod is never unguarded", async () => {
-  // No Sandbox and no "none" Agent: the policies still ship, so the first Harness pod a later
-  // `jr2 up` adds is born selected, never in a window before its policy exists.
-  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst");
-  const w = mkWorld(root);
-  assert.equal(await up(["--yes"], w.io), 0);
-  assert.deepEqual(Object.keys(policiesOf(w)).sort(), [
-    "jr2-instance-harness-egress",
-    "jr2-instance-harness-ingress",
-    "jr2-sandbox-egress",
+  // What an Instance of before the Fence has: the four Harness pod policies, beside the two that
+  // jr2 still makes (the Custodian's, the Instance Effector's).
+  const before = [
     "jr2-sandbox-ingress",
-  ]);
-});
-
-test("no Harness pod reaches a cloud metadata address, and its other egress stays open (ADR-0076)", async () => {
-  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
-  const w = mkWorld(root);
+    "jr2-sandbox-egress",
+    "jr2-instance-harness-ingress",
+    "jr2-instance-harness-egress",
+  ];
+  w.kube.policies = [...before, "jr2-custodian", "jr2-instance-effector"].map((name) => ({ metadata: { name } }));
   assert.equal(await up(["--yes"], w.io), 0);
-  const policies = policiesOf(w);
-
-  const sandboxes = policies["jr2-sandbox-egress"]!;
-  assert.equal(sandboxes.metadata.namespace, "myinst");
-  // The same pods as the ingress policy: every pod the operator makes for a Sandbox.
-  assert.deepEqual(sandboxes.spec.podSelector, policies["jr2-sandbox-ingress"]!.spec.podSelector);
-  // Egress alone: the ingress rule stays the ingress policy's, and policies of one direction add up.
-  assert.deepEqual(sandboxes.spec.policyTypes, ["Egress"]);
-  assert.deepEqual(sandboxes.spec.egress, METADATA_EGRESS);
-
-  const instanceHarness = policies["jr2-instance-harness-egress"]!;
-  assert.deepEqual(instanceHarness.spec.podSelector, { matchLabels: { app: "jr2-instance-harness" } });
-  assert.deepEqual(instanceHarness.spec.policyTypes, ["Egress"]);
-  assert.deepEqual(instanceHarness.spec.egress, METADATA_EGRESS);
-
-  // Not all of the link-local range: NodeLocal DNSCache answers on 169.254.20.10.
-  const except = JSON.stringify(sandboxes.spec.egress);
-  assert.ok(!except.includes("169.254.0.0/16"), "the link-local range stays open");
+  // A Harness pod is on the Fence, with no address on the cluster's network: no policy is for it.
+  assert.deepEqual(Object.keys(policiesOf(w)), []);
+  // Read by jr2's own labels, so a policy of the user's is never listed.
+  assert.deepEqual(w.kube.policySelectors, ["jr2.dev/instance=myinst,app.kubernetes.io/managed-by=jr2"]);
+  for (const name of before) {
+    assert.ok(w.kube.deleted.includes(`myinst/networkpolicy/${name}`), `${name} is deleted`);
+  }
+  assert.ok(!w.kube.deleted.includes("myinst/networkpolicy/jr2-custodian"), "the Custodian's stays");
+  // The Instance Effector's goes only by its own converge (no http Effect here), never by the sweep.
+  assert.ok(w.kube.deleted.filter((d) => d === "myinst/networkpolicy/jr2-instance-effector").length <= 1);
 });
 
 test("both readiness probes set a period — a ~1s boot must not be billed as a 10s rollout wait", async () => {
@@ -5311,7 +5233,7 @@ test("a split that leaves the Harness below its floor is refused at the converge
   const err = w.err.join("\n");
   assert.match(
     err,
-    /refusing: workflow "sized" \(on the Machine composed as "review"\): the Size leaves the Harness container 160Mi/,
+    /refusing: workflow "sized" \(on the Machine composed as "review"\): the Size leaves the Harness container 224Mi/,
   );
   assert.match(err, /the User Container's 800Mi \(its user\.resources\.limits\.memory\)/);
   assert.match(
@@ -5324,7 +5246,7 @@ test("a split that leaves the Harness below its floor is refused at the converge
 
 test("the Instance default is split too: a sandbox.resources below the floor is refused naming jr2.config.ts", async () => {
   const root = await withWorkspace(
-    await mkInstance(`export default { name: "myinst", sandbox: { resources: { limits: { memory: "300Mi" } } } };\n`),
+    await mkInstance(`export default { name: "myinst", sandbox: { resources: { limits: { memory: "200Mi" } } } };\n`),
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 1);
@@ -5997,7 +5919,7 @@ function wsManifest(i: number): HeldManifest {
   };
 }
 
-test("jr2-held grows by one manifest per Workspace and holds the program once — 40 Workspaces stay under the apply limit (ADR-0059)", () => {
+test("jr2-held grows by one manifest per Workspace — 40 Workspaces stay under the apply limit (ADR-0059)", () => {
   // The @kind failure this pins: nine pods' rendered Envoy files in one ConfigMap passed client-side
   // apply's 256 KiB annotation. `jr2 up` DECLARES; a pod's maker renders its own files.
   const heldOf = (n: number): HeldObjects => ({
@@ -6021,18 +5943,18 @@ test("jr2-held grows by one manifest per Workspace and holds the program once �
       }),
     ) as { items: Array<Record<string, any>> };
     const cm = list.items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
-    // The whole List, too: no other object carries a rendered file or a copy of the program.
-    assert.equal(JSON.stringify(list).split("function envoy_on_request").length - 1, 1, "the program once");
+    // The whole List, too: no object carries a rendered file or the program, which is the
+    // Custodian's (ADR-0084).
+    assert.equal(JSON.stringify(list).split("function envoy_on_request").length - 1, 0, "no program");
     assert.ok(!list.items.some((i) => i.metadata.name === "jr2-held-custodian"), "no Instance Harness, no files");
     return { text: JSON.stringify(cm), data: cm.data };
   };
 
   const forty = heldCm(40);
   assert.ok(forty.text.length < 256 * 1024, `jr2-held for 40 Workspaces: ${forty.text.length} bytes`);
-  assert.equal(Object.keys(forty.data).length, 41, "forty manifests and one program");
-  assert.equal(forty.data["program.lua"], CUSTODIAN_PROGRAM);
+  assert.equal(Object.keys(forty.data).length, 40, "forty manifests");
   for (const key of Object.keys(forty.data)) {
-    assert.ok(key === "program.lua" || /^held-ws-[0-9a-f]+\.json$/.test(key), `no rendered file: ${key}`);
+    assert.ok(/^held-ws-[0-9a-f]+\.json$/.test(key), `no rendered file: ${key}`);
   }
 
   // One more Workspace adds its manifest, and nothing else.

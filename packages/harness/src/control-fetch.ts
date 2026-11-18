@@ -1,38 +1,30 @@
 // How the Harness sends each control request — the Menu, a pick, a delivery poll, a notice's
 // acknowledgment, a batch of the conversation — to the Custodian (ADR-0059, ADR-0076, ADR-0084).
 //
-// In a Harness pod on the Fence, the Custodian is outside the pod, at jr2's own name
+// A Harness pod is on the Fence, and the Custodian is outside the pod, at jr2's own name
 // (`custodian.jr2.internal`), which the slot's resolver answers. The control routes are HTTPS on
 // its port 443, and the Custodian ends that TLS with a leaf of the pod's CA. The Harness trusts that
 // CA through `NODE_EXTRA_CA_CERTS` (the pod's trust bundle), so it sends the control Stand-in only
 // to a peer that holds the leaf: no process in the pod can take the Custodian's place.
-//
-// A pod that still has a Custodian container gets `JR2_CUSTODIAN_SOCKET`, the path of that
-// container's control socket under `/run/jr2`, and the requests go there.
 //
 // The `fetch` answers as the global `fetch` does, for what `menu.ts` reads: a `Response` for every
 // HTTP status, and a rejection on a transport failure — a `TypeError("fetch failed")` whose `cause`
 // is the error (`connect ECONNREFUSED …`, `connect EHOSTUNREACH …`, a TLS refusal), as undici's
 // is. An abort rejects with the signal's reason.
 
-import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from "node:http";
+import type { ClientRequest, IncomingMessage, RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { LookupFunction } from "node:net";
 import { Readable } from "node:stream";
 
-/** jr2's own name for the Custodian, as a URL: where the control routes are when the pod has no
- * control socket. `@jr2/orchestrator`'s `JR2_CUSTODIAN_NAME`; a test holds the two equal. */
+/** jr2's own name for the Custodian, as a URL: where the control routes are. `@jr2/orchestrator`'s
+ * `JR2_CUSTODIAN_NAME`; a test holds the two equal. */
 export const CUSTODIAN_URL = "https://custodian.jr2.internal";
-
-/** The env that names the control socket of a Custodian container in the pod (ADR-0076). */
-export const CUSTODIAN_SOCKET_ENV = "JR2_CUSTODIAN_SOCKET";
 
 /** The statuses whose response has no body: a `Response` refuses one. */
 const NULL_BODY = new Set([101, 204, 205, 304]);
 
 export type ControlFetchOptions = {
-  /** A Unix socket that each request goes to; the URL gives only the path. */
-  socketPath?: string;
   /** The trust for an `https:` URL. Default: Node's own, with `NODE_EXTRA_CA_CERTS` (the pod's CA).
    * A test gives its own CA. */
   ca?: string;
@@ -65,21 +57,17 @@ export function controlFetch(opts: ControlFetchOptions = {}): typeof globalThis.
         path: `${url.pathname}${url.search}`,
         headers: { host: url.host, ...headers },
       };
-      let req: ClientRequest;
-      if (opts.socketPath !== undefined) {
-        req = httpRequest({ ...base, socketPath: opts.socketPath });
-      } else if (url.protocol === "https:") {
-        req = httpsRequest({
-          ...base,
-          hostname: url.hostname,
-          port: url.port === "" ? 443 : Number(url.port),
-          ...(opts.ca !== undefined ? { ca: opts.ca } : {}),
-          ...(opts.lookup !== undefined ? { lookup: opts.lookup } : {}),
-        });
-      } else {
-        reject(new Error(`a control request goes over HTTPS or the control socket, not to ${url.origin}`));
+      if (url.protocol !== "https:") {
+        reject(new Error(`a control request goes over HTTPS, not to ${url.origin}`));
         return;
       }
+      const req: ClientRequest = httpsRequest({
+        ...base,
+        hostname: url.hostname,
+        port: url.port === "" ? 443 : Number(url.port),
+        ...(opts.ca !== undefined ? { ca: opts.ca } : {}),
+        ...(opts.lookup !== undefined ? { lookup: opts.lookup } : {}),
+      });
       const onAbort = () => req.destroy(signal?.reason instanceof Error ? signal.reason : new Error("aborted"));
       signal?.addEventListener("abort", onAbort, { once: true });
       req.on("error", (err) => {
@@ -118,14 +106,10 @@ export function controlFetch(opts: ControlFetchOptions = {}): typeof globalThis.
 export type ControlReach = { url: string; fetch: typeof globalThis.fetch };
 
 /**
- * The control reach of this pod, from its env: the control socket when `JR2_CUSTODIAN_SOCKET`
- * names one (the URL's host is then a name only), else `JR2_CUSTODIAN_URL`, else
- * {@link CUSTODIAN_URL}. Throws for a URL that is not `https:`: the control Stand-in goes only to a
+ * The control reach of this pod, from its env: `JR2_CUSTODIAN_URL`, else {@link CUSTODIAN_URL}. Throws for a URL that is not `https:`: the control Stand-in goes only to a
  * peer that shows the Custodian's leaf (ADR-0059).
  */
 export function controlReachOf(env: Readonly<Record<string, string | undefined>>): ControlReach {
-  const socketPath = env[CUSTODIAN_SOCKET_ENV];
-  if (socketPath) return { url: "http://jr2-custodian", fetch: controlFetch({ socketPath }) };
   const url = env.JR2_CUSTODIAN_URL || CUSTODIAN_URL;
   let protocol: string;
   try {

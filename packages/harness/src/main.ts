@@ -129,8 +129,7 @@ try {
   refuse(err instanceof Error ? err.message : String(err));
 }
 // Every control request goes to the Custodian: over HTTPS at jr2's own name, whose leaf only the
-// Custodian holds (ADR-0059, ADR-0084), or, in a pod that has a Custodian container, to its control
-// socket under /run/jr2, which no process of the domain can bind (ADR-0076).
+// Custodian holds (ADR-0059, ADR-0084).
 let reach: ControlReach;
 try {
   reach = controlReachOf(process.env);

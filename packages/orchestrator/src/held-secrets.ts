@@ -51,8 +51,9 @@ import type { EgressRule } from "./egress.ts";
  * push Secrets (`jr2-git-<hash>`, `jr2-git-push-<hash>`, ADR-0051) — and each pod's own credentials
  * (ADR-0076) on the Fence (ADR-0084): its slot Secret (`jr2-custodian-slot-<i>`), which holds its real
  * tokens, its control Stand-in and its leaf keys, and its Stand-in Secret (`<sandbox>-standins`, the
- * Instance Harness's `jr2-instance-harness-standins`), and the Instance Harness's credentials Secret
- * of before the Fence (`jr2-instance-harness-token`), which `jr2 up` deletes — and the Instance's
+ * Instance Harness's `jr2-instance-harness-standins`), and a pod's credentials Secret of before the
+ * Fence (`jr2-instance-harness-token`, which `jr2 up` deletes, and `<sandbox>-token`, which goes with
+ * its CR), each of which holds a live control token — and the Instance's
  * dial token (`jr2-custodian-dial`). Every Secret of the Custodian starts `jr2-custodian-`. */
 const KIT_SECRETS: readonly string[] = [
   INSTANCE_SECRET,
@@ -73,7 +74,7 @@ const isKitSecret = (name: string): boolean =>
   name === HELD_SECRETS_SECRET ||
   KIT_SECRET_PREFIXES.some((p) => name.startsWith(p)) ||
   // A Sandbox's own Effector key and its Stand-ins: every Sandbox's name starts `ws-`
-  // (`workspaceName`). `-token` is the in-pod path's credentials Secret, until that path goes.
+  // (`workspaceName`). `-token` is a Sandbox's credentials Secret of before the Fence (above).
   (name.startsWith("ws-") && ["-effector", "-standins", "-token"].some((s) => name.endsWith(s)));
 
 /**
@@ -161,10 +162,21 @@ export const SANDBOX_TOKEN_NAME = "JR2_SANDBOX_TOKEN";
  * is secret: the Harness process alone holds it, as `/run/jr2/control/standin`. */
 export const CONTROL_TOKEN_NAME = "JR2_CONTROL_TOKEN";
 
-/** The env names the mechanism owns on a Harness container (ADR-0059): the proxy, the trust
- * bundles, and every `JR2_` name. A held secret may not choose them, and while a held secret exists,
- * `harness.env` may not either — the Custodian cannot chain to a second proxy yet (R11). */
+/** The env names the mechanism owns on a Harness container (ADR-0059, ADR-0084): the trust bundles
+ * of the pod's CA (`fenceComposition`), and every `JR2_` name. Neither a held secret (R2) nor
+ * `harness.env` (R11) may choose them. */
 export const MECHANISM_ENV: readonly string[] = [
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "REQUESTS_CA_BUNDLE",
+  "GIT_SSL_CAINFO",
+];
+
+/** The proxy variables (ADR-0084): a Harness pod's only network is the Fence, and jr2 sets none of
+ * them. Neither a held secret (R2) nor `harness.env` (R11) may choose them: a proxy would send the
+ * Harness's requests to a host that the Custodian carries as one more Tunneled host, never through
+ * its swap, and the Harness removes each one from a confined child's env. */
+export const PROXY_ENV: readonly string[] = [
   "HTTPS_PROXY",
   "https_proxy",
   "HTTP_PROXY",
@@ -172,11 +184,8 @@ export const MECHANISM_ENV: readonly string[] = [
   "NO_PROXY",
   "no_proxy",
   "ALL_PROXY",
+  "all_proxy",
   "NODE_USE_ENV_PROXY",
-  "NODE_EXTRA_CA_CERTS",
-  "SSL_CERT_FILE",
-  "REQUESTS_CA_BUNDLE",
-  "GIT_SSL_CAINFO",
 ];
 
 /** What `jr2 up` placed in one pod; what its composition reads (`held-<pod>.json` in the `jr2-held`
@@ -460,7 +469,7 @@ export function heldSecretsOf(
     if (!NAME.test(e.name)) {
       throw new Error(`${e.at}.name "${e.name}" is not an env var name ([A-Z_][A-Z0-9_]*) (ADR-0059)`);
     }
-    if (e.name.startsWith("JR2_") || MECHANISM_ENV.includes(e.name)) {
+    if (e.name.startsWith("JR2_") || MECHANISM_ENV.includes(e.name) || PROXY_ENV.includes(e.name)) {
       throw new Error(
         `${e.at}.name ${e.name} is the kit's — JR2_ names and the proxy and trust variables belong to the ` +
           "mechanism (ADR-0059). Name the env var your client reads.",
@@ -488,15 +497,20 @@ export function heldSecretsOf(
     });
   }
 
-  if (entries.length > 0) {
-    // R11: the mechanism's names are the mechanism's while it runs.
-    for (const [i, v] of env.entries()) {
-      if (MECHANISM_ENV.includes(v.name)) {
-        throw new Error(
-          `harness.env[${i}] sets ${v.name}, which the Custodian owns while a held secret exists — it cannot ` +
-            "chain to another proxy or trust store yet. Drop the entry; put a private CA in harness.caBundle (ADR-0059).",
-        );
-      }
+  // R11: the mechanism's names are the mechanism's, and no Harness pod has a proxy.
+  for (const [i, v] of env.entries()) {
+    if (MECHANISM_ENV.includes(v.name)) {
+      throw new Error(
+        `harness.env[${i}] sets ${v.name}, which jr2 sets on each Harness pod: the pod trusts the CA whose ` +
+          "leaves the Custodian shows. Drop the entry; put a private CA in harness.caBundle (ADR-0059).",
+      );
+    }
+    if (PROXY_ENV.includes(v.name)) {
+      throw new Error(
+        `harness.env[${i}] sets ${v.name}, and a Harness pod has no proxy: each connection goes through the ` +
+          "Fence to the Custodian, which cannot send it on to another proxy. Drop the entry; give each host the " +
+          "pod calls an Egress entry (ADR-0059, ADR-0084).",
+      );
     }
   }
 

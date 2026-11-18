@@ -7,8 +7,7 @@
 //
 // The Harness reads the surface from the Orchestrator itself, through the Custodian: over HTTPS at
 // jr2's own name, which only the Custodian holds a leaf for (`control-fetch.ts`, ADR-0059,
-// ADR-0084), or to a Custodian container's control socket under `/run/jr2`, where no process of the
-// domain can make a socket (ADR-0076). It sends `Authorization: Bearer <control Stand-in>`:
+// ADR-0084). It sends `Authorization: Bearer <control Stand-in>`:
 // the Harness PROCESS alone holds that Stand-in, read once from its file (`children.ts`), and no
 // process it confines can read it (ADR-0076). The Custodian — a container the Agent executes
 // nothing in — puts the control token in its place on the agent routes and on no other. So no
@@ -158,8 +157,7 @@ export type DeliveryReceipt = {
 /** Where the Menu is: the Custodian's control listener and the control Stand-in — the pod's, the
  * same for each conversation. */
 export type MenuReach = {
-  /** The base of each control request's URL: jr2's own name over HTTPS, or, with a control socket,
-   * a name only (`fetch` names the socket). */
+  /** The base of each control request's URL: jr2's own name over HTTPS. */
   url: string;
   /** The control Stand-in, which the Harness process alone holds (ADR-0076): read from its file. */
   token: string;
@@ -1018,8 +1016,7 @@ class PickNotice extends Error {}
  * failed. Every other failure — a reset, a socket the other side closed, a headers timeout — can
  * come after the request left. */
 const NEVER_LEFT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]);
-// ENOENT: no socket at the control socket's path (the Custodian has not bound it yet).
-const NEVER_LEFT_ON_CONNECT = new Set(["ENETUNREACH", "EHOSTUNREACH", "ENOENT"]);
+const NEVER_LEFT_ON_CONNECT = new Set(["ENETUNREACH", "EHOSTUNREACH"]);
 
 /** True when a transport failure proves the request never left (`NEVER_LEFT`). */
 function neverLeft(err: unknown, depth = 0): boolean {

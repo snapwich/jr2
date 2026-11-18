@@ -276,7 +276,7 @@ test("a Sandbox CR on the Fence: spec.network, no Custodian container, and the S
     secretVolume: "s",
     keyVolume: "k",
     scratchVolume: "x",
-    fence: true,
+    caVolume: "effector-ca",
   });
   const cr = sandboxCr({
     namespace: "jr2-test",
@@ -309,17 +309,6 @@ test("a Sandbox CR on the Fence: spec.network, no Custodian container, and the S
     failureThreshold: 600,
   });
   assert.deepEqual(effector.readinessProbe, { exec: { command }, timeoutSeconds: 2, periodSeconds: 10 });
-  // Off the Fence, the Effector keeps the kubelet's HTTP probe.
-  const plain = sandboxEffectorContainer({
-    image: "img",
-    keys: [],
-    securityContext: {},
-    secretVolume: "s",
-    keyVolume: "k",
-    scratchVolume: "x",
-  });
-  assert.deepEqual(plain.readinessProbe, { httpGet: { path: "/healthz", port: 8082 }, periodSeconds: 1 });
-  assert.equal("startupProbe" in plain, false);
 });
 
 // --- a Harness pod that `jr2 up` makes on the Fence (ADR-0084): the Instance Harness, the check pod
@@ -452,8 +441,6 @@ test("a secret the Custodian holds for the Sandbox Effector: its Stand-in is in 
   const volumes = sandboxEffectorVolumes({
     sandbox: "ws-3",
     manifest: { version: 1, secret: "jr2-effector-p", sources: [], standIns: [{ name: "files-token", binding: name }] },
-    caBundle: false,
-    fence: true,
   }) as Array<{ name: string; projected?: { sources: unknown[] }; configMap?: unknown }>;
   assert.deepEqual(volumes.find((v) => v.name === "effector-secrets")?.projected?.sources, [
     { secret: { name: "ws-3-standins", items: [{ key: heldStandInKey(name), path: "files-token" }] } },

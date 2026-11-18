@@ -202,16 +202,17 @@ and it replaces the Adapter.
   the dial guard (below).
 
 - **The engine choices.** The values and every credential decision are in a Lua filter. Its program is fixed
-  (`program.lua`); each Harness pod's own `custodian.lua` is a generated `HELD` table — names, headers, paths and
-  targets, never a value — that ends with `dofile` of the program, so the program runs after the table it reads. The
-  program reads each value of a pod's table from that pod's folder of values, takes off one trailing `\n` or `\r\n`, and
-  refuses it, with a line that names the secret, when it is missing, empty, or has a byte outside `0x20`–`0x7E`. Then
-  Envoy refuses the slot's new rules, and the Custodian's control process removes the slot, so that its Harness pod
-  reaches nothing until the value is fixed, never what the old rules permitted. Each Stand-in but the fetch Stand-in is
-  a value too: the Custodian reads it from its values, never from the table. Envoy's `credential_injector` is not used:
-  it is alpha, it breaks on a secret file that ends in a newline (1.39.1), and it replaces a whole header, where the
-  swap must see the Stand-in. Values never enter a ConfigMap. Envoy runs with hot restart off, closes a connection on a
-  chain that a change removed after a drain time of 60 seconds (ADR-0084), and flushes its access log twice a second.
+  (`program.lua`, in the Custodian's ConfigMap); each slot's own `custodian.lua` is a generated `HELD` table — names,
+  headers, paths and targets, never a value — that ends with `dofile` of the program, so the program runs after the
+  table it reads. The program reads each value of a pod's table from that pod's folder of values, takes off one trailing
+  `\n` or `\r\n`, and refuses it, with a line that names the secret, when it is missing, empty, or has a byte outside
+  `0x20`–`0x7E`. Then Envoy refuses the slot's new rules, and the Custodian's control process removes the slot, so that
+  its Harness pod reaches nothing until the value is fixed, never what the old rules permitted. Each Stand-in but the
+  fetch Stand-in is a value too: the Custodian reads it from its values, never from the table. Envoy's
+  `credential_injector` is not used: it is alpha, it breaks on a secret file that ends in a newline (1.39.1), and it
+  replaces a whole header, where the swap must see the Stand-in. Values never enter a ConfigMap. Envoy runs with hot
+  restart off, closes a connection on a chain that a change removed after a drain time of 60 seconds (ADR-0084), and
+  flushes its access log twice a second.
 - **The log is a contract.** One line per decision on stdout, with the prefix `jr2.custodian` and `key=value` pairs:
   `ready version=… secrets=… hosts=N` (when the control process sees a slot's rules active in Envoy, at that version;
   `removed` when a slot goes, `refuse … reason=rules` or `reason=envoy` when its rules cannot be made or Envoy refuses
@@ -373,14 +374,14 @@ and it replaces the Adapter.
   alike. `jr2 up` declares, and the pod's maker renders: the Orchestrator renders a Sandbox's rules at provision, from
   the manifest it reads, and writes them to the Custodian (ADR-0084); `jr2 up` renders those of the Instance Harness and
   of each check pod. `jr2-held` (always) holds `held-<pod>.json` for each pod (what it holds: names, bindings, headers,
-  never a value) and `program.lua` once per Instance, so it grows by one manifest per Workspace, and it holds no
-  rendered file. The reason: every Kubernetes object stops at 1 MiB, and client-side apply's annotation at 256 KiB; one
-  copy of Envoy's files per pod in `jr2-held` passed that limit at nine Workspaces, and a dedupe or a server-side apply
-  only moves the ceiling. `jr2-held-secrets-<pod>` holds one pod's literal values, labeled `jr2.dev/held-pod`, and
-  `jr2 up` deletes the one a pod no longer needs. No container of a Harness pod mounts it. The Orchestrator mounts
-  `jr2-held` at `/etc/jr2/held` and reads the manifest of the Workspace it provisions, per provision — the `jr2-images`
-  pattern ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)); a Workspace `jr2 up` never walked has none, and
-  its provision is refused, naming `jr2 up`. A pod key is the workflow and the Workspace's placement route: the `actors`
+  never a value), so it grows by one manifest per Workspace, and it holds no rendered file. The reason: every Kubernetes
+  object stops at 1 MiB, and client-side apply's annotation at 256 KiB; one copy of Envoy's files per pod in `jr2-held`
+  passed that limit at nine Workspaces, and a dedupe or a server-side apply only moves the ceiling.
+  `jr2-held-secrets-<pod>` holds one pod's literal values, labeled `jr2.dev/held-pod`, and `jr2 up` deletes the one a
+  pod no longer needs. No container of a Harness pod mounts it. The Orchestrator mounts `jr2-held` at `/etc/jr2/held`
+  and reads the manifest of the Workspace it provisions, per provision — the `jr2-images` pattern
+  ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)); a Workspace `jr2 up` never walked has none, and its
+  provision is refused, naming `jr2 up`. A pod key is the workflow and the Workspace's placement route: the `actors`
   slot keys down to its `workspace()`, a wrapper's body skipped, where a plain Machine invoked inline adds xstate's
   generated invoke src for that hop (`xstate.invoke.<index>.<state id>`), held so it can never equal a slot key.
   `jr2 up` computes it from the state node, and the provision reads it off the live actor tree, so both derive one key.

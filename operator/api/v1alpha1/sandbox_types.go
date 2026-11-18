@@ -35,8 +35,9 @@ type SandboxSpec struct {
 	// +optional
 	Args []string `json:"args,omitempty"`
 
-	// Port is the port the primary container serves on; surfaced in
-	// status.endpoint.
+	// Port is the port the primary container serves on: the one the
+	// Orchestrator dials at the Pod's slot address, and that the default
+	// readiness probe asks.
 	// +optional
 	// +kubebuilder:default=8080
 	// +kubebuilder:validation:Minimum=1
@@ -56,10 +57,11 @@ type SandboxSpec struct {
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 
 	// ReadinessProbe overrides the primary container's readiness probe. When
-	// unset the operator injects a probe of the Harness's own /healthz on Port
-	// (ADR-0063) so phase Ready means "the Harness accepts connections", not
-	// merely "the container started". When set, the operator adds no startup
-	// probe either.
+	// unset the operator injects `effector healthcheck` of the Harness's own
+	// /healthz on Port, run inside the container (ADR-0063, ADR-0084), so phase
+	// Ready means "the Harness accepts connections", not merely "the container
+	// started", and a startup probe of the same command. When set, the operator
+	// adds no startup probe either.
 	// +optional
 	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
 
@@ -71,7 +73,8 @@ type SandboxSpec struct {
 	// kubelet reaches a pod there. The Sandbox is not Ready until Multus
 	// reports the attachment as the Pod's default network. Both values are the
 	// Orchestrator's; the operator checks neither. Unset leaves the Pod on the
-	// cluster's network.
+	// cluster's network, where nothing reaches it: the operator makes no
+	// Service for a Sandbox.
 	// +optional
 	Network *SandboxFence `json:"network,omitempty"`
 
@@ -291,11 +294,6 @@ type SandboxStatus struct {
 	// +optional
 	Phase SandboxPhase `json:"phase,omitempty"`
 
-	// Endpoint is the in-cluster Service DNS the Orchestrator uses to reach the
-	// Harness, e.g. http://<name>.<ns>.svc:8080.
-	// +optional
-	Endpoint string `json:"endpoint,omitempty"`
-
 	// PodRef references the Pod backing this Sandbox.
 	// +optional
 	PodRef *corev1.LocalObjectReference `json:"podRef,omitempty"`
@@ -307,10 +305,6 @@ type SandboxStatus struct {
 	// created again. Clients read phase Lost, not a UID comparison.
 	// +optional
 	PodUID types.UID `json:"podUID,omitempty"`
-
-	// ServiceRef references the Service fronting this Sandbox.
-	// +optional
-	ServiceRef *corev1.LocalObjectReference `json:"serviceRef,omitempty"`
 
 	// Node is the node the Pod was scheduled onto, once it was — the node
 	// whose Repo caches this Sandbox mounts, and so the key into each named
@@ -497,7 +491,6 @@ type SandboxLFSStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.endpoint`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // Sandbox is the Schema for the sandboxes API

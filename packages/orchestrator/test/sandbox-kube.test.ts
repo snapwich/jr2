@@ -1,7 +1,7 @@
 // kubeSandbox — the CR MAPPING and the waits, against the fake API server (_fake-kube.ts) with
 // the operator played by the test (the cluster itself is the kind e2e tier's job). What matters
 // here: the CR carries the run labels and names its Repos by cache key (ADR-0051), Ready gates
-// provisioning on WATCH EVENTS (ADR-0063) and returns the CR's own svc-DNS endpoint, the attach is
+// provisioning on WATCH EVENTS (ADR-0063) and returns its slot's address (ADR-0084), the attach is
 // the Harness's `POST /attach` with the Harness bearer (ADR-0058, ADR-0063), every Repo's resource
 // is ensured before the CR names it and the operator's Ready verdict on it is read (a clone that
 // failed fails the provision by name; a fetch that failed makes the attach stale), the credentials
@@ -18,7 +18,6 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { custodianBootstrap, custodianScript } from "../src/custodian.ts";
 import { EMPTY_HELD, heldStandIn, leafStem, workspaceHeldPod, type HeldManifest } from "../src/held-secrets.ts";
 import { imageContextDigest } from "../src/images.ts";
 import { dialFetch } from "../src/dial.ts";
@@ -34,6 +33,10 @@ import {
   type KubeSandboxOptions,
 } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
+import type { CustodianClient } from "../src/custodian-client.ts";
+import { FENCE_PLACEHOLDERS, FENCE_SEGMENT } from "../src/egress.ts";
+import { issueCa } from "../src/pki.ts";
+import { readSlotSecret } from "../src/custodian-slot.ts";
 import {
   controlStandIn,
   controlToken,
@@ -42,12 +45,7 @@ import {
   harnessTokenDigest,
   sandboxToken,
 } from "../src/tokens.ts";
-import {
-  effectorManifestKey,
-  sandboxEffectorKeySecret,
-  sandboxEffectorObjectsOf,
-  sandboxEffectorService,
-} from "../src/sandbox-effector.ts";
+import { effectorManifestKey, sandboxEffectorKeySecret, sandboxEffectorObjectsOf } from "../src/sandbox-effector.ts";
 import { GIT_PUSH_MANIFEST_KEY, gitPushSecretName } from "../src/git-push.ts";
 import type { RepoResources } from "../src/repos.ts";
 import type { AttachRequest } from "../src/wire.ts";
@@ -65,7 +63,9 @@ import { waitFor } from "./_fixtures.ts";
 /** The operator's word that the pod has a node (ADR-0063, ADR-0064). */
 const SCHEDULED = { type: "Scheduled", status: "True", reason: "Scheduled" };
 /** The status the operator publishes once a Sandbox is serving. */
-const READY = { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-1" };
+const READY = { phase: "Ready", podUID: "pod-uid-1" };
+/** The Harness's address of the first Sandbox a test provisions: slot 3 of range 2 (ADR-0084). */
+const SLOT_ENDPOINT = "http://198.19.1.5:8080";
 /** A pod with a node that is not serving yet — what the Ready budget measures. */
 const PENDING = { phase: "Pending" };
 
@@ -130,12 +130,30 @@ function cluster(script: object[] = [READY], harness?: (req: AttachRequest, auth
     const bases = Object.fromEntries(body.slots.map((s) => [s.slot, s.ref ?? "main"]));
     return Response.json({ repos, bases });
   }) as typeof fetch;
-  return { api, calls: api.writes, attaches, exec: { client, watch, harnessFetch } };
+  return { api, calls: api.writes, attaches, exec: { client, watch, harnessFetch, fence: FENCE } };
 }
 
-/** Every provision writes more than its CR — its token Secret after it (the Custodian is
- * unconditional — ADR-0013; owned from birth — ADR-0001), so "the CR" is the apply of a Sandbox,
- * never simply a write. */
+/** The Instance's Custodian, played (ADR-0084): each slot's rules are live at once. Each Sandbox is
+ * on the Fence; `sandbox-kube-fence.test.ts` pins what the Fence adds. */
+const LIVE: CustodianClient = {
+  dialToken: "dial",
+  pods: async () => [{ pod: "c-1", address: "10.0.0.11", node: "w1", ready: true }],
+  podOn: async () => "10.0.0.11",
+  reports: async () => [{ pod: "c-1", status: { active: null, present: false } }],
+  makeLive: async () => "v1",
+};
+const FENCE_RANGES = { segment: FENCE_SEGMENT, placeholders: FENCE_PLACEHOLDERS };
+const UPSTREAM = issueCa("upstream roots").cert;
+const FENCE = {
+  range: 2,
+  ranges: FENCE_RANGES,
+  custodian: LIVE,
+  upstream: async () => UPSTREAM,
+  caBundle: async () => undefined,
+};
+
+/** Every provision writes more than its CR — its Fence objects after it (ADR-0084; owned from birth
+ * — ADR-0001), so "the CR" is the apply of a Sandbox, never simply a write. */
 const applies = (calls: FakeCall[], plural: string): any[] =>
   calls
     .filter((c) => c.contentType === "application/apply-patch+yaml" && c.target.startsWith(`${plural}/`))
@@ -215,8 +233,8 @@ async function mkHeld(
 
 const NOTHING_HELD = await mkHeld(EMPTY_HELD);
 
-/** Everything a provision needs beyond the images map: the Custodian is always composed, so its
- * token Secret (and therefore a signing key) and its manifest are not optional — and every
+/** Everything a provision needs beyond the images map: each Sandbox is on the Fence, so its slot
+ * Secret (and therefore a signing key) and its manifest are not optional — and every
  * provision names Repos whose resources it must ensure, so neither is the Repo-resource port. */
 const provisionable = {
   signingKey: Buffer.from("k"),
@@ -268,7 +286,7 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     ...withApp,
     path: "review/item #7/ws",
   });
-  assert.equal(endpoint, "http://sb-1.default.svc:8080");
+  assert.equal(endpoint, SLOT_ENDPOINT);
   // Waited on WATCH EVENTS (ADR-0063): the Sandbox was never read by name, and no Pod ever was.
   assert.deepEqual(
     api.calls.filter((c) => c.method === "GET" && c.target !== "sandboxes"),
@@ -316,26 +334,17 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     // The Harness's TMPDIR, the whole output of a long bash call (ADR-0076): the Harness
     // container's alone, which its confined processes read and do not write.
     { name: "output", mountPath: "/run/jr2/output" },
+    // The trust files of the pod's CA (ADR-0059, ADR-0084): the Custodian ends TLS at jr2's own
+    // name with a leaf of it, so each Harness pod trusts it, whether or not it holds a secret.
+    { name: "ca", mountPath: "/etc/jr2/ca", readOnly: true },
     // Its Stand-ins, as files no confined child can read (ADR-0076, C1).
     { name: "harness-credentials", mountPath: "/run/jr2", readOnly: true },
-    // The Custodian's control socket, which it connects to and cannot write (ADR-0076).
-    { name: "custodian-socket", mountPath: "/run/jr2/custodian", readOnly: true },
   ]);
-  // Then the Custodian's own two (ADR-0059): what it holds and how it is told to hold it — and the
-  // Harness's Stand-ins. With nothing held and no CA bundle, the Harness container mounts no trust.
+  // Then the trust and the Harness's Stand-ins. The Custodian is outside the pod (ADR-0084): no
+  // volume of it here.
   assert.deepEqual(
     applied.spec.volumes.map((v: { name: string }) => v.name),
-    [
-      "work",
-      "runtime",
-      "conversations",
-      "shell",
-      "output",
-      "custodian-values",
-      "custodian-config",
-      "custodian-socket",
-      "harness-credentials",
-    ],
+    ["work", "runtime", "conversations", "shell", "output", "ca", "harness-credentials"],
   );
   assert.deepEqual(applied.spec.volumes.slice(0, 5), [
     { name: "work", emptyDir: {} },
@@ -365,7 +374,7 @@ test("a Sandbox's Harness persists its conversations to an emptyDir no other con
     ),
   );
   // CR-level volumeMounts are the Harness container's (the operator's contract); every other
-  // container — the Custodian, the User Container, the preflight — mounts it nowhere.
+  // container — the User Container, the preflight — mounts it nowhere.
   assert.ok(applied.spec.volumeMounts.some((m: { name: string }) => m.name === "conversations"));
   for (const c of [...applied.spec.sidecars, ...applied.spec.initContainers]) {
     assert.ok(
@@ -476,7 +485,7 @@ test("a registry ref is deployed-never-built: it passes through verbatim, in eit
   // The preflight still runs against it — that is the whole point: a ref's first appearance is a
   // provision, so this is the only moment the floor can be proven at all.
   assert.equal(applied.spec.initContainers[0].image, "ghcr.io/acme/toolchain:2024-11");
-  assert.equal(applied.spec.sidecars[1].image, "ghcr.io/acme/sshd:1");
+  assert.equal(applied.spec.sidecars[0].image, "ghcr.io/acme/sshd:1");
 });
 
 test("the User Container is the zero-contract seat: own entrypoint, /work, and NOTHING else", async () => {
@@ -513,7 +522,7 @@ test("the User Container is the zero-contract seat: own entrypoint, /work, and N
   // And no securityContext, which is how the operator reads the exemption: root is allowed here.
   assert.ok(!("securityContext" in user), "the seat jr2 does not own is not hardened by jr2");
 
-  // Absent → two containers, exactly as before the seat existed.
+  // Absent → the Harness container alone.
   const { exec: e2, calls: c2 } = cluster();
   await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...e2 }).provision({
     name: "sb-nouser",
@@ -523,7 +532,7 @@ test("the User Container is the zero-contract seat: own entrypoint, /work, and N
   });
   assert.deepEqual(
     crOf(c2).spec.sidecars.map((s: { name: string }) => s.name),
-    ["custodian"],
+    [],
     "no default User Container — the seat's identity is what jr2 does not own",
   );
 });
@@ -824,7 +833,7 @@ test("a Harness that keeps dying before Ready fails the provision BY NAME, with 
   const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...once.exec });
   assert.equal(
     (await port2.provision({ name: "sb-once", runId: "r", workflow: "w", ...withApp })).endpoint,
-    READY.endpoint,
+    SLOT_ENDPOINT,
   );
 
   // And a memory kill says so, with the fix.
@@ -899,7 +908,7 @@ test("a brought image that runs as root fails the provision at once, BY NAME, wi
   const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...other.exec });
   assert.equal(
     (await port2.provision({ name: "sb-2", runId: "r", workflow: "w", ...withApp })).endpoint,
-    READY.endpoint,
+    SLOT_ENDPOINT,
   );
 });
 
@@ -971,7 +980,7 @@ test("place(): a Sandbox with no node waits with NO deadline, says each reason o
   await placing;
   const ready = port.provision("sb-wait");
   setTimeout(() => api.setStatus("sandboxes", "sb-wait", READY), 50);
-  assert.deepEqual(await ready, { endpoint: READY.endpoint });
+  assert.deepEqual(await ready, { endpoint: SLOT_ENDPOINT });
 });
 
 test("place(): a Sandbox not yet looked at by the scheduler is no reason — only a False Scheduled is", async () => {
@@ -1116,10 +1125,13 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
     [
       "FLUE_LOG",
       "JR2_CUSTODIAN_URL",
-      // Where the control socket is (ADR-0076): a path, never a credential.
-      "JR2_CUSTODIAN_SOCKET",
       // Where the control Stand-in's file is (C1): never a Stand-in in env.
       "JR2_CONTROL_STANDIN_FILE",
+      // The trust of the pod's CA (ADR-0059, ADR-0084): the Custodian's leaves chain to it.
+      "NODE_EXTRA_CA_CERTS",
+      "SSL_CERT_FILE",
+      "REQUESTS_CA_BUNDLE",
+      "GIT_SSL_CAINFO",
       // The CPU hints (ADR-0060): mechanism, so after the instance's own.
       "JR2_CPUS",
       "OMP_NUM_THREADS",
@@ -1196,8 +1208,8 @@ test("each Sandbox's Harness gets the DIGEST of its own placement's bearer, last
   }
 });
 
-test("the Custodian is UNCONDITIONAL and is the pod's only credential holder (ADR-0013, ADR-0059)", async () => {
-  const { api, exec, calls } = cluster();
+test("the pod holds no credential: no Custodian container, the control Stand-in as a file, no token in env (ADR-0013, ADR-0059, ADR-0084)", async () => {
+  const { exec, calls } = cluster();
   const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
@@ -1207,91 +1219,22 @@ test("the Custodian is UNCONDITIONAL and is the pod's only credential holder (AD
   await port.provision({ name: "sb-env2", runId: "r", workflow: "w", ...withApp });
 
   const applied = crOf(calls);
-  // No User Container was named — so this list is exactly the Custodian.
-  assert.deepEqual(
-    applied.spec.sidecars.map((s: { name: string; image: string }) => [s.name, s.image]),
-    [["custodian", "envoy:c00"]],
-  );
-  const custodian = applied.spec.sidecars[0];
-  // The token is a FILE in the Custodian, and nothing of it is in any env (ADR-0013 asymmetry):
-  // the Custodian's env is its Sandbox's name and nothing else.
-  assert.equal(custodian.envFrom, undefined);
-  assert.deepEqual(custodian.env, [{ name: "JR2_SANDBOX", value: "sb-env2" }]);
-  const values = applied.spec.volumes.find((v: { name: string }) => v.name === "custodian-values");
-  assert.deepEqual(values.projected.sources, [
-    {
-      secret: {
-        name: "sb-env2-token",
-        items: [
-          { key: "control-token", path: "JR2_CONTROL_TOKEN" },
-          { key: "control-standin", path: "JR2_CONTROL_TOKEN.standin" },
-          { key: "token", path: "JR2_SANDBOX_TOKEN" },
-        ],
-      },
-    },
-  ]);
+  // No User Container was named, and the Custodian is outside the pod: no sidecar at all.
+  assert.deepEqual(applied.spec.sidecars, []);
   // The Harness holds the control Stand-in as a file, never a token, and no Stand-in in env (C1).
-  assert.ok(!applied.spec.env.some((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN"));
+  assert.ok(!applied.spec.env.some((e: { name: string }) => /TOKEN$/.test(e.name)));
   const credentials = applied.spec.volumes.find((v: { name: string }) => v.name === "harness-credentials");
   assert.deepEqual(credentials.projected.sources, [
-    { secret: { name: "sb-env2-token", items: [{ key: "control-standin", path: "control/standin" }] } },
+    { secret: { name: "sb-env2-standins", items: [{ key: "control-standin", path: "control/standin" }] } },
   ]);
-  // Nothing of the Custodian's but the folder of its control socket, which the Harness connects to
-  // and cannot write (ADR-0076).
-  assert.deepEqual(
-    applied.spec.volumeMounts.filter((m: { name: string }) => m.name.startsWith("custodian-")),
-    [{ name: "custodian-socket", mountPath: "/run/jr2/custodian", readOnly: true }],
-    "the Harness container mounts nothing else of the Custodian's",
-  );
-  const [secret] = applies(calls, "secrets");
-  assert.equal(secret.metadata.name, "sb-env2-token");
-  // `data`, not `stringData`: a server-side apply owns the fields it names (ADR-0063). The fetch
-  // token, the control token and the control Stand-in, each a signed name (ADR-0076, C1, C2).
-  const key = provisionable.signingKey;
-  const decoded = (k: string) => Buffer.from(secret.data[k], "base64").toString();
-  assert.deepEqual(Object.keys(secret.data).sort(), ["control-standin", "control-token", "token"]);
-  assert.equal(decoded("token"), sandboxToken(key, "sb-env2"));
-  assert.equal(decoded("control-token"), controlToken(key, "sb-env2"));
-  assert.equal(decoded("control-standin"), controlStandIn(key, "sb-env2"));
-  assert.match(decoded("control-standin"), /^[A-Za-z0-9_-]{43}$/, "secret: 43 base64url characters");
-  assert.equal(secret.stringData, undefined);
-  // …and it is the CR's child from birth, by the uid the CR's apply answered with (ADR-0001).
-  assert.deepEqual(secret.metadata.ownerReferences, [
-    {
-      apiVersion: "core.jr2.dev/v1alpha1",
-      kind: "Sandbox",
-      name: "sb-env2",
-      uid: api.object("sandboxes", "sb-env2").metadata.uid,
-      controller: true,
-      blockOwnerDeletion: false,
-    },
-  ]);
+  // The Stand-ins' Secret holds the control Stand-in and no token; the tokens are in the slot
+  // Secret, which no container of the pod mounts (ADR-0084).
+  const standIns = applies(calls, "secrets").find((x) => x.metadata.name === "sb-env2-standins");
+  assert.deepEqual(Object.keys(standIns.data ?? standIns.stringData).sort(), ["control-standin"]);
+  assert.ok(!JSON.stringify(applied).includes("jr2-custodian-slot-"), "no container mounts the slot Secret");
 });
 
-test("the token Secret is written AFTER the CR, owned from birth, and a re-apply writes the same (ADR-0001)", async () => {
-  const { api, exec, calls } = cluster();
-  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
-  await port.provision({ name: "sb-own", runId: "r", workflow: "w", ...withApp });
-
-  const writes = calls.map((c) => c.target);
-  const cr = writes.indexOf("sandboxes/sb-own");
-  const secret = writes.indexOf("secrets/sb-own-token");
-  assert.ok(cr >= 0 && secret > cr, `the CR first, then its Secret: ${writes.join(", ")}`);
-  assert.equal(
-    calls.filter((c) => c.target.startsWith("secrets/") && c.contentType !== "application/apply-patch+yaml").length,
-    0,
-    "one write makes the Secret whole: no owner patched on after",
-  );
-
-  // An Orchestrator restart re-provisions by name: the CR keeps its uid, so the Secret re-applies
-  // the SAME token and the SAME owner — a no-op for the Custodian holding it.
-  await port.provision({ name: "sb-own", runId: "r", workflow: "w", ...withApp });
-  const [first, again] = applies(calls, "secrets");
-  assert.deepEqual(again, first);
-  assert.equal(first.metadata.ownerReferences[0].uid, api.object("sandboxes", "sb-own").metadata.uid);
-});
-
-test("a CR apply that fails writes no token Secret (ADR-0001)", async () => {
+test("a CR apply that fails writes no Secret (ADR-0001)", async () => {
   const { api, exec, calls } = cluster();
   api.refuse((call) =>
     call.target === "sandboxes/sb-refused" ? Response.json({ message: "no" }, { status: 500 }) : undefined,
@@ -1299,71 +1242,6 @@ test("a CR apply that fails writes no token Secret (ADR-0001)", async () => {
   const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   await assert.rejects(port.provision({ name: "sb-refused", runId: "r", workflow: "w", ...withApp }));
   assert.deepEqual(applies(calls, "secrets"), [], "no Secret without the CR that owns it");
-});
-
-test("a Sandbox's Custodian files are rendered at provision, AFTER the CR, owned by it, and never hold a value (ADR-0059)", async () => {
-  const manifest: HeldManifest = {
-    version: 1,
-    egress: [],
-    secrets: [
-      {
-        name: "JIRA_TOKEN",
-        source: { kind: "literal" },
-        hosts: [{ host: "jira.example.com", port: 443, leaf: leafStem("jira.example.com", 443) }],
-        headers: ["authorization"],
-      },
-    ],
-  };
-  const { api, exec, calls } = cluster();
-  const port = kubeSandbox({
-    imagesPath: await mkImages(REFS),
-    ...provisionable,
-    heldDir: await mkHeld(manifest),
-    namespace: "jr2-dev",
-    ...exec,
-  });
-  await port.provision({ name: "sb-files", runId: "r", workflow: "w", ...withApp });
-
-  const writes = calls.map((c) => c.target);
-  const cr = writes.indexOf("sandboxes/sb-files");
-  const config = writes.indexOf("configmaps/sb-files-custodian");
-  assert.ok(cr >= 0 && config > cr, `the CR first, then its Custodian ConfigMap: ${writes.join(", ")}`);
-  const [cm] = applies(calls, "configmaps");
-  assert.equal(cm.metadata.name, "sb-files-custodian");
-  assert.equal(cm.metadata.namespace, "jr2-dev");
-  assert.deepEqual(cm.metadata.labels, { "jr2.dev/sandbox": "sb-files" });
-  // The CR's child from birth, like its token: it goes when the pod goes (ADR-0001).
-  assert.deepEqual(cm.metadata.ownerReferences, [
-    {
-      apiVersion: "core.jr2.dev/v1alpha1",
-      kind: "Sandbox",
-      name: "sb-files",
-      uid: api.object("sandboxes", "sb-files").metadata.uid,
-      controller: true,
-      blockOwnerDeletion: false,
-    },
-  ]);
-  // Envoy's bootstrap from the pod's manifest and the Orchestrator's in-namespace address; the
-  // script is the HELD table ending in the program's dofile.
-  assert.deepEqual(Object.keys(cm.data).sort(), ["custodian.lua", "envoy.json"]);
-  assert.deepEqual(
-    JSON.parse(cm.data["envoy.json"]),
-    custodianBootstrap(manifest, { host: "jr2-orchestrator.jr2-dev.svc", port: 4000 }),
-  );
-  assert.equal(cm.data["custodian.lua"], custodianScript(manifest, { fetch: true }));
-  assert.match(cm.data["custodian.lua"], /\ndofile\("\/etc\/jr2\/custodian\/config\/program\.lua"\)\n$/);
-  // Names, hosts, headers — never a value, never a secret Stand-in: the public fetch Stand-in alone.
-  const text = JSON.stringify(cm.data);
-  assert.ok(!/jr2-held-(?!JR2_SANDBOX_TOKEN)/.test(text), "no secret Stand-in in a ConfigMap");
-  const secretData = applies(calls, "secrets")[0].data as Record<string, string>;
-  for (const value of Object.values(secretData)) {
-    assert.ok(!text.includes(Buffer.from(value, "base64").toString()), "no token and no Stand-in value");
-  }
-  // The held secret's Stand-in is minted into the pod's Secret: secret, and its own pod's (C1b).
-  const held = Buffer.from(secretData["standin-JIRA_TOKEN"]!, "base64").toString();
-  assert.equal(held, heldStandIn(provisionable.signingKey, "sb-files", "JIRA_TOKEN"));
-  assert.match(held, /^jr2-held-JIRA_TOKEN\.[A-Za-z0-9_-]{43}$/);
-  assert.ok(!held.includes("sk-ant-oat"));
 });
 
 test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its image, its mounts, and a key the CR owns (ADR-0068)", async () => {
@@ -1383,7 +1261,6 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
     applies(bare.calls, "secrets").some((s) => s.metadata.name === "sb-none-effector"),
     false,
   );
-  assert.deepEqual(applies(bare.calls, "services"), [], "no Effector Service without an Effector");
 
   const heldDir = await mkHeld(EMPTY_HELD);
   const plan = {
@@ -1410,7 +1287,7 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
     ...placed.exec,
     credentials: [{ match: "*", token: "T" }],
   }).provision({
-    name: "sb-fx",
+    name: "sb-eff",
     runId: "r",
     workflow: "w",
     effector: "registry.example/tools:1",
@@ -1436,7 +1313,7 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   const volumes = Object.fromEntries(spec.volumes.map((v: { name: string }) => [v.name, v]));
   assert.deepEqual(volumes["effector-secrets"].projected.sources, manifest.sources);
   assert.deepEqual(volumes["effector-own"].projected.sources, [
-    { secret: { name: "sb-fx-effector", items: [{ key: "key", path: "key" }] } },
+    { secret: { name: "sb-eff-effector", items: [{ key: "key", path: "key" }] } },
     { secret: { name: manifest.secret, items: [{ key: "effector.json", path: "effector.json" }] } },
   ]);
   // The Harness container mounts none of them.
@@ -1454,18 +1331,12 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   // effector.json says the Workspace holds a credentialed command.
   assert.match(sandboxEffectorObjectsOf(plan).secret.stringData["effector.json"]!, /"commands": true/);
   // The key: derived from the Sandbox's name, in a Secret the CR owns.
-  const key = applies(placed.calls, "secrets").find((s) => s.metadata.name === "sb-fx-effector");
-  assert.equal(Buffer.from(key.data.key, "base64").toString(), effectorKey(Buffer.from("k"), "sb-fx"));
-  assert.equal(key.metadata.ownerReferences[0].name, "sb-fx");
-  // How the Orchestrator reaches it: a headless Service the CR owns, whose name resolves to the
-  // pod's own address (the one a request is signed for), publishing it while not ready.
-  const [svc] = applies(placed.calls, "services");
-  assert.equal(svc.metadata.name, sandboxEffectorService("sb-fx"));
-  assert.equal(svc.metadata.ownerReferences[0].name, "sb-fx");
-  assert.equal(svc.spec.clusterIP, "None");
-  assert.equal(svc.spec.publishNotReadyAddresses, true);
-  assert.deepEqual(svc.spec.selector, { "sandbox.jr2.dev/name": "sb-fx" });
-  assert.deepEqual(svc.spec.ports, [{ name: "effector", port: 8082, targetPort: 8082 }]);
+  const key = applies(placed.calls, "secrets").find((s) => s.metadata.name === "sb-eff-effector");
+  assert.equal(Buffer.from(key.data.key, "base64").toString(), effectorKey(Buffer.from("k"), "sb-eff"));
+  assert.equal(key.metadata.ownerReferences[0].name, "sb-eff");
+  // How the Orchestrator reaches it: at its slot's address, through the Custodian (ADR-0084). No
+  // Service: the pod has no address on the cluster's network.
+  assert.deepEqual(applies(placed.calls, "services"), []);
   // The default image is the Sandbox Image, in the Harness's seat.
   const dflt = cluster();
   await kubeSandbox({
@@ -1475,7 +1346,7 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
     ...dflt.exec,
     credentials: [{ match: "*", token: "T" }],
   }).provision({
-    name: "sb-fx2",
+    name: "sb-eff2",
     runId: "r",
     workflow: "w",
     ...withApp,
@@ -1616,15 +1487,15 @@ test("a CR apply that fails writes no Custodian ConfigMap (ADR-0001)", async () 
   assert.deepEqual(applies(calls, "configmaps"), [], "no ConfigMap without the CR that owns it");
 });
 
-test("a token Secret that fails after its CR fails the provision, and the CR is its caller's to delete (ADR-0001)", async () => {
+test("a slot Secret that fails after its CR fails the provision, and the CR is its caller's to delete (ADR-0001)", async () => {
   const { api, exec } = cluster([]); // no operator: the CR is deleted before it would answer
   api.refuse((call) =>
-    call.target === "secrets/sb-orphan-token" ? Response.json({ message: "no" }, { status: 500 }) : undefined,
+    call.target === "secrets/jr2-custodian-slot-3" ? Response.json({ message: "no" }, { status: 500 }) : undefined,
   );
   const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   await assert.rejects(port.provision({ name: "sb-orphan", runId: "r", workflow: "w", ...withApp }));
-  // The CR exists with no token for its Custodian. The provision rejected, so the Workspace deletes
-  // it — workspace.ts destroys a Sandbox whose place failed (workspace.test.ts pins that) — and the
+  // The CR exists with no rules for its slot. The provision rejected, so the Workspace deletes it —
+  // workspace.ts destroys a Sandbox whose place failed (workspace.test.ts pins that) — and the
   // delete takes it whole.
   assert.ok(api.object("sandboxes", "sb-orphan"));
   await port.destroy("sb-orphan");
@@ -1648,7 +1519,7 @@ test("a Workspace's Custodian holds its own pod's Held secrets, found by its wor
     { workflow: "w", route: [] },
     { workflow: "w", route: ["review"], manifest: jira },
   ]);
-  const envOf = async (route: string[]) => {
+  const provisioned = async (route: string[]) => {
     const { exec, calls } = cluster();
     await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, heldDir, ...exec }).provision({
       name: "sb",
@@ -1660,42 +1531,29 @@ test("a Workspace's Custodian holds its own pod's Held secrets, found by its wor
     const cr = crOf(calls);
     return {
       env: cr.spec.env.map((e: { name: string }) => e.name) as string[],
-      config: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-config").projected.sources,
-      files: applies(calls, "configmaps")[0].data,
-      values: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-values").projected.sources,
+      slot: readSlotSecret(applies(calls, "secrets").find((x) => x.metadata.name === "jr2-custodian-slot-3").data).spec,
       standIns: JSON.stringify(cr.spec.volumes.find((v: { name: string }) => v.name === "harness-credentials")),
     };
   };
-  const review = await envOf(["review"]);
+  const review = await provisioned(["review"]);
   const pod = workspaceHeldPod({ workflow: "w", route: ["review"] });
   assert.ok(
     review.standIns.includes("standins/JIRA_TOKEN"),
     "the review Workspace's pod holds what its workspace() lists",
   );
-  // Its Custodian's own two files, rendered at provision from THIS pod's manifest, beside the one
-  // program from `jr2-held`.
-  assert.deepEqual(review.config, [
-    {
-      configMap: {
-        name: "sb-custodian",
-        items: [
-          { key: "envoy.json", path: "envoy.json" },
-          { key: "custodian.lua", path: "custodian.lua" },
-        ],
-      },
-    },
-    { configMap: { name: "jr2-held", items: [{ key: "program.lua", path: "program.lua" }] } },
-  ]);
-  assert.equal(review.files["custodian.lua"], custodianScript(jira, { fetch: true }));
-  assert.deepEqual(review.values.at(-1), {
-    secret: { name: `jr2-held-secrets-${pod}`, items: [{ key: "JIRA_TOKEN", path: "JIRA_TOKEN" }] },
-  });
-  const root = await envOf([]);
+  // The Custodian reads the value from THIS pod's literals (ADR-0084): the slot names that pod.
+  assert.equal(review.slot.heldPod, pod, "the slot names the pod whose literals it reads");
+  assert.deepEqual(
+    review.slot.manifest.secrets.map((x) => x.name),
+    ["JIRA_TOKEN"],
+  );
+  const root = await provisioned([]);
   assert.ok(!root.standIns.includes("JIRA_TOKEN"), "the root Workspace's pod names nothing, and holds nothing");
+  assert.deepEqual(root.slot.manifest.secrets, []);
   assert.ok(!root.env.includes("HTTPS_PROXY"));
 });
 
-test("a held secret: the Harness gets Stand-in files and the proxy, the Custodian alone mounts values and leaves (ADR-0059, ADR-0076)", async () => {
+test("a held secret: the Harness gets Stand-in files and the trust of its CA, and no container mounts a value or a leaf (ADR-0059, ADR-0076, ADR-0084)", async () => {
   const manifest: HeldManifest = {
     version: 1,
     egress: [],
@@ -1741,15 +1599,9 @@ test("a held secret: the Harness gets Stand-in files and the proxy, the Custodia
       .map((e: { name: string; value?: string }) => [e.name, e.value]),
     [
       ["FLUE_LOG", "debug"],
-      ["JR2_CUSTODIAN_URL", "http://127.0.0.1:8081"],
-      ["JR2_CUSTODIAN_SOCKET", "/run/jr2/custodian/control.sock"],
+      ["JR2_CUSTODIAN_URL", "https://custodian.jr2.internal"],
       ["JR2_CONTROL_STANDIN_FILE", "/run/jr2/control/standin"],
       ["JR2_GRANTED_SECRETS", "OPENAI_API_KEY"],
-      ["HTTPS_PROXY", "http://127.0.0.1:15001"],
-      ["https_proxy", "http://127.0.0.1:15001"],
-      ["NO_PROXY", "localhost,127.0.0.1,::1"],
-      ["no_proxy", "localhost,127.0.0.1,::1"],
-      ["NODE_USE_ENV_PROXY", "1"],
       ["NODE_EXTRA_CA_CERTS", "/etc/jr2/ca/extra.crt"],
       ["SSL_CERT_FILE", "/etc/jr2/ca/bundle.crt"],
       ["REQUESTS_CA_BUNDLE", "/etc/jr2/ca/bundle.crt"],
@@ -1762,13 +1614,13 @@ test("a held secret: the Harness gets Stand-in files and the proxy, the Custodia
     ],
   );
   assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "stale-keys" }, prefix: "JR2_ENVFROM_" }]);
-  // Each held secret's Stand-in is a file in the Harness container, from the pod's Secret (C1b).
+  // Each held secret's Stand-in is a file in the Harness container, from the pod's Stand-ins (C1b).
   assert.deepEqual(
     applied.spec.volumes.find((v: { name: string }) => v.name === "harness-credentials").projected.sources,
     [
       {
         secret: {
-          name: "sb-held-token",
+          name: "sb-held-standins",
           items: [
             { key: "control-standin", path: "control/standin" },
             { key: "standin-ANTHROPIC_API_KEY", path: "standins/ANTHROPIC_API_KEY" },
@@ -1779,7 +1631,7 @@ test("a held secret: the Harness gets Stand-in files and the proxy, the Custodia
     ],
   );
   const minted = applies(calls, "secrets").find(
-    (x: { metadata: { name: string } }) => x.metadata.name === "sb-held-token",
+    (x: { metadata: { name: string } }) => x.metadata.name === "sb-held-standins",
   )!;
   for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
     assert.equal(
@@ -1788,59 +1640,21 @@ test("a held secret: the Harness gets Stand-in files and the proxy, the Custodia
     );
   }
 
-  const custodian = applied.spec.sidecars.find((c: { name: string }) => c.name === "custodian");
-  assert.deepEqual(
-    custodian.volumeMounts.map((m: { name: string; mountPath: string }) => [m.name, m.mountPath]),
-    [
-      ["custodian-values", "/etc/jr2/custodian/values"],
-      ["custodian-config", "/etc/jr2/custodian/config"],
-      ["custodian-socket", "/run/jr2/custodian"],
-      ["custodian-tls", "/etc/jr2/custodian/tls"],
-      ["custodian-trust", "/etc/jr2/ca"],
-    ],
-  );
-  const values = applied.spec.volumes.find((v: { name: string }) => v.name === "custodian-values");
-  assert.equal(values.projected.defaultMode, 0o440);
-  assert.deepEqual(values.projected.sources.slice(1), [
-    {
-      secret: {
-        name: `jr2-held-secrets-${workspaceHeldPod({ workflow: "w", route: [] })}`,
-        items: [{ key: "ANTHROPIC_API_KEY", path: "ANTHROPIC_API_KEY" }],
-      },
-    },
-    { secret: { name: "team-keys", items: [{ key: "openai", path: "OPENAI_API_KEY" }] } },
-  ]);
-  assert.deepEqual(
-    applied.spec.volumes.find((v: { name: string }) => v.name === "custodian-trust"),
-    {
-      name: "custodian-trust",
-      configMap: { name: "jr2-ca", items: [{ key: "upstream.crt", path: "upstream.crt" }] },
-    },
-  );
-
-  // The asymmetry, whole: no container but the Custodian references what it holds — not the
-  // Harness (the CR's own mounts), not the User Container.
-  const held = new Set(["custodian-values", "custodian-tls", "custodian-config", "custodian-trust"]);
+  // The asymmetry, whole: the Custodian is outside the pod (ADR-0084), so no container of the pod
+  // names a value's Secret, a leaf or the slot Secret — not the Harness, not the User Container.
   for (const container of [{ name: "harness", volumeMounts: applied.spec.volumeMounts }, ...applied.spec.sidecars]) {
-    if (container.name === "custodian") continue;
-    for (const m of container.volumeMounts ?? []) assert.ok(!held.has(m.name), `${container.name} mounts ${m.name}`);
     assert.ok(
       !JSON.stringify(container).includes("jr2-held-secrets") && !JSON.stringify(container).includes("team-keys"),
+      container.name,
     );
   }
-  assert.ok(!JSON.stringify(applied).includes("jr2-held-ca"), "no pod names the CA's Secret");
+  for (const name of ["jr2-held-secrets", "team-keys", "jr2-held-tls", "jr2-held-ca", "jr2-custodian-slot-"]) {
+    assert.ok(!JSON.stringify(applied).includes(name), `no pod names ${name}`);
+  }
   assert.ok(!("shareProcessNamespace" in applied.spec), "the Agent cannot read another container's /proc");
-  assert.deepEqual(custodian.securityContext, {
-    runAsNonRoot: true,
-    readOnlyRootFilesystem: true,
-    allowPrivilegeEscalation: false,
-    capabilities: { drop: ["ALL"] },
-    seccompProfile: { type: "RuntimeDefault" },
-  });
-  assert.deepEqual(custodian.readinessProbe.httpGet, { path: "/healthz", port: 15021 });
 });
 
-test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS container with NODE_EXTRA_CA_CERTS; absent → nothing", async () => {
+test("caBundle, nothing held: the jr2-ca ConfigMap's ca.crt joins the HARNESS container's trust files; absent → the pod's CA alone", async () => {
   const imagesPath = await mkImages(REFS);
   const withCa = cluster();
   await kubeSandbox({ imagesPath, ...provisionable, ...withCa.exec, caBundle: true }).provision({
@@ -1851,27 +1665,27 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
   });
   const applied = crOf(withCa.calls);
   assert.deepEqual(applied.spec.env.slice(0, -1), [
-    { name: "JR2_CUSTODIAN_URL", value: "http://127.0.0.1:8081" },
-    { name: "JR2_CUSTODIAN_SOCKET", value: "/run/jr2/custodian/control.sock" },
+    { name: "JR2_CUSTODIAN_URL", value: "https://custodian.jr2.internal" },
     { name: "JR2_CONTROL_STANDIN_FILE", value: "/run/jr2/control/standin" },
-    { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/ca.crt" },
+    { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/extra.crt" },
+    { name: "SSL_CERT_FILE", value: "/etc/jr2/ca/bundle.crt" },
+    { name: "REQUESTS_CA_BUNDLE", value: "/etc/jr2/ca/bundle.crt" },
+    { name: "GIT_SSL_CAINFO", value: "/etc/jr2/ca/bundle.crt" },
     ...CPU_HINTS,
     { name: "JR2_PROJECT_CONTEXT", value: "worktree" },
     { name: "JR2_USER_CONTEXT", value: "" },
     { name: "JR2_CONVERSATIONS_DIR", value: "/run/jr2/conversations" },
     { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(provisionable.signingKey, "sb-ca") },
   ]);
+  const ca = (cr: { spec: { volumes: Array<{ name: string }> } }) =>
+    JSON.stringify(cr.spec.volumes.find((v) => v.name === "ca"));
+  assert.match(ca(applied), /"sb-ca-trust".*"jr2-ca".*"ca\.crt"/);
+  // CR-level volumeMounts land on the HARNESS container only (operator contract).
   assert.ok(
-    applied.spec.volumes.some(
-      (v: Record<string, unknown>) =>
-        JSON.stringify(v) === JSON.stringify({ name: "ca", configMap: { name: "jr2-ca" } }),
+    applied.spec.volumeMounts.some(
+      (m: { name: string; mountPath: string }) => m.name === "ca" && m.mountPath === "/etc/jr2/ca",
     ),
   );
-  // CR-level volumeMounts land on the HARNESS container only (operator contract). With nothing
-  // held, the Custodian verifies no upstream, so it mounts no trust at all.
-  assert.deepEqual(applied.spec.volumeMounts.at(-3), { name: "ca", mountPath: "/etc/jr2/ca", readOnly: true });
-  const custodian = applied.spec.sidecars.find((c: { name: string }) => c.name === "custodian");
-  assert.ok(!custodian.volumeMounts.some((m: { name: string }) => m.name === "ca" || m.name === "custodian-trust"));
 
   const without = cluster();
   await kubeSandbox({ imagesPath, ...provisionable, ...without.exec }).provision({
@@ -1881,7 +1695,8 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
     ...withApp,
   });
   const bare = crOf(without.calls);
-  assert.ok(!bare.spec.volumes.some((v: { name: string }) => v.name === "ca"));
+  assert.match(ca(bare), /"sb-noca-trust"/);
+  assert.doesNotMatch(ca(bare), /"jr2-ca"/);
 });
 
 test("provision resolves with the Harness endpoint, and nothing else (ADR-0021: no pod identity to hold)", async () => {
@@ -1889,7 +1704,7 @@ test("provision resolves with the Harness endpoint, and nothing else (ADR-0021: 
   const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
 
   assert.deepEqual(await port.provision({ name: "sb-1", runId: "r", workflow: "w", ...withApp }), {
-    endpoint: "http://sb-1.default.svc:8080",
+    endpoint: SLOT_ENDPOINT,
   });
 });
 
@@ -2334,7 +2149,7 @@ test("a Sandbox the operator holds on its Repos waits on the REPO budget, not th
     ...exec,
   });
   const out = await port.provision({ name: "sb-cold", runId: "r", workflow: "w", ...withApp });
-  assert.equal(out.endpoint, "http://sb-1.default.svc:8080");
+  assert.equal(out.endpoint, SLOT_ENDPOINT);
 });
 
 test("the Repo budget runs out BY NAME: the operator's verdict, the node, and where to look — never the preflight", async () => {
@@ -2396,7 +2211,6 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
   const infraKey = repoKey(infraUrl);
   const staleReady = {
     phase: "Ready",
-    endpoint: "http://sb-stale.default.svc:8080",
     conditions: [
       { type: "Ready", status: "True", reason: "PodReady" },
       {
@@ -2424,7 +2238,6 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
   // forgets an earlier verdict.
   const fresh = {
     phase: "Ready",
-    endpoint: "http://sb-stale.default.svc:8080",
     conditions: [{ type: "ReposFresh", status: "True", reason: "Fetched", message: "every Repo was fetched" }],
   };
   const { exec: e2 } = cluster([fresh]);
@@ -2438,7 +2251,11 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
 /** A Sandbox the operator already reports Ready, in the store before the port is built. */
 function readySandbox(name: string, status: object = READY) {
   const c = cluster([]);
-  c.api.seed("sandboxes", { metadata: { name, labels: { "jr2.dev/run": "r" } }, status } as never);
+  c.api.seed("sandboxes", {
+    metadata: { name, labels: { "jr2.dev/run": "r" } },
+    spec: { network: { attachment: "jr2-fence-3", nameserver: "198.19.0.1" } },
+    status,
+  } as never);
   return c;
 }
 
@@ -2455,7 +2272,7 @@ test("attach is the Harness's POST /attach at the Sandbox's endpoint, with the H
   const [call] = c.attaches;
   // The address is the Sandbox's own, off the watch; no `kubectl exec`, no stream through the API
   // server, no pod read.
-  assert.equal(call!.url, "http://sb-1.default.svc:8080/attach");
+  assert.equal(call!.url, `${SLOT_ENDPOINT}/attach`);
   assert.equal(call!.auth, `Bearer ${harnessToken(provisionable.signingKey, "sb-3")}`, "the bearer for THIS pod");
   // The identity and cache key are resolved HERE, so the cache the Harness clones from is the one
   // the operator mounted — the Harness never re-derives them (ADR-0051).
@@ -2491,7 +2308,7 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
   assert.equal(lines.length, 1, "a retry that cost something says so once");
   assert.match(
     lines[0]!,
-    /^jr2\.routability seat=attach attempts=3 ms=\d+ last=ECONNREFUSED url=http:\/\/sb-1\.default\.svc:8080\/attach$/,
+    /^jr2\.routability seat=attach attempts=3 ms=\d+ last=ECONNREFUSED url=http:\/\/198\.19\.1\.5:8080\/attach$/,
   );
 
   // A window that closes names the address it never reached.
@@ -2505,7 +2322,7 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
   });
   await assert.rejects(
     () => never.attach({ name: "sb-r", repos: [{ slot: "app", url: APP_URL }] }),
-    /never reached its Harness at http:\/\/sb-1\.default\.svc:8080/,
+    /never reached its Harness at http:\/\/198\.19\.1\.5:8080/,
   );
 });
 
@@ -2581,7 +2398,7 @@ test("an attach try whose connection does not open is given up after the connect
   assert.equal(lines.length, 1);
   assert.match(
     lines[0]!,
-    /^jr2\.routability seat=attach attempts=2 ms=\d+ last=ETIMEDOUT url=http:\/\/sb-1\.default\.svc:8080\/attach$/,
+    /^jr2\.routability seat=attach attempts=2 ms=\d+ last=ETIMEDOUT url=http:\/\/198\.19\.1\.5:8080\/attach$/,
   );
 
   // A connection that never opens for the whole window still faults, and names the address.
@@ -2594,7 +2411,7 @@ test("an attach try whose connection does not open is given up after the connect
   });
   await assert.rejects(
     () => never.attach({ name: "sb-d", repos: [{ slot: "app", url: APP_URL }] }),
-    /the attach never reached its Harness at http:\/\/sb-1\.default\.svc:8080: connect ETIMEDOUT sb-1\.default\.svc:8080/,
+    /the attach never reached its Harness at http:\/\/198\.19\.1\.5:8080: connect ETIMEDOUT 198\.19\.1\.5:8080/,
   );
 });
 
@@ -2609,7 +2426,7 @@ test("with no transport given, the attach dials through dialFetch: a new connect
   const port = kubeSandbox({ ...provisionable, ...exec });
   const out = await port.attach({ name: "sb-w", repos: [{ slot: "app", url: APP_URL }] });
   assert.deepEqual(out.repos, { app: "/work/app" });
-  assert.deepEqual(dialed, [{ host: "sb-1.default.svc", port: 8080 }], "the default transport made the connection");
+  assert.deepEqual(dialed, [{ host: "198.19.1.5", port: 8080 }], "the default transport made the connection");
 });
 
 test("an attach whose signal aborts ends at once with the reason, and closes its request", async () => {
@@ -2651,7 +2468,7 @@ test("an attach that reached its Harness and heard nothing says so, not that it 
   });
   await assert.rejects(
     () => port.attach({ name: "sb-i", repos: [{ slot: "app", url: APP_URL }] }),
-    /the attach got no answer from its Harness at http:\/\/sb-1\.default\.svc:8080: no answer from sb-1\.default\.svc:8080 in 50ms/,
+    /the attach got no answer from its Harness at http:\/\/198\.19\.1\.5:8080: no answer from 198\.19\.1\.5:8080 in 50ms/,
   );
 });
 
@@ -2665,7 +2482,11 @@ test("a failed attach carries the Harness's own words — the slot, the step, gi
       { status: 500 },
     ),
   );
-  c.api.seed("sandboxes", { metadata: { name: "sb-f", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  c.api.seed("sandboxes", {
+    metadata: { name: "sb-f", labels: { "jr2.dev/run": "r" } },
+    spec: { network: { attachment: "jr2-fence-3", nameserver: "198.19.0.1" } },
+    status: READY,
+  } as never);
   const port = kubeSandbox({ ...provisionable, ...c.exec });
   await assert.rejects(
     () => port.attach({ name: "sb-f", repos: [{ slot: "app", url: APP_URL }] }),
@@ -2704,24 +2525,21 @@ test("the CR carries the whole Size: pod-level ceiling, per-container split, req
     requests: { cpu: "2", memory: "3Gi" },
     limits: { cpu: "2", memory: "3Gi" },
   });
-  // The Harness container: the rest after the Custodian's slice, and the `/work` disk as a request
-  // with no limit — a limit evicts the pod and loses `/work`.
+  // The Harness container: the whole Size, as no User Container split is stated and the Custodian
+  // is outside the pod (ADR-0084), and the `/work` disk as a request with no limit — a limit evicts
+  // the pod and loses `/work`.
   assert.deepEqual(spec.resources, {
-    requests: { cpu: "1950m", memory: "3008Mi", "ephemeral-storage": "10Gi" },
-    limits: { cpu: "1950m", memory: "3008Mi" },
+    requests: { cpu: "2", memory: "3Gi", "ephemeral-storage": "10Gi" },
+    limits: { cpu: "2", memory: "3Gi" },
   });
-  const custodian = spec.sidecars.find((c: { name: string }) => c.name === "custodian");
-  assert.deepEqual(custodian.resources, {
-    requests: { cpu: "50m", memory: "64Mi" },
-    limits: { cpu: "50m", memory: "64Mi" },
-  });
+  assert.deepEqual(spec.sidecars, [], "no container of the Custodian takes a slice");
   assert.deepEqual(spec.initContainers[0].resources, {
     requests: { cpu: "10m", memory: "32Mi" },
     limits: { memory: "128Mi" },
   });
   // `/dev/shm`: a quarter of the Harness share. The operator mounts it, in the Harness container
   // alone, so the CR composes no volume for it.
-  assert.equal(spec.shmSize, "752Mi");
+  assert.equal(spec.shmSize, "768Mi");
   assert.ok(!spec.volumes.some((v: { name: string }) => v.name === "shm"));
   // Priority: the class `jr2 up` creates, unless the Instance names its own.
   assert.equal(spec.priorityClassName, "jr2-sandbox");
@@ -2774,7 +2592,7 @@ test("a stated User Container split lands on the user sidecar and comes out of t
     requests: { cpu: "250m", memory: "512Mi" },
     limits: { cpu: "250m", memory: "512Mi" },
   });
-  assert.deepEqual(spec.resources.limits, { cpu: "700m", memory: "1472Mi" });
+  assert.deepEqual(spec.resources.limits, { cpu: "750m", memory: "1536Mi" });
 });
 
 test("a split below the Harness floor fails the provision by name, with NOTHING applied (ADR-0060)", async () => {
@@ -2784,21 +2602,12 @@ test("a split below the Harness floor fails the provision by name, with NOTHING 
       name: "sb-tiny",
       runId: "r",
       workflow: "w",
-      resources: { limits: { memory: "300Mi" } },
+      resources: { limits: { memory: "200Mi" } },
       ...withApp,
     }),
     /Sandbox "sb-tiny" cannot be provisioned: the Size leaves the Harness container .* below its 256Mi floor/,
   );
   assert.deepEqual(calls, [], "no Secret, no CR");
-});
-
-test("a Sandbox Effector's Service name: `fx-` in place of `ws-`, so as long as the Sandbox's and apart from the operator's", () => {
-  const name = workspaceName("run-0123456789abcdef", "a-very-long-workspace-id-".repeat(4));
-  assert.ok(name.length <= 63 && name.startsWith("ws-"));
-  const svc = sandboxEffectorService(name);
-  assert.equal(svc.length, name.length);
-  assert.ok(svc.startsWith("fx-") && svc !== name);
-  assert.ok(sandboxEffectorService("sb-fx").length <= 63);
 });
 
 test("a Sandbox Effector's key is its Sandbox's own, never the Instance Effector's, and ADR-0058 says who writes each (ADR-0058, ADR-0068)", async () => {
@@ -2862,6 +2671,7 @@ test("a secret named `git` takes no path of the push credentials, which the oper
     secretVolume: "effector-secrets",
     keyVolume: "effector-own",
     scratchVolume: "effector-scratch",
+    caVolume: "effector-ca",
   });
   const gitVar = container.env.find((e) => e.name === "JR2_EFFECTOR_GIT");
   const gitDir = gitVar && "value" in gitVar ? gitVar.value : "";
@@ -2945,8 +2755,8 @@ test("each mount of the Harness container is read-only, under /run/jr2, or the W
     const mounts: Mount[] = [...spec.volumeMounts, ...operatorMounts(spec)];
     assert.deepEqual(unclassified(mounts, home), [], `shape ${i}: a mount that the Harness and the domain share`);
     // The paths that the Harness holds alone are each under `/run/jr2` (ADR-0076): the Stand-ins,
-    // the control socket and the conversations.
-    for (const path of ["/run/jr2", "/run/jr2/custodian", "/run/jr2/conversations"]) {
+    // and the conversations.
+    for (const path of ["/run/jr2", "/run/jr2/conversations"]) {
       assert.ok(
         mounts.some((m) => m.mountPath === path),
         `shape ${i}: ${path} is mounted`,

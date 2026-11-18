@@ -69,17 +69,9 @@ var _ = Describe("Sandbox Controller", func() {
 			}).Should(BeTrue())
 		})
 
-		It("creates an owned Pod and Service and reports Pending until the pod is Ready", func() {
+		It("creates an owned Pod and no Service, and reports Pending until the pod is Ready", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-
-			By("creating a Service owned by the Sandbox, targeting the primary port")
-			svc := &corev1.Service{}
-			Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
-			Expect(svc.Spec.Ports).To(HaveLen(1))
-			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
-			Expect(svc.OwnerReferences).To(HaveLen(1))
-			Expect(svc.OwnerReferences[0].Kind).To(Equal("Sandbox"))
 
 			By("creating a Pod with the primary container plus the sidecar, owned by the Sandbox")
 			pod := &corev1.Pod{}
@@ -107,21 +99,21 @@ var _ = Describe("Sandbox Controller", func() {
 				Expect(c.SecurityContext.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")), c.Name)
 			}
 
-			By("injecting a readiness probe on the primary port so Ready means serving")
+			By("injecting a readiness probe of the Harness's own /healthz on the primary port so Ready means serving")
 			probe := pod.Spec.Containers[0].ReadinessProbe
 			Expect(probe).NotTo(BeNil())
-			Expect(probe.HTTPGet).NotTo(BeNil())
-			Expect(probe.HTTPGet.Path).To(Equal("/healthz"))
-			Expect(probe.HTTPGet.Port.IntValue()).To(Equal(8080))
+			Expect(probe.HTTPGet).To(BeNil())
+			Expect(probe.Exec.Command).To(Equal([]string{"/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8080/healthz"}))
 
-			By("reporting phase Pending with an endpoint and refs")
+			By("making no Service: the Orchestrator reaches the Pod at its slot's address (ADR-0084)")
+			Expect(errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Service{}))).To(BeTrue())
+
+			By("reporting phase Pending with the Pod's ref")
 			sandbox := &corev1alpha1.Sandbox{}
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
-			Expect(sandbox.Status.Endpoint).To(Equal("http://test-sandbox.default.svc:8080"))
 			Expect(sandbox.Status.PodRef.Name).To(Equal(resourceName))
 			Expect(sandbox.Status.PodUID).To(Equal(pod.UID))
-			Expect(sandbox.Status.ServiceRef.Name).To(Equal(resourceName))
 
 			By("transitioning to Ready once the pod reports the Ready condition")
 			pod.Status.Phase = corev1.PodRunning

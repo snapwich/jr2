@@ -20,10 +20,9 @@
 // The Sandbox's CA is made here (`sandboxPki`) and its key goes with the call: no object holds it,
 // so no key that can sign a leaf for the Sandbox exists while its Agents run.
 //
-// `fenceComposition` is what the CR gains on the Fence, in place of the in-pod Custodian: the
-// attachment and the nameserver of its slot (`spec.network`), the Harness container's env and its
-// mounts. No Custodian container, no proxy variable and no control socket: the Custodian is at
-// jr2's own name, outside the pod.
+// `fenceComposition` is what the CR gains on the Fence: the attachment and the nameserver of its
+// slot (`spec.network`), the Harness container's env and its mounts. No proxy variable: the
+// Custodian is at jr2's own name, outside the pod.
 //
 // `podFenceObjects` gives the same three objects for a Harness pod that `jr2 up` makes (the
 // Instance Harness on slot 0, the check pod on slot 1), with leaves of the Instance's CA and no
@@ -423,7 +422,7 @@ export const FENCE_DEFAULT_NETWORK_ANNOTATION = "v1.multus-cni.io/default-networ
 type Volume = Record<string, unknown>;
 type VolumeMount = { name: string; mountPath: string; readOnly?: boolean };
 
-/** What a Sandbox's CR gains on the Fence (ADR-0084), in place of the in-pod Custodian. */
+/** What a Sandbox's CR gains on the Fence (ADR-0084). */
 export type FenceComposition = {
   /** The CR's `spec.network`: the slot's attachment, and its one nameserver, the uplink's address. */
   network: { attachment: string; nameserver: string };
@@ -496,7 +495,8 @@ export function fenceComposition(
           ],
         },
       },
-      // Group-readable for the pod's fsGroup, as on the in-pod Custodian's pod (custodian.ts).
+      // Group-readable for the pod's fsGroup: the Harness runs as no fixed uid, and the kubelet writes
+      // the files as root, so 0440 is the least mode the Harness can read.
       {
         name: HARNESS_CREDENTIALS_VOLUME,
         projected: {

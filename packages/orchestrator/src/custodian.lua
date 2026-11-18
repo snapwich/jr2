@@ -1,31 +1,24 @@
--- The Custodian's decisions (ADR-0059), run by Envoy's Lua filter on every listener it owns.
+-- The Custodian's decisions (ADR-0059, ADR-0084), run by Envoy's Lua filter on each listener of the
+-- Custodian pod that carries a request.
 --
--- Envoy carries the bytes: the CONNECT listener, TLS on both sides, the upstream pools, streaming.
--- This script makes every choice about a credential, and nothing else. It ships once per Instance
--- in the `jr2-held` ConfigMap (`program.lua`); each pod's own `custodian.lua` is a generated `HELD`
--- table (names, headers, paths, bound targets — never a value) that ends by loading this file.
--- Envoy loads that once per Lua state at start, so the top-level code below runs before any
--- listener serves, with `HELD` already set: a value that is missing or cannot ride a header stops
--- the start-up with a line that names the secret, never the value.
+-- Envoy carries the bytes: TLS on both sides, the upstream pools, streaming. This program makes
+-- every choice about a credential, and nothing else. It ships once per Instance in the Custodian's
+-- ConfigMap (`program.lua`); each slot's own table is a generated `HELD` table (names, headers,
+-- paths, bound targets, the slot's folder of values and its Sandbox — never a value) that ends by
+-- loading this file. Envoy loads that once per Lua state, so the top-level code below runs before
+-- the slot's listener serves, with `HELD` already set: a value that is missing or cannot ride a
+-- header stops the load with a line that names the secret, never the value.
 --
--- Four roles, one per route family, read from the route's metadata:
+-- The roles, one per route family, read from the route's metadata:
 --
---   control    toward the Orchestrator, plain HTTP: the agent routes on the control socket, and
---              the ask on the loopback fetch listener (ADR-0076). Each listener has only its own
---              routes, so a route of the other one gets the deny route's 404
---   egress     the CONNECT listener: dial guard, then tunnel or hand to an intercept listener
+--   control    toward the Orchestrator: the agent routes and the ask, on jr2's own name
 --   intercept  one bound host, TLS already ended: swap the Stand-in, strip the rest
---   health     the kubelet's probe
---
--- The Custodian of an Instance (ADR-0084) runs this same program with one table for each slot, and
--- the table names the slot's own folder of values (`HELD.values`) and its Sandbox (`HELD.sandbox`).
--- Its listeners add three roles:
---
 --   http       a Tunneled host's plain HTTP: the `Host` chose the route; the address must agree
 --   refuse     a refusal that a route states (`reason`, `body`), so that each one is logged alike
 --   inbound    the Orchestrator's dial to a Harness pod: the dial token, then the target check
+--   deny       a route that no other route matched
 
-local VALUES = HELD.values or "/etc/jr2/custodian/values/"
+local VALUES = HELD.values or ""
 
 -- The value of one held secret, or its Stand-in, read once. One trailing line end is taken off,
 -- because `kubectl create secret --from-file` writes one; anything else a header cannot carry stops
@@ -222,111 +215,6 @@ local function hold(handle, headers, bound, target, path, open)
   tag(handle, "log", true)
 end
 
--- A CONNECT target, one spelling: lowercase, no trailing dot on the name.
-local function normal(authority)
-  local a = authority:lower()
-  local host, port = a:match("^(%[[^%]]+%]):(%d+)$")
-  if host == nil then host, port = a:match("^([^:]+):(%d+)$") end
-  if host == nil then return nil end
-  host = host:gsub("%.$", "")
-  return host, port
-end
-
-local function ipv4(host)
-  local a, b, c, d = host:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
-  if a == nil then return nil end
-  a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
-  if a > 255 or b > 255 or c > 255 or d > 255 then return nil end
-  return a, b, c, d
-end
-
--- An IPv6 literal as eight numbers, or nil.
-local function ipv6(host)
-  local s = host:match("^%[(.+)%]$")
-  if s == nil or not s:find(":") then return nil end
-  local v4 = s:match(":(%d+%.%d+%.%d+%.%d+)$")
-  if v4 ~= nil then
-    local a, b, c, d = ipv4(v4)
-    if a == nil then return nil end
-    s = s:sub(1, #s - #v4) .. string.format("%x:%x", a * 256 + b, c * 256 + d)
-  end
-  local head, rest = s:match("^(.-)::(.*)$")
-  local function groups(part)
-    local out = {}
-    if part == "" then return out end
-    for g in (part .. ":"):gmatch("([^:]*):") do
-      if not g:match("^%x%x?%x?%x?$") then return nil end
-      out[#out + 1] = tonumber(g, 16)
-    end
-    return out
-  end
-  local left, right
-  if head == nil then
-    left, right = groups(s), {}
-    if left == nil or #left ~= 8 then return nil end
-  else
-    left, right = groups(head), groups(rest)
-    if left == nil or right == nil or #left + #right > 7 then return nil end
-  end
-  local out = {}
-  for _, g in ipairs(left) do out[#out + 1] = g end
-  for _ = 1, 8 - #left - #right do out[#out + 1] = 0 end
-  for _, g in ipairs(right) do out[#out + 1] = g end
-  return out
-end
-
--- The dial guard's first half: a tunnel never reaches loopback, link-local (the cloud metadata
--- address among it), or an unspecified address — nor an IPv4-mapped spelling of one. By NAME it
--- knows only `localhost`. The second half is Envoy's: an RBAC filter judges the address the
--- dynamic forward proxy resolved a name to, and `envoy_on_response` logs its refusal (ADR-0059).
-local function guarded(host)
-  if host == "localhost" or host:sub(-10) == ".localhost" then return true end
-  local a, b = ipv4(host)
-  if a ~= nil then
-    return a == 127 or a == 0 or (a == 169 and b == 254)
-  end
-  local g = ipv6(host)
-  if g ~= nil then
-    local zero = true
-    for i = 1, 7 do if g[i] ~= 0 then zero = false end end
-    if zero and (g[8] == 0 or g[8] == 1) then return true end
-    if g[1] >= 0xfe80 and g[1] <= 0xfebf then return true end
-    if g[1] == 0xfd00 and g[2] == 0xec2 and g[3] == 0 and g[4] == 0 and g[5] == 0 and g[6] == 0 and g[7] == 0
-      and g[8] == 0x254 then return true end
-    local mapped = g[1] == 0 and g[2] == 0 and g[3] == 0 and g[4] == 0 and g[5] == 0 and g[6] == 0xffff
-    if mapped then
-      local x, y = math.floor(g[7] / 256), g[7] % 256
-      return x == 127 or x == 0 or (x == 169 and y == 254)
-    end
-  end
-  return false
-end
-
-local function egress(handle, headers)
-  if headers:get(":method") ~= "CONNECT" then
-    return refuse(handle, 405, "method", "this listener speaks CONNECT alone")
-  end
-  local authority = headers:get(":authority") or ""
-  local host, port = normal(authority)
-  if host == nil then
-    return refuse(handle, 400, "target", "a CONNECT names host:port")
-  end
-  local target = host .. ":" .. port
-  if target ~= authority then
-    headers:replace(":authority", target)
-    handle:clearRouteCache()
-  end
-  if HELD.targets[target] ~= nil then
-    -- Handed to the intercept listener, which logs each request it carries.
-    return
-  end
-  if guarded(host) then
-    return refuse(handle, 403, "guard", target .. " is loopback, link-local or unspecified")
-  end
-  tag(handle, "action", "tunnel")
-  tag(handle, "log", true)
-end
-
 -- What a bound host is sent. TRACE is not: a server that answers it echoes the request, the
 -- swapped value among it, back to the Agent. Neither is a WebDAV or other extension method.
 local METHODS = { GET = true, HEAD = true, POST = true, PUT = true, PATCH = true, DELETE = true, OPTIONS = true }
@@ -360,9 +248,8 @@ end
 local function control(handle, headers, route)
   if route == "fetch" then
     -- A slot's table names its Sandbox (ADR-0084): the uplink chose the slot, so the Harness pod
-    -- that sent the connection chose nothing. A table with no slot is the in-pod Custodian's.
+    -- that sent the connection chose nothing.
     local sandbox = HELD.sandbox
-    if HELD.slot == nil then sandbox = os.getenv("JR2_SANDBOX") end
     if sandbox == nil or sandbox == "" then
       tag(handle, "action", "refuse")
       tag(handle, "reason", "no-sandbox")
@@ -418,23 +305,8 @@ local function inbound(handle, headers)
   tag(handle, "log", true)
 end
 
-local READY = false
-
--- A refusal by resolved address comes from the RBAC filter after this one: the one 403 a request
--- this script let through as a tunnel can get. It is logged as a refusal by spelling is. (A slot's
--- chains dial through the Custodian's dial listeners, which log the guard's refusal themselves.)
-function envoy_on_response(handle)
-  if handle:metadata():get("role") ~= "egress" then return end
-  if handle:headers():get(":status") ~= "403" then return end
-  local jr2 = handle:streamInfo():dynamicMetadata():get("jr2")
-  if jr2 == nil or jr2.action ~= "tunnel" then return end
-  tag(handle, "action", "refuse")
-  tag(handle, "reason", "guard")
-end
-
 local function decide(handle, meta, role)
   local headers = handle:headers()
-  if role == "egress" then return egress(handle, headers) end
   if role == "intercept" then return intercept(handle, headers, meta:get("target")) end
   if role == "control" then return control(handle, headers, meta:get("route")) end
   if role == "inbound" then return inbound(handle, headers) end
@@ -452,16 +324,6 @@ local function decide(handle, meta, role)
   end
   if role == "refuse" then
     return refuse(handle, tonumber(meta:get("status")) or 403, meta:get("reason"), meta:get("body"))
-  end
-  if role == "health" then
-    if not READY then
-      READY = true
-      local names = {}
-      for _, s in ipairs(HELD.secrets) do names[#names + 1] = s.name end
-      io.stdout:write("jr2.custodian ready secrets=" .. table.concat(names, ",") .. " hosts=" .. HELD.hosts .. "\n")
-      io.stdout:flush()
-    end
-    return handle:respond({ [":status"] = "200", ["content-type"] = "text/plain" }, "ok\n")
   end
   if role == "deny" then
     return refuse(handle, 404, "route", "no such route")

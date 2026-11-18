@@ -131,7 +131,7 @@ func (e *exec1) fn(path string, argv []string, env []string) error {
 	return nil
 }
 
-// custodian stands in for the loopback Custodian: it records the body it was
+// custodian stands in for the Custodian: it records the body it was
 // asked with and answers what the test names. It answers only the Stand-in —
 // the Custodian swaps that bearer and no other (ADR-0059).
 func custodian(t *testing.T, status int, body any) (*httptest.Server, *string) {

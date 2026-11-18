@@ -55,15 +55,15 @@ test("childEnv: the container's start env, HOME, TMPDIR and the granted Stand-in
       PATH: "/usr/bin:/bin",
       // No proxy variable reaches the domain (ADR-0084): the Fence takes each connection to the
       // Custodian, whatever the image's ENV or `harness.env` says.
-      HTTPS_PROXY: "http://127.0.0.1:15001",
-      https_proxy: "http://127.0.0.1:15001",
+      HTTPS_PROXY: "http://corp-proxy:3128",
+      https_proxy: "http://corp-proxy:3128",
       HTTP_PROXY: "http://elsewhere:3128",
       ALL_PROXY: "socks5://elsewhere:1080",
       NO_PROXY: "localhost",
       NODE_USE_ENV_PROXY: "1",
       NODE_EXTRA_CA_CERTS: "/etc/jr2/ca/extra.crt",
       GIT_CONFIG_SYSTEM: "/opt/jr2/etc/gitconfig",
-      JR2_CUSTODIAN_URL: "http://127.0.0.1:8081",
+      JR2_CUSTODIAN_URL: "https://custodian.jr2.internal",
       JR2_HARNESS_TOKEN_SHA256: "digest",
       JR2_HARNESS_JSON: "{}",
       JR2_GRANTED_SECRETS: "JIRA_TOKEN,SNEAKY",
@@ -90,7 +90,7 @@ test("childEnv: the container's start env, HOME, TMPDIR and the granted Stand-in
     PATH: "/usr/bin:/bin",
     NODE_EXTRA_CA_CERTS: "/etc/jr2/ca/extra.crt",
     GIT_CONFIG_SYSTEM: "/opt/jr2/etc/gitconfig",
-    JR2_CUSTODIAN_URL: "http://127.0.0.1:8081",
+    JR2_CUSTODIAN_URL: "https://custodian.jr2.internal",
     SOME_IMAGE_VAR: "x",
     VIRTUAL_ENV: "/app/.venv",
     HOME: "/home/jr2",
@@ -305,7 +305,7 @@ test("an image-only NODE_OPTIONS and LD_LIBRARY_PATH reach the domain's env and 
         // What jr2 composed.
         JR2_HARNESS_ENV_NAMES: "PORT,JR2_CUSTODIAN_URL",
         PORT: "8080",
-        JR2_CUSTODIAN_URL: "http://127.0.0.1:8081",
+        JR2_CUSTODIAN_URL: "https://custodian.jr2.internal",
         // harness.envFrom, with the Orchestrator's prefix.
         JR2_ENVFROM_GOOGLE_CLOUD_PROJECT: "p",
       },
@@ -326,7 +326,7 @@ test("an image-only NODE_OPTIONS and LD_LIBRARY_PATH reach the domain's env and 
   assert.equal(domain.LD_LIBRARY_PATH, "/app/lib");
   assert.equal(domain.IMAGE_ONLY, "yes");
   assert.equal(domain.GOOGLE_CLOUD_PROJECT, "p");
-  assert.equal(domain.JR2_CUSTODIAN_URL, "http://127.0.0.1:8081");
+  assert.equal(domain.JR2_CUSTODIAN_URL, "https://custodian.jr2.internal");
   assert.deepEqual(
     Object.keys(domain).filter((n) => n.startsWith("JR2_") && n !== "JR2_CUSTODIAN_URL"),
     [],
@@ -351,12 +351,10 @@ test("the pod paths the Harness reads are the ones the Orchestrator mounts: @jr2
   assert.equal(harness.OUTPUT_DIR, names.OUTPUT_DIR);
   assert.equal(harness.CONVERSATIONS_DIR, names.CONVERSATIONS_DIR);
   assert.equal(join(harness.SHELL_SOCKET, ".."), names.SHELL_DIR);
-  assert.equal(join(harness.CONTROL_SOCKET, ".."), names.CUSTODIAN_SOCKET_DIR);
 });
 
 test("the Harness's name for the Custodian is the one its resolver answers and its leaf names: @jr2/orchestrator's JR2_CUSTODIAN_NAME (ADR-0084)", async () => {
   const control = await import("../src/control-fetch.ts");
   const names = await import("@jr2/orchestrator/internal");
   assert.equal(control.CUSTODIAN_URL, `https://${names.JR2_CUSTODIAN_NAME}`);
-  assert.equal(control.CUSTODIAN_SOCKET_ENV, names.CUSTODIAN_SOCKET_ENV);
 });

@@ -177,23 +177,22 @@ func TestBuildPodCarriesFSGroupRuntimeVolumeAndInitContainers(t *testing.T) {
 	}
 }
 
-// TestBuildPodReadinessProbe checks the default /healthz probe on the serving
-// port, and that an explicit spec.readinessProbe is honored verbatim.
+// TestBuildPodReadinessProbe checks the default probe, an exec of `effector
+// healthcheck` of the Harness's /healthz on the serving port (ADR-0063,
+// ADR-0084), and that an explicit spec.readinessProbe is honored verbatim.
 func TestBuildPodReadinessProbe(t *testing.T) {
 	r := &SandboxReconciler{}
 
 	def := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 9000}), nil)
 	probe := def.Spec.Containers[0].ReadinessProbe
-	if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/healthz" {
-		t.Fatalf("expected a default /healthz readiness probe (ADR-0063), got %+v", probe)
+	want := []string{"/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:9000/healthz"}
+	if probe == nil || probe.Exec == nil || !reflect.DeepEqual(probe.Exec.Command, want) {
+		t.Fatalf("expected a default exec probe of /healthz on port 9000 (ADR-0063), got %+v", probe)
 	}
-	if probe.HTTPGet.Port.IntValue() != 9000 {
-		t.Fatalf("default probe should target the serving port 9000, got %v", probe.HTTPGet.Port)
-	}
-	// The kubelet's 10s default adds up to 10s to every provision for nothing
-	// (the scaling review's R12): a TCP connect each second is free.
-	if probe.PeriodSeconds != 1 {
-		t.Fatalf("default probe periodSeconds = %d, want 1", probe.PeriodSeconds)
+	// The startup probe gives the 1 s cadence until the Harness first answers
+	// (the scaling review's R12); readiness then runs every 10 s.
+	if start := def.Spec.Containers[0].StartupProbe; start == nil || start.PeriodSeconds != 1 {
+		t.Fatalf("default startup probe: want every second, got %+v", start)
 	}
 
 	custom := &corev1.Probe{
@@ -330,7 +329,8 @@ func TestOnTheFence(t *testing.T) {
 }
 
 // TestBuildPodOffTheFence checks that a Sandbox without spec.network keeps the
-// cluster's network and DNS: no Multus annotation, no DNS policy or config.
+// cluster's DNS and no Multus annotation, and still gets the exec probes: the
+// operator makes no Service, so no probe of the kubelet is the default.
 func TestBuildPodOffTheFence(t *testing.T) {
 	r := &SandboxReconciler{}
 	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
@@ -341,11 +341,8 @@ func TestBuildPodOffTheFence(t *testing.T) {
 		t.Fatalf("no spec.network, but DNS %q %+v", pod.Spec.DNSPolicy, pod.Spec.DNSConfig)
 	}
 	probe := pod.Spec.Containers[0].ReadinessProbe
-	if probe == nil || probe.HTTPGet == nil || probe.PeriodSeconds != 1 {
-		t.Fatalf("no spec.network: want the kubelet's HTTP probe every second, got %+v", probe)
-	}
-	if got := pod.Spec.Containers[0].StartupProbe; got != nil {
-		t.Fatalf("no spec.network, but a startup probe: %+v", got)
+	if probe == nil || probe.Exec == nil || probe.HTTPGet != nil {
+		t.Fatalf("no spec.network: want the exec probe, got %+v", probe)
 	}
 }
 

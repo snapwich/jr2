@@ -28,8 +28,8 @@ const (
 	RepoWorkers = 4
 )
 
-// CacheOptions caches only what the operator labels: the Pod and Service
-// informers take the managed-by selector, so memory and watch traffic are
+// CacheOptions caches only what the operator labels: the Pod informer takes
+// the managed-by selector, so memory and watch traffic are
 // O(Sandboxes) whatever cluster the operator lands in. Sandboxes and Repos are
 // jr2's own kinds and are cached whole. The one read that must not trust the
 // cache, the confirmation before a Pod is declared lost (ADR-0021), goes past
@@ -38,8 +38,7 @@ func CacheOptions() cache.Options {
 	managed := labels.SelectorFromSet(labels.Set{ManagedByLabel: ManagedByValue})
 	return cache.Options{
 		ByObject: map[client.Object]cache.ByObject{
-			&corev1.Pod{}:     {Label: managed},
-			&corev1.Service{}: {Label: managed},
+			&corev1.Pod{}: {Label: managed},
 		},
 	}
 }

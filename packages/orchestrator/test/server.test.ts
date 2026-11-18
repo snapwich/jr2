@@ -20,6 +20,7 @@ import { EMPTY_HELD, workspaceHeldPod } from "../src/held-secrets.ts";
 import { kubeRepos } from "../src/repos.ts";
 import { kubeSandbox } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
+import { FENCE_PLACEHOLDERS, FENCE_SEGMENT } from "../src/egress.ts";
 import { sandboxToken } from "../src/tokens.ts";
 import { FIXTURE_ASSEMBLY, publishTree, scratchInstance } from "./_assembly.ts";
 
@@ -548,6 +549,20 @@ test("a provision on a cluster with no operator fails naming the fix, at the fir
     namespace: "ws",
     client: kube,
     repos,
+    // The Instance's Custodian, played: each Sandbox is on the Fence (ADR-0084).
+    fence: {
+      range: 0,
+      ranges: { segment: FENCE_SEGMENT, placeholders: FENCE_PLACEHOLDERS },
+      custodian: {
+        dialToken: "dial",
+        pods: async () => [],
+        podOn: async () => undefined,
+        reports: async () => [{ pod: "c-1", status: { active: null, present: false } }],
+        makeLive: async () => "v1",
+      },
+      upstream: async () => "",
+      caBundle: async () => undefined,
+    },
   });
   const req = (repos: unknown[]) => ({ name: "sb-1", runId: "run-1", workflow: "w", route: [], repos }) as never;
   const pointed =

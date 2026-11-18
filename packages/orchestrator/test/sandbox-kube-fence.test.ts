@@ -21,7 +21,6 @@ import { kubeClient } from "../src/kube-client.ts";
 import { issueCa } from "../src/pki.ts";
 import type { PlacementRoute } from "../src/parts.ts";
 import type { RepoResources } from "../src/repos.ts";
-import { custodianComposition } from "../src/custodian.ts";
 import { fenceComposition } from "../src/sandbox-fence.ts";
 import { kubeSandbox, sandboxSidecars, type FenceWiring } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
@@ -278,7 +277,7 @@ test("the Sandbox's slot Secret and objects are not written for a Sandbox refuse
   assert.deepEqual(k.api.writes, []);
 });
 
-test("a deployed Orchestrator with no Fence refuses a provision, names `jr2 up`, and writes nothing", async () => {
+test("an Orchestrator with no Fence refuses a provision, names `jr2 up`, and writes nothing", async () => {
   const k = cluster(custodian().client);
   const p = kubeSandbox({
     imagesPath: await mkImages(),
@@ -288,7 +287,6 @@ test("a deployed Orchestrator with no Fence refuses a provision, names `jr2 up`,
     client: k.client,
     watch: k.watch,
     harnessFetch: k.harnessFetch,
-    requireFence: true,
   });
   await assert.rejects(
     p.place(
@@ -307,26 +305,12 @@ test("a deployed Orchestrator with no Fence refuses a provision, names `jr2 up`,
   assert.deepEqual(k.api.writes, []);
 });
 
-test("sandboxSidecars: the in-pod Custodian when the composition has one, never on the Fence", () => {
-  const manifest = EMPTY_HELD;
-  const fence = fenceComposition(manifest, { sandbox: "ws-x", slot: 9, ranges: RANGES });
+test("sandboxSidecars: the User Container, then the Sandbox Effector; no Custodian container", () => {
   const user = { name: "user" };
   const effector = { name: "effector" };
-  assert.deepEqual(sandboxSidecars(fence, user, effector), [user, effector]);
-  assert.deepEqual(sandboxSidecars(fence), []);
-  const inPod = custodianComposition(manifest, {
-    image: "envoy:c00",
-    pod: "ws-x",
-    config: "ws-x-custodian",
-    credentials: { secret: "ws-x-token" },
-    sandbox: "ws-x",
-    caBundle: false,
-    resources: { requests: { cpu: "100m", memory: "64Mi" }, limits: { cpu: "100m", memory: "64Mi" } },
-  });
-  assert.deepEqual(
-    sandboxSidecars(inPod, user, effector).map((s) => s.name),
-    ["custodian", "user", "effector"],
-  );
+  assert.deepEqual(sandboxSidecars(user, effector), [user, effector]);
+  assert.deepEqual(sandboxSidecars(undefined, effector), [effector]);
+  assert.deepEqual(sandboxSidecars(), []);
 });
 
 test("a push over https on the Fence: the slot binds the entry's token toward the url's host, with the entry's Stand-in (ADR-0068)", async () => {

@@ -34,7 +34,6 @@ import { httpFileWith, pushParts, pushWith } from "../src/sandbox-effect.ts";
 import { createSyncPort, type SyncPortFactory } from "../src/sync-client.ts";
 import type { SyncAnswer, SyncRequest } from "../src/wire.ts";
 import { sandboxEffectorSecret, sandboxEffectorContainer, sandboxEffectorVolumes } from "../src/sandbox-kube.ts";
-import { sandboxEffectorService } from "../src/sandbox-effector.ts";
 import { effectorTarget } from "../src/instance.ts";
 import { effectorKey } from "../src/tokens.ts";
 import { jr2Setup } from "../src/setup.ts";
@@ -635,6 +634,7 @@ test("the Sandbox Effector container: jr2's binary, the Worktree, caches and run
     secretVolume: "effector-secrets",
     keyVolume: "effector-key",
     scratchVolume: "effector-scratch",
+    caVolume: "effector-ca",
   });
   assert.equal(c.name, "effector");
   assert.deepEqual(c.command, ["/opt/jr2/bin/effector"]);
@@ -646,6 +646,7 @@ test("the Sandbox Effector container: jr2's binary, the Worktree, caches and run
     "/run/jr2/secrets": true,
     "/run/jr2/effector": true,
     "/run/jr2/scratch": false,
+    "/etc/jr2/effector-ca": true,
   });
   const names = c.env.map((e) => e.name);
   assert.ok(!names.some((n) => /TOKEN|KEY$|SECRET$/.test(n) && n !== "JR2_EFFECTOR_KEY"), "no value in its env");
@@ -656,7 +657,9 @@ test("the Sandbox Effector container: jr2's binary, the Worktree, caches and run
 // ADR-0068: the Effector refuses a request signed before its process started. With no probe of its
 // own the pod went Ready on the Harness's while the Effector still read its mounts, the body's
 // first Effect request was signed then, and its answer was that refusal: unsigned, so `unknown`.
-// The probe holds pod Ready (and so the Sandbox's, ADR-0063) until the Effector serves.
+// The probe holds pod Ready (and so the Sandbox's, ADR-0063) until the Effector serves. The pod is
+// on the Fence, where no probe of the kubelet reaches it (ADR-0084), so the probe is an exec of the
+// Effector's own `healthcheck`.
 test("the Sandbox Effector container is probed on its own /healthz: the pod is Ready only once the Effector serves", () => {
   const c = sandboxEffectorContainer({
     image: "registry.example/sandbox:1",
@@ -665,8 +668,16 @@ test("the Sandbox Effector container is probed on its own /healthz: the pod is R
     secretVolume: "effector-secrets",
     keyVolume: "effector-key",
     scratchVolume: "effector-scratch",
+    caVolume: "effector-ca",
   });
-  assert.deepEqual(c.readinessProbe, { httpGet: { path: "/healthz", port: 8082 }, periodSeconds: 1 });
+  const healthcheck = ["/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8082/healthz"];
+  assert.deepEqual(c.readinessProbe, { exec: { command: healthcheck }, timeoutSeconds: 2, periodSeconds: 10 });
+  assert.deepEqual(c.startupProbe, {
+    exec: { command: healthcheck },
+    timeoutSeconds: 2,
+    periodSeconds: 1,
+    failureThreshold: 600,
+  });
 });
 
 // ADR-0068: a credentialed command's child reads the image's top-level trees, bar the denied names
@@ -698,11 +709,10 @@ test("every Sandbox Effector mount that holds a secret or the Agent's files is w
   for (const p of [env.JR2_EFFECTOR_SECRETS, env.JR2_EFFECTOR_GIT, env.JR2_EFFECTOR_KEY, env.JR2_EFFECTOR_CONFIG]) {
     assert.ok(p !== undefined && under(p, "/run/jr2"), `${p} is under /run/jr2`);
   }
-  // The caBundle is a ConfigMap, never a Secret.
+  // The trust is a ConfigMap, never a Secret.
   const ca = sandboxEffectorVolumes({
     sandbox: "ws-1",
     manifest: { version: 1, secret: "jr2-effector-ws-1", sources: [] },
-    caBundle: true,
   }).find((v) => v.name === "effector-ca");
   assert.ok(ca && "configMap" in ca);
 });
@@ -753,11 +763,11 @@ test("the sync's client: POST /sync with the Workspace's bearer; a Harness that 
   assert.match("reason" in answer ? answer.reason : "", /could not be reached/);
 });
 
-test("where each Effector is: the Instance Effector's Service and key; a Sandbox Effector's Service and its Sandbox's key", () => {
+test("where each Effector is: the Instance Effector's Service and key; a Sandbox Effector's slot address and its Sandbox's key", () => {
   const key = Buffer.from("k");
   const opts = {
     instanceEffector: "jr2-instance-effector.ns.svc:8082",
-    sandboxEffector: (sandbox: string) => `${sandboxEffectorService(sandbox)}.ns.svc:8082`,
+    sandboxEffector: (sandbox: string) => (sandbox === "ws-run-coding-1a2b" ? "198.19.1.5:8082" : "198.19.1.6:8082"),
   };
   assert.deepEqual(effectorTarget("instance", opts, key), {
     placement: "instance",
@@ -766,7 +776,7 @@ test("where each Effector is: the Instance Effector's Service and key; a Sandbox
   });
   assert.deepEqual(effectorTarget({ sandbox: "ws-run-coding-1a2b" }, opts, key), {
     placement: "sandbox",
-    service: "fx-run-coding-1a2b.ns.svc:8082",
+    service: "198.19.1.5:8082",
     key: effectorKey(key, "ws-run-coding-1a2b"),
   });
   assert.equal(effectorTarget({ sandbox: "ws-x" }, {}, key), undefined);

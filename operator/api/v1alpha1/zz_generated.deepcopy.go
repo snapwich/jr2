@@ -496,11 +496,6 @@ func (in *SandboxStatus) DeepCopyInto(out *SandboxStatus) {
 		*out = new(v1.LocalObjectReference)
 		**out = **in
 	}
-	if in.ServiceRef != nil {
-		in, out := &in.ServiceRef, &out.ServiceRef
-		*out = new(v1.LocalObjectReference)
-		**out = **in
-	}
 	if in.Repos != nil {
 		in, out := &in.Repos, &out.Repos
 		*out = make([]SandboxRepoStatus, len(*in))

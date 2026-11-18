@@ -214,8 +214,6 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
 
 export type FakeSandbox = {
   url: string;
-  /** The same Custodian on a Unix socket, as the control socket under `/run/jr2` is (ADR-0076). */
-  socket: string;
   /** The same Custodian over HTTPS at jr2's own name (`https://custodian.jr2.internal:<port>`), its
    * TLS ended with a leaf of a test CA, as on the Fence (ADR-0059, ADR-0084). `fetch` trusts that
    * CA alone and looks jr2's name up as the loopback: what the Harness's `controlFetch` does in a
@@ -340,10 +338,6 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     });
   });
   const port = await listen(server);
-  // The control socket (ADR-0076): one more listener, the same answers.
-  const socket = join(mkdtempSync(join(tmpdir(), "jr2-custodian-")), "control.sock");
-  const onSocket: Server = createServer((req, res) => server.emit("request", req, res));
-  await new Promise<void>((resolve) => onSocket.listen(socket, resolve));
   // jr2's own name over HTTPS (ADR-0084): one more listener, the same answers.
   const tls = testTls(new URL(CUSTODIAN_URL).hostname);
   const onTls: TlsServer = createTlsServer({ cert: tls.cert, key: tls.key }, (req, res) =>
@@ -352,7 +346,6 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
   const tlsPort = await listen(onTls as unknown as Server);
   return {
     url: `http://127.0.0.1:${port}`,
-    socket,
     https: {
       url: `${CUSTODIAN_URL}:${tlsPort}`,
       fetch: controlFetch({ ca: tls.ca, lookup: loopbackLookup }),
@@ -393,8 +386,6 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
       slots.length = 0;
     },
     close: () => {
-      onSocket.closeAllConnections();
-      onSocket.close();
       onTls.closeAllConnections();
       onTls.close();
       server.closeAllConnections();

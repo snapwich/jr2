@@ -201,10 +201,10 @@ export type KubeAdmin = {
    * stored nowhere. THROWS on a refusal, with kubectl's reason. */
   dryRunCreate(opts: { manifest: string; context?: string }): Promise<{ spec?: { resources?: unknown } }>;
   /** Wait until one pod has run to its end, and read its logs — the provider preflight's seam
-   * (ADR-0019, ADR-0059). Its pod has a Custodian beside the check container, which `kubectl run` cannot
-   * make, so `jr2 up` applies it and waits here. Two bounds: `startSeconds` until the check
-   * container runs (the image pulls and the Custodian's start), then `runSeconds` for the check. It
-   * stops early on a pod that cannot start (`podProgress`). Never throws. */
+   * (ADR-0019, ADR-0084). Its pod is on the Fence, which `kubectl run` cannot make, so `jr2 up`
+   * applies it and waits here. Two bounds: `startSeconds` until the check container runs (the image
+   * pulls), then `runSeconds` for the check. It stops early on a pod that cannot start
+   * (`podProgress`). Never throws. */
   awaitPodEnd(opts: {
     namespace: string;
     name: string;
@@ -221,14 +221,12 @@ export type KubeAdmin = {
 
 /** How one pod ended (`awaitPodEnd`). `phase` is the pod's own, or `stuck` (it cannot start:
  * `stuck` says why) or `timeout` (`started` says whether the check ran). `output` is the check
- * container's whole log; `custodian` the Custodian's, its previous run's first when it restarted.
- * `reasons` is each container's waiting or ended reason as the kubelet says it. */
+ * container's whole log. `reasons` is each container's waiting or ended reason as the kubelet says it. */
 export type PodEnd = {
   phase: "Succeeded" | "Failed" | "stuck" | "timeout";
   started: boolean;
   stuck?: string;
   output: string;
-  custodian: string;
   reasons: string[];
 };
 
@@ -301,14 +299,11 @@ const PULL_FINAL = /not found|manifest unknown|unauthorized|denied/i;
 
 /**
  * Where a check pod is (`awaitPodEnd`): ended (`phase`), unable to start (`stuck`, the reason), or
- * still on its way, with whether `container` runs yet. A restart of `sidecar` is `stuck`: the
- * Custodian restarts only when it refused to start, and the next start refuses alike. Pure, for its
- * test.
+ * still on its way, with whether `container` runs yet. Pure, for its test.
  */
 export function podProgress(
   pod: CheckPodObject | undefined,
   container: string,
-  sidecar: string,
 ): { phase?: "Succeeded" | "Failed"; stuck?: string; running: boolean; reasons: string[] } {
   const statuses = [...(pod?.status?.initContainerStatuses ?? []), ...(pod?.status?.containerStatuses ?? [])];
   const reasons = statuses.flatMap((c) => [
@@ -327,10 +322,6 @@ export function podProgress(
     if (waiting && (TERMINAL_WAITING.has(waiting) || pullFinal)) {
       const last = c.lastState?.terminated?.reason;
       return { stuck: `${c.name ?? "?"}: ${waiting}${last ? ` (last ended ${last})` : ""}`, running, reasons };
-    }
-    if (c.name === sidecar && (c.restartCount ?? 0) > 0) {
-      const last = c.lastState?.terminated?.reason;
-      return { stuck: `${sidecar}: restarted${last ? ` (last ended ${last})` : ""}`, running, reasons };
     }
   }
   return { running, reasons };
@@ -353,11 +344,10 @@ export type PodEndPorts = {
 
 /**
  * The wait of `awaitPodEnd`: poll the pod every 2 s until it ends (`podProgress`), cannot start
- * (a terminal waiting reason, a Custodian restart, a `FailedMount` event), or runs out of time —
- * `startSeconds` until `container` runs, then `runSeconds` from then on. While it waits to start,
- * each new reason it gives goes to `pending`. Then it reads the logs: the check container's whole log, for
- * every model's line, read again when a pod that ended answers nothing; and the Custodian's last
- * 50 lines, its run before first when it restarted.
+ * (a terminal waiting reason, a `FailedMount` event), or runs out of time — `startSeconds` until
+ * `container` runs, then `runSeconds` from then on. While it waits to start, each new reason it
+ * gives goes to `pending`. Then it reads the check container's whole log, for every model's line,
+ * read again when a pod that ended answers nothing.
  */
 export async function waitPodEnd(
   ports: PodEndPorts,
@@ -367,13 +357,11 @@ export async function waitPodEnd(
   let runBy: number | undefined;
   let seen: ReturnType<typeof podProgress>;
   let end: PodEnd["phase"];
-  let restarted = false;
   let said: string | undefined;
   const mounts = new Map<string, string>();
   for (;;) {
     const pod = await ports.pod();
-    seen = podProgress(pod, opts.container, "custodian");
-    restarted ||= seen.stuck?.startsWith("custodian: restarted") === true;
+    seen = podProgress(pod, opts.container);
     if (seen.running && runBy === undefined) runBy = ports.now() + opts.runSeconds * 1000;
     if (seen.phase) {
       end = seen.phase;
@@ -404,16 +392,11 @@ export async function waitPodEnd(
     await ports.sleep(1000);
     output = await ports.logs(opts.container, { tailLines: -1 });
   }
-  const custodian = [
-    ...(restarted ? [await ports.logs("custodian", { tailLines: 50, previous: true })] : []),
-    await ports.logs("custodian", { tailLines: 50 }),
-  ].join("\n");
   return {
     phase: end,
     started: runBy !== undefined,
     ...(seen.stuck ? { stuck: seen.stuck } : {}),
     output,
-    custodian,
     reasons: seen.reasons,
   };
 }

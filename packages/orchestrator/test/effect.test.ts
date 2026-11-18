@@ -526,7 +526,7 @@ test("a loop below the Agent's state grows the blob by its tails only while the 
 });
 
 test("D1 holds a fast exit through the real exec: a kill that overtakes its start keeps it from running", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jr2-fx-"));
+  const dir = mkdtempSync(join(tmpdir(), "jr2-effect-"));
   const execs = new Execs({ children: testChildren({ work: dir }) });
   const marker = join(dir, "ran");
   let release!: () => void;
@@ -696,7 +696,7 @@ const appendsTo = (file: string) => [
 ];
 
 test("no second fire: a start that reached a Harness which then restarted is never sent again — `unknown`, one run", async () => {
-  const work = mkdtempSync(join(tmpdir(), "jr2-fx-"));
+  const work = mkdtempSync(join(tmpdir(), "jr2-effect-"));
   const marks = join(work, "marks");
   const children = testChildren({ work });
   let execs = new Execs({ children });
@@ -726,7 +726,7 @@ test("no second fire: a start that reached a Harness which then restarted is nev
 });
 
 test("a start whose answer was lost while its Harness lives on: it is read by id and followed — one run, its real output", async () => {
-  const work = mkdtempSync(join(tmpdir(), "jr2-fx-"));
+  const work = mkdtempSync(join(tmpdir(), "jr2-effect-"));
   const marks = join(work, "marks");
   const execs = new Execs({ children: testChildren({ work }) });
   let starts = 0;
@@ -748,7 +748,7 @@ test("a start whose answer was lost while its Harness lives on: it is read by id
 });
 
 test("a start that never left (the connection was refused) is sent again until it lands — one run", async () => {
-  const work = mkdtempSync(join(tmpdir(), "jr2-fx-"));
+  const work = mkdtempSync(join(tmpdir(), "jr2-effect-"));
   const marks = join(work, "marks");
   const execs = new Execs({ children: testChildren({ work }) });
   let starts = 0;

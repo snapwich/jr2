@@ -1,6 +1,6 @@
 # operator
 
-The Kubernetes operator that reconciles the generic `Sandbox` CRD into a Pod + Service, reports a `status.endpoint`,
+The Kubernetes operator that reconciles the generic `Sandbox` CRD into a Pod, reports its `status.phase`,
 and keeps one bare cache per node of every `Repo` a Sandbox names. A standalone Go module (kubebuilder /
 controller-runtime). See [ADR-0001](../docs/adr/0001-operator-owned-generic-sandbox.md) and
 [ADR-0051](../docs/adr/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md).
@@ -66,10 +66,11 @@ The reconciler (`internal/controller/sandbox_controller.go`):
 
 - Builds a **bare Pod** (no Deployment/Job) from `spec.image` (the primary "harness" container) plus any
   `spec.sidecars`, with `spec.volumes` / `volumeMounts` / `resources` / `env` / `envFrom`.
-- Creates a **Service** per Sandbox selecting the pod, exposing `spec.port` (default 8080).
-- Owns both via owner references, so deleting the `Sandbox` garbage-collects the Pod + Service.
+- Creates **no Service**: with `spec.network` the pod is on the Fence (ADR-0084), and the Orchestrator reaches it at its
+  slot's address through the Custodian.
+- Owns the Pod via an owner reference, so deleting the `Sandbox` garbage-collects it.
 - Reports `status.phase` (`Pending` → `Ready` → `Terminating`), gating **Ready on the pod's `Ready` condition** (not
-  just scheduling), and populates `status.endpoint` (`http://<name>.<ns>.svc:<port>`), `podRef`, `serviceRef`.
+  just scheduling) and, with `spec.network`, on Multus's report of the attachment, and populates `podRef`.
 - Garbage-collects an **orphaned** Sandbox (no owner references) once `spec.idleTimeout` elapses.
 
 ## Sandbox spec/status
@@ -78,7 +79,8 @@ The reconciler (`internal/controller/sandbox_controller.go`):
 spec:
   image: <harness image> # primary container, required
   command/args: [...] # optional entrypoint override
-  port: 8080 # surfaced in status.endpoint
+  port: 8080 # the port the Orchestrator dials and the default probe asks
+  network: { attachment: jr2-fence-<i>, nameserver: <address> } # the Fence (ADR-0084)
   repos: [{ key: <cache key> }...] # Repos to attach; each mounted read-only at /repos/<key> (ADR-0051)
   sidecars: [<corev1.Container>...] # generic; agents live here, operator stays agnostic
   volumes / volumeMounts: [...]
@@ -87,8 +89,7 @@ spec:
   idleTimeout: 30m # GC an orphaned Sandbox after this
 status:
   phase: Pending | Ready | Terminating
-  endpoint: http://<name>.<ns>.svc:8080
-  podRef / serviceRef: { name }
+  podRef: { name }
   node: <node name> # where the pod landed; the key into each Repo's status.nodes[]
   conditions: [...] # Ready mirrors status.phase; ReposFresh reports the caches' last fetch
 ```

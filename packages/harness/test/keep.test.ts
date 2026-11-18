@@ -133,7 +133,7 @@ test("written locally first: a restart sends what the Orchestrator did not take,
   }
 });
 
-test("the send over the control socket states the Stand-in and the slot, and reads the answer", async () => {
+test("the send to the Custodian states the Stand-in and the slot, and reads the answer", async () => {
   const seen: Array<{ url: string; init: RequestInit }> = [];
   const answers = [
     new Response("{}", { status: 200 }),
@@ -142,7 +142,7 @@ test("the send over the control socket states the Stand-in and the slot, and rea
     new Response("{}", { status: 403 }),
   ];
   const send = keepSendOver({
-    url: "http://jr2-custodian/",
+    url: "https://custodian.jr2.internal/",
     token: "stand-in",
     fetch: (async (url: string, init: RequestInit) => {
       seen.push({ url, init });
@@ -155,7 +155,7 @@ test("the send over the control socket states the Stand-in and the slot, and rea
   assert.equal(await send("r/root/coder", "root/coder", entries, signal), "again");
   assert.equal(await send("r/root/coder", "root/coder", entries, signal), "again");
   assert.equal(await send("r/root/coder", "root/coder", entries, signal), "refused");
-  assert.equal(seen[0]!.url, "http://jr2-custodian/agents/r%2Froot%2Fcoder/conversation");
+  assert.equal(seen[0]!.url, "https://custodian.jr2.internal/agents/r%2Froot%2Fcoder/conversation");
   const headers = seen[0]!.init.headers as Record<string, string>;
   assert.equal(headers.authorization, "Bearer stand-in");
   assert.equal(headers["x-jr2-slot"], "root/coder");

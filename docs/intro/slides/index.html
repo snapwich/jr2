@@ -1041,8 +1041,8 @@ secrets: [{
 
         <!-- Sources: ADR-0059 (held secrets, the Stand-in, the Custodian replaces the Adapter), ADR-0058 (the model
              key used to sit in the Harness container). The Harness env holds Stand-ins (jr2-held-<NAME>); outbound
-             HTTPS goes through the Custodian (HTTPS_PROXY), which swaps in a key only toward a host that key is bound
-             to and tunnels every other host untouched. The engine is upstream Envoy, pinned by digest, with a Lua
+             traffic goes through the Custodian, outside the pod, on the Fence (ADR-0084), which swaps in a key only
+             toward a host that key is bound to and tunnels every host of the Egress list untouched. The engine is upstream Envoy, pinned by digest, with a Lua
              filter jr2 writes; jr2 up writes its whole configuration, with no admin listener. Limits (ADR-0059
              Consequences): the Agent can still spend a key toward its bound host while its pod lives; a key with
              admin rights can mint one the Agent could take; an upstream that echoes the key in a response hands it

@@ -30,8 +30,9 @@ unchanged.
   reports the node, and Playwright sizes its workers from it alone, so a Machine passes `--workers=$JR2_CPUS`; the Agent
   is told its CPU count by the Briefing ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), never
   by the Frame.
-- **jr2 splits the Size inside the pod.** The Custodian takes a fixed kit slice (64Mi, 50m). The User Container takes
-  its split if the Machine states one — `user` widens from a string to
+- **jr2 splits the Size inside the pod.** The Custodian is outside the pod
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), so it takes no part of the Size. The User
+  Container takes its split if the Machine states one — `user` widens from a string to
   `{ image, resources?: { limits: { memory?, cpu? } } }` (ADR-0005 foresaw the widening) — and otherwise shares the pod
   budget with no limit of its own. The Sandbox Effector, in a pod that has one
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), has no split and no limit of its own

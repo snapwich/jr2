@@ -40,7 +40,6 @@ export type SandboxStatus = {
    * terminal, and the operator never creates another. Terminal: a Lost Sandbox is never Pending or
    * Ready again. */
   phase?: SandboxPhase;
-  endpoint?: string;
   /** The pod the operator created for this Sandbox — its once-only record that it did. The
    * Orchestrator judges no identity from it: Lost is the operator's verdict (ADR-0021). */
   podUID?: string;

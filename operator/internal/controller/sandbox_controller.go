@@ -166,13 +166,12 @@ type SandboxReconciler struct {
 // +kubebuilder:rbac:groups=core.jr2.dev,resources=sandboxes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.jr2.dev,resources=sandboxes/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core.jr2.dev,resources=repos,verbs=get;list;watch
 
 // Reconcile drives a Sandbox toward its desired state: a Pod (primary container
-// plus any sidecars) and a Service, with status.phase / status.endpoint
-// reported back. The Pod and Service are owned by the Sandbox so deleting the CR
-// garbage-collects them; a Sandbox whose keepalive lease has lapsed past
+// plus any sidecars), with status.phase reported back, and no Service: the
+// Orchestrator reaches a Pod on the Fence at its slot's address (ADR-0084).
+// The Pod is owned by the Sandbox so deleting the CR garbage-collects it; a Sandbox whose keepalive lease has lapsed past
 // spec.idleTimeout deletes itself (ADR-0001). The Repos the spec names are read
 // (never written) to place the Pod near their caches, to hold Ready until every
 // one is present on its node and fetched (ADR-0051), and to report per key what
@@ -214,10 +213,6 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
-	if err := r.reconcileService(ctx, &sandbox); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile service: %w", err)
-	}
-
 	repos, err := r.reposFor(ctx, &sandbox)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("read repos: %w", err)
@@ -253,7 +248,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("reconcile status: %w", err)
 	}
 
-	log.V(1).Info("reconciled", "phase", sandbox.Status.Phase, "endpoint", sandbox.Status.Endpoint)
+	log.V(1).Info("reconciled", "phase", sandbox.Status.Phase)
 	// requeueAfter re-checks the idle deadline without relying on an external
 	// event; zero means no idle re-check is pending.
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -300,27 +295,6 @@ func lastKeepalive(ctx context.Context, sandbox *corev1alpha1.Sandbox) time.Time
 		return ts
 	}
 	return created
-}
-
-// reconcileService ensures the headed Service fronting the Sandbox exists and
-// targets the primary container's port.
-func (r *SandboxReconciler) reconcileService(ctx context.Context, sandbox *corev1alpha1.Sandbox) error {
-	port := portFor(sandbox)
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: sandbox.Name, Namespace: sandbox.Namespace},
-	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
-		svc.Labels = sandboxLabels(sandbox)
-		svc.Spec.Selector = sandboxLabels(sandbox)
-		svc.Spec.Ports = []corev1.ServicePort{{
-			Name:       "http",
-			Port:       port,
-			TargetPort: intstrFromInt32(port),
-			Protocol:   corev1.ProtocolTCP,
-		}}
-		return controllerutil.SetControllerReference(sandbox, svc, r.Scheme)
-	})
-	return err
 }
 
 // reposFor reads the Repo resource behind every key the Sandbox names. A key
@@ -693,8 +667,6 @@ func (r *SandboxReconciler) markLost(ctx context.Context, sandbox *corev1alpha1.
 func (r *SandboxReconciler) reconcileRefused(ctx context.Context, sandbox *corev1alpha1.Sandbox, message string) (time.Duration, error) {
 	observed := sandbox.Status.DeepCopy()
 	sandbox.Status.Phase = corev1alpha1.SandboxPending
-	sandbox.Status.Endpoint = endpointFor(sandbox)
-	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
 	for _, t := range []string{conditionScheduled, conditionReady} {
 		meta.SetStatusCondition(&sandbox.Status.Conditions, metav1.Condition{
 			Type:               t,
@@ -990,33 +962,20 @@ func shmVolumeFor(sandbox *corev1alpha1.Sandbox) ([]corev1.Volume, []corev1.Volu
 }
 
 // readinessProbeFor returns the primary container's readiness probe: the
-// Sandbox's override when set, otherwise one that asks the Harness's own
-// `/healthz` on the serving port, so phase Ready means the Harness accepts
-// connections (not just "started"). On the Fence (spec.network) it is an exec
-// probe, `effector healthcheck`, because no HTTP or TCP probe of the kubelet
-// reaches the Pod there (ADR-0084); otherwise it is the kubelet's HTTP GET.
+// Sandbox's override when set, otherwise an exec probe, `effector healthcheck`
+// of the Harness's own /healthz on the serving port, so phase Ready means the
+// Harness accepts connections (not just "started"). It is an exec probe,
+// because no HTTP or TCP probe of the kubelet reaches a pod on the Fence
+// (ADR-0084), and it asks the Harness's own route, not the port (ADR-0063).
 func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 	if sandbox.Spec.ReadinessProbe != nil {
 		return sandbox.Spec.ReadinessProbe
 	}
-	if sandbox.Spec.Network != nil {
-		// Each exec probe is a process the runtime starts in the container,
-		// about ten times the CPU of an HTTP probe. The startup probe
-		// (startupProbeFor) gives the 1 s cadence until the Harness first
-		// answers; after that, readiness is checked every 10 s.
-		return &corev1.Probe{ProbeHandler: fenceHealthcheck(sandbox), TimeoutSeconds: 2, PeriodSeconds: 10}
-	}
-	// The Harness's own route, not the port (ADR-0063): the pod has one
-	// network namespace, so a sidecar that takes the port would answer a
-	// socket probe and the pod would go Ready with no Harness in it.
-	return &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstrFromInt32(portFor(sandbox))},
-		},
-		// Every second, not the kubelet's 10: the default period adds up to
-		// 10s to every provision (the scaling review's R12).
-		PeriodSeconds: 1,
-	}
+	// Each exec probe is a process the runtime starts in the container,
+	// about ten times the CPU of an HTTP probe. The startup probe
+	// (startupProbeFor) gives the 1 s cadence until the Harness first
+	// answers; after that, readiness is checked every 10 s.
+	return &corev1.Probe{ProbeHandler: fenceHealthcheck(sandbox), TimeoutSeconds: 2, PeriodSeconds: 10}
 }
 
 // fenceStartupFailures is how many failed startup probes, one each second,
@@ -1026,14 +985,13 @@ func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 // the crash loop that ends the provision.
 const fenceStartupFailures = 600
 
-// startupProbeFor returns the primary container's startup probe: on the
-// Fence with no readiness override, the same exec probe as readiness every
-// second, so that the pod is Ready within a second of the Harness's first
-// answer (R12) while the 10 s readiness period bounds the probes' CPU for
-// the rest of the pod's life. Otherwise none: the HTTP probe is cheap at 1 s,
-// and an override states its own timing.
+// startupProbeFor returns the primary container's startup probe: with no
+// readiness override, the same exec probe as readiness every second, so that
+// the pod is Ready within a second of the Harness's first answer (R12) while
+// the 10 s readiness period bounds the probes' CPU for the rest of the pod's
+// life. With an override, none: an override states its own timing.
 func startupProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
-	if sandbox.Spec.Network == nil || sandbox.Spec.ReadinessProbe != nil {
+	if sandbox.Spec.ReadinessProbe != nil {
 		return nil
 	}
 	return &corev1.Probe{
@@ -1121,12 +1079,10 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// Pod the last status named.
 	admitted := reposAdmitted(sandbox, pod)
 	observed := sandbox.Status.DeepCopy()
-	sandbox.Status.Endpoint = endpointFor(sandbox)
 	sandbox.Status.PodRef = &corev1.LocalObjectReference{Name: pod.Name}
 	// The Pod this Sandbox has for its life (ADR-0021), recorded when it was
 	// created; restated here for a Pod created before the operator recorded it.
 	sandbox.Status.PodUID = pod.UID
-	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
 	// The node whose caches this Sandbox mounts — published for whoever reads
 	// the Sandbox, as the key into each Repo's status.nodes[]. The operator
 	// itself gates on the Pod's nodeName below, and the cache agent reads
@@ -1242,12 +1198,6 @@ func onTheFence(sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) bool {
 		}
 	}
 	return false
-}
-
-// endpointFor is the in-cluster Service address the Orchestrator reaches the
-// Harness at.
-func endpointFor(sandbox *corev1alpha1.Sandbox) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
 }
 
 // containerStatus copies one container's restarts and last end off the Pod
@@ -1506,7 +1456,6 @@ func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.Sandbox{}).
 		Owns(&corev1.Pod{}).
-		Owns(&corev1.Service{}).
 		Watches(&corev1alpha1.Repo{}, r.repoEvents()).
 		WithOptions(controller.Options{MaxConcurrentReconciles: SandboxWorkers}).
 		Named("sandbox").

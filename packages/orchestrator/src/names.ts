@@ -135,11 +135,9 @@ export function heldSecretsSecret(pod: string): string {
 /** One leaf per bound `host:port` (`<stem>.crt`, `<stem>.key`) — the Custodians' alone. */
 export const HELD_TLS_SECRET = "jr2-held-tls";
 /** What `jr2 up` DECLARES about held secrets: each pod's held manifest (`heldManifestKey` — names,
- * bindings, headers; never a value) and the Custodian's program once (`CUSTODIAN_PROGRAM_KEY`).
- * Nothing rendered per pod lives here: a shared object stops at 1 MiB, and Envoy's files are a
- * pod's own, rendered where the pod is made (`sandboxCustodianConfigMap`,
- * `INSTANCE_CUSTODIAN_CONFIGMAP`). Always applied, possibly holding no secret: every Harness pod
- * runs a Custodian. */
+ * bindings, headers; never a value), and each Sandbox Effector's and the push manifest. Nothing
+ * rendered per pod lives here: a shared object stops at 1 MiB. Always applied, possibly holding no
+ * secret. */
 export const HELD_CONFIGMAP = "jr2-held";
 /** Where the Orchestrator reads a Workspace's held manifest, per provision — a mount, so a
  * held-secret edit reaches future Sandboxes without rolling the Orchestrator (the `jr2-images`
@@ -147,15 +145,9 @@ export const HELD_CONFIGMAP = "jr2-held";
 export const HELD_MOUNT = "/etc/jr2/held";
 /** The `jr2-held` key of one pod's manifest. */
 export const heldManifestKey = (pod: string): string => `held-${pod}.json`;
-/** The `jr2-held` key of the Custodian's fixed Lua — `custodian.lua` as written, once per Instance;
- * each pod's own script loads it by this name from its config mount. */
+/** The key of the Custodian's fixed Lua in the Custodian's ConfigMap — `custodian.lua` as written,
+ * once per Instance; each slot's own table loads it by this name. */
 export const CUSTODIAN_PROGRAM_KEY = "program.lua";
-/** The ConfigMap with the Instance Harness's Custodian's two rendered files (`envoy.json`,
- * `custodian.lua`), written by `jr2 up`: the one pod it makes. */
-export const INSTANCE_CUSTODIAN_CONFIGMAP = "jr2-held-custodian";
-/** The ConfigMap with one Sandbox's Custodian's two rendered files, written by the Orchestrator at
- * provision and owned by the Sandbox CR — the `<name>-token` family: it goes with the pod. */
-export const sandboxCustodianConfigMap = (sandbox: string): string => `${sandbox}-custodian`;
 /** The Secret of one slot of the Custodian of an Instance (ADR-0084): what its control process reads
  * to render the slot's rules (`custodian-slot.ts`). The Orchestrator writes it (for slots 0–2, `jr2
  * up`) and never reads it; the Custodian may get each of these names, and no other Secret. */
@@ -205,23 +197,8 @@ export const ANNOTATION_FENCE_OBJECTS = "jr2.dev/fence-objects";
  * (`workspaceHeldPod`), so the two cannot collide. */
 export const INSTANCE_HARNESS_HELD_POD = "instance";
 
-/** The Custodian's ports (ADR-0059), all taken on every Harness pod (ADR-0005): the Harness's
- * HTTPS proxy on loopback, the kubelet's probe, and the fetch listener that the ask rides to the
- * Orchestrator, at the address `jr2-upload-pack` defaults to (ADR-0053). The agent routes are not
- * on a port: they are on the control socket ({@link CUSTODIAN_CONTROL_SOCKET}, ADR-0076). */
-export const CUSTODIAN_PORT = 15001;
+/** The Custodian pod's health port (ADR-0084): the kubelet's probe, on the cluster's network. */
 export const CUSTODIAN_HEALTH_PORT = 15021;
-export const CUSTODIAN_FETCH_PORT = 8081;
-
-/** The folder of the Custodian's control socket (ADR-0076): an emptyDir that the Harness container
- * and the Custodian container alone mount, at this path in both. It is under `/run/jr2`, so no
- * process that the Harness confines can make a socket here, and none can take the control
- * listener's place while the Custodian restarts. The Custodian writes it; the Harness mounts it
- * read-only, which still lets it connect to the socket. */
-export const CUSTODIAN_SOCKET_DIR = "/run/jr2/custodian";
-/** The control socket: the Custodian's listener for the five agent routes, which carry the control
- * Stand-in (ADR-0059, ADR-0076). */
-export const CUSTODIAN_CONTROL_SOCKET = `${CUSTODIAN_SOCKET_DIR}/control.sock`;
 
 /** The scaffold's default deploy-key Secret name (ADR-0047/0051): what `jr2 init`'s wildcard
  * `git.credentials` entry names as its `sshKey`, and what `jr2 up`'s ssh offer generates into when

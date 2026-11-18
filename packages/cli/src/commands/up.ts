@@ -77,7 +77,6 @@ import {
   heldSecretsOf,
   HELD_CA_SECRET,
   HELD_TLS_SECRET,
-  INSTANCE_CUSTODIAN_CONFIGMAP,
   INSTANCE_HARNESS_HELD_POD,
   ORCHESTRATOR_PORT,
   imageContextDigest,
@@ -177,7 +176,6 @@ import {
   INSTANCE_HARNESS_PVC,
   INSTANCE_HARNESS_SERVICE,
   instanceHarnessObjects,
-  INSTANCE_HARNESS_CREDENTIALS,
   instanceEffectorObjects,
   effectorDigest,
   storedValueDigest,
@@ -1236,6 +1234,19 @@ export async function up(args: string[], io: Io): Promise<number> {
   });
   activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
   await kube.apply({ manifest: instanceList, warn: (line) => activity(io, line), ...ctx });
+  // jr2 makes two NetworkPolicies now: the Custodian's and the Instance Effector's (ADR-0084,
+  // ADR-0068). A Harness pod is on the Fence and has no address on the cluster's network, so each
+  // other policy that jr2 made for this Instance before the Fence goes on an upgrade.
+  const keptPolicies = new Set([CUSTODIAN_SERVICE, INSTANCE_EFFECTOR]);
+  for (const policy of await kube.listJson<KubeObject>({
+    kind: "networkpolicy",
+    selector: `${LABEL_INSTANCE}=${name},app.kubernetes.io/managed-by=jr2`,
+    namespace,
+    ...ctx,
+  })) {
+    if (keptPolicies.has(policy.metadata.name)) continue;
+    await kube.deleteObject({ kind: "networkpolicy", name: policy.metadata.name, namespace, ...ctx });
+  }
   // After the apply, so the line names a value that exists. It works only when the Orchestrator has
   // loaded its digest, which the publish below waits for (ADR-0078); `converged` says so.
   for (const n of callerTokens.made) {
@@ -1464,11 +1475,10 @@ export async function up(args: string[], io: Io): Promise<number> {
       }),
       ...ctx,
     });
-    // What the pod had before the Fence (ADR-0084): its Custodian's files, its credentials Secret,
-    // and the ClusterIP Service that the Orchestrator dialed. No Service routes to it now.
+    // What the pod had before the Fence (ADR-0084): the ClusterIP Service that the Orchestrator
+    // dialed, and the objects of a Custodian in the pod. No Service routes to it now.
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
-    await kube.deleteObject({ kind: "configmap", name: INSTANCE_CUSTODIAN_CONFIGMAP, namespace, ...ctx });
-    await kube.deleteObject({ kind: "secret", name: INSTANCE_HARNESS_CREDENTIALS, namespace, ...ctx });
+    for (const old of BEFORE_THE_FENCE) await kube.deleteObject({ ...old, namespace, ...ctx });
     await awaitRollout(kube, {
       kind: "statefulset",
       name: INSTANCE_HARNESS_SERVICE,
@@ -1494,8 +1504,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     await kube.deleteObject({ kind: "persistentvolumeclaim", name: INSTANCE_HARNESS_PVC, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_PODS_SERVICE, namespace, ...ctx });
-    await kube.deleteObject({ kind: "configmap", name: INSTANCE_CUSTODIAN_CONFIGMAP, namespace, ...ctx });
-    await kube.deleteObject({ kind: "secret", name: INSTANCE_HARNESS_CREDENTIALS, namespace, ...ctx });
+    for (const old of BEFORE_THE_FENCE) await kube.deleteObject({ ...old, namespace, ...ctx });
     // Slot 0's objects go when no pod of it is left: a pod that drains keeps its Menu and its model
     // through the Custodian to the end (ADR-0031), and a later converge deletes them.
     const draining = await kube.listJson({
@@ -1603,6 +1612,14 @@ export async function up(args: string[], io: Io): Promise<number> {
   for (const notice of gitSsh) reportGeneratedKey(io, notice);
   return 0;
 }
+
+/** The Instance Harness's objects of the time before the Fence (ADR-0084): its Custodian's rendered
+ * files, and its credentials Secret, which held its control token. `jr2 up` deletes them on an
+ * upgraded Instance. */
+const BEFORE_THE_FENCE = [
+  { kind: "configmap", name: "jr2-held-custodian" },
+  { kind: "secret", name: `${INSTANCE_HARNESS_SERVICE}-token` },
+] as const;
 
 /**
  * Every image ref one converge resolved. The Orchestrator reads `harness`/`custodian`/`sandbox` from
@@ -3479,21 +3496,15 @@ export function checkVerdicts(output: string): Map<string, CheckVerdict> {
 
 /**
  * Why a check pod said nothing of a model, from how it ended (`PodEnd`): the hint follows the reason
- * the kubelet gave, and the Custodian's own refusal line is quoted when it has one. Exported for its
- * test.
+ * the kubelet gave. Exported for its test.
  */
-export function podFault(
-  end: PodEnd,
-  checkPod: Pick<CheckPod, "where">,
-  images: { harnessImage: string; custodianImage?: string },
-): string {
-  const refusal = /jr2\.custodian refuse secret=\S+ reason=[\w-]+/.exec(end.custodian)?.[0];
+export function podFault(end: PodEnd, checkPod: Pick<CheckPod, "where">, images: { harnessImage: string }): string {
   const said = end.reasons.length ? ` (${end.reasons.join("; ")})` : "";
   const stuck = end.stuck ?? "";
   if (/ErrImagePull|ImagePullBackOff|InvalidImageName/.test(stuck)) {
     return (
       `the check pod cannot start: ${stuck}${said} — a node on ${checkPod.where} cannot pull ` +
-      `${stuck.startsWith("custodian") ? (images.custodianImage ?? images.harnessImage) : images.harnessImage}; check \`registry\` or ` +
+      `${images.harnessImage}; check \`registry\` or ` +
       "`kitRegistry`, and that those nodes can pull from it"
     );
   }
@@ -3505,27 +3516,18 @@ export function podFault(
     );
   }
   if (stuck.startsWith("FailedMount")) {
-    // A volume of the Custodian: a held secret's `valueFrom` Secret, or its key.
+    // A volume of the check pod: its trust ConfigMap or its Stand-in Secret, which `jr2 up` wrote
+    // before the pod (ADR-0084).
     return (
-      `the check pod cannot start: ${stuck} — a Secret or a key that a \`secrets\` valueFrom names is missing ` +
-      "in the Instance's namespace"
+      `the check pod cannot start: ${stuck} — its trust ConfigMap or its Stand-in Secret is missing; ` +
+      "a jr2 defect, not a fault of the provider: run `jr2 up` again"
     );
   }
   const oom = [stuck, ...end.reasons].find((r) => /OOMKilled/.test(r));
   if (oom) {
-    const custodian = oom.startsWith("custodian");
     return (
-      `the check pod ran out of memory: ${oom}${said} — ` +
-      (custodian
-        ? `its Custodian has the Instance Harness Custodian's limit (${KIT_POD_SIZES.instanceCustodian.limits.memory})`
-        : `the check container's limit is ${KIT_POD_SIZES.checkContainer.limits.memory}`) +
-      "; a jr2 defect, not a fault of the provider"
-    );
-  }
-  if (refusal || stuck.startsWith("custodian")) {
-    return (
-      `the check pod's Custodian did not start: ${refusal ?? stuck}${said} — a Custodian stops at start on a held ` +
-      "value that is missing, empty or not printable ASCII"
+      `the check pod ran out of memory: ${oom}${said} — the check container's limit is ` +
+      `${KIT_POD_SIZES.checkContainer.limits.memory}; a jr2 defect, not a fault of the provider`
     );
   }
   if (end.phase === "timeout") {

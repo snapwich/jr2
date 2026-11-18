@@ -296,9 +296,6 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.endpoint
-      name: Endpoint
-      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -2132,7 +2129,8 @@ spec:
                   kubelet reaches a pod there. The Sandbox is not Ready until Multus
                   reports the attachment as the Pod's default network. Both values are the
                   Orchestrator's; the operator checks neither. Unset leaves the Pod on the
-                  cluster's network.
+                  cluster's network, where nothing reaches it: the operator makes no
+                  Service for a Sandbox.
                 properties:
                   attachment:
                     description: |-
@@ -2234,8 +2232,9 @@ spec:
               port:
                 default: 8080
                 description: |-
-                  Port is the port the primary container serves on; surfaced in
-                  status.endpoint.
+                  Port is the port the primary container serves on: the one the
+                  Orchestrator dials at the Pod's slot address, and that the default
+                  readiness probe asks.
                 format: int32
                 maximum: 65535
                 minimum: 1
@@ -2249,10 +2248,11 @@ spec:
               readinessProbe:
                 description: |-
                   ReadinessProbe overrides the primary container's readiness probe. When
-                  unset the operator injects a probe of the Harness's own /healthz on Port
-                  (ADR-0063) so phase Ready means "the Harness accepts connections", not
-                  merely "the container started". When set, the operator adds no startup
-                  probe either.
+                  unset the operator injects `effector healthcheck` of the Harness's own
+                  /healthz on Port, run inside the container (ADR-0063, ADR-0084), so phase
+                  Ready means "the Harness accepts connections", not merely "the container
+                  started", and a startup probe of the same command. When set, the operator
+                  adds no startup probe either.
                 properties:
                   exec:
                     description: Exec specifies a command to execute in the container.
@@ -6375,11 +6375,6 @@ spec:
                     format: int32
                     type: integer
                 type: object
-              endpoint:
-                description: |-
-                  Endpoint is the in-cluster Service DNS the Orchestrator uses to reach the
-                  Harness, e.g. http://<name>.<ns>.svc:8080.
-                type: string
               harness:
                 description: |-
                   Harness is what the kubelet reports about the primary container of the
@@ -6546,20 +6541,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - key
                 x-kubernetes-list-type: map
-              serviceRef:
-                description: ServiceRef references the Service fronting this Sandbox.
-                properties:
-                  name:
-                    default: ""
-                    description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
               waiting:
                 description: |-
                   Waiting is every container of the current Pod that is waiting, init
@@ -6660,7 +6641,6 @@ rules:
   - ""
   resources:
   - pods
-  - services
   verbs:
   - create
   - delete
