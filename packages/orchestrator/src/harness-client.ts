@@ -334,6 +334,9 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   const postAdmission = async (url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> => {
     const startedAt = Date.now();
     const deadline = startedAt + admitWindowMs;
+    // The routability line's duration is on the monotonic clock: a step of the wall clock must not
+    // make it negative (ADR-0042).
+    const startedMono = performance.now();
     let backoffMs = backoffInitialMs;
     let attempts = 0;
     let lastCode = "?";
@@ -368,7 +371,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
       }
       // Only when it actually cost something. A window that is never approached should be silent,
       // so that a line appearing at all is already the signal (see `routabilityLine`).
-      if (attempts > 1) log(routabilityLine("admission", url, attempts, Date.now() - startedAt, lastCode));
+      if (attempts > 1)
+        log(routabilityLine("admission", url, attempts, Math.round(performance.now() - startedMono), lastCode));
       return res;
     }
   };

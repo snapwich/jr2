@@ -1,11 +1,10 @@
 // The authorization boundary (ADR-0013). This is the file that says what the Custodian holds FOR.
 //
-// The setting: an Agent has code execution in its Harness container (that is what `local()` tools
-// are), and that container shares the pod's network namespace with the Custodian. So the Agent can
-// reach the Orchestrator's HTTP surface — no NetworkPolicy can tell its packets from the
-// Custodian's. The ONLY thing standing between it and the delivery API is the token, which is why
-// the token is mounted into the Custodian container alone — the Harness holds its Stand-in
-// (ADR-0059) — and why these tests exist:
+// The setting: an Agent has code execution in its Sandbox (that is what `local()` tools are), and
+// its `curl` reaches the Custodian by the same path as the Harness, so no network control can tell
+// the two apart. The ONLY thing standing between it and the delivery API is the token, which is why
+// the Custodian alone holds the token — the Harness holds its Stand-in (ADR-0059) — and why these
+// tests exist:
 //
 //   - a caller with no token drives nothing;
 //   - a control token, with the slot the Harness states, may deliver to ITS OWN pod's agent

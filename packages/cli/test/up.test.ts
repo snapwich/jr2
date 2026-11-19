@@ -6460,9 +6460,10 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   assert.ok(!w.kube.deleted.includes(`myinst/secret/${own.metadata.name}`), "the placing Workspace's stays");
 });
 
-test("the Orchestrator's Role reads no Secret: create and patch only, and ConfigMaps as ADR-0059 states (ADR-0068)", async () => {
-  // It applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, server-side, and
-  // holds no value (ADR-0068): no get, no list, no watch, no delete, no update on a Secret.
+test("the Orchestrator's Role reads no Secret: create and patch only, and ConfigMaps for the trust ConfigMap (ADR-0068, ADR-0084)", async () => {
+  // It applies its own per-Sandbox slot Secret, `<sandbox>-standins`, `<sandbox>-effector` and
+  // `<sandbox>-trust`, server-side, and holds no value (ADR-0068): no get, no list, no watch, no
+  // delete, no update on a Secret.
   const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
   assert.equal(await up(["--yes"], w.io), 0);
   const role = appliedObjects(w).get("Role/jr2-orchestrator")!;
@@ -6476,13 +6477,12 @@ test("the Orchestrator's Role reads no Secret: create and patch only, and Config
   );
 });
 
-test("the Orchestrator may apply a Sandbox Effector's Service — and may not read, list or delete one (ADR-0068)", async () => {
-  // It writes the headless Service at provision, server-side applied, owned by the CR.
+test("the Orchestrator's Role writes no Service: a pod on the Fence has none (ADR-0068, ADR-0084)", async () => {
   const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
   assert.equal(await up(["--yes"], w.io), 0);
   const role = appliedObjects(w).get("Role/jr2-orchestrator")!;
   const rules = role.rules.filter((r: { resources: string[] }) => r.resources.includes("services"));
-  assert.deepEqual(rules, [{ apiGroups: [""], resources: ["services"], verbs: ["create", "patch"] }]);
+  assert.deepEqual(rules, []);
 });
 
 // --- Chart wrappers (ADR-0070): the walk reads an Open body's declaration --------------------------

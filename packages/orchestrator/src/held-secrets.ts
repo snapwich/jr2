@@ -508,7 +508,7 @@ export function heldSecretsOf(
     if (PROXY_ENV.includes(v.name)) {
       throw new Error(
         `harness.env[${i}] sets ${v.name}, and a Harness pod has no proxy: each connection goes through the ` +
-          "Fence to the Custodian, which cannot send it on to another proxy. Drop the entry; give each host the " +
+          "Fence to the Custodian, which sends nothing on to a proxy. Drop the entry; give each host the " +
           "pod calls an Egress entry (ADR-0059, ADR-0084).",
       );
     }

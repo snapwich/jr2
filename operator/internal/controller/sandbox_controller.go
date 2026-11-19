@@ -183,11 +183,11 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	var sandbox corev1alpha1.Sandbox
 	if err := r.Get(ctx, req.NamespacedName, &sandbox); err != nil {
-		// Not found: owner-reference GC already handled the Pod/Service.
+		// Not found: owner-reference GC already handled the Pod.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Being deleted: surface Terminating; owner refs GC the Pod + Service.
+	// Being deleted: surface Terminating; owner refs GC the Pod.
 	if !sandbox.DeletionTimestamp.IsZero() {
 		if sandbox.Status.Phase != corev1alpha1.SandboxTerminating {
 			sandbox.Status.Phase = corev1alpha1.SandboxTerminating
@@ -1064,7 +1064,7 @@ func hardenedContainerSecurityContext() *corev1.SecurityContext {
 	}
 }
 
-// reconcileStatus computes phase/endpoint/refs and the pod facts from the live
+// reconcileStatus computes phase/refs and the pod facts from the live
 // Pod and the Repo resources it depends on, and writes status when it changed —
 // only then, because every write is a watch event at the Orchestrator
 // (ADR-0063), and a lease renewal that changes nothing must not cost one. Phase reaches Ready only when the

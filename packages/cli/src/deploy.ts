@@ -502,7 +502,7 @@ export function instanceObjects(opts: {
     },
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(ORCHESTRATOR_SA) },
     {
-      // The orchestrator drives Sandbox CRs (+ their token Secrets) in its own namespace
+      // The orchestrator drives Sandbox CRs in its own namespace
       // (ADR-0012/0013), watches them (ADR-0063), and creates the Repo CRs the cache agent
       // reconciles (ADR-0051). Nothing on Pods: it never reads one — the operator publishes the pod
       // facts on the Sandbox's status — and the attach is the Harness's own `POST /attach`, so no
@@ -519,13 +519,10 @@ export function instanceObjects(opts: {
         // secrets, the clone and push Secrets, or a user's Secret through the API. RBAC cannot
         // pin `create` to a name, and `resourceNames` has no prefix form.
         { apiGroups: [""], resources: ["secrets"], verbs: ["create", "patch"] },
-        // A Sandbox's Custodian files, rendered at provision and server-side applied (ADR-0059), or
-        // on the Fence its trust ConfigMap (ADR-0084); owned by the CR, so the garbage collector
-        // deletes them with the pod.
+        // A Sandbox's trust ConfigMap `<sandbox>-trust` (ADR-0084), server-side applied at
+        // provision and owned by the CR, so the garbage collector deletes it with the pod. No
+        // Service: a pod on the Fence has none (ADR-0068, ADR-0084).
         { apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] },
-        // A Sandbox Effector's headless Service, written at provision beside its key (ADR-0068): how
-        // this process reaches the pod's own address. Owned by the CR, like the ConfigMap.
-        { apiGroups: [""], resources: ["services"], verbs: ["create", "patch"] },
         // The Custodian's pods and their nodes (ADR-0084): the EndpointSlices of its headless
         // Service, so that the Orchestrator dials a Harness pod through the Custodian pod on that
         // pod's node. Still no read of a Pod.

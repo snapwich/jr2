@@ -6,13 +6,19 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: sandbox-sample
 spec:
-  # Primary container (the Harness). http-echo serves on :8080 so the
-  # status.endpoint is actually reachable from other pods.
+  # Primary container (the Harness). http-echo serves on :8080. The sample
+  # has no jr2 runtime (no `effector healthcheck`) and no spec.network, so it
+  # sets its own readiness probe, which the kubelet can reach on the cluster's
+  # network.
   image: hashicorp/http-echo:1.0.0
   args:
     - "-listen=:8080"
     - "-text=hello-from-sandbox"
   port: 8080
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 8080
   # A generic sidecar. The operator schedules this without understanding it is
   # an "agent" — agent-awareness lives one layer up (ADR-0001).
   sidecars:

@@ -18,7 +18,7 @@ import (
 // API server's own priority and fairness still governs.
 const (
 	// ManagedByLabel and ManagedByValue mark every object the operator
-	// creates, and are the selector its Pod and Service informers take.
+	// creates, and are the selector its Pod informer takes.
 	ManagedByLabel = "app.kubernetes.io/managed-by"
 	ManagedByValue = "jr2-operator"
 

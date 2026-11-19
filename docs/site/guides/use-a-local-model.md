@@ -224,7 +224,7 @@ key, also for a live Sandbox. No Harness restarts.
 - `jr2 up` refuses a trust variable in `harness.env`, such as `NODE_EXTRA_CA_CERTS`. Put the CA in `caBundle`:
   `harness.env[<i>] sets <NAME>, which jr2 sets on each Harness pod: the pod trusts the CA whose leaves the Custodian shows. Drop the entry; put a private CA in harness.caBundle (ADR-0059).`
 - `jr2 up` refuses a proxy variable in `harness.env`, such as `HTTPS_PROXY`. Give each host an Egress entry:
-  `harness.env[<i>] sets <NAME>, and a Harness pod has no proxy: each connection goes through the Fence to the Custodian, which cannot send it on to another proxy. Drop the entry; give each host the pod calls an Egress entry (ADR-0059, ADR-0084).`
+  `harness.env[<i>] sets <NAME>, and a Harness pod has no proxy: each connection goes through the Fence to the Custodian, which sends nothing on to a proxy. Drop the entry; give each host the pod calls an Egress entry (ADR-0059, ADR-0084).`
 - `jr2 up` warns about a key when no Agent names a model of the provider:
   `warning: harness.provider.apiKey is named by nothing; goes nowhere — no Agent names a "<id>/…" model (ADR-0059)`.
 - `jr2 up` refuses an `api` other than `"openai-completions"` before it builds or applies anything:

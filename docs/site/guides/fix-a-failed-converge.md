@@ -296,8 +296,7 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   When the check pod cannot start, the error says why:
   - a node cannot pull an image;
   - a Secret or a key that `harness.envFrom` or a `harness.env` valueFrom names is missing;
-  - a Secret or a key that a `secrets` valueFrom names is missing (the volume does not mount);
-  - the Custodian refused a held value;
+  - the trust ConfigMap or the Stand-in Secret of the check pod is missing (a jr2 defect: run `jr2 up` again);
   - a container ran out of memory.
 
   While the check pod waits to start, `jr2 up` writes why, for example

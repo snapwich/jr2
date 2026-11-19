@@ -49,7 +49,7 @@ loudly narrated, safe to re-run:
   secret's name that is a key of an `envFrom` Secret, and names the Secret, the key and the held secret (ADR-0059, R14).
   A credential the Harness uses is a held secret
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): `up` writes a literal value into
-  `jr2-held-secrets-<pod>` for each pod that names it, which only the Custodian mounts, and checks that a referenced
+  `jr2-held-secrets-<pod>` for each pod that names it, which only the Custodian reads, and checks that a referenced
   Secret and key exist. Like the signing key, the held-secret CA that `up` mints (`jr2-held-ca`) is kept across
   converges — minted on first need, never rotated by `up` — because a live pod trusts it. A Sandbox has a CA of its own
   (ADR-0059).
@@ -201,9 +201,10 @@ loudly narrated, safe to re-run:
     - A container cannot start: a crash loop, a missing Secret or key in the env (`CreateContainerConfigError`), or a
       pull that the registry refuses (not found, manifest unknown, unauthorized, denied). A slow or limited pull, and a
       `CreateContainerError`, can pass by themselves, so the wait goes on.
-    - A volume cannot mount: the Secret or the key of a held secret's `valueFrom` is missing. The kubelet says so in a
-      `FailedMount` event. It counts when the kubelet says it again (its count or its last time goes up), because the
-      first can be a race with the objects of the same apply.
+    - A volume cannot mount: the trust ConfigMap or the Stand-in Secret of the check pod is missing. This is a jr2
+      defect, and the error says to run `up` again. The kubelet says so in a `FailedMount` event. It counts when the
+      kubelet says it again (its count or its last time goes up), because the first can be a race with the objects of
+      the same apply.
   - **Leftovers.** `up` has no signal handler. If `up` stops (Ctrl-C), the kubelet stops a running pod at its
     `activeDeadlineSeconds`. A pod that no node took has no start time, and that deadline never applies to it. So a
     later `up` of the same Instance deletes these objects:

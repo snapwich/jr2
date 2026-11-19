@@ -108,8 +108,8 @@ make run                           # run the operator against the current kubeco
 
 # in another shell
 kubectl apply -f config/samples/core_v1alpha1_sandbox.yaml
-kubectl get sandbox -w             # watch Pending -> Ready (or Lost), endpoint populated
-kubectl delete sandbox sandbox-sample   # owner-ref GC of Pod + Service
+kubectl get sandbox -w             # watch Pending -> Ready (or Lost), podRef populated
+kubectl delete sandbox sandbox-sample   # owner-ref GC of the Pod
 ```
 
 ## Tests
@@ -118,8 +118,8 @@ kubectl delete sandbox sandbox-sample   # owner-ref GC of Pod + Service
 make test          # envtest-backed controller suite + fast fake-client unit tests
 ```
 
-- `internal/controller/sandbox_controller_test.go` — envtest: owned Pod+Service creation, Pending→Ready transition,
-  endpoint/refs.
+- `internal/controller/sandbox_controller_test.go` — envtest: owned Pod creation, Pending→Ready transition, podRef and
+  the pod facts.
 - `internal/controller/idletimeout_test.go` — fake-client: orphan idle-GC fires; owned Sandbox survives and provisions.
 - `internal/repocache/agent_test.go`, `creds_test.go` — fake-client + fake git: clone on demand, probe once per
   generation, on-demand and interval fetch, stale-not-absent on a failed fetch, eviction, the sweep, credential shapes.

@@ -126,7 +126,7 @@ export const CA_CONFIGMAP = "jr2-ca";
  * the kube API, and that NO pod mounts: every leaf is issued before a pod starts. */
 export const HELD_CA_SECRET = "jr2-held-ca";
 /** The prefix of each pod's literal held values (`heldSecretsSecret`): one Secret per pod, one key
- * per name it holds — mounted into that pod's Custodian and nothing else. */
+ * per name it holds — which only the Custodian reads. */
 export const HELD_SECRETS_SECRET = "jr2-held-secrets";
 /** The literal held values of one pod (ADR-0059): `jr2-held-secrets-<pod>`. */
 export function heldSecretsSecret(pod: string): string {

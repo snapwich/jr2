@@ -25,8 +25,8 @@
 //   PUT  /assembly                     publish the next Assembly                 [publish token]
 //   GET  /assembly                     the current Assembly and the held ones    [open]
 //
-// The token is not decoration: an Agent has code execution in its Harness container and shares the
-// pod's network namespace, so it can reach these routes. A Sandbox token may deliver ONLY to an
+// The token is not decoration: an Agent has code execution in its Sandbox, and its `curl` reaches
+// the Custodian, which carries these routes, by the same path as the Harness (ADR-0013). A Sandbox token may deliver ONLY to an
 // agent surface recorded against its own Sandbox — never to a Gate. That is what stops an Agent
 // from approving its own review.
 //

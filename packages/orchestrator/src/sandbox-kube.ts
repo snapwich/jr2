@@ -1355,6 +1355,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
       authorization: `Bearer ${harnessToken(opts.signingKey, name)}`,
     };
     const startedAt = Date.now();
+    // The routability line's duration is on the monotonic clock: a step of the wall clock must not
+    // make it negative (ADR-0042).
+    const startedMono = performance.now();
     // The window for a Harness that does not answer, counted again after each answer.
     let until = startedAt + attachWindowMs;
     let reached = false;
@@ -1394,7 +1397,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
         backoff = Math.min(backoff * 2, 5_000);
         continue;
       }
-      if (!reached && attempts > 1) log(routabilityLine("attach", url, attempts, Date.now() - startedAt, lastCode));
+      if (!reached && attempts > 1)
+        log(routabilityLine("attach", url, attempts, Math.round(performance.now() - startedMono), lastCode));
       reached = true;
       until = Date.now() + attachWindowMs;
       backoff = 250;

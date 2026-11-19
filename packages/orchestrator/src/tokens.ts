@@ -1,7 +1,6 @@
-// Bearer tokens (ADR-0013), because the Sandbox boundary is otherwise theater. The Harness
-// container shares the pod's network namespace, so an Agent can reach the Orchestrator directly;
-// a per-pod NetworkPolicy cannot distinguish its packets from the Custodian's. Only authentication
-// closes this, and only the token bounds what a caller may DO (as opposed to where it may talk).
+// Bearer tokens (ADR-0013), because the Sandbox boundary is otherwise theater. An Agent's `curl`
+// reaches the Custodian by the same path as the Harness, from the same Sandbox, so no network
+// control can tell the two apart. Only authentication closes this, and only the token bounds what a caller may DO (as opposed to where it may talk).
 //
 // Three principals. The asymmetry between the first two is the whole design; the third is a door
 // key, not a seat:
