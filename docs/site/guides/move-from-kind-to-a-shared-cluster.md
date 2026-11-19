@@ -58,15 +58,21 @@ below explains one field. Set only the fields that your cluster needs.
   - An `unreachable` route for the segment on each Sandbox node (`198.19.0.0/20`, or `segment` of
     [`fence`](../reference/config.md#fence)), so that the node never sends a packet of the segment on its default route.
 
+  None of these parts survives a restart of the node unless the node makes them at boot (a unit or the node's
+  provisioning), and `jr2 up` checks them only at a converge.
+
   `deploy/fence/node-prep.sh` in the jr2 repository makes each part on the nodes of a kind cluster
   (`just fence-node-prep` in a clone of the repository). Read it as an example of each part for your own nodes.
 
   `jr2 up` checks each part, and refuses to converge while a Sandbox node lacks one. It names the node and the part. The
   check has no privilege on the node, so it sees what the rule set does, not the rule set. A node that does not change
   the frames on the bridge today passes without the rule that keeps conntrack off the bridge. The check also cannot see
-  the default VLAN of the bridge. Make each part as this list says, also when the check passes. On Cilium, the config of
-  the node must let a different CNI plugin run (`cni-exclusive: false`). A managed cluster that permits no second pod
-  network and no rule set on its nodes cannot have the Fence.
+  the default VLAN of the bridge. On a cluster whose pods do not use the node's route table (for example Cilium with BPF
+  host routing), the check cannot see the `unreachable` route: a connection from the network of the cluster gets no
+  answer. Then `jr2 up` writes a warning that names the node, and does not refuse. Make sure that the node has the
+  route. Make each part as this list says, also when the check passes. On Cilium, the config of the node must let a
+  different CNI plugin run (`cni-exclusive: false`). A managed cluster that permits no second pod network and no rule
+  set on its nodes cannot have the Fence.
 
 - No node credential that a pod can get. At a cloud metadata address, the metadata service of a node can give the node's
   cloud credential to a pod. A Sandbox and the Instance Harness cannot dial such an address: the Custodian refuses each

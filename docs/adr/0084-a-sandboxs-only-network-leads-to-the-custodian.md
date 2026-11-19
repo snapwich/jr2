@@ -164,14 +164,17 @@ and that holds when Workspace code is root in the Sandbox.
   ARP answer says that the bridge or the Custodian pod does not carry them. Then `jr2 up` also replaces that node's
   Custodian pod, so that its trunk joins the bridge that the node has after the fix. The other pod is on the cluster's
   network and dials the segment: the node's unreachable route must refuse it at once. A dial with no answer in 1 s is
-  made again, at most 3 times, because on a loaded node the refusal can come after the timer; each dial must still be
-  refused at once. The probe is a probe of behaviour with no privilege: no pod of it has the node's network, a
-  capability or a token, because jr2 owns no privileged code on a node beyond the uplink. So it sees the effect of the
-  rule set, not the rule set: a node that does not change bridged frames today passes without the rule that keeps
-  conntrack off the bridge, and the probe cannot see the bridge's default VLAN or the node's IPv6 link-local address.
-  The Sandbox node set changes between converges, so the operator also does not count a Sandbox Ready until Multus
-  reports its attachment as the pod's default network: on a node where Multus did not act, the pod has the cluster's
-  network, and its exec probe passes there too.
+  made again, at most 3 times, because on a loaded node the refusal can come after the timer. Any answer other than "no
+  route to host" refuses the converge. When each dial gets no answer, `jr2 up` does not refuse: it writes a warning that
+  names the node and goes on. On a cluster whose pods do not use the node's route table (for example Cilium with BPF
+  host routing), the packet of a pod never meets the node's route, so the pod gets no answer although the node has the
+  route. There the check cannot see the route, and the node's owner must make sure that it is there. The probe is a
+  probe of behaviour with no privilege: no pod of it has the node's network, a capability or a token, because jr2 owns
+  no privileged code on a node beyond the uplink. So it sees the effect of the rule set, not the rule set: a node that
+  does not change bridged frames today passes without the rule that keeps conntrack off the bridge, and the probe cannot
+  see the bridge's default VLAN or the node's IPv6 link-local address. The Sandbox node set changes between converges,
+  so the operator also does not count a Sandbox Ready until Multus reports its attachment as the pod's default network:
+  on a node where Multus did not act, the pod has the cluster's network, and its exec probe passes there too.
 
 ## Considered options
 
@@ -249,5 +252,8 @@ and that holds when Workspace code is root in the Sandbox.
   each Sandbox node for each Instance ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
 - **The cluster needs a second pod network and a rule set on each Sandbox node.** On Cilium, the node's config must let
   another CNI plugin run. A managed cluster that permits neither cannot have the segment.
+- **The parts of a node do not survive a restart of the node** unless the node makes them at boot (a unit, or the node's
+  provisioning). `jr2 up` checks them only at a converge, so a restarted node can lack a part until the next converge
+  refuses. A restarted node was seen with the bridge and no rule set.
 - **An Instance with no Workspace needs the Fence too,** because its Instance Harness is behind one. So the first model
   call of a new Instance needs the prerequisites on a node.

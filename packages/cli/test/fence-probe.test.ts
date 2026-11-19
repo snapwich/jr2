@@ -278,6 +278,7 @@ async function runRoute(netModule: typeof net, target: string, port: number): Pr
       JR2_PROBE_TARGET: target,
       JR2_PROBE_TARGET_PORT: String(port),
       JR2_PROBE_SEGMENT: "198.19.0.0/20",
+      JR2_PROBE_NODE_NAME: "node-a",
       JR2_PROBE_MESSAGE: join(dir, "message"),
     },
     log: (line) => run.log.push(line),
@@ -335,16 +336,36 @@ test("the route probe tries again with a new socket when a try gets no answer, a
   assert.deepEqual(run.message, { probe: "route", ok: true });
 });
 
-test("the route probe refuses with 'got no answer' when none of its 3 tries gets an answer", async () => {
+test("the route probe passes with a warning when none of its 3 tries gets an answer, and any other answer refuses", async () => {
+  // A cluster whose pods do not use the node's route table (Cilium with BPF host routing) drops the
+  // packet with no answer: the probe cannot see the route there, so it warns and does not refuse.
   const fake = scriptedNet(["silent", "silent", "silent"]);
   const run = await runRoute(fake.net, "198.19.15.254", 9);
   assert.equal(fake.sockets(), 3);
-  assert.equal(run.code, 1);
-  assert.equal(run.message?.part, "rule-set");
-  assert.match(
-    run.message!.why!,
-    /^no unreachable route for 198\.19\.0\.0\/20 on the node: a connection to 198\.19\.15\.254:9 .* got no answer/,
+  assert.equal(run.code, 0);
+  assert.equal(run.message?.ok, true);
+  assert.equal(run.message?.part, undefined);
+  assert.equal(
+    run.message?.warn,
+    "the check could not see the unreachable route for 198.19.0.0/20 on node-a, because a connection to " +
+      "198.19.15.254:9 from the cluster's network got no answer in 1 s in each of 3 tries. This is what a cluster " +
+      "shows whose pods do not use the node's route table (for example Cilium with BPF host routing). Make sure " +
+      "that the node has the route (ADR-0084)",
   );
+
+  // No answer, then an answer that is not "no route to host": it refuses.
+  for (const other of ["ECONNREFUSED", "ENETUNREACH"]) {
+    const later = scriptedNet(["silent", other]);
+    const refused = await runRoute(later.net, "198.19.15.254", 9);
+    assert.equal(later.sockets(), 2);
+    assert.equal(refused.code, 1);
+    assert.equal(refused.message?.part, "rule-set");
+    assert.equal(refused.message?.warn, undefined);
+    assert.match(
+      refused.message!.why!,
+      new RegExp(`^no unreachable route for 198\\.19\\.0\\.0/20 on the node: .* got ${other} after \\d+ ms`),
+    );
+  }
 });
 
 // ---- what `jr2 up` reads --------------------------------------------------------------------------------
@@ -418,7 +439,7 @@ test("from the API: no attachment definition, or a Sandbox node with no Ready Mu
 
 // ---- the probe of the nodes, through a fake API -----------------------------------------------------------
 
-test("each Custodian node gets both pods; their gaps come back; a node with no uplink answer gets a new Custodian pod", async () => {
+test("each Custodian node gets both pods; their gaps come back; a passed probe's warning comes back; a node with no uplink answer gets a new Custodian pod", async () => {
   const fence = (r: object) => `jr2.fence-probe ${JSON.stringify({ probe: "fence", ...r })}`;
   const route = (r: object) => `jr2.fence-probe ${JSON.stringify({ probe: "route", ...r })}`;
   const results: Record<string, string> = {
@@ -429,7 +450,10 @@ test("each Custodian node gets both pods; their gaps come back; a node with no u
       why: "no unreachable route for 198.19.0.0/20",
     }),
     [probePodNames("node-b").fence]: fence({ ok: false, part: "bridge", why: "no answer from the uplink" }),
-    [probePodNames("node-b").route]: route({ ok: true }),
+    [probePodNames("node-b").route]: route({
+      ok: true,
+      warn: "the check could not see the unreachable route for 198.19.0.0/20 on node-b",
+    }),
   };
   const calls: string[] = [];
   let polls = 0;
@@ -466,6 +490,7 @@ test("each Custodian node gets both pods; their gaps come back; a node with no u
     },
   };
   const lines: string[] = [];
+  const warnings: string[] = [];
   const gaps = await probeFenceNodes(kube, {
     name: "inst",
     namespace: "ns",
@@ -473,8 +498,10 @@ test("each Custodian node gets both pods; their gaps come back; a node with no u
     ranges: fenceRangesOf(undefined),
     image: "img",
     log: (l) => lines.push(l),
+    warn: (l) => warnings.push(l),
     pollMs: 1,
   });
+  assert.deepEqual(warnings, ["fence: the check could not see the unreachable route for 198.19.0.0/20 on node-b"]);
   assert.deepEqual(gaps, [
     { node: "node-a", part: "the rule set", why: "no unreachable route for 198.19.0.0/20" },
     {
@@ -521,6 +548,7 @@ test("a probe pod that gets no network ends with the kubelet's reason", async ()
     ranges: fenceRangesOf(undefined),
     image: "img",
     log: () => {},
+    warn: () => {},
     pollMs: 1,
     now: () => (t += 20_000),
   });
@@ -547,6 +575,7 @@ test("no Custodian pod: nothing to probe", async () => {
       ranges: fenceRangesOf(undefined),
       image: "x",
       log: () => {},
+      warn: () => {},
     }),
     [],
   );

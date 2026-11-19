@@ -1040,6 +1040,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...ctx,
     });
     // Then what only a pod on each node shows: the bridge and the rule set.
+    let unseen = 0;
     const gaps = await probeFenceNodes(kube, {
       name,
       namespace,
@@ -1049,9 +1050,19 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...(config.sandbox ? { placement: config.sandbox } : {}),
       ...ctx,
       log: (line) => activity(io, line),
+      warn: (line) => {
+        unseen++;
+        activity(io, `warning: ${line}`);
+      },
     });
     if (gaps.length > 0) throw fenceRefusal(gaps);
-    activity(io, "fence: verified — the bridge and the rule set answer on each Sandbox node");
+    activity(
+      io,
+      unseen === 0
+        ? "fence: verified — the bridge and the rule set answer on each Sandbox node"
+        : "fence: verified — the bridge and the rule set answer on each Sandbox node, except the unreachable route " +
+            `that the check could not see on ${unseen} node(s) (see the warning)`,
+    );
   } else if (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx })) {
     // A Custodian of a converge that had a Harness pod. Its range stays claimed until `jr2 down`
     // (ADR-0084): a pod of the Instance can still be on a VLAN of it. The Custodian goes only when no

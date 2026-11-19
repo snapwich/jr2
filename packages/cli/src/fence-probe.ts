@@ -17,6 +17,9 @@
 //                     the node's address must give no answer but the Custodian's.
 //   the route probe   a pod on the cluster's network that dials the last address of the segment
 //                     and must get "no route to host" within 1 s: the node's unreachable route.
+//                     When each try gets no answer, it passes with a warning: a cluster whose pods
+//                     do not use the node's route table (for example Cilium with BPF host routing)
+//                     drops the packet with no answer, so the probe cannot see the route there.
 //
 // A behaviour probe with no privilege: neither pod has the node's network, a capability, a writable
 // root or a token. It writes its result as its termination message, as the Repo cache agent writes
@@ -83,6 +86,8 @@ export type ProbeResult = {
   part?: "attachment" | "bridge" | "rule-set";
   /** What the probe saw, in words a person acts on. */
   why?: string;
+  /** A probe that passed but could not see its part: what `jr2 up` prints as a warning. */
+  warn?: string;
 };
 
 /**
@@ -229,7 +234,8 @@ export async function fenceProbeMain(sys: ProbeSys): Promise<void> {
 
 /**
  * The route probe (on the cluster's network). Self-contained, as the Fence probe is. Its inputs:
- * `JR2_PROBE_TARGET` (the last address of the segment), `JR2_PROBE_SEGMENT`, `JR2_PROBE_MESSAGE`.
+ * `JR2_PROBE_TARGET` (the last address of the segment), `JR2_PROBE_SEGMENT`, `JR2_PROBE_NODE_NAME`,
+ * `JR2_PROBE_MESSAGE`.
  */
 export async function routeProbeMain(sys: ProbeSys): Promise<void> {
   const env = sys.env;
@@ -245,10 +251,13 @@ export async function routeProbeMain(sys: ProbeSys): Promise<void> {
   };
   const target = env.JR2_PROBE_TARGET ?? "";
   const segment = env.JR2_PROBE_SEGMENT ?? "";
+  const node = env.JR2_PROBE_NODE_NAME ?? "the node";
   const port = Number(env.JR2_PROBE_TARGET_PORT ?? "9");
   // A try with no answer in 1 s is made again with a new socket, at most 3 times: on a loaded node the
-  // refusal can come after the timer, and TCP sends the SYN again only at 1 s. Each try still must get
-  // "no route to host" at once; any other answer refuses at once.
+  // refusal can come after the timer, and TCP sends the SYN again only at 1 s. "No route to host"
+  // passes; any other answer refuses at once. No answer in each try passes with a warning: on a
+  // cluster whose pods do not use the node's route table (Cilium with BPF host routing), the node's
+  // route never answers a pod, so the probe cannot see it.
   const tries = 3;
   let started = Date.now();
   let code = "";
@@ -267,14 +276,22 @@ export async function routeProbeMain(sys: ProbeSys): Promise<void> {
     });
   }
   if (code === "EHOSTUNREACH") return end({ ok: true });
+  if (code === "") {
+    return end({
+      ok: true,
+      warn:
+        `the check could not see the unreachable route for ${segment} on ${node}, because a connection to ` +
+        `${target}:${port} from the cluster's network got no answer in 1 s in each of ${tries} tries. This is what ` +
+        "a cluster shows whose pods do not use the node's route table (for example Cilium with BPF host routing). " +
+        "Make sure that the node has the route (ADR-0084)",
+    });
+  }
   return end({
     ok: false,
     part: "rule-set",
     why:
       `no unreachable route for ${segment} on the node: a connection to ${target}:${port} from the cluster's network ` +
-      (code === ""
-        ? `got no answer in 1 s in each of ${tries} tries, not "no route to host" at once`
-        : `got ${code} after ${Date.now() - started} ms, not "no route to host"`),
+      `got ${code} after ${Date.now() - started} ms, not "no route to host"`,
   });
 }
 
@@ -386,6 +403,7 @@ export function fenceProbePods(opts: {
       pod(names.route, node, false, ROUTE_PROBE_PROGRAM, [
         { name: "JR2_PROBE_TARGET", value: routeProbeTarget(opts.ranges.segment) },
         { name: "JR2_PROBE_SEGMENT", value: opts.ranges.segment },
+        { name: "JR2_PROBE_NODE_NAME", value: node },
       ]),
     );
   }
@@ -524,9 +542,9 @@ export type ProbeKube = Pick<KubeAdmin, "apply" | "getJson" | "listJson" | "dele
 
 /**
  * Run the two probe pods on each node where a Custodian pod of the Instance runs, wait for each to
- * end, and return each part that a node lacks (none when each passed). The pods go again in every
- * case. A node whose Fence probe saw no answer at all from the uplink has a Custodian pod whose
- * trunk is not on the bridge that the node has now (a bridge deleted and made again): that pod is
+ * end, and return each part that a node lacks (none when each passed). A probe that passed but could
+ * not see its part goes to `warn`. The pods go again in every case. A node whose Fence probe saw no
+ * answer at all from the uplink has a Custodian pod whose trunk is not on the bridge that the node has now (a bridge deleted and made again): that pod is
  * replaced, so that the next converge after the fix finds its trunk there.
  */
 export async function probeFenceNodes(
@@ -540,6 +558,8 @@ export async function probeFenceNodes(
     placement?: SandboxPlacement;
     context?: string;
     log: (line: string) => void;
+    /** A probe that passed but could not see its part. */
+    warn: (line: string) => void;
     pollMs?: number;
     now?: () => number;
   },
@@ -608,6 +628,8 @@ export async function probeFenceNodes(
           ended.set(w.pod, pod!);
           const gap = gapOf(w.node, w.probe, pod);
           if (gap) gaps.push(gap);
+          const warn = gap ? undefined : probeResultOf(pod)?.warn;
+          if (warn) opts.warn(`fence: ${warn}`);
           if (w.probe === "fence" && probeResultOf(pod)?.part === "bridge") bridgeless.push(w.node);
           continue;
         }

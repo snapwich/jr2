@@ -339,7 +339,10 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   part, then run `jr2 up` again. On a kind cluster, run `just fence-node-prep` in a clone of the jr2 repository
   (`just cluster=<name> fence-node-prep` for a cluster that is not named `jr2`): it adds each part to each node
   (`deploy/fence/node-prep.sh`). See
-  [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#check-the-cluster) for each part.
+  [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#check-the-cluster) for each part. When the
+  check could not see the `unreachable` route of a node, `jr2 up` does not refuse. It writes
+  `warning: fence: the check could not see the unreachable route for <segment> on <node>, because a connection to <address>:9 from the cluster's network got no answer in 1 s in each of 3 tries. This is what a cluster shows whose pods do not use the node's route table (for example Cilium with BPF host routing). Make sure that the node has the route (ADR-0084)`.
+  On such a cluster, make sure that each Sandbox node has the route.
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See
   [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). Every rollout comes after the provider

@@ -84,7 +84,9 @@ the cluster, see [Architecture](architecture.md).
     of the node, and the rule set of the node. First it reads Multus from the cluster. Then it applies the Custodian,
     its uplink on each Sandbox node and its resolver. When the Custodian is ready, two short pods on each Sandbox node
     check the bridge and the rule set. These pods have no privilege, so they see what the rule set does, not the rule
-    set itself. While a Sandbox node lacks a part, the converge fails, and the error names the node and the part.
+    set itself. While a Sandbox node lacks a part, the converge fails, and the error names the node and the part. On a
+    cluster whose pods do not use the node's route table, the check cannot see the node's `unreachable` route. Then it
+    writes a warning, and the converge continues.
 12. It checks each model that an Agent uses: one pod on a Sandbox node, behind the Fence as each Harness pod is, asks
     the provider through the Custodian for one tool call for each model. Until each check passes, `jr2 up` writes
     nothing else that the Instance or the operator reads. The pod has up to 5 minutes to start, and each model has up to
