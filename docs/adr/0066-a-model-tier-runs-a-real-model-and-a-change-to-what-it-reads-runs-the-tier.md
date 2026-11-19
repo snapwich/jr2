@@ -311,17 +311,18 @@ recover, finish — are exercised only one scripted tool call at a time.
   the measured moment never occurred — the shape of the `noticed` and `push-follow` voids. The setup changed for it
   (decided under the user's deferral on 2026-10-11, confirmed by the user on 2026-10-12): when the setup holds and there
   is one push, the step counts the commits from `main` to that push's published commit on `push.git`, and two or more
-  make the trial void ("void: the first push carried <n> commits …"). One commit whose `greet.js` already has the
-  comment above `greet()` makes the trial void too ("void: the first push already held the comment above greet() …"):
-  the model put the fix and the comment in one commit before it read any post-push text, which is the same shape (a run
-  of 2026-11-19 read 8 of 10 with one such miss; the next run read 10 of 10 with one such void). It decides from the
-  push's content, never from the push count, so "published once, committed, finished" and "published, reset, finished"
-  stay misses, and a trial with a second push is measured whatever its first push held. The prompt, the floor and the
-  pass did not change, and the 8 of 10 stands: the claim passes only on a new run. The void shares the claim's one bound
-  of replacements (half the trials, rounded up) with the setup void, and a void past it counts against the floor and
-  prints as a void. At the diagnostic run's rate, 4 of 10, the bound is often spent; the claim is then open, not passed.
-  Rejected: counting the batched trial a miss (it measures the model's reading of the claim's own prompt), raising the
-  bound, or lowering the floor.
+  make the trial void ("void: the first push carried <n> commits …"). The build of ADR-0084 added a second void on
+  2026-11-19, and the user has not confirmed it yet: one commit whose `greet.js` already has the comment above `greet()`
+  makes the trial void too ("void: the first push already held the comment above greet() …"). The model put the fix and
+  the comment in one commit before it read any post-push text, which is the same shape (a run of 2026-11-19 read 8 of 10
+  with one such miss; the next run read 10 of 10 with one such void). The step decides from the push's content, never
+  from the push count, so "published once, committed, finished" and "published, reset, finished" stay misses, and a
+  trial with a second push is measured whatever its first push held. The prompt, the floor and the pass did not change,
+  and the 8 of 10 stands: the claim passes only on a new run. The void shares the claim's one bound of replacements
+  (half the trials, rounded up) with the setup void, and a void past it counts against the floor and prints as a void.
+  At the diagnostic run's rate, 4 of 10, the bound is often spent; the claim is then open, not passed. Rejected:
+  counting the batched trial a miss (it measures the model's reading of the claim's own prompt), raising the bound, or
+  lowering the floor.
 - The steering claims of ADR-0002 — `steer-follow` (a Caller's Steering message in an open Turn is followed) and
   `peer-not-order` (a peer's word that the workflow relays is not obeyed as an order) — are Menu-only. In `steer-follow`
   the step sends the message with `jr2 steer` while `run_checks` is outstanding, then answers the Gate: every check

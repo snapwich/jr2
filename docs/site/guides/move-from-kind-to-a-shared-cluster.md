@@ -49,7 +49,8 @@ below explains one field. Set only the fields that your cluster needs.
     isolation.
   - The stock CNI plugins `bridge`, `static` and `tuning` on each Sandbox node. The script below installs v1.10.0.
   - One bridge on each Sandbox node, named `jr2fence0`, with `vlan_filtering 1` and `vlan_default_pvid 0`, no VLAN of
-    its own, no address and IPv6 off. Then a port of a Sandbox gets only its own VLAN.
+    its own, no address, IPv6 off, and `arp_ignore 8`, so that the node answers no ARP request on it. Then a port of a
+    Sandbox gets only its own VLAN.
   - The `8021q` module in the kernel of each Sandbox node. The uplink of the Custodian has a VLAN interface for each
     slot.
   - The rule set of each Sandbox node, which keeps the node's own network stack off the bridge: a frame that the bridge

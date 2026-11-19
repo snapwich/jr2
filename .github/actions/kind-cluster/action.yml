@@ -42,7 +42,7 @@ runs:
       shell: bash
       run: |
         sudo modprobe 8021q
-        lsmod | grep -w 8021q
+        test -d /sys/module/8021q
 
     - name: Create the cluster
       shell: bash

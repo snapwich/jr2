@@ -795,14 +795,14 @@ The user must decide these items. Until then, obey the rule for each item.
 
 ### The tools and the cluster
 
-| Fact                | Value                                                                                    |
-| ------------------- | ---------------------------------------------------------------------------------------- |
-| The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                           |
-| The kernel (page 1) | Linux 6.2 or later with Landlock: the kernel of the computer, or of Docker's VM.         |
-| The jr2 CLI         | `npm i -g @jr2/cli`                                                                      |
-| The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                     |
-| The package manager | npm.                                                                                     |
-| The Sandbox Image   | The `images/default/Dockerfile` that `jr2 init` writes. The tutorial does not change it. |
+| Fact                | Value                                                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                                                                      |
+| The kernel (page 1) | Linux 6.2 or later with Landlock, and the 8021q module, for the script of the Fence: the kernel of the computer, or of Docker's VM. |
+| The jr2 CLI         | `npm i -g @jr2/cli`                                                                                                                 |
+| The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                                                                |
+| The package manager | npm.                                                                                                                                |
+| The Sandbox Image   | The `images/default/Dockerfile` that `jr2 init` writes. The tutorial does not change it.                                            |
 
 `jr2 up` converges into the current kubectl context. `kind create cluster` makes `kind-jr2` the current context.
 
