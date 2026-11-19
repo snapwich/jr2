@@ -47,7 +47,7 @@ that names an `anthropic/` model uses this key.
 == Local
 
 Open `jr2.config.ts`. Add the `harness` entry after the `git` entry. Keep the other lines and their comments. This is
-the result. Its comments are shorter than the comments in your file:
+the result, before the `egress` entry that you add below. Its comments are shorter than the comments in your file:
 
 <<< @/examples/shared/local/jr2.config.ts
 

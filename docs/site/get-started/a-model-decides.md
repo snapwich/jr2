@@ -156,6 +156,9 @@ instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<ve
 converged — `jr2 run <workflow>` when ready
 ```
 
+The range of VLANs, the number of Custodian pods, the names of the nodes and the version of the slot depend on your
+cluster. Your values can be different.
+
 The line of Connect a model, `provider: <url> configured, but no carried Agent names a "local/…" model — skipped`, is
 gone. `triager` names a `local/…` model, so `jr2 up` checks that the endpoint completes a tool call. If the check fails,
 `jr2 up` stops and prints what to examine.

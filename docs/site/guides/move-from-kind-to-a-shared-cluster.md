@@ -44,8 +44,9 @@ below explains one field. Set only the fields that your cluster needs.
   Sandbox and of the [Instance Harness](../reference/glossary.md#instance-harness). It is a second pod network, apart
   from the network of the cluster. `jr2 up` installs the [Custodian](../reference/glossary.md#custodian), its uplink on
   each Sandbox node and its resolver. It does not install these parts:
-  - Multus in its thick form, with `namespaceIsolation: true`, so that a Sandbox pod gets the Fence as its only network,
-    and a pod can use an attachment of its own namespace only.
+  - Multus in its thick form, with `namespaceIsolation: true` and no global namespace, so that a Sandbox pod gets the
+    Fence as its only network, and a pod can use an attachment of its own namespace only. `jr2 up` does not check this
+    isolation.
   - The stock CNI plugins `bridge`, `static` and `tuning` on each Sandbox node. The script below installs v1.10.0.
   - One bridge on each Sandbox node, named `jr2fence0`, with `vlan_filtering 1` and `vlan_default_pvid 0`, no VLAN of
     its own, no address and IPv6 off. Then a port of a Sandbox gets only its own VLAN.

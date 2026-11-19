@@ -83,6 +83,8 @@ swept 2 image(s) (482.3 MB)
 removed
 ```
 
+The range of VLANs and the image counts and sizes depend on your cluster. Your values can be different.
+
 `jr2 down` asks you to confirm, unless you add `--yes`. Type `y`. Then it deletes the namespace of the Instance and
 waits until the namespace is gone. These things go with the namespace:
 
@@ -125,6 +127,8 @@ swept 3 image(s) (532.7 MB)
 …
 removed
 ```
+
+The range of VLANs and the image counts and sizes depend on your cluster. Your values can be different.
 
 ::: danger
 

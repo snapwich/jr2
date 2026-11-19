@@ -152,23 +152,26 @@ and that holds when Workspace code is root in the Sandbox.
 - **How a Sandbox's traffic reaches the Custodian is one seam.** The segment is the only form that is built. A cluster
   that cannot have it needs another form behind the same seam, and the rules of the Custodian do not change.
 - **`jr2 up` installs the uplink, the Custodian and the resolver, and it probes what it does not install.** The second
-  network of a pod (Multus), the bridge and the node's rule set are prerequisites. `jr2 up` refuses to converge while a
-  Sandbox node lacks one, and it names the node and the part. Before it applies the Custodian, it reads the API:
-  Multus's CustomResourceDefinition must exist, and a Ready Multus pod must run on each Sandbox node. After the
-  Custodian's pods are Ready, it runs two one-shot pods on each node of a Custodian pod. One is on slot 2 of the
-  Instance's range: its address must be the slot's address, the Custodian's resolver must answer it, and the node's
-  address must give no answer but the Custodian's. When no DNS answer comes, an ARP answer from the uplink says that the
-  bridge carries the frames and the node changes them (the rule set), and no ARP answer says that the bridge or the
-  Custodian pod does not carry them. Then `jr2 up` also replaces that node's Custodian pod, so that its trunk joins the
-  bridge that the node has after the fix. The other pod is on the cluster's network and dials the segment: the node's
-  unreachable route must refuse it at once. A dial with no answer in 1 s is made again, at most 3 times, because on a
-  loaded node the refusal can come after the timer; each dial must still be refused at once. The probe is a probe of
-  behaviour with no privilege: no pod of it has the node's network, a capability or a token, because jr2 owns no
-  privileged code on a node beyond the uplink. So it sees the effect of the rule set, not the rule set: a node that does
-  not change bridged frames today passes without the rule that keeps conntrack off the bridge, and the probe cannot see
-  the bridge's default VLAN or the node's IPv6 link-local address. The Sandbox node set changes between converges, so
-  the operator also does not count a Sandbox Ready until Multus reports its attachment as the pod's default network: on
-  a node where Multus did not act, the pod has the cluster's network, and its exec probe passes there too.
+  network of a pod (Multus), the bridge and the node's rule set are prerequisites. The second network must refuse a pod
+  an attachment of another namespace (Multus's `namespaceIsolation`, with no global namespace): without it, a pod of
+  another namespace can name the Instance's uplink or slot attachment and join its VLANs. `jr2 up` does not probe this
+  isolation. `jr2 up` refuses to converge while a Sandbox node lacks one of the other parts, and it names the node and
+  the part. Before it applies the Custodian, it reads the API: Multus's CustomResourceDefinition must exist, and a Ready
+  Multus pod must run on each Sandbox node. After the Custodian's pods are Ready, it runs two one-shot pods on each node
+  of a Custodian pod. One is on slot 2 of the Instance's range: its address must be the slot's address, the Custodian's
+  resolver must answer it, and the node's address must give no answer but the Custodian's. When no DNS answer comes, an
+  ARP answer from the uplink says that the bridge carries the frames and the node changes them (the rule set), and no
+  ARP answer says that the bridge or the Custodian pod does not carry them. Then `jr2 up` also replaces that node's
+  Custodian pod, so that its trunk joins the bridge that the node has after the fix. The other pod is on the cluster's
+  network and dials the segment: the node's unreachable route must refuse it at once. A dial with no answer in 1 s is
+  made again, at most 3 times, because on a loaded node the refusal can come after the timer; each dial must still be
+  refused at once. The probe is a probe of behaviour with no privilege: no pod of it has the node's network, a
+  capability or a token, because jr2 owns no privileged code on a node beyond the uplink. So it sees the effect of the
+  rule set, not the rule set: a node that does not change bridged frames today passes without the rule that keeps
+  conntrack off the bridge, and the probe cannot see the bridge's default VLAN or the node's IPv6 link-local address.
+  The Sandbox node set changes between converges, so the operator also does not count a Sandbox Ready until Multus
+  reports its attachment as the pod's default network: on a node where Multus did not act, the pod has the cluster's
+  network, and its exec probe passes there too.
 
 ## Considered options
 

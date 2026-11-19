@@ -37,7 +37,8 @@ To install the server, see the install page of [llama.cpp](https://github.com/gg
 
 ## Add the provider
 
-Add a `harness` entry to `jr2.config.ts`. It declares a custom provider with the id `local`:
+Add a `harness` entry to `jr2.config.ts`. It declares a custom provider with the id `local`. The file below does not
+show the `egress` entry that the endpoint also needs (see the end of this section):
 
 <<< @/examples/shared/local/jr2.config.ts
 

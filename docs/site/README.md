@@ -779,7 +779,10 @@ The user must decide these items. Until then, obey the rule for each item.
   each command, replaces the output, and removes the comment. `scripts/release.sh` refuses to make a release commit, and
   `scripts/publish.sh` refuses a release, while a page has this comment. Thus do the manual check before `just release`,
   in these steps:
-  1. Run `just dist-up`. Use the `jr2` that it installs, because the reader uses the installed CLI, not a checkout.
+  1. Make the kind cluster `jr2` with `just e2e-kind-up`, or prepare an existing one with `just fence-node-prep`, so
+     that its nodes have the parts of the Fence. A cluster that only `kind create cluster` made has none of them, and
+     `jr2 up` stops at its check of the Fence. Then run `just dist-up`. Use the `jr2` that it installs, because the
+     reader uses the installed CLI, not a checkout.
   2. Make the Instance as the pages tell the reader: `jr2 init my-instance`, with the model of the Local tab. When a
      page needs a fork, use a public GitHub repo that has the `main` and the release tags of jr2, and show it as
      `<you>/jr2`. When a page needs a remote MCP server, serve the fake of `features/steps/fake-mcp.ts` on the host with
