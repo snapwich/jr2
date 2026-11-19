@@ -72,7 +72,7 @@ Feature: a real model drives the kit
       ADR-0016's ask-again rule. The `mode-stop` workflow's prompt asks for a review and to wait;
       `ask_review` enters a mode whose picks are closed, and its answer is the reviewer's approval,
       which comes while they are closed, so it allows nothing and the model stops; a timer with no
-      target then opens `revise` and `submit`, and the wake asks the model with the nudge's text and
+      target then opens `revise` and `submit`, 120 s after `ask_review`, and the wake asks the model with the nudge's text and
       a Turn part that states the Allowed picks last. The first Menu call after the ask is the
       measurement. A model still working when the picks opened heard them at a step boundary and was
       never asked: void.

@@ -387,6 +387,14 @@ recover, finish — are exercised only one scripted tool call at a time.
     this change on 2026-10-23 (question 21: give the review a real answer). In the claim-setups run (below) it gave 10
     of 10 on the home lab, on Haiku 5.5 and on Sonnet 5.5, and every trial finished.
 
+    The timer opens the picks 120 s after `reviewing`'s entry. The timer must be longer than the model's slow tail under
+    the tier's load, or it measures the endpoint's load, not the claim: a model still working when the picks open hears
+    them at a step boundary, and the trial is void. With 30 s, a full home-lab run on 2026-11-19 (16 streams on the
+    endpoint) had 7 voids, more than the bound of replacements, and the cell fell to 8 of 10. From the `ask_review`
+    answer to the model's next output, the median was 24 s and the longest 106.8 s; with the scenario alone, the median
+    was 8 s and no trial was void. The prompt, the floor (9) and the bound of replacements are unchanged. The user
+    approved this change on 2026-11-19.
+
   - `push-wake`, since replaced by `wake`. It measured a Menu-only Turn that started with nothing allowed and picked
     inside the same Submission once a Gate's answer was restated at a step boundary. The step first answered the board
     as soon as the Turn's prompt printed; in two runs, 8 and 9 trials had no restatement, each with one `hold` or

@@ -94,9 +94,10 @@ export const machine = jr2Setup({
         drafting: { on: { ask_review: "reviewing" } },
         reviewing: {
           entry: assign({ open: false }),
-          // Nothing to pick, long enough that a model reads the reviewer's answer and stops first. No
-          // target: the picks open where they are, and Rest is not held.
-          after: { 30_000: { actions: assign({ open: true }) } },
+          // Nothing to pick, long enough that a model reads the reviewer's answer and stops first, also
+          // in the slow tail of the endpoint under the full tier's load (ADR-0066). No target: the picks
+          // open where they are, and Rest is not held.
+          after: { 120_000: { actions: assign({ open: true }) } },
           on: {
             revise: { guard: ({ context }) => context.open, target: "drafting" },
             submit: { guard: ({ context }) => context.open, target: "#mode-stop.submitted" },
