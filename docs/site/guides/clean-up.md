@@ -74,13 +74,12 @@ Run `jr2 down` in the Instance folder:
 jr2 down
 ```
 
-<!-- output: not run -->
-
 ```text
 remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance")? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
-gave back VLAN range 0 of the Fence
-swept 2 image(s) (317.0 MB)
+gave back VLAN range 2 of the Fence
+swept 2 image(s) (482.3 MB)
+…
 removed
 ```
 

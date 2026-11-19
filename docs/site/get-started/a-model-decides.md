@@ -126,8 +126,6 @@ prints what to examine.
 
 `jr2 up` asks your model for one tool call, from inside the cluster:
 
-<!-- output: not run -->
-
 ```text
 → .env: LOCAL_MODEL_URL
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
@@ -138,16 +136,20 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
 agents: triager (carried by 2 workflow machine(s))
 …
 the Instance Harness: Custodian holds nothing
+the Instance Harness: Egress list Tunneled <address>:8000
+held secrets: minted the Instance's CA into jr2-held-ca
 …
-custodian: converging on each Sandbox node (VLAN range 0)
-custodian: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
-…
+custodian: converging on each Sandbox node (VLAN range 2)
+custodian: verified — 2 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+fence: probing the bridge and the rule set on 2 Sandbox node(s): jr2-worker, jr2-worker2
+fence: verified — the bridge and the rule set answer on each Sandbox node
 provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), through the Custodian, as a Turn calls it
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: the check pod is not running yet — check: ContainerCreating
 provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 instance harness: converging (triager declares workspace: "none")
-instance harness: Fence slot 0 live at version <version>
+instance harness: Fence slot 0 live at version 165a46e89c2d426e
 instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<version>
 …
 converged — `jr2 run <workflow>` when ready

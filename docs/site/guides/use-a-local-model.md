@@ -80,14 +80,15 @@ jr2 up
 `jr2 up` starts a pod in the cluster, on the nodes where the Agents that name the model run. The pod asks the endpoint
 for one tool call for each model, as a Turn asks. You see these lines when the Agent is a `workspace: "none"` Agent:
 
-<!-- output: not run -->
-
 ```text
 …
-provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), direct, as a pod that holds no secret calls it
+the Instance Harness: Custodian holds nothing
+the Instance Harness: Egress list Tunneled <address>:8000
+held secrets: minted the Instance's CA into jr2-held-ca
+…
+provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), through the Custodian, as a Turn calls it
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
-provider: the check pod is not running yet — custodian: PodInitializing
-provider: the check pod is not running yet — check: PodInitializing
+provider: the check pod is not running yet — check: ContainerCreating
 provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 ```
@@ -181,22 +182,23 @@ trust it. An `https://` endpoint whose certificate comes from a private CA needs
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 the Instance Harness: Custodian holds JR2_PROVIDER_API_KEY (provider)
+the Instance Harness: Egress list Intercepted <address>:8000
 held secret JR2_PROVIDER_API_KEY → <address>:8000 (literal)
-held secrets: minted the Instance's CA into jr2-held-ca
-provider: checking local/qwen3.6-35b-a3b on the Instance Harness, through a Custodian that holds JR2_PROVIDER_API_KEY for <address>:8000
+…
+provider: checking local/qwen3.6-35b-a3b on the Instance Harness, through the Custodian, which holds JR2_PROVIDER_API_KEY for <address>:8000
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
-provider: the check pod is not running yet — custodian: PodInitializing
+provider: the check pod is not running yet — check: ContainerCreating
 provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 ```
 
-The Custodian holds the key. `jr2 up` prints the `held secrets:` line when the namespace has no CA for the Custodian
-yet, as on the first `jr2 up` with a Held secret.
+The Custodian holds the key, and it is now an Intercepted host of the Instance Harness. The entry `"<address>:8000"` in
+`egress` is not necessary now, because the host of a Held secret needs no entry. The `held secrets:` line of the CA is
+not in this output: `jr2 up` makes the CA of the Instance on the first `jr2 up` that converges a Harness pod, and prints
+the line then (see [Run jr2 up](#run-jr2-up)).
 
 To change the key, edit `.env`. Then start the server again. Then run `jr2 up` again. The Custodian then uses the new
 key, also for a live Sandbox. No Harness restarts.
