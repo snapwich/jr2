@@ -93,15 +93,20 @@ custodian-test:
 
 # --- kind e2e tier (ADR-0010; requires docker + kind) ---
 
-# A VANILLA cluster, and nothing else (ADR-0038): `jr2 up` from this checkout builds and `kind load`s
-# every image it deploys — Harness, operator, Orchestrator, and the Instance's Sandbox Images. The one
-# image it deploys and never builds — the Custodian's pinned Envoy (ADR-0059) — a kind node pulls
-# from its registry itself, so the cluster needs network to docker.io (or a `kitRegistry` mirror).
-# Pre-loading a `:local` tag here would be exactly the invisible-stale-image bug that deletes.
-# Nothing is instance-bound to the cluster (ADR-0019): each @kind scenario `jr2 up`s into a fresh
-# namespace, operator included.
+# A kind cluster with no image and no Instance in it (ADR-0038): `jr2 up` from this checkout builds
+# and `kind load`s every image it deploys — Harness, operator, Orchestrator, and the Instance's
+# Sandbox Images. The one image it deploys and never builds — the Custodian's pinned Envoy
+# (ADR-0059) — a kind node pulls from its registry itself, so the cluster needs network to docker.io
+# (or a `kitRegistry` mirror). Pre-loading a `:local` tag here would be exactly the
+# invisible-stale-image bug that deletes. The one thing added to the nodes is the Fence's node
+# prerequisites (`fence-node-prep`: Multus, the stock bridge plugins, the bridge, the rule set and
+# the route), which `jr2 up` probes and does not install (ADR-0084); the node's kernel needs the
+# 8021q module. An existing cluster of this name is kept, and its nodes are prepared again, which
+# changes nothing on a prepared node. Nothing is instance-bound to the cluster (ADR-0019): each
+# @kind scenario `jr2 up`s into a fresh namespace, operator included.
 e2e-kind-up:
-    kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
+    kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml --name {{ cluster }}
+    just cluster={{ cluster }} fence-node-prep
     @echo "now: \`just e2e-kind\`"
 
 # run the kind e2e tier (needs `just e2e-kind-up`). The tier addresses the kind cluster by its own
@@ -116,7 +121,7 @@ e2e-kind-up:
 # `parallel` is the worker count, and it is a property of the HOST, not the tier: the profile's
 # default (4, features/cucumber.json) is measured on a dev box, and a scenario's pods ask their
 # node for about 1.4 cpu of requests — the kit-sized control pods (ADR-0060: Orchestrator 500m,
-# Instance Harness 250m, its Custodian, the Repo cache and the Instance Effector 50m each) and a
+# Instance Harness 250m, the Repo cache and the Instance Effector 50m each) and a
 # 500m Sandbox (features/kind-instance/jr2.config.ts) — so four at once ask a node for 5.6 cpu. A
 # 4-vCPU hosted runner allocates 4, of which kube-system holds about 1 (v0.4.0's run: every
 # Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.8, which fits;
@@ -337,7 +342,7 @@ e2e-dist:
 
 # --- @model e2e tier (ADR-0066; requires docker + kind + a model endpoint) ---
 #
-# The @kind tier with the last fake removed: the same vanilla cluster (`just e2e-kind-up`), and
+# The @kind tier with the last fake removed: the same cluster (`just e2e-kind-up`), and
 # behind each scenario's Custodian a REAL model endpoint, named by a profile in
 # `features/model-endpoints/<name>.json` and selected with `JR2_MODEL_ENDPOINT` (default
 # `homelab`); the key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone. Not in CI and

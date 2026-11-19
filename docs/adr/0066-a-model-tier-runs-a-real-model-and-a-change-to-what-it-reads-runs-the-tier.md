@@ -15,9 +15,9 @@ recover, finish — are exercised only one scripted tool call at a time.
 
 ## Decision
 
-- **An opt-in `@model` tier: the `@kind` tier with the last fake removed.** Same shared vanilla kind cluster, same
-  bring-up (`just e2e-kind-up`), same `jr2 up` per scenario into a fresh namespace, same seed Repo, same Custodian path
-  — the endpoint's key is a Held secret bound to its host, and the Harness container holds a Stand-in
+- **An opt-in `@model` tier: the `@kind` tier with the last fake removed.** Same shared kind cluster, same bring-up
+  (`just e2e-kind-up`), same `jr2 up` per scenario into a fresh namespace, same seed Repo, same Custodian path — the
+  endpoint's key is a Held secret bound to its host, and the Harness container holds a Stand-in
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). What changes is the provider the
   Custodian swaps toward: a real model endpoint instead of the World's scripted one. The pod runs the stock Harness, the
   model originates every tool call, and the wire, the container boundary, the git transport and the Machine are all the

@@ -124,8 +124,12 @@ Instance needs, such as the [Orchestrator](../reference/glossary.md#orchestrator
 [Custodian](../reference/glossary.md#custodian). A [Sandbox](../reference/glossary.md#sandbox) and the
 [Instance Harness](../reference/glossary.md#instance-harness) also need parts of their network that `jr2 up` does not
 install: Multus, a bridge on each node, and a rule set on each node. `jr2 up` checks them, and names each node that does
-not have one. [Converge](../concepts/converge.md) explains what `jr2 up` makes. The [CLI reference](../reference/cli.md)
-gives each command and its options.
+not have one. For a kind cluster, the jr2 repository has a script that adds them to each node:
+`deploy/fence/node-prep.sh`. In a clone of the repository, `just fence-node-prep` runs it against the cluster `jr2`. It
+needs [just](https://github.com/casey/just), and the `8021q` module in the kernel of the computer or of Docker's VM.
+[Move from kind to a shared cluster](../guides/move-from-kind-to-a-shared-cluster.md) gives each part.
+[Converge](../concepts/converge.md) explains what `jr2 up` makes. The [CLI reference](../reference/cli.md) gives each
+command and its options.
 
 ## Next
 

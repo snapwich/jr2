@@ -8,9 +8,9 @@
 // materializes from the selected `features/model-endpoints/<name>.json` before the converge
 // (`workflows/_profile.ts` says why a file and not env). The one deployment-varying value that
 // stays on env is the key (`JR2_MODEL_API_KEY`), never a file of this checkout. It is a literal
-// Held secret (ADR-0059): `jr2 up` writes it into the held Secret of each pod that names it, which
-// only that pod's Custodian mounts, and into the provider check pod's Secret, which `jr2 up`
-// deletes after the check (ADR-0019). The Harness container holds only its Stand-in.
+// Held secret (ADR-0059): `jr2 up` writes it into the slot Secret of each Harness pod that names it,
+// which only the Custodian of the Instance reads, and into the check pod's slot Secret, which
+// `jr2 up` deletes after the check (ADR-0019, ADR-0084). The Harness container holds only its Stand-in.
 //
 // NO IMAGE IS NAMED HERE (ADR-0038): this checkout's `jr2 up` builds and loads every image it
 // deploys, including `images/default` below — the same Sandbox Image the @kind tier runs.

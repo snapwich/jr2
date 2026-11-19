@@ -241,9 +241,13 @@ With neither, a Sandbox reaches only the hosts that its Held secrets are bound t
 [Instance Harness](../reference/glossary.md#instance-harness) is behind a Fence too. Its list has no entry of yours: it
 reaches the hosts of its Held secrets, the hosts that `jr2 up` requires an entry for (below), and jr2's own routes.
 
-An entry of the list is `"<host>"`, `"<host>:<port>"`, or `{ host, port?, intercept: true }`. For example,
-`egress: ["registry.npmjs.org", "github.com:22", { host: "pypi.org", intercept: true }]` permits the npm registry, ssh
-to GitHub, and PyPI, which the Custodian intercepts:
+An entry of the list is `"<host>"`, `"<host>:<port>"`, or `{ host, port?, intercept: true }`. This default of an
+Instance permits the npm registry, ssh to GitHub, PyPI, which the Custodian intercepts, and a server that has no name:
+
+<<< @/examples/concepts/workspaces/jr2.config.ts
+
+The `docs-fix` Workflow above states its own list, `egress: ["registry.npmjs.org"]`. Its Sandbox reaches the npm
+registry, and not the other hosts of the default. The rules of an entry:
 
 - An entry with no port permits ports 443 and 80.
 - `*.` at the start of a host, such as `*.example.com`, permits each name below that domain, for TLS and HTTP only, on
@@ -310,6 +314,14 @@ These limits follow from the Fence:
 - A tool that dials a fixed address fails, unless that address and its port are an entry.
 - UDP, QUIC and ICMP do not go out. A client that tries QUIC falls back to TCP.
 - A protocol in which the server speaks first waits about 2 seconds for each connection.
+- The containers of a Sandbox pod can start before the Custodian has the rules of the Sandbox. A lookup or a connection
+  in that time is refused. jr2 sends the first Turn and the first Effect only after the rules are live, but the
+  entrypoint of a User Container can dial earlier. On an Alpine (musl) image, such a first lookup waits about 5 seconds
+  and then fails with "try again". A client that tries again gets an answer when the rules are live.
+- An Instance has at most 125 Sandboxes at once, beside its Instance Harness, because its range has 128 VLANs. A slot is
+  free again 2 minutes after its Sandbox went. While no slot is free, jr2 refuses to make a Sandbox:
+  `Sandbox "<sandbox>" gets no Fence slot (ADR-0084): …`. A cluster has 31 ranges, so at most 31 Instances with a
+  Harness pod share a cluster.
 - When you remove an entry, the change applies to each new connection at once. A connection that is open and that the
   list no longer permits is closed after about a minute. When the value of a Held secret changes, the Sandbox's
   connections to its Intercepted hosts and its plain HTTP connections close after about a minute too. When you add or

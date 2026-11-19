@@ -44,9 +44,20 @@ below explains one field. Set only the fields that your cluster needs.
   Sandbox and of the [Instance Harness](../reference/glossary.md#instance-harness). It is a second pod network, apart
   from the network of the cluster. `jr2 up` installs the [Custodian](../reference/glossary.md#custodian), its uplink on
   each Sandbox node and its resolver. It does not install these parts:
-  - Multus, with the stock `bridge` plugin, so that a Sandbox pod gets the Fence as its only network.
-  - One bridge on each Sandbox node.
-  - The rule set of each Sandbox node, which keeps the node's own network stack off the bridge.
+  - Multus in its thick form, with `namespaceIsolation: true`, so that a Sandbox pod gets the Fence as its only network,
+    and a pod can use an attachment of its own namespace only.
+  - The stock CNI plugins `bridge`, `static` and `tuning` on each Sandbox node. The script below installs v1.10.0.
+  - One bridge on each Sandbox node, named `jr2fence0`, with `vlan_filtering 1` and `vlan_default_pvid 0`, no VLAN of
+    its own, no address and IPv6 off. Then a port of a Sandbox gets only its own VLAN.
+  - The `8021q` module in the kernel of each Sandbox node. The uplink of the Custodian has a VLAN interface for each
+    slot.
+  - The rule set of each Sandbox node, which keeps the node's own network stack off the bridge: a frame that the bridge
+    carries skips the node's conntrack, and nothing from the bridge reaches the node or is routed off the bridge.
+  - An `unreachable` route for the segment on each Sandbox node (`198.19.0.0/20`, or `segment` of
+    [`fence`](../reference/config.md#fence)), so that the node never sends a packet of the segment on its default route.
+
+  `deploy/fence/node-prep.sh` in the jr2 repository makes each part on the nodes of a kind cluster
+  (`just fence-node-prep` in a clone of the repository). Read it as an example of each part for your own nodes.
 
   `jr2 up` checks each part, and refuses to converge while a Sandbox node lacks one. It names the node and the part. The
   check has no privilege on the node, so it sees what the rule set does, not the rule set. A node that does not change

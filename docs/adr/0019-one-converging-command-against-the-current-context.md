@@ -285,9 +285,10 @@ from env.
   which `up` would have to detect anyway — at which point it may as well fix it.
 - **A committed or locally-cached deployment target.** Rejected twice: committed addresses break repo reuse; a local
   cache (`.jr2/target.json`) is derived state that can lie. The cluster itself is the record.
-- **`jr2` creating clusters** (`jr2 cluster up`, or an interactive offer). Rejected: with no baked mounts, any vanilla
-  cluster works; creating one is infrastructure provisioning, like installing docker. The no-context error message says
-  `kind create cluster` and that is the whole story.
+- **`jr2` creating clusters** (`jr2 cluster up`, or an interactive offer). Rejected: with no baked mounts, a cluster
+  needs nothing of jr2 beyond the Fence's node prerequisites, which `jr2 up` probes and does not install
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)); creating a cluster and preparing its nodes is
+  infrastructure provisioning, like installing docker.
 
 ## Consequences
 

@@ -768,7 +768,10 @@ The user must decide these items. Until then, obey the rule for each item.
 
 - **The Fence on kind.** A Sandbox and the Instance Harness need Multus, a bridge on each node and the rule set of each
   node. `jr2 up` checks them, and it does not install them. `kind create cluster` gives none of them, and the tutorial
-  has no step that installs them. Until the user decides that step, page 1 says only that `jr2 up` checks them.
+  has no step that installs them. Until the user decides that step (a published script, a `jr2` command that prepares a
+  kind cluster, or a page only), page 1 says that `jr2 up` checks them, and names the script of the jr2 repository that
+  adds them to a kind cluster (`just fence-node-prep`). The pages that give the parts (`install`,
+  `move-from-kind-to-a-shared-cluster`, `fix-a-failed-converge`) name the same script.
 - **The fork and its tags.** No test shows that a fork with "Copy the main branch only" cleared has the release tags.
   The manual check confirms it.
 - **The output.** The writers of stage 3 have no cluster, no key and no model endpoint. Write the output from the code,

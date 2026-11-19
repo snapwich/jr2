@@ -336,8 +336,10 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   Fence got no answer from the Custodian on the bridge, `jr2 up` also replaces the Custodian pod of that node, so that
   the pod joins the bridge again. When the cluster has no Multus, the error says
   `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`. Give the node the
-  part, then run `jr2 up` again. See
-  [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#check-the-cluster).
+  part, then run `jr2 up` again. On a kind cluster, run `just fence-node-prep` in a clone of the jr2 repository
+  (`just cluster=<name> fence-node-prep` for a cluster that is not named `jr2`): it adds each part to each node
+  (`deploy/fence/node-prep.sh`). See
+  [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#check-the-cluster) for each part.
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See
   [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). Every rollout comes after the provider

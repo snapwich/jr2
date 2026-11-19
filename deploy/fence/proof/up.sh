@@ -4,9 +4,9 @@
 #   KUBECONFIG=features/.tmp/kubeconfig-jr2 deploy/fence/proof/up.sh [cluster]
 #
 # Instance A (namespace fence-proof-a, range 0) and Instance B (fence-proof-b, range 1), each with a Custodian pod
-# on both workers. Sandboxes of A: slot 3 on jr2-worker (with a privileged container v5), slot 4 on jr2-worker2,
+# on both workers. Sandboxes of A: slot 3 on jr2-worker, slot 4 on jr2-worker2,
 # slot 5 on jr2-worker, slot 6 on jr2-worker with an HTTP probe (it must not become Ready), slot 7 on jr2-worker
-# with the window probe. Sandbox of B: slot 3 on jr2-worker. deploy/fence/proof/down.sh deletes it all.
+# with the window probe. Sandbox of B: slot 3 on jr2-worker. Deleting the two namespaces deletes it all.
 set -euo pipefail
 CLUSTER=${1:-jr2}
 : "${KUBECONFIG:?KUBECONFIG must name the kubeconfig file of the cluster}"
@@ -25,7 +25,7 @@ R custodian --ns fence-proof-b --range 1 --live 3 --nodes "$W1,$W2" | kc apply -
 for ns in fence-proof-a fence-proof-b; do kc -n "$ns" rollout status ds/jr2-custodian --timeout=300s; done
 
 {
-  R sandbox --ns fence-proof-a --range 0 --slot 3 --node "$W1" --privileged
+  R sandbox --ns fence-proof-a --range 0 --slot 3 --node "$W1"
   echo ---
   R sandbox --ns fence-proof-a --range 0 --slot 4 --node "$W2"
   echo ---

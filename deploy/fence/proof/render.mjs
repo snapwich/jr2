@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // The M1 proof of the Fence (ADR-0084): it writes the Kubernetes objects of one proof Instance to stdout, as YAML
-// (JSON documents, which kubectl reads as YAML). A test fixture of this repo, not jr2 code; M8 builds the real
-// objects in `jr2 up`, and M16 deletes this folder.
+// (JSON documents, which kubectl reads as YAML). A test fixture of this repo, not jr2 code: `jr2 up` makes the real
+// objects. The proof pods have only the postures that jr2 gives a pod, with no NET_ADMIN and no privilege.
 //
 //   render.mjs custodian --ns <ns> --range <k> --live <i,j,...> --nodes <node,...>
 //       the slot NADs (0..127) and the trunk NAD, the Custodian's ConfigMaps (uplink, Envoy, resolver) and its
 //       DaemonSet on the named nodes. A live slot has rules: an Envoy listener on 20000+i and a resolver on 25000+i.
-//   render.mjs sandbox --ns <ns> --slot <i> --range <k> --node <node> [--privileged] [--http-probe] [--window]
+//   render.mjs sandbox --ns <ns> --slot <i> --range <k> --node <node> [--http-probe] [--window]
 //       one Sandbox pod on slot i, whose only network is the Fence.
 //
 // The Egress list of each live slot: example.com (443 and 80); slot 4 also has example.org. So slot 4 has a
@@ -506,9 +506,7 @@ function sandbox(o) {
     },
     tool("v1", { runAsUser: 1000, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: none }),
     tool("v2", { runAsUser: 0 }),
-    tool("v3", { runAsUser: 0, capabilities: { add: ["NET_ADMIN", "NET_RAW"] } }),
   ];
-  if (o.privileged) containers.push(tool("v5", { privileged: true }));
   const initContainers = [];
   if (o.window) {
     initContainers.push({

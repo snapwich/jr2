@@ -43,8 +43,9 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   pi, the real Menu through the Custodian, real Working tools — and the substitution moved to the provider: a scripted
   OpenAI-compatible endpoint the World serves from the host. Which is what makes this tier a second pi canary.) They are
   tagged `@kind` and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is the
-  product's own path (ADR-0019): one shared VANILLA kind cluster and nothing else, then **`jr2 up` per scenario into a
-  fresh namespace** — which since ADR-0038 builds and loads every image it deploys, so no image is pre-loaded by hand.
+  product's own path (ADR-0019): one shared kind cluster with no image in it and only the Fence's node prerequisites
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), then **`jr2 up` per scenario into a fresh
+  namespace** — which since ADR-0038 builds and loads every image it deploys, so no image is pre-loaded by hand.
   Namespace-as-identity makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster.
   **The host address behind the provider's name is discovered, not assumed.** The scripted provider runs host-side. A
   Harness pod reaches it through the Custodian, by a name or by an exact address with a port that the Egress list
