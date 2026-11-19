@@ -2,9 +2,11 @@
 // reader to put the file in `workflows/` and run `jr2 up`, and an Assistant copies it. `pnpm
 // typecheck` compiles the file, but `jr2 up` also loads the Machine and walks it: the fault routes
 // (ADR-0073, ADR-0074), the Open parts, the `mcp` names, the Chart files, the dispatches, the Effect
-// secrets and the pushes, the seats (ADR-0015) and the Sizes. This test calls `checkInstance`, the
-// function that `jr2 up` and `jr2 check` call, so it cannot give a different answer. It does not copy
-// a rule. A `refusing:`, `error:` or `warning:` line fails the test.
+// secrets and the pushes, the seats (ADR-0015) and the Sizes. Then it reads where each secret goes and
+// what each Egress list must permit (ADR-0059, ADR-0084). This test calls `checkInstance` and then
+// `secretPlacementsOf`, the functions that `jr2 up` calls in that order, so it refuses what `jr2 up`
+// refuses. It does not copy a rule. A `refusing:`, `error:` or `warning:` line of `checkInstance`, and a
+// refusal of `secretPlacementsOf`, fail the test.
 //
 // How the test finds the Workflows: a `.ts` file that has a line that starts with
 // `export const machine` is a Workflow, because that is the module contract of `workflows/<name>.ts`.
@@ -18,10 +20,17 @@
 //   shows one, it is the config of the provider tab (`anthropic/` or `local/`) from
 //   `examples/shared/`, which "Connect a model" gives the reader. Else it is empty, as `jr2 check`
 //   reads an Instance that has no config.
+// - In a provider tab (`anthropic/` or `local/`) whose page shows its own config, the test adds the
+//   `harness` and the `secrets` of that tab's config from `examples/shared/`, because the reader made
+//   the Instance with "Connect a model" first.
+// - In the Local tab, a config with no `egress` gets the entry that "Connect a model" tells the reader
+//   to add, `egress: ["<address>:8000"]`. LOCAL_MODEL_URL is TUTORIAL_MODEL_URL when it is not set.
 // - ALSO adds what a page tells the reader to add in its text, not in a file.
 // - A Chart file in the folder of a Workflow, or in the folder above it, goes in
 //   `workflows/<that Workflow>/`, as "Run a Chart by name" tells.
 // - The reader fills in each placeholder, such as `<you>`. The test fills it in with PLACEHOLDERS.
+// - The reader sets each secret in `.env`. The test gives each secret with no value ENV_VALUE, for
+//   `secretPlacementsOf` only, because `checkInstance` reads no value.
 // - The typecheck is not run here: `pnpm typecheck` compiles every example.
 
 import { test } from "node:test";
@@ -31,7 +40,7 @@ import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadConfig, type JR2Config } from "@jr2/orchestrator/internal";
+import { loadConfig, secretPlacementsOf, type JR2Config } from "@jr2/orchestrator/internal";
 import { checkInstance } from "../../../packages/cli/src/instance-check.ts";
 import { allPages, readSitemap } from "../build/sitemap.ts";
 
@@ -79,6 +88,13 @@ const REFUSED: Record<string, string> = {
 
 /** Each placeholder in the examples, and a value that a reader can give it. */
 const PLACEHOLDERS: Record<string, string> = { "<you>": "you" };
+
+/** The address of the local model endpoint, as the page's example address of a host with no name. */
+const TUTORIAL_MODEL_URL = "http://192.168.1.20:8000/v1";
+process.env.LOCAL_MODEL_URL ??= TUTORIAL_MODEL_URL;
+
+/** The value of each secret that the reader sets in .env. It is long enough for each check of a value. */
+const ENV_VALUE = "a-value-from-dot-env-0123456789abcdef";
 
 const alsoOf = (folder: string) => ALSO[folder] ?? ALSO[dirname(folder)];
 
@@ -146,7 +162,16 @@ async function configOf(folder: string, mine: string[]): Promise<JR2Config> {
   assert.ok(shown.length <= 1, `the pages show more than one config: ${shown.join(", ")}`);
   const tab = basename(folder);
   const file = shown[0] ?? (tab === "anthropic" || tab === "local" ? `shared/${tab}/jr2.config.ts` : undefined);
-  const config = file ? ((await loadConfig(join(EXAMPLES, dirname(file)))) ?? {}) : {};
+  let config: JR2Config = file ? ((await loadConfig(join(EXAMPLES, dirname(file)))) ?? {}) : {};
+  if (tab === "anthropic" || tab === "local") {
+    const shared =
+      file === `shared/${tab}/jr2.config.ts` ? {} : ((await loadConfig(join(EXAMPLES, "shared", tab))) ?? {});
+    const secrets = [...(config.secrets ?? []), ...(shared.secrets ?? [])];
+    config = { ...config, harness: config.harness ?? shared.harness, ...(secrets.length ? { secrets } : {}) };
+    if (tab === "local" && config.egress === undefined) {
+      config = { ...config, egress: [new URL(process.env.LOCAL_MODEL_URL!).host] };
+    }
+  }
   const secrets = alsoOf(folder)?.secrets ?? [];
   if (!secrets.length) return config;
   return { ...config, secrets: [...(config.secrets ?? []), ...secrets.map((name) => ({ name, value: undefined }))] };
@@ -205,7 +230,21 @@ for (const folder of folders) {
           cwd: root,
           typecheck: async () => ({ ok: true, output: "" }),
         };
-        passed = (await checkInstance(io, root, config)) !== undefined;
+        const checked = await checkInstance(io, root, config);
+        // `jr2 up` reads the placements next: a host that a Sandbox must reach and that its Egress
+        // list does not permit throws here.
+        if (checked) {
+          // The reader sets each secret in .env, so each one that has no value gets ENV_VALUE.
+          const secrets = config.secrets?.map((e) =>
+            e.value === undefined && e.valueFrom === undefined ? { ...e, value: ENV_VALUE } : e,
+          );
+          // Only a refusal counts here. A warning of the placements says that a secret goes nowhere,
+          // and that depends on the whole Instance: the test's Instance holds one folder only, and a
+          // shared config, such as examples/shared/slack/, names secrets for the Workflows of more
+          // than one page.
+          secretPlacementsOf({ ...config, secrets }, checked.placementWalk);
+        }
+        passed = checked !== undefined;
       } catch (err) {
         // A refusal when a module loads, or in the walk, throws. The CLI prints it as `error:`.
         lines.push(`error: ${(err as Error).message}`);

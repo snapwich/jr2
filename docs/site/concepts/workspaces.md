@@ -248,7 +248,9 @@ Instance permits the npm registry, ssh to GitHub, PyPI, which the Custodian inte
 
 The `docs-fix` Workflow above states its own list, `egress: ["registry.npmjs.org"]`. Its Sandbox reaches the npm
 registry, and not the other hosts of the default. Its push to `github.com` needs no entry, because the Custodian holds
-the token of the `git` entry for that host. The rules of an entry:
+the token of the `git` entry for that host. With a model endpoint that has no key, as in the Local tab, the list also
+names the address and the port of the endpoint. Such a host needs an entry, and the list of a `workspace()` replaces the
+default. The rules of an entry:
 
 - An entry with no port permits ports 443 and 80.
 - `*.` at the start of a host, such as `*.example.com`, permits each name below that domain, for TLS and HTTP only, on
@@ -320,9 +322,10 @@ These limits follow from the Fence:
   entrypoint of a User Container can dial earlier. On an Alpine (musl) image, such a first lookup waits about 5 seconds
   and then fails with "try again". A client that tries again gets an answer when the rules are live.
 - An Instance has at most 125 Sandboxes at once, beside its Instance Harness, because its range has 128 VLANs. A slot is
-  free again 2 minutes after its Sandbox went. While no slot is free, jr2 refuses to make a Sandbox:
-  `Sandbox "<sandbox>" gets no Fence slot (ADR-0084): …`. A cluster has 31 ranges, so at most 31 Instances with a
-  Harness pod share a cluster.
+  free again at the earliest 2 minutes after its Sandbox went, when each Custodian pod of the Instance says that the
+  slot is empty. While a Custodian pod does not answer, no slot is given again. While no slot is free, jr2 refuses to
+  make a Sandbox: `Sandbox "<sandbox>" gets no Fence slot (ADR-0084): …`. A cluster has 31 ranges, so at most 31
+  Instances with a Harness pod share a cluster.
 - When you remove an entry, the change applies to each new connection at once. A connection that is open and that the
   list no longer permits is closed after about a minute. When the value of a Held secret changes, the Sandbox's
   connections to its Intercepted hosts and its plain HTTP connections close after about a minute too. When you add or
