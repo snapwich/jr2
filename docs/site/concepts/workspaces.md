@@ -247,7 +247,8 @@ Instance permits the npm registry, ssh to GitHub, PyPI, which the Custodian inte
 <<< @/examples/concepts/workspaces/jr2.config.ts
 
 The `docs-fix` Workflow above states its own list, `egress: ["registry.npmjs.org"]`. Its Sandbox reaches the npm
-registry, and not the other hosts of the default. The rules of an entry:
+registry, and not the other hosts of the default. Its push to `github.com` needs no entry, because the Custodian holds
+the token of the `git` entry for that host. The rules of an entry:
 
 - An entry with no port permits ports 443 and 80.
 - `*.` at the start of a host, such as `*.example.com`, permits each name below that domain, for TLS and HTTP only, on

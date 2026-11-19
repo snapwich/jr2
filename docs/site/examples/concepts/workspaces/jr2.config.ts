@@ -1,6 +1,10 @@
 import { defineConfig } from "@jr2/orchestrator";
 
 export default defineConfig({
+  git: {
+    // The token that docs-fix pushes with. The Custodian holds it for github.com, so that host needs no entry.
+    credentials: [{ match: "github.com/you/", token: "JR2_GIT_TOKEN" }],
+  },
   // The Egress list of each Sandbox whose workspace() states no egress of its own.
   egress: [
     // The npm registry, on ports 443 and 80.
