@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The M1 proof of the Fence (ADR-0084): it writes the Kubernetes objects of one proof Instance to stdout, as YAML
 // (JSON documents, which kubectl reads as YAML). A test fixture of this repo, not jr2 code: `jr2 up` makes the real
-// objects. The proof pods have only the postures that jr2 gives a pod, with no NET_ADMIN and no privilege.
+// objects. The proof Sandbox pods have only the postures that jr2 gives a Sandbox pod, with no NET_ADMIN and no
+// privilege. The proof Custodian's uplink init container has NET_ADMIN, as jr2's own uplink has.
 //
 //   render.mjs custodian --ns <ns> --range <k> --live <i,j,...> --nodes <node,...>
 //       the slot NADs (0..127) and the trunk NAD, the Custodian's ConfigMaps (uplink, Envoy, resolver) and its

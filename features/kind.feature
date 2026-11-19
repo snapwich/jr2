@@ -18,7 +18,7 @@ Feature: a workspace() run drives a real Sandbox on kind
   bump can break it.
 
   This tier is opt-in (`@kind`, excluded from the default suite) because it needs infrastructure:
-    just e2e-kind-up      # a VANILLA kind cluster; nothing is built or loaded here
+    just e2e-kind-up      # a kind cluster with no image in it and the Fence's node prerequisites
     just e2e-kind
   Bring-up is the product's own path (ADR-0010/0019/0038): each scenario runs `jr2 up` into a fresh
   namespace of the shared cluster, and that converge builds and loads every image it builds — the

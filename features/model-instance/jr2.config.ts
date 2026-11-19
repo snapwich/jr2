@@ -1,5 +1,6 @@
 // The @model tier's instance config (ADR-0066): the @kind instance's shape (ADR-0010) with the
-// last fake removed. Bring-up is the product's own path — one shared vanilla kind cluster, then
+// last fake removed. Bring-up is the product's own path — one shared kind cluster with no image in it
+// and the Fence's node prerequisites (`just e2e-kind-up`), then
 // `jr2 up` per scenario into a FRESH namespace; the workflows bind the seed Repo the suite serves
 // in-cluster, and the fence admits that host alone (ADR-0051).
 //
@@ -8,9 +9,10 @@
 // materializes from the selected `features/model-endpoints/<name>.json` before the converge
 // (`workflows/_profile.ts` says why a file and not env). The one deployment-varying value that
 // stays on env is the key (`JR2_MODEL_API_KEY`), never a file of this checkout. It is a literal
-// Held secret (ADR-0059): `jr2 up` writes it into the slot Secret of each Harness pod that names it,
-// which only the Custodian of the Instance reads, and into the check pod's slot Secret, which
-// `jr2 up` deletes after the check (ADR-0019, ADR-0084). The Harness container holds only its Stand-in.
+// Held secret (ADR-0059): `jr2 up` writes it into the held Secret `jr2-held-secrets-<pod>` of each
+// Harness pod that names it, which only the Custodian of the Instance reads, and into the check
+// pod's slot Secret, which `jr2 up` deletes after the check (ADR-0019, ADR-0084). The Harness
+// container holds only its Stand-in.
 //
 // NO IMAGE IS NAMED HERE (ADR-0038): this checkout's `jr2 up` builds and loads every image it
 // deploys, including `images/default` below — the same Sandbox Image the @kind tier runs.

@@ -325,14 +325,15 @@ dist-down:
 # default to the same two: the tier refuses to start while a manual loop holds them
 # (`just dist-down`).
 #
-# The cluster is vanilla but not featureless since ADR-0044 — deploy/kind.yaml tells containerd that
-# per-registry config exists, which is what lets the fixture point the nodes at its own registry. A
-# cluster created before that patch is refused by name at bring-up, not diagnosed later as a pull
-# failure.
+# The cluster is the one `e2e-kind-up` makes: deploy/kind.yaml tells containerd that per-registry
+# config exists (ADR-0044), which is what lets the fixture point the nodes at its own registry, and
+# `fence-node-prep` gives each node the Fence's prerequisites, which `jr2 up` probes (ADR-0084). A
+# cluster created before the containerd patch is refused by name at bring-up, not diagnosed later
+# as a pull failure.
 
-# a VANILLA kind cluster for the @dist tier (the same one @kind uses — safe to run either)
+# a kind cluster with no image in it and the Fence's node prerequisites (the same one @kind uses)
 e2e-dist-up:
-    kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
+    just cluster={{ cluster }} e2e-kind-up
     @echo "now: \`just e2e-dist\`"
 
 # run the @dist e2e tier (needs `just e2e-dist-up`, and network on every run — the storage is wiped)

@@ -6,7 +6,10 @@
 # Instance A (namespace fence-proof-a, range 0) and Instance B (fence-proof-b, range 1), each with a Custodian pod
 # on both workers. Sandboxes of A: slot 3 on jr2-worker, slot 4 on jr2-worker2,
 # slot 5 on jr2-worker, slot 6 on jr2-worker with an HTTP probe (it must not become Ready), slot 7 on jr2-worker
-# with the window probe. Sandbox of B: slot 3 on jr2-worker. Deleting the two namespaces deletes it all.
+# with the window probe. Sandbox of B: slot 3 on jr2-worker. Deleting the two namespaces deletes the objects that this
+# script applies. These stay: the image jr2-fence-proof:1 on the host and on each node, and the range Leases
+# jr2-fence-range-0 and jr2-fence-range-1 in jr2-system, which this script does not make and which hold ranges 0 and 1
+# for the proof Instances.
 set -euo pipefail
 CLUSTER=${1:-jr2}
 : "${KUBECONFIG:?KUBECONFIG must name the kubeconfig file of the cluster}"
