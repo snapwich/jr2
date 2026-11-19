@@ -57,14 +57,13 @@ jr2 up
 
 For an Instance whose Agent has only the [Menu](../reference/glossary.md#menu) and uses Anthropic, you see these lines:
 
-<!-- output: not run -->
-
 ```text
 …
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
 the Instance Harness: Egress list Intercepted api.anthropic.com:443
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
+…
 provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for api.anthropic.com
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
 provider: the check pod is not running yet — check: ContainerCreating

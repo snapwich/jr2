@@ -87,8 +87,6 @@ the Turns of `triager`. The Instance Harness is behind a [Fence](../reference/gl
 
 The output shows where the model key goes. Then `jr2 up` asks your model for one tool call, from inside the cluster:
 
-<!-- output: not run -->
-
 ```text
 → .env: ANTHROPIC_API_KEY
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
@@ -104,19 +102,24 @@ the Instance Harness: Egress list Intercepted api.anthropic.com:443
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
 held secrets: minted the Instance's CA into jr2-held-ca
 …
-custodian: converging on each Sandbox node (VLAN range 0)
-custodian: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
-…
+custodian: converging on each Sandbox node (VLAN range 2)
+custodian: verified — 2 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+fence: probing the bridge and the rule set on 2 Sandbox node(s): jr2-worker, jr2-worker2
+fence: verified — the bridge and the rule set answer on each Sandbox node
 provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for api.anthropic.com
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: the check pod is not running yet — check: ContainerCreating
 provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 instance harness: converging (triager declares workspace: "none")
-instance harness: Fence slot 0 live at version <version>
+instance harness: Fence slot 0 live at version 9811e83677fe38d7
 instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<version>
 …
 converged — `jr2 run <workflow>` when ready
 ```
+
+The range of VLANs, the number of Custodian pods, the names of the nodes and the version of the slot depend on your
+cluster. Your values can be different.
 
 The warning of Connect a model, `secrets[0] (ANTHROPIC_API_KEY) is named by nothing; goes nowhere`, is gone. `triager`
 names an Anthropic model, so `jr2 up` gives the key to the [Custodian](../reference/glossary.md#custodian), for the
