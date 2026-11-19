@@ -56,11 +56,11 @@ import {
   type HistoryMessage,
   type RunChild,
 } from "../lib/model-status.ts";
-import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
+import { needsFirstPush, readContinue, type FirstPush, type PushRecord } from "../lib/model-continue.ts";
 import { beginEvidence, keptConversation, recordStatus, trialContext, type TrialContext } from "./model-evidence.ts";
 import { cellDir, menuOnlySeatedWorkflows, tokensOf, trialDir, type Usage } from "../lib/model-evidence.ts";
 import { appendUsage, cellUsage, dollars, mergeCell, monthToDate, type CellUsage } from "../lib/model-scorecard.ts";
-import { ensureSeed, pushRemoteCommitsFromMain, pushRemoteLogFromMain } from "./seed.ts";
+import { ensureSeed, pushRemoteCommitsFromMain, pushRemoteFile, pushRemoteLogFromMain } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -1186,17 +1186,22 @@ const answered: Driver = async (world, input) => {
  * a first push that published a signed copy (`pushed`, its published commit not its source) — the
  * answer that carries the paragraph after a signed push; without it the trial is void. The
  * measurement is the second push: `pushed`, because the Agent continued on its branch and left the
- * pushed commits as they were. When the setup holds and there is one push, the commits from `main`
- * to its published commit on push.git decide: two or more, and the model made both commits before
- * it read any post-push text, so the trial is void (`features/lib/model-continue.ts`); one, and a
- * trial that never published a second time is a miss.
+ * pushed commits as they were. When the setup holds and there is one push, its published commit on
+ * push.git decides: two or more commits from `main`, or a `greet.js` that already has the comment
+ * above `greet()`, and the model made the second change before it read any post-push text, so the
+ * trial is void (`features/lib/model-continue.ts`); the fix alone, and a trial that never published
+ * a second time is a miss.
  */
 const continueAfterSignedPush: Driver = async (world, input) => {
   const runId = await startRun(world, "continue-after-signed-push", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
   const pushes = (outputOf(last)?.pushes ?? []) as PushRecord[];
-  const carried = needsCarried(pushes) ? await pushRemoteCommitsFromMain(pushes[0]!.published!) : undefined;
-  const reading = readContinue(pushes, carried);
+  const published = pushes[0]?.published;
+  const first: FirstPush | undefined =
+    needsFirstPush(pushes) && published !== undefined
+      ? { carried: await pushRemoteCommitsFromMain(published), greet: await pushRemoteFile(published, "greet.js") }
+      : undefined;
+  const reading = readContinue(pushes, first);
   const seen = `pushes ${pushes.map((p) => p.outcome).join(" ") || "none"}; ended ${ended(last, outputOf(last)?.outcome)}`;
   return {
     runId,

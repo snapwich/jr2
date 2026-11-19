@@ -428,6 +428,13 @@ export async function pushRemoteCommitsFromMain(commit: string): Promise<number>
   return n;
 }
 
+/** A file of the push remote at `commit`, or "" when the commit has no such file. */
+export async function pushRemoteFile(commit: string, path: string): Promise<string> {
+  assert.match(commit, /^[0-9a-f]{40}$/);
+  assert.match(path, /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/, "a plain relative path");
+  return inSeed(`git -c safe.directory='*' -C /srv/push.git show ${commit}:${path} 2>/dev/null || true`);
+}
+
 /** The push remote's log from `main` to `commit`, one line per commit (ADR-0066's kept evidence). */
 export async function pushRemoteLogFromMain(commit: string): Promise<string> {
   return inSeed(pushRemoteLogScript(commit));
