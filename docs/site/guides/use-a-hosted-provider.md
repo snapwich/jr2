@@ -63,10 +63,11 @@ For an Instance whose Agent has only the [Menu](../reference/glossary.md#menu) a
 …
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
+the Instance Harness: Egress list Intercepted api.anthropic.com:443
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
-provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for api.anthropic.com
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for api.anthropic.com
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
-provider: the check pod is not running yet — custodian: PodInitializing
+provider: the check pod is not running yet — check: ContainerCreating
 provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 ```
@@ -122,10 +123,12 @@ jr2 up
 
 The key now goes to the gateway:
 
+<!-- output: not run -->
+
 ```text
 …
 held secret ANTHROPIC_API_KEY → <gateway> (literal)
-provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for <gateway>
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for <gateway>
 …
 provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …

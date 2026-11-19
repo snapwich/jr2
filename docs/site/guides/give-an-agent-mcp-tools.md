@@ -143,8 +143,8 @@ name in an allowlist must be a tool of the server:
 
 ```text
 …
-mcp: listing the tools of "slack-acme" at <your MCP URL> on the Instance Harness, through a Custodian that holds SLACK_ACME_TOKEN, with its Stand-in
-mcp: listing the tools of "slack-partner" at <your MCP URL> on the Instance Harness, through a Custodian that holds SLACK_PARTNER_TOKEN, with its Stand-in
+mcp: listing the tools of "slack-acme" at <your MCP URL> on the Instance Harness, through the Custodian, which holds SLACK_ACME_TOKEN, with its Stand-in
+mcp: listing the tools of "slack-partner" at <your MCP URL> on the Instance Harness, through the Custodian, which holds SLACK_PARTNER_TOKEN, with its Stand-in
 provider: the check pod has up to 5 min to start, then up to 6 min for its model and 1 min for each of its 2 MCP servers
 …
 mcp: "slack-acme" lists 2 tool(s); every allowlisted name is there

@@ -116,14 +116,13 @@ Instance, run `jr2 down --all` in place of `jr2 down`:
 jr2 down --all
 ```
 
-<!-- output: not run -->
-
 ```text
 remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator)? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
-gave back VLAN range 0 of the Fence
+gave back VLAN range 2 of the Fence
 uninstalling the operator (jr2-system)
-swept 2 image(s) (259.1 MB)
+swept 3 image(s) (532.7 MB)
+…
 removed
 ```
 

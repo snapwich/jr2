@@ -100,6 +100,7 @@ agents: triager (carried by 2 workflow machine(s))
 …
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
+the Instance Harness: Egress list Intercepted api.anthropic.com:443
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
 held secrets: minted the Instance's CA into jr2-held-ca
 …
