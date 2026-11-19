@@ -118,9 +118,11 @@ export default defineConfig({
   // The Size of every Sandbox this tier provisions (ADR-0060): below the kit default, because jr2
   // reserves the whole Size and the tier runs several scenarios at once on ONE kind node — at 2Gi
   // and one cpu each, beside every scenario's kit-sized control pods, a 4-core runner leaves
-  // Sandboxes Pending. The Harness still gets 960Mi and 450m after the Custodian's share. The Size
-  // alone is not enough there: the control pods ask 900m a scenario before any Sandbox, so the
-  // runner also runs fewer workers (`just e2e-kind 2`; the recipe has the arithmetic).
+  // Sandboxes Pending. The Harness gets the whole Size, because the Custodian is a pod of its own
+  // (ADR-0084). The Size alone is not enough there: before any Sandbox, a scenario's control pods
+  // ask 850m and its Custodian pod asks 100m and 1,920Mi, so 950m a scenario, and Multus asks 100m
+  // on the node. So the runner also runs fewer workers (`just e2e-kind 2`; the recipe has the
+  // arithmetic).
   // One named Caller token (ADR-0078): `jr2 up` makes its value in a Secret of its own and gives the
   // Orchestrator only the digest. The Callers Rule reads it, sends it and rotates it.
   callers: { tokens: { ci: { may: { read: "all" } } } },

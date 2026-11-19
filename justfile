@@ -120,12 +120,13 @@ e2e-kind-up:
 #
 # `parallel` is the worker count, and it is a property of the HOST, not the tier: the profile's
 # default (4, features/cucumber.json) is measured on a dev box, and a scenario's pods ask their
-# node for about 1.4 cpu of requests — the kit-sized control pods (ADR-0060: Orchestrator 500m,
-# Instance Harness 250m, the Repo cache and the Instance Effector 50m each) and a
-# 500m Sandbox (features/kind-instance/jr2.config.ts) — so four at once ask a node for 5.6 cpu. A
-# 4-vCPU hosted runner allocates 4, of which kube-system holds about 1 (v0.4.0's run: every
-# Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.8, which fits;
-# the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
+# node for 1.45 cpu of requests — the kit-sized control pods (ADR-0060: Orchestrator 500m,
+# Instance Harness 250m, the Repo cache and the Instance Effector 50m each), the Custodian pod
+# (ADR-0084: 100m and 1,920Mi) and a 500m Sandbox (features/kind-instance/jr2.config.ts) — so four
+# at once ask a node for 5.8 cpu. A 4-vCPU hosted runner allocates 4, of which the system pods ask
+# 1,050m with Multus (100m and 300Mi on each node; measured on jr2-control-plane) (v0.4.0's run:
+# every Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.9, which
+# fits and leaves about 50m; the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
 # of 47, 2 pass 47 of 47. Requests are the kit's, sized for a real cluster, and are not lowered for a runner.
 #
 # `shard` (`<i>/<n>`, from 1) runs every n-th scenario of the tier, starting at the i-th: cucumber's

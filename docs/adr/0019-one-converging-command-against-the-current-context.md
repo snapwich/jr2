@@ -287,8 +287,8 @@ from env.
   cache (`.jr2/target.json`) is derived state that can lie. The cluster itself is the record.
 - **`jr2` creating clusters** (`jr2 cluster up`, or an interactive offer). Rejected: with no baked mounts, a cluster
   needs nothing of jr2 beyond the Fence's node prerequisites, which `jr2 up` probes and does not install
-  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)); creating a cluster and preparing its nodes is
-  infrastructure provisioning, like installing docker.
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)); creating a cluster is infrastructure
+  provisioning, like installing docker.
 
 ## Consequences
 

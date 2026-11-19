@@ -24,7 +24,8 @@
 //   `harness` and the `secrets` of that tab's config from `examples/shared/`, because the reader made
 //   the Instance with "Connect a model" first.
 // - In the Local tab, a config with no `egress` gets the entry that "Connect a model" tells the reader
-//   to add, `egress: ["<address>:8000"]`. LOCAL_MODEL_URL is TUTORIAL_MODEL_URL when it is not set.
+//   to add, `egress: ["<address>:8000"]`. LOCAL_MODEL_URL is always TUTORIAL_MODEL_URL, also when the
+//   shell sets it, because the Local examples name that address as a literal.
 // - ALSO adds what a page tells the reader to add in its text, not in a file.
 // - A Chart file in the folder of a Workflow, or in the folder above it, goes in
 //   `workflows/<that Workflow>/`, as "Run a Chart by name" tells.
@@ -91,7 +92,7 @@ const PLACEHOLDERS: Record<string, string> = { "<you>": "you" };
 
 /** The address of the local model endpoint, as the page's example address of a host with no name. */
 const TUTORIAL_MODEL_URL = "http://192.168.1.20:8000/v1";
-process.env.LOCAL_MODEL_URL ??= TUTORIAL_MODEL_URL;
+process.env.LOCAL_MODEL_URL = TUTORIAL_MODEL_URL;
 
 /** The value of each secret that the reader sets in .env. It is long enough for each check of a value. */
 const ENV_VALUE = "a-value-from-dot-env-0123456789abcdef";
