@@ -2183,39 +2183,49 @@ Given(
     // rather than a re-tag of an id the node already holds. The labels go on the COMMAND LINE,
     // never in the Dockerfile — the same rule `jr2 up` follows (ADR-0037/0039) — and `jr2.dev/kind`
     // is what makes the image jr2's to take at all.
+    //
+    // The image is written to a tar at once and loaded from the tar. No root names it, so the host
+    // sweep of a parallel scenario's `jr2 up` can remove it from the host's docker at any time; a
+    // `kind load docker-image` after the read of the nodes then got "reference does not exist". A
+    // sweep between the build and the save fails the save, and the step builds once more.
     const dir = await mkdtemp(join(tmpdir(), "jr2-e2e-garbage-"));
+    const archive = join(dir, "image.tar");
     try {
       await writeFile(join(dir, "marker"), `${ref} ${randomBytes(16).toString("hex")}\n`);
       await writeFile(join(dir, "Dockerfile"), "FROM scratch\nCOPY marker /marker\n");
-      await exec("docker", [
-        "build",
-        "-t",
-        ref,
-        "--label",
-        "jr2.dev/kind=sandbox",
-        "--label",
-        `jr2.dev/instance=${this.namespace}`,
-        dir,
-      ]);
+      const build = async (): Promise<void> => {
+        await exec("docker", [
+          "build",
+          "-t",
+          ref,
+          "--label",
+          "jr2.dev/kind=sandbox",
+          "--label",
+          `jr2.dev/instance=${this.namespace}`,
+          dir,
+        ]);
+        await exec("docker", ["save", "-o", archive, ref]);
+      };
+      await build().catch(build);
+      const nodes = await kindNodes();
+      const before = new Map(
+        await Promise.all(nodes.map(async (n): Promise<[string, Set<string>]> => [n, await nodeRefs(n)])),
+      );
+      await exec("kind", ["load", "image-archive", archive, "--name", await kindClusterName()]);
+      this.plantedImage = ref;
+      // What the load ADDED, per node — the tag plus the names only containerd knows. This is the
+      // set the sweep has to take, and the reason the assertion is a diff and not a tag lookup.
+      this.plantedRefs = {};
+      for (const node of nodes) {
+        const added = [...(await nodeRefs(node))].filter((r) => !before.get(node)!.has(r));
+        assert.ok(
+          added.some((r) => shortRef(r) === ref),
+          `the planted image reached node ${node} before the sweep (added: ${added.join(", ")})`,
+        );
+        this.plantedRefs[node] = added;
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
-    }
-    const nodes = await kindNodes();
-    const before = new Map(
-      await Promise.all(nodes.map(async (n): Promise<[string, Set<string>]> => [n, await nodeRefs(n)])),
-    );
-    await exec("kind", ["load", "docker-image", ref, "--name", await kindClusterName()]);
-    this.plantedImage = ref;
-    // What the load ADDED, per node — the tag plus the names only containerd knows. This is the
-    // set the sweep has to take, and the reason the assertion is a diff and not a tag lookup.
-    this.plantedRefs = {};
-    for (const node of nodes) {
-      const added = [...(await nodeRefs(node))].filter((r) => !before.get(node)!.has(r));
-      assert.ok(
-        added.some((r) => shortRef(r) === ref),
-        `the planted image reached node ${node} before the sweep (added: ${added.join(", ")})`,
-      );
-      this.plantedRefs[node] = added;
     }
   },
 );
