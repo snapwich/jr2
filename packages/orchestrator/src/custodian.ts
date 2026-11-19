@@ -36,7 +36,8 @@ export function custodianRef(kitRegistry?: string): string {
   return `${home}:${tag}@${digest}`;
 }
 
-/** Where the Harness and the Custodian see the `jr2-ca` ConfigMap (ADR-0020). */
+/** Where a pod reads its trust files (ADR-0020): a Harness pod its `extra.crt` and `bundle.crt` and
+ * the `caBundle`'s `ca.crt`, the Instance Effector `ca.crt`, the Custodian its `upstream.crt`. */
 export const CA_MOUNT = "/etc/jr2/ca";
 
 /** Where the Harness container holds its Stand-ins (ADR-0059, ADR-0076): a read-only mount that no

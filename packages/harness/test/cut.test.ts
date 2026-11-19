@@ -1404,7 +1404,7 @@ test("the cut's env keeps SSL_CERT_FILE beside an HTTPS JR2_CUSTODIAN_URL, so jr
   assert.equal(https.SSL_CERT_FILE, "/etc/jr2/ca/bundle.crt");
   assert.equal(https.NODE_EXTRA_CA_CERTS, undefined, "only the trust variable that Go reads is kept");
   const plain = cutEnv(paths, "/h", {
-    JR2_CUSTODIAN_URL: "http://127.0.0.1:8081",
+    JR2_CUSTODIAN_URL: "http://custodian.jr2.internal",
     SSL_CERT_FILE: "/etc/jr2/ca/bundle.crt",
   });
   assert.equal(plain.SSL_CERT_FILE, undefined, "a plain URL needs no trust");

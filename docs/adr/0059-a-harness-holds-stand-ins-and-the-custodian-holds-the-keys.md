@@ -345,11 +345,12 @@ and it replaces the Adapter.
   reused while its SAN is the same, it chains to the current CA, and more than 30 days remain. Keys are ECDSA P-256,
   written by jr2's own small DER writer over `node:crypto`: no dependency, and no `openssl`.
 - **Trust is in variables only.** jr2 mounts no file over the image's own CA bundle, so the bundle of a brought image
-  stays as its owner made it. The `jr2-ca` ConfigMap carries `ca.crt` (the user's `caBundle`) and `upstream.crt` (the
-  roots + `caBundle`, and never a jr2 CA, for the Custodian). "Roots" are the Mozilla roots of the Node that runs
-  `jr2 up`. The ConfigMap is applied server-side, so client-side apply's annotation does not limit its size. Each
-  Harness pod that gets the trust variables (above) also gets two files of its own from its maker, never in `jr2-ca`,
-  which its Harness container mounts at `/etc/jr2/ca` beside `ca.crt`: `extra.crt` (`caBundle` + the pod's CA, for
+  stays as its owner made it. The `jr2-ca` ConfigMap carries `ca.crt` (the user's `caBundle`) alone, and only while a
+  `caBundle` is set. The Custodian's own ConfigMap carries `upstream.crt` (the roots + `caBundle`, and never a jr2 CA).
+  "Roots" are the Mozilla roots of the Node that runs `jr2 up`. A ConfigMap that carries the roots is applied
+  server-side, so client-side apply's annotation does not limit its size. Each Harness pod that gets the trust variables
+  (above) also gets two files of its own from its maker, in a trust ConfigMap of the pod and never in `jr2-ca`, which
+  its Harness container mounts at `/etc/jr2/ca` beside `ca.crt`: `extra.crt` (`caBundle` + the pod's CA, for
   `NODE_EXTRA_CA_CERTS`) and `bundle.crt` (the roots, `caBundle` and the pod's CA, for the tools whose variable replaces
   their store).
 - **Every Secret is applied server-side.** A client-side apply copies the whole object into its

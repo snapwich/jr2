@@ -1046,7 +1046,7 @@ function neverLeft(err: unknown, depth = 0): boolean {
 const NEVER_FORWARDED = new Set(["UF", "UH", "DF", "URX"]);
 
 /** The most specific thing a transport rejection says about itself: `fetch failed` diagnoses
- * nothing, the errno one level down (`connect ECONNREFUSED 127.0.0.1:8081`) is the answer. */
+ * nothing, the errno one level down (`connect ECONNREFUSED custodian.jr2.internal:443`) is the answer. */
 function transportDetail(err: unknown, depth = 0): string {
   if (depth > 4 || typeof err !== "object" || err === null) return String(err);
   const { message, cause, errors } = err as { message?: unknown; cause?: unknown; errors?: unknown };

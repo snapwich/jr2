@@ -117,9 +117,9 @@ export function callerTokenSecret(name: string): string {
  * (ADR-0013) and never a model key (ADR-0059: those are held). */
 export const HARNESS_ENV_SECRET = "jr2-harness-env";
 
-/** The instance's trust ConfigMap (ADR-0020, ADR-0059): the user's `harness.caBundle` as `ca.crt`
- * and, while a held secret exists, the three bundles the held-secret path needs — `extra.crt` and
- * `bundle.crt` for the Harness, `upstream.crt` for the Custodian. Public data by nature. */
+/** The instance's trust ConfigMap (ADR-0020): the user's `harness.caBundle` as `ca.crt`, and
+ * nothing else. It exists only while a `caBundle` is set. Each Harness pod's own bundles are in its
+ * own trust ConfigMap, and the Custodian's `upstream.crt` in its own. Public data by nature. */
 export const CA_CONFIGMAP = "jr2-ca";
 
 /** Held secrets (ADR-0059). The per-Instance CA — its key included — that `jr2 up` alone reads over

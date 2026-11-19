@@ -206,7 +206,7 @@ Harness process is jr2's code, and each process it starts in `/work` is confined
 
 - The generic `Sandbox` CRD composes all of this as plain container specs
   ([ADR-0001](0001-operator-owned-generic-sandbox.md) holds — the operator stays agent-agnostic); the Orchestrator's
-  `kubectlSandbox` supplies the images. The pod runs one container, plus `user` when the `workspace()` names one and
+  `kubeSandbox` supplies the images. The pod runs one container, plus `user` when the `workspace()` names one and
   `effector` when an Effect is placed there. Its one network is the Fence (ADR-0084): all that its containers send
   arrives at the Custodian, and the kubelet's probes of its containers are exec probes.
 - Every container but the Sandbox Effector carries a limit from the Workspace's Size (ADR-0060): the User Container its

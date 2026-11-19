@@ -32,10 +32,10 @@ and an operator to build and maintain.
 The CR's `spec.image` is the **Harness** — jr2's own server hosting the instance's Agents (ADR-0005/0018/0027).
 Everything else in the pod rides `spec.sidecars`: plain Kubernetes `Container` fragments (image, ports, env,
 volumeMounts) the operator schedules **without understanding them** — exactly as a Deployment's pod template carries
-arbitrary containers without the controller knowing their roles. That is how the Custodian (ADR-0013, ADR-0059) and the
-User Container (ADR-0005) land in the pod with zero operator awareness: `kubectlSandbox` compiles them into the sidecar
-list when it builds the CR. Containers cannot be added to a live pod (native containers, that is), so everything a
-Sandbox will run must be in the spec at spin-up.
+arbitrary containers without the controller knowing their roles. That is how the User Container (ADR-0005) and the
+Sandbox Effector (ADR-0068) land in the pod with zero operator awareness: `kubeSandbox` compiles them into the sidecar
+list when it builds the CR. The Custodian is not in the pod (ADR-0084). Containers cannot be added to a live pod (native
+containers, that is), so everything a Sandbox will run must be in the spec at spin-up.
 
 One Harness **image** serves many **Agents** — the Harness resolves model, instructions, and its Menu at runtime without
 a rebuild, reading the definition each admission carries (ADR-0018, ADR-0049) and reading the Menu through the Custodian

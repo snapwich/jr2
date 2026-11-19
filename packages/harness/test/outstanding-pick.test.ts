@@ -50,7 +50,7 @@ function fakeFetch(answer: (call: Call, n: number) => Response | Promise<Respons
 }
 
 const opts = (fetch: typeof globalThis.fetch, extra: object = {}) => ({
-  url: "http://127.0.0.1:8081",
+  url: "https://custodian.jr2.internal",
   token: "the-control-stand-in",
   slot: "root/coder",
   fetch,

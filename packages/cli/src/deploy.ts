@@ -1328,18 +1328,12 @@ function heldSecretObjects(held: HeldObjects, meta: (name: string) => KubeManife
 }
 
 /**
- * The trust ConfigMap (ADR-0020, ADR-0059): the user's `caBundle` as `ca.crt`, and while a secret
- * is held, the three bundles its path needs. Its own manifest, apart from the List, because the
- * bundles carry every root certificate — past what client-side apply's annotation can hold — so
- * `jr2 up` applies it server-side. Undefined when there is nothing to trust.
+ * The trust ConfigMap (ADR-0020): the user's `caBundle` as `ca.crt`, which the Instance Effector and
+ * each Harness pod read. Its own manifest, apart from the List, and `jr2 up` applies it server-side.
+ * Undefined when there is no `caBundle`: then `jr2 up` deletes it.
  */
-export function trustObject(opts: {
-  name: string;
-  namespace: string;
-  caBundle?: string;
-  bundles?: { extra: string; bundle: string; upstream: string };
-}): string | undefined {
-  if (opts.caBundle === undefined && opts.bundles === undefined) return undefined;
+export function trustObject(opts: { name: string; namespace: string; caBundle?: string }): string | undefined {
+  if (opts.caBundle === undefined) return undefined;
   return JSON.stringify({
     apiVersion: "v1",
     kind: "ConfigMap",
@@ -1348,12 +1342,7 @@ export function trustObject(opts: {
       namespace: opts.namespace,
       labels: { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" },
     },
-    data: {
-      ...(opts.caBundle !== undefined ? { "ca.crt": opts.caBundle } : {}),
-      ...(opts.bundles
-        ? { "extra.crt": opts.bundles.extra, "bundle.crt": opts.bundles.bundle, "upstream.crt": opts.bundles.upstream }
-        : {}),
-    },
+    data: { "ca.crt": opts.caBundle },
   });
 }
 

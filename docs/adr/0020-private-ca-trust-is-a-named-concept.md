@@ -18,22 +18,24 @@ mount + `NODE_EXTRA_CA_CERTS` via `harness.env`), the runbook shape ADR-0019 exi
   by the deployed orchestrator in-cluster — so the config carries a _path_, not file contents: the in-cluster evaluation
   checks presence and never touches the filesystem. `up` fails loudly on an unreadable path.
 - **`up` materializes the `jr2-ca` ConfigMap** beside the harness ConfigMap. It holds `ca.crt` (the `caBundle`) and
-  `upstream.crt` (below). Both Harness placements mount its `ca.crt` at `/etc/jr2/ca` on the **Harness container**. A
-  pod with no Intercepted host sets `NODE_EXTRA_CA_CERTS=/etc/jr2/ca/ca.crt`. CR-level `volumeMounts` land on the
-  primary container by the operator's contract, so the asymmetry costs no operator change: the User Container
-  (user-owned image — same rule as `harness.env`, ADR-0005/0013) never inherits the trust path.
+  nothing else, and it exists only while `caBundle` is set: with no `caBundle`, `up` deletes it. Both Harness placements
+  mount its `ca.crt` at `/etc/jr2/ca` on the **Harness container**, and the Instance Effector reads it too (ADR-0068).
+  CR-level `volumeMounts` land on the primary container by the operator's contract, so the asymmetry costs no operator
+  change: the User Container (user-owned image — same rule as `harness.env`, ADR-0005/0013) never inherits the trust
+  path.
 - **A pod with an Intercepted host also trusts the CA that the Custodian's leaves for it chain to**
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md),
   [ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). Every Harness pod, a Sandbox or the Instance
   Harness, has one: the name of jr2's control routes. For a Sandbox, that CA is the Sandbox's own; for the Instance
-  Harness and a check pod, it is the Instance's (ADR-0059). The pod's maker gives it two files of its own, beside
-  `ca.crt` in `/etc/jr2/ca`, and never in `jr2-ca`: `extra.crt` (`caBundle` + that CA), which `NODE_EXTRA_CA_CERTS`
-  names instead; and `bundle.crt` (the roots + both), which `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `GIT_SSL_CAINFO`
-  name, because those replace a tool's store. The Custodian verifies an Intercepted host against `upstream.crt` (the
-  roots + `caBundle`, never a CA of jr2's) — a corporate gateway whose certificate chains to the private CA included.
-  "Roots" are the Mozilla roots of the Node that runs `jr2 up`. The ConfigMap is applied server-side, so client-side
-  apply's annotation does not limit its size. The Custodian's control listener is plain HTTP to the Orchestrator's
-  Service and trusts nothing.
+  Harness and a check pod, it is the Instance's (ADR-0059). The pod's maker gives it two files of its own, in a trust
+  ConfigMap of the pod and never in `jr2-ca`, beside `ca.crt` in `/etc/jr2/ca`: `extra.crt` (`caBundle` + that CA),
+  which `NODE_EXTRA_CA_CERTS` names; and `bundle.crt` (the roots + both), which `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`
+  and `GIT_SSL_CAINFO` name, because those replace a tool's store. The Custodian verifies an Intercepted host against
+  `upstream.crt` (the roots + `caBundle`, never a CA of jr2's), which is in the Custodian's own ConfigMap — a corporate
+  gateway whose certificate chains to the private CA included. "Roots" are the Mozilla roots of the Node that runs
+  `jr2 up`. Each ConfigMap that carries the roots is applied server-side, so client-side apply's annotation does not
+  limit its size. The control routes are HTTPS at jr2's own name, and the Custodian ends that TLS with the leaf of the
+  pod's slot. From the Custodian, they go to the Orchestrator's Service as plain HTTP, which trusts nothing.
 - **The provider preflight trusts the same bundle the same way** (`NODE_EXTRA_CA_CERTS` on the check pod, from its own
   copy of `jr2-ca` and, with an Intercepted host, its own `extra.crt`). A preflight that fails where the Harness would
   succeed — or passes where it would fail — is a broken promise; sharing the mechanism keeps the two verdicts identical.

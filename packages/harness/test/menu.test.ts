@@ -69,7 +69,7 @@ function fakeFetch(answer: (call: Call) => Response | Promise<Response>): { fetc
 }
 
 const opts = (f: typeof fetch) => ({
-  url: "http://127.0.0.1:8081/",
+  url: "https://custodian.jr2.internal/",
   token: STAND_IN,
   slot: SLOT,
   fetch: f,
@@ -102,7 +102,7 @@ test("the surface becomes the Menu: the bare name, sanitized, the event's schema
     additionalProperties: false,
   });
   // The iid is ONE path segment on the wire, and the bearer is the Stand-in — never a token.
-  assert.equal(calls[0]!.url, "http://127.0.0.1:8081/agents/run-1%2Freviewer/surface");
+  assert.equal(calls[0]!.url, "https://custodian.jr2.internal/agents/run-1%2Freviewer/surface");
   assert.equal(calls[0]!.headers.authorization, `Bearer ${STAND_IN}`);
   assert.equal(calls[0]!.headers["x-jr2-slot"], SLOT, "the stated slot rides the read (ADR-0076)");
 });
@@ -134,7 +134,7 @@ test("a pick is one delivery with the Stand-in, and the receipt comes back as pr
   const prose = await menu[0]!.pick({ verdict: "approved" });
   const post = calls[1]!;
   assert.equal(post.method, "POST");
-  assert.equal(post.url, "http://127.0.0.1:8081/agents/run-1%2Freviewer/events");
+  assert.equal(post.url, "https://custodian.jr2.internal/agents/run-1%2Freviewer/events");
   assert.equal(post.headers.authorization, `Bearer ${STAND_IN}`);
   assert.equal(post.headers["x-jr2-slot"], SLOT, "the stated slot rides the pick (ADR-0076)");
   assert.deepEqual(JSON.parse(post.body!), { type: "review_verdict", verdict: "approved" });
@@ -381,11 +381,11 @@ test("a surface read with no answer is ended and retried; a window that closes o
 
 test("a surface read whose window closes names the address and the reason, not `fetch failed`", async () => {
   const { fetch } = fakeFetch(() => {
-    throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED 127.0.0.1:8081") });
+    throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED custodian.jr2.internal:443") });
   });
   await assert.rejects(
     () => readMenu({ ...opts(fetch), retryInitialMs: 1, retryMaxMs: 1, retryWindowMs: 5 }, "run-1/reviewer"),
-    /the Orchestrator never answered http:\/\/127\.0\.0\.1:8081\/agents\/run-1%2Freviewer\/surface: connect ECONNREFUSED/,
+    /the Orchestrator never answered https:\/\/custodian\.jr2\.internal\/agents\/run-1%2Freviewer\/surface: connect ECONNREFUSED/,
   );
 });
 
@@ -458,7 +458,7 @@ test("the delivery poll of an outstanding pick carries the control Stand-in and 
   const menu = await menuOf(opts(fetch), "run-1/reviewer");
   await menu[0]!.pick({ verdict: "approved" });
   const poll = calls.find((c) => c.url.includes("/deliveries/"))!;
-  assert.equal(poll.url, "http://127.0.0.1:8081/agents/run-1%2Freviewer/deliveries/d-7");
+  assert.equal(poll.url, "https://custodian.jr2.internal/agents/run-1%2Freviewer/deliveries/d-7");
   assert.equal(poll.headers.authorization, `Bearer ${STAND_IN}`);
   assert.equal(poll.headers["x-jr2-slot"], SLOT);
 });

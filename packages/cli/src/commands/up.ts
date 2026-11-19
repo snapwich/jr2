@@ -126,6 +126,7 @@ import {
   custodianDialToken,
   CUSTODIAN_SERVICE,
   FENCE_CONFIGMAP,
+  CA_CONFIGMAP,
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { awaitMounts, digestSecretsOf, mountedDigests, staleLine } from "../mount-wait.ts";
@@ -221,6 +222,7 @@ import {
   kubectlAdmin,
   kubectlKube,
   rolloutFailure,
+  isMissingResourceType,
   KUBE_FLOOR,
   ORCHESTRATOR_SERVICE,
   type KubeAdmin,
@@ -1199,10 +1201,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   await preflightDispatch(io, carried.effects);
 
   // --- apply + rollout ---------------------------------------------------------------------------
-  // The trust bundles first, and server-side: every pod that mounts them must find them, and they
-  // carry every root certificate — past what client-side apply's annotation can hold.
-  const trust = trustObject({ name, namespace, caBundle: caPem, bundles: held.bundles });
+  // The trust ConfigMap first, and server-side: every pod that mounts it must find it. With no
+  // `caBundle` no pod mounts it, and a `jr2-ca` that an earlier converge applied goes (ADR-0020).
+  const trust = trustObject({ name, namespace, caBundle: caPem });
   if (trust) await kube.apply({ manifest: trust, serverSide: true, ...ctx });
+  else await kube.deleteObject({ kind: "configmap", name: CA_CONFIGMAP, namespace, ...ctx });
   // What the Orchestrator reads for each Sandbox's trust files on the Fence (ADR-0020), also
   // server-side, before the Orchestrator that mounts it.
   if (fenceRange !== undefined) {
@@ -1236,8 +1239,19 @@ export async function up(args: string[], io: Io): Promise<number> {
   await kube.apply({ manifest: instanceList, warn: (line) => activity(io, line), ...ctx });
   // jr2 makes two NetworkPolicies now: the Custodian's and the Instance Effector's (ADR-0084,
   // ADR-0068). A Harness pod is on the Fence and has no address on the cluster's network, so each
-  // other policy that jr2 made for this Instance before the Fence goes on an upgrade.
+  // other policy that jr2 made for this Instance before the Fence goes on an upgrade. A Sandbox made
+  // before the Fence (no `spec.network`) is on the cluster's network until it goes, so the two
+  // Sandbox policies stay while one exists, and a later converge deletes them.
   const keptPolicies = new Set([CUSTODIAN_SERVICE, INSTANCE_EFFECTOR]);
+  const offFence = await sandboxesOffTheFence(kube, namespace, ctx);
+  if (offFence.length > 0) {
+    for (const policy of SANDBOX_POLICIES_BEFORE_THE_FENCE) keptPolicies.add(policy);
+    activity(
+      io,
+      `${offFence.length} Sandbox(es) made before the Fence (${offFence.join(", ")}) keep their NetworkPolicies ` +
+        "until they go; the next `jr2 up` after that deletes the policies",
+    );
+  }
   for (const policy of await kube.listJson<KubeObject>({
     kind: "networkpolicy",
     selector: `${LABEL_INSTANCE}=${name},app.kubernetes.io/managed-by=jr2`,
@@ -2060,6 +2074,28 @@ async function harnessPodsLeft(
     ...(harness.length > 0 ? ["the Instance Harness pod"] : []),
   ];
   return parts.length > 0 ? parts.join(" and ") : undefined;
+}
+
+/** The NetworkPolicies that selected each Sandbox pod before the Fence (ADR-0084). */
+const SANDBOX_POLICIES_BEFORE_THE_FENCE = ["jr2-sandbox-ingress", "jr2-sandbox-egress"];
+
+/**
+ * The names of the namespace's Sandboxes that are not on the Fence: a CR with no `spec.network`,
+ * which only an Orchestrator of before the Fence made (ADR-0084). A Sandbox kind that the cluster
+ * does not know counts as no Sandbox.
+ */
+async function sandboxesOffTheFence(kube: KubeAdmin, namespace: string, ctx: { context?: string }): Promise<string[]> {
+  try {
+    const sandboxes = await kube.listJson<{ metadata: { name: string }; spec?: { network?: unknown } }>({
+      kind: "sandboxes.core.jr2.dev",
+      namespace,
+      ...ctx,
+    });
+    return sandboxes.filter((s) => s.spec?.network === undefined).map((s) => s.metadata.name);
+  } catch (err) {
+    if (isMissingResourceType(err)) return [];
+    throw err;
+  }
 }
 
 /**

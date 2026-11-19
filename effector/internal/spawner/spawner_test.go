@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -28,6 +29,10 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "spawner" {
 		syscall.Exit(Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
+	// A run under nohup starts with SIGHUP ignored, and an ignored signal stays ignored across exec,
+	// so no spawn would get its terminal's hang-up. A handler of the test's own is reset to the
+	// default at exec, so each spawner and its spawns start with the default, as in a pod.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGHUP)
 	os.Exit(m.Run())
 }
 

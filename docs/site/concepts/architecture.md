@@ -217,7 +217,7 @@ yourself.
 
 The operator reconciles two custom resources:
 
-- A **Sandbox resource** becomes one pod and a Service. The Orchestrator writes the Sandbox resource, and the operator
+- A **Sandbox resource** becomes one pod, and no Service. The Orchestrator writes the Sandbox resource, and the operator
   makes the pod and reports its state. The operator never makes a second pod for a Sandbox. When the pod ends, the
   Sandbox is lost.
 - A **Repo** names one git repository that the Repo cache keeps.

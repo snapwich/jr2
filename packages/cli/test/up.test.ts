@@ -225,7 +225,8 @@ class FakeCluster implements KubeAdmin {
    * the applied one. Unset → an HONEST cluster, reporting a pod running whatever was last applied. */
   podImages: Record<string, string> = {};
   /** Live Sandbox CRs, as `jr2 up`'s closing report reads them (ADR-0038: report, never re-image). */
-  sandboxes: Array<{ metadata: { name: string; namespace?: string }; spec?: { image?: string } }> = [];
+  sandboxes: Array<{ metadata: { name: string; namespace?: string }; spec?: { image?: string; network?: unknown } }> =
+    [];
   /** `true` → listing Sandboxes throws, as it does when the CRD is absent or RBAC forbids it. */
   sandboxListFails = false;
   /** The sweep's roots (ADR-0039), read cluster-wide: the namespaces some instance owns, their
@@ -3138,19 +3139,19 @@ test("provider apiKey is a held secret: the Custodian's Secret holds it, the Har
   // deployment facts are all that is left to mount.
   assert.equal(spec.agents, undefined, "no Agent roster rides the deployment");
 
-  // The trust bundles, server-side: roots + the jr2 CA for the Harness, roots alone upstream.
-  const trust = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"jr2-ca"`))!);
-  assert.ok(trust.data["extra.crt"].includes(ca.stringData["ca.crt"]));
-  assert.ok(trust.data["bundle.crt"].includes(ca.stringData["ca.crt"]));
-  assert.ok(
-    !trust.data["upstream.crt"].includes(ca.stringData["ca.crt"]),
-    "the Custodian never trusts its own CA upstream",
-  );
+  // No caBundle: no jr2-ca, held secret or not (ADR-0020). Each Harness pod's bundles are in its own
+  // trust ConfigMap, and the Custodian's upstream.crt in its own.
+  assert.ok(!w.kube.applied.some((m) => m.includes(`"name":"jr2-ca"`)), "no jr2-ca without a caBundle");
+  assert.ok(w.kube.deleted.includes("myinst/configmap/jr2-ca"), "a jr2-ca of an earlier converge goes");
   // The Orchestrator's trust texts of each Sandbox on the Fence: the roots and no jr2 CA.
   const fence = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"jr2-fence"`))!);
-  assert.equal(fence.data["upstream.crt"], trust.data["upstream.crt"]);
+  assert.ok(fence.data["upstream.crt"].includes("BEGIN CERTIFICATE"), "the roots");
+  assert.ok(
+    !fence.data["upstream.crt"].includes(ca.stringData["ca.crt"]),
+    "the Custodian never trusts its own CA upstream",
+  );
   assert.equal(fence.data["ca.crt"], undefined, "no caBundle, no ca.crt");
-  assert.deepEqual(w.kube.serverSide, ["jr2-ca", "jr2-fence"]);
+  assert.deepEqual(w.kube.serverSide, ["jr2-fence"]);
 });
 
 test("the CA is kept, a leaf that still fits is reused, and a converge holding nothing drops the Custodian's Secrets", async () => {
@@ -3275,10 +3276,11 @@ test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a m
   assert.equal(await up(["--yes"], w.io), 0);
 
   // A ConfigMap, not a Secret — CA certs are public data (ADR-0020). Its own manifest, applied
-  // server-side and FIRST: with a held secret it carries every root, past client-side apply's limit.
+  // server-side and FIRST, and it holds the caBundle alone: a held secret adds nothing to it.
   const cm = JSON.parse(w.kube.applied[w.kube.applied.findIndex((m) => m.includes(`"name":"jr2-ca"`))]!);
   assert.equal(cm.kind, "ConfigMap");
-  assert.equal(cm.data["ca.crt"], pem);
+  assert.deepEqual(cm.data, { "ca.crt": pem });
+  assert.ok(!w.kube.deleted.includes("myinst/configmap/jr2-ca"));
   assert.ok(
     w.kube.applied.findIndex((m) => m.includes(`"name":"jr2-ca"`)) < w.kube.applied.findIndex(isInstanceList),
     "the trust exists before any pod of the Instance that mounts it",
@@ -3343,11 +3345,12 @@ test("egress (ADR-0084): each pod's held manifest carries its Egress list, repor
   assert.ok(!refused.kube.applied.some(isInstanceList), "nothing of the Instance is applied");
 });
 
-test("no caBundle and nothing held → no jr2-ca ConfigMap", async () => {
+test("no caBundle → no jr2-ca ConfigMap, and one that an earlier converge applied is deleted", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
   assert.ok(!w.kube.applied.some((m) => m.includes(`"name":"jr2-ca"`)));
+  assert.ok(w.kube.deleted.includes("myinst/configmap/jr2-ca"));
 });
 
 test("a referenced-but-missing Secret fails the converge naming it, with the creation hint", async () => {
@@ -4807,6 +4810,29 @@ test("no NetworkPolicy selects a Harness pod, and each one jr2 made before the F
   assert.ok(!w.kube.deleted.includes("myinst/networkpolicy/jr2-custodian"), "the Custodian's stays");
   // The Instance Effector's goes only by its own converge (no http Effect here), never by the sweep.
   assert.ok(w.kube.deleted.filter((d) => d === "myinst/networkpolicy/jr2-instance-effector").length <= 1);
+});
+
+test("a Sandbox made before the Fence keeps the two Sandbox policies until it goes, and the converge after deletes them (ADR-0084)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
+  const w = mkWorld(root);
+  const before = ["jr2-sandbox-ingress", "jr2-sandbox-egress", "jr2-instance-harness-ingress"];
+  w.kube.policies = [...before, "jr2-custodian"].map((name) => ({ metadata: { name } }));
+  // One Sandbox of the old Orchestrator (no spec.network) and one on the Fence.
+  w.kube.sandboxes = [
+    { metadata: { name: "ws-old", namespace: "myinst" }, spec: { image: "img" } },
+    { metadata: { name: "ws-new", namespace: "myinst" }, spec: { image: "img", network: {} } },
+  ];
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.ok(!w.kube.deleted.includes("myinst/networkpolicy/jr2-sandbox-ingress"), "kept while ws-old runs");
+  assert.ok(!w.kube.deleted.includes("myinst/networkpolicy/jr2-sandbox-egress"), "kept while ws-old runs");
+  assert.ok(w.kube.deleted.includes("myinst/networkpolicy/jr2-instance-harness-ingress"), "no Sandbox needs it");
+  assert.match(w.err.join("\n"), /1 Sandbox\(es\) made before the Fence \(ws-old\) keep their NetworkPolicies/);
+
+  // ws-old is gone: the next converge deletes the two policies.
+  w.kube.sandboxes = [w.kube.sandboxes[1]!];
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.ok(w.kube.deleted.includes("myinst/networkpolicy/jr2-sandbox-ingress"));
+  assert.ok(w.kube.deleted.includes("myinst/networkpolicy/jr2-sandbox-egress"));
 });
 
 test("both readiness probes set a period — a ~1s boot must not be billed as a 10s rollout wait", async () => {
