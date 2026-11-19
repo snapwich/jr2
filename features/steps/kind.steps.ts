@@ -375,7 +375,7 @@ When(
  *                          address always completes on the Fence, because the uplink gives it to
  *                          the Custodian; what comes back is the Custodian's refusal or the host's
  */
-const FENCE_PROBE =
+export const FENCE_PROBE =
   `const net=require("net");` +
   `const named=(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(5000)})` +
   `.then(r=>"HTTP "+r.status,e=>"ERR "+(e.cause?.code??e.name));` +
@@ -386,7 +386,13 @@ const FENCE_PROBE =
   `s.on("error",(e)=>{clearTimeout(t);r(got||("ERR "+(e.code||e.message)))})});`;
 
 /** An HTTP/1.1 request as text, for `raw`. */
-function rawRequest(method: string, host: string, path: string, headers: Record<string, string>, body = ""): string {
+export function rawRequest(
+  method: string,
+  host: string,
+  path: string,
+  headers: Record<string, string>,
+  body = "",
+): string {
   const lines = [
     `${method} ${path} HTTP/1.1`,
     `host: ${host}`,
@@ -438,7 +444,7 @@ When(
 );
 
 /** The Custodian's refusal of a connection to an address that no entry names (ADR-0084). */
-const NO_ENTRY_REFUSAL = /^jr2 custodian: refused: no entry of the Egress list permits this address/;
+export const NO_ENTRY_REFUSAL = /^jr2 custodian: refused: no entry of the Egress list permits this address/;
 
 /**
  * What a probe of the Fence saw (`FENCE_PROBE`): a fetch by name, and a raw connection to each
@@ -528,7 +534,7 @@ export async function toolResultWith(world: E2EWorld, marker: string, ms = 300_0
 }
 
 /** The JSON a probe printed after `marker` on one line. */
-function probeJson<T>(text: string, marker: string): T {
+export function probeJson<T>(text: string, marker: string): T {
   const line = text.split("\n").find((l) => l.startsWith(marker));
   assert.ok(line, `the probe printed "${marker}" (got: ${text.slice(0, 2000)})`);
   return JSON.parse(line.slice(marker.length).trim()) as T;
@@ -1273,7 +1279,7 @@ Then(
 const METADATA_ADDRESS = "169.254.169.254";
 
 /** A TCP connect with a 3 s limit, as planted code does it: `connected`, `timeout`, or the error's code. */
-const CONNECT_PROBE =
+export const CONNECT_PROBE =
   `const net=require("net");` +
   `const probe=(host,port)=>new Promise((r)=>{const s=net.connect({host,port});` +
   `const t=setTimeout(()=>{s.destroy();r("timeout")},3000);` +
@@ -1717,7 +1723,7 @@ const PROXY_NAMES = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "NODE
 /** jr2's own name: the resolver of each Harness pod answers it with the control routes (ADR-0084). */
 const CUSTODIAN_NAME = "custodian.jr2.internal";
 
-type FencePod = {
+export type FencePod = {
   metadata: { name: string; annotations?: Record<string, string> };
   spec: {
     nodeName?: string;
@@ -1728,7 +1734,9 @@ type FencePod = {
 };
 
 /** The run's Sandbox on the Fence: its pod, its node, its slot (from its CR's attachment) and its address. */
-async function fenceOf(world: E2EWorld): Promise<{ pod: FencePod; node: string; slot: number; attachment: string }> {
+export async function fenceOf(
+  world: E2EWorld,
+): Promise<{ pod: FencePod; node: string; slot: number; attachment: string }> {
   const name = (await waitForReadySandbox(world)).metadata.name;
   const cr = JSON.parse(await kubectl(world, ["get", "sandbox", name, "-o", "json"])) as {
     spec: { network?: { attachment?: string } };

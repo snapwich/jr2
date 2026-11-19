@@ -792,6 +792,45 @@ Feature: a workspace() run drives a real Sandbox on kind
       When the Harness container dials the Instance Harness
       Then the Instance Harness never answered: its name is refused, and its address gets no answer
 
+  Rule: a Sandbox's only peer is the Custodian, and each refusal names the Sandbox and the reason
+    ADR-0084. Workspace code can be root in its pod, so the Fence is outside the pod, and each
+    probe here is a regular client in a posture of the product: the Harness container (the image's
+    uid, no capability) and the User Container (root, with the runtime's default capabilities,
+    NET_RAW among them). A name that no entry names gets the resolver's refusal, also from a DNS
+    server that the client names. A connection to an address that no entry names (the node, the API
+    server, a public address) gets the Custodian's refusal and no byte of the target. A placeholder
+    that another slot holds does not carry its name here. Another Harness pod gets no answer, and
+    ICMP gets nothing. The Custodian logs each refusal with the Sandbox and the reason. From the
+    cluster's network, only the Custodian pod's published ports answer, and a plain pod reaches no
+    slot. The checks that forge an identity (a spoofed address, a VLAN of the pod's own, a PROXY
+    preamble, a header of jr2's) are not here: they are an open item.
+
+    Scenario: the Harness container and the User Container reach the Custodian alone, and get jr2's reason
+      Given the kind instance is serving
+      When I start the "seated" workflow detached
+      Then the run's Sandbox becomes Ready
+      When another run's Sandbox becomes Ready beside it
+      And the Harness container dials past the Egress list
+      Then the probe ran as a uid other than 0, with no capability
+      And each name that no entry names got the resolver's refusal, also from a DNS server that the client named, and a listed name got its placeholder
+      And the node, the API server and a public address each got the Custodian's refusal and no byte of their own
+      And another slot's placeholder got no connection to the name it stands for
+      And another Sandbox and the Instance Harness got no answer
+      And the Custodian logged each refusal with the Sandbox and the reason
+      When the User Container dials past the Egress list
+      Then the probe ran as root, with NET_RAW
+      And each name that no entry names got the resolver's refusal, also from a DNS server that the client named, and a listed name got its placeholder
+      And the node, the API server and a public address each got the Custodian's refusal and no byte of their own
+      And another slot's placeholder got no connection to the name it stands for
+      And another Sandbox and the Instance Harness got no answer
+      And an ICMP echo to the node and to a public address got no answer
+      And the Custodian logged each refusal with the Sandbox and the reason
+
+    Scenario: a plain pod on the cluster's network reaches only the Custodian's published ports
+      Given the kind instance is serving
+      When a plain pod on the cluster's network dials each port of a Custodian pod
+      Then only the Custodian's health port answered it, and no slot listener, resolver, inbound or control port did
+
   Rule: an Agent's turn ends when the state that asked for it stops waiting
     ADR-0024. Leaving an Agent invoke means "I am no longer interested in this answer", so the
     submission behind it is ended — at the Harness, which is the only place that end is observable
