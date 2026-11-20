@@ -141,19 +141,20 @@ is its pick), `workdir` (a relative write lands in the Worktree), `noticed` (a m
 and step-boundary claims (`mode-follow`, `mode-refusal`, `mode-stop`, `wake`, `push-follow`), the held-answer claims
 (`chain-answer`, `cut-pick`), the command-Effect claims (`answered`, `allowed-after-route`, `unknown-outcome`), the push
 claim (`continue-after-signed-push`: the push after a signed push publishes), and the Chart claim (`chart-refusal`:
-after the door refuses a planner's Chart, its next Chart admits; its floor is set ahead of a measured run, ADR-0070),
-and the steering claims (`steer-follow`: a Caller's Steering message in an open Turn is followed; `peer-not-order`: a
-peer's relayed word is not obeyed as an order; ADR-0002), and the MCP claim (`mcp-then-pick`: an Agent calls its MCP
-tool, then picks; its floor waits for a measured run, ADR-0079). Two are THE RUN — `ticket`: planner, coder, reviewer,
-and a commit verified in the pod (branch ahead of `main`, HEAD is the named commit, tree clean, `node --test` passes);
-and `ticket-modes`, one coder Turn through three modes. The whole tier is about 27 minutes on the home lab (one run,
-2026-10-25; about 70 one scenario at a time) and about 11 on Haiku 5.5. The scenarios run the profile's `workers` at
-once (the recipe passes it as `--parallel`), in file order, so `model.feature` lists its longest Rules first;
-`chart-refusal` is the longest, about 21 minutes. Each claim keeps the profile's `parallel` trials in flight, so
-`workers` × `parallel` runs are in flight. That product must stay within what the endpoint serves (the home-lab vLLM
-serves 16 streams) and what the host holds (about 0.85 CPU and 2.2 GiB per scenario, plus 0.5 CPU and 1 GiB per Sandbox
-trial in flight, on a 16 CPU, 45 GB host that three kind clusters share). One checkout runs one suite at a time: a
-second suite fails at once, whatever its profile, and two suites at once need two worktrees.
+after the door refuses a planner's Chart, its next Chart admits; its floor of 7 of 10 was set ahead of a measured run,
+and its measured rate is about 0.69, so a run below the floor is expected about one time in two and is not by itself a
+regression, ADR-0070), and the steering claims (`steer-follow`: a Caller's Steering message in an open Turn is followed;
+`peer-not-order`: a peer's relayed word is not obeyed as an order; ADR-0002), and the MCP claim (`mcp-then-pick`: an
+Agent calls its MCP tool, then picks; its floor waits for a measured run, ADR-0079). Two are THE RUN — `ticket`:
+planner, coder, reviewer, and a commit verified in the pod (branch ahead of `main`, HEAD is the named commit, tree
+clean, `node --test` passes); and `ticket-modes`, one coder Turn through three modes. The whole tier is about 27 minutes
+on the home lab (one run, 2026-10-25; about 70 one scenario at a time) and about 11 on Haiku 5.5. The scenarios run the
+profile's `workers` at once (the recipe passes it as `--parallel`), in file order, so `model.feature` lists its longest
+Rules first; `chart-refusal` is the longest, about 21 minutes. Each claim keeps the profile's `parallel` trials in
+flight, so `workers` × `parallel` runs are in flight. That product must stay within what the endpoint serves (the
+home-lab vLLM serves 16 streams) and what the host holds (about 0.85 CPU and 2.2 GiB per scenario, plus 0.5 CPU and 1
+GiB per Sandbox trial in flight, on a 16 CPU, 45 GB host that three kind clusters share). One checkout runs one suite at
+a time: a second suite fails at once, whatever its profile, and two suites at once need two worktrees.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
 `scorecard: <model> <cell>: k/N`, with `(u unfinished)` when a trial's run did not finish. A trial passes only when its

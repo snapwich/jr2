@@ -38,7 +38,9 @@ Feature: a real model drives the kit
     then the summarizer, and is told no slot name; its Open body lends `summarizer` alone. The
     first Chart is expected to name `linter`, and the next `run_chart` is the measurement: the door
     admits it. A trial whose first Chart admits saw no refusal, and is void. The floor, 7 of 10, was
-    set ahead of a measured run; the `off` cell cleared it on 2026-10-19 and set its baseline. A
+    set ahead of a measured run. The `off` cell's rate is about 0.69 (103 of 150 trials, 2026-10-25
+    to 2026-11-19), so its baseline is 7 of 10, and a run below the floor is not by itself a
+    regression. A
     thinking-on cell was measured once and not kept: 5 of 10, the same misses, a third more wall
     time (ADR-0070).
 
