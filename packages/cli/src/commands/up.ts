@@ -3598,12 +3598,16 @@ function providerFault(p: CheckedProvider, model: string, where: string, fault: 
     (p.custom || p.gateway) && /no answer in \d+ s|no verdict in \d+ s|time ran out/.test(fault)
       ? "  - a model that loads on first use can take longer than the check waits: run `jr2 up` again once it has loaded\n"
       : "";
+  // The Custodian's 502 names a failed TLS handshake (ADR-0059): then the TLS of the host is the
+  // likely cause, and comes first.
+  const tls = tlsCauses(fault);
   if (p.custom) {
     // The custom provider's own causes (ADR-0018): an endpoint jr2 knows nothing about but its url.
     return (
       `provider preflight failed for model "${model}" against ${hosts} (from a pod on ${where}, as a Turn calls it): ` +
       `${fault}\n` +
       slow +
+      tls +
       // A refused key: the endpoint answered, so the key comes first and the reach is not it.
       (refusedKey(fault)
         ? (p.keys.length
@@ -3634,6 +3638,7 @@ function providerFault(p: CheckedProvider, model: string, where: string, fault: 
     `${custodian ? "through a Custodian" : "direct"}, ` +
     `as a Turn calls it): ${fault}\n` +
     slow +
+    tls +
     causes +
     (p.gateway
       ? `  - harness.catalog.${p.id}.baseUrl (${p.gateway}) may not answer, or may not serve "${model.slice(p.id.length + 1)}" ` +
@@ -3641,6 +3646,23 @@ function providerFault(p: CheckedProvider, model: string, where: string, fault: 
       : "") +
     "  - a private CA on that path must be in harness.caBundle"
   );
+}
+
+/** The causes of a failed TLS handshake, when the Custodian's 502 names one (ADR-0059), else nothing. */
+export function tlsCauses(fault: string): string {
+  if (/the TLS handshake failed: the Custodian does not trust the certificate/.test(fault)) {
+    return (
+      "  - the Custodian does not trust the certificate of the host, or the certificate is not for the host's name: " +
+      "a private CA on that path must be in harness.caBundle\n"
+    );
+  }
+  if (/the TLS handshake failed|before the TLS handshake ended/.test(fault)) {
+    return (
+      "  - the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all " +
+      "that the Custodian offers: put a TLS terminator, such as nginx, in front of a host that does not\n"
+    );
+  }
+  return "";
 }
 
 /** The layers this converge hands to the cluster, said out loud rather than silently skipped. */

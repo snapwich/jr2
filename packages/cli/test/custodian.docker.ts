@@ -61,6 +61,10 @@ const VALUES = {
   LITELLM_KEY: "ll-value-three",
   UNTRUSTED_KEY: "un-value-four",
   SECOND_SERVICE_TOKEN: "svc-value-five",
+  // Toward hosts whose TLS fails: TLS 1.0 alone, a close in the handshake, a refused connect.
+  OLD_TLS_KEY: "old-tls-value-eight",
+  CLOSER_KEY: "closer-value-nine",
+  SHUT_KEY: "shut-value-ten",
   // A token push's token, and one toward a host that the Egress list also names (ADR-0068).
   push_git: "ghp-git-token-value-six",
   push_open: "ghp-open-token-value-seven",
@@ -73,6 +77,9 @@ let a: Upstream; // a.test: three secrets bound by name (the `dial-tls` listener
 let b: Upstream; // the LAN address: a paths-narrowed secret bound by address
 let c: Upstream; // c.test: Tunneled
 let d: Upstream; // d.test: bound, but its CA is not in upstream.crt
+let old: Upstream; // old.test: bound, its CA trusted, but its TLS is TLS 1.0 alone
+let closer: Awaited<ReturnType<typeof startCloser>>; // closer.test and an address: closes on the ClientHello
+let shutPort: number; // shut.test: a LAN port where nothing listens
 let wild: Upstream; // x.wild.test, under `*.wild.test`
 let git: Upstream; // git.test: a smart-HTTP git server, its token bound in Basic (a push, ADR-0068)
 let open: Upstream; // open.test: a token bound in Basic, and an entry names the host too
@@ -225,6 +232,15 @@ function slot3(): RigSlot {
       binding("SECOND_SERVICE_TOKEN", "a.test", a.port, ["authorization"]),
       binding("LITELLM_KEY", LAN, b.port, ["authorization", "x-api-key"], ["/v1/messages"]),
       binding("UNTRUSTED_KEY", "d.test", d.port, ["x-api-key"]),
+      binding("OLD_TLS_KEY", "old.test", old.port, ["x-api-key"]),
+      {
+        ...binding("CLOSER_KEY", "closer.test", closer.port, ["x-api-key"]),
+        hosts: [
+          { host: "closer.test", port: closer.port, leaf: leafStem("closer.test", closer.port) },
+          { host: LAN, port: closer.port, leaf: leafStem(LAN, closer.port) },
+        ],
+      },
+      binding("SHUT_KEY", "shut.test", shutPort, ["x-api-key"]),
       // The token of a push over https, which git sends in a Basic pair (ADR-0068).
       { ...binding("push_git", "git.test", git.port, ["authorization"]), holder: "effector", basic: true },
       { ...binding("push_open", "open.test", open.port, ["authorization"]), holder: "effector", basic: true },
@@ -233,6 +249,10 @@ function slot3(): RigSlot {
       rule("a.test", a.port, "name", true, "held"),
       rule(LAN, b.port, "address", true, "held"),
       rule("d.test", d.port, "name", true, "held"),
+      rule("old.test", old.port, "name", true, "held"),
+      rule("closer.test", closer.port, "name", true, "held"),
+      rule(LAN, closer.port, "address", true, "held"),
+      rule("shut.test", shutPort, "name", true, "held"),
       rule("git.test", git.port, "name", true, "effector"),
       rule("open.test", open.port, "name", true, "effector", "entry"),
       rule("c.test", c.port, "name", false, "entry"),
@@ -279,7 +299,7 @@ const slot0: RigSlot = {
 };
 
 before(async () => {
-  [a, b, c, d, wild, git, open] = await Promise.all([
+  [a, b, c, d, wild, git, open, old] = await Promise.all([
     startUpstream("a.test"),
     startUpstream(),
     startUpstream("c.test"),
@@ -287,7 +307,12 @@ before(async () => {
     startUpstream("x.wild.test"),
     startUpstream("git.test"),
     startUpstream("open.test"),
+    startUpstream("old.test", "1.0"),
   ]);
+  closer = await startCloser();
+  const shut = await startTcpTarget();
+  shutPort = shut.port;
+  await shut.close();
   gitRoot = await mkdtemp(join(tmpdir(), "jr2-custodian-git-"));
   await gitIn(gitRoot, "init", "-q", "--bare", "app.git");
   const pushPair = `Basic ${Buffer.from(`x-access-token:${VALUES.push_git}`).toString("base64")}`;
@@ -306,12 +331,15 @@ before(async () => {
   slots = [slot0, slot3(), slot4()];
   pod = await startCustodianPod({
     slots,
-    upstreamCas: [a.ca.cert, b.ca.cert, c.ca.cert, wild.ca.cert, git.ca.cert, open.ca.cert],
+    upstreamCas: [a.ca.cert, b.ca.cert, c.ca.cert, wild.ca.cert, git.ca.cert, open.ca.cert, old.ca.cert],
     orchestrator: { host: LAN, port: orchestrator.port },
     names: {
       "a.test": LAN,
       "c.test": LAN,
       "d.test": LAN,
+      "old.test": LAN,
+      "closer.test": LAN,
+      "shut.test": LAN,
       "x.wild.test": LAN,
       "git.test": LAN,
       "open.test": LAN,
@@ -333,7 +361,8 @@ before(async () => {
 
 after(async () => {
   await pod?.stop();
-  await Promise.all([a, b, c, d, wild, git, open].map((u) => u?.close()));
+  await Promise.all([a, b, c, d, wild, git, open, old].map((u) => u?.close()));
+  await closer?.close();
   if (gitRoot) await rm(gitRoot, { recursive: true, force: true });
   await Promise.all([web, orchestrator, harness, echo, ssh].map((t) => t?.close()));
 });
@@ -352,6 +381,46 @@ const viaB = (opts: Omit<Parameters<typeof httpsVia>[2], "ca"> = {}) =>
 const viaD = (opts: Omit<Parameters<typeof httpsVia>[2], "ca"> = {}) =>
   httpsVia(pod.at(3, "d.test", d.port), "d.test", { authority: `d.test:${d.port}`, ca: pod.trust(3), ...opts });
 const key = (name: string, slot = 3) => heldStandInOf(name, slot);
+/** HTTPS to a bound name of slot 3 whose TLS fails, with its Stand-in. */
+const viaFailing = (name: string, port: number, secret: string) =>
+  httpsVia(pod.at(3, name, port), name, {
+    authority: `${name}:${port}`,
+    ca: pod.trust(3),
+    headers: { "x-api-key": key(secret) },
+  });
+
+/** A target that takes the TCP connection and closes it when the ClientHello comes, with no TLS
+ * alert, as a host that speaks no TLS 1.2 can do (LiteLLM's own TLS did). */
+async function startCloser(): Promise<{ port: number; hellos: number; close: () => Promise<void> }> {
+  const sockets = new Set<Socket>();
+  const target = { port: 0, hellos: 0, close: async () => {} };
+  const server = createNetServer((s) => {
+    sockets.add(s);
+    s.on("close", () => sockets.delete(s));
+    s.on("error", () => {});
+    s.once("data", () => {
+      target.hellos++;
+      s.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, LAN, resolve));
+  target.port = (server.address() as { port: number }).port;
+  target.close = () =>
+    new Promise<void>((resolve) => {
+      for (const s of sockets) s.destroy();
+      server.close(() => resolve());
+    });
+  return target;
+}
+
+/** The words that the Custodian adds for a failed TLS handshake (ADR-0059). */
+const UNTRUSTED =
+  "the TLS handshake failed: the Custodian does not trust the certificate of the host, or the certificate is not for " +
+  "this name (a private CA must be in harness.caBundle): ";
+const OFFERED =
+  "the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that " +
+  "the Custodian offers: ";
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 describe("toward a bound host (an Intercepted host of the slot)", () => {
   test("1. the Stand-in is swapped: x-api-key alone, Bearer, and two secrets in one request; nothing is added", async () => {
@@ -455,11 +524,77 @@ describe("toward a bound host (an Intercepted host of the slot)", () => {
     assert.equal(b.seen.at(-1)?.url, "/v1/messages/x", "the target gets the path that was checked");
   });
 
-  test("7. a target certificate that upstream.crt does not trust → 502, and nothing is sent", async () => {
+  test("7. a target certificate that upstream.crt does not trust → 502 that names the certificate, and nothing is sent", async () => {
     const r = await viaD({ headers: { "x-api-key": key("UNTRUSTED_KEY") } });
     assert.equal(r.status, 502);
-    assert.match(r.body, new RegExp(`^jr2 custodian: d\\.test:${d.port} could not be reached: `));
+    assert.match(
+      r.body,
+      new RegExp(
+        `^jr2 custodian: d\\.test:${d.port} could not be reached: ${escape(UNTRUSTED)}\\S*CERTIFICATE_VERIFY_FAILED`,
+      ),
+    );
     assert.equal(d.seen.length, 0);
+    await line(
+      new RegExp(`action=refuse target=d\\.test:${d.port} reason=tls-certificate method=GET status=502 flags=UF`),
+    );
+  });
+
+  test("7a. a target that speaks TLS 1.0 alone, or closes the connection at the ClientHello → 502 that names TLS 1.2; a refused connect names no TLS", async () => {
+    const bodies: string[] = [];
+    let r = await viaFailing("old.test", old.port, "OLD_TLS_KEY");
+    bodies.push(r.body);
+    assert.equal(r.status, 502);
+    assert.match(
+      r.body,
+      new RegExp(
+        `^jr2 custodian: old\\.test:${old.port} could not be reached: the TLS handshake failed: ${escape(OFFERED)}\\S*TLS_error`,
+      ),
+    );
+    assert.equal(old.seen.length, 0);
+    await line(new RegExp(`action=refuse target=old\\.test:${old.port} reason=tls method=GET status=502 flags=UF`));
+
+    // The close has no TLS error: Envoy says `{remote_connection_failure}` alone, on the `dial-tls`
+    // listener (a name) and on the slot's own chain (an address).
+    const closed = (target: string) =>
+      new RegExp(
+        `^jr2 custodian: ${escape(target)} could not be reached: the host closed the connection before the TLS ` +
+          `handshake ended: ${escape(OFFERED)}upstream_reset_before_response_started\\{remote_connection_failure\\} -\\n$`,
+      );
+    r = await viaFailing("closer.test", closer.port, "CLOSER_KEY");
+    bodies.push(r.body);
+    assert.equal(r.status, 502);
+    assert.match(r.body, closed(`closer.test:${closer.port}`));
+    await line(
+      new RegExp(`action=refuse target=closer\\.test:${closer.port} reason=tls method=GET status=502 flags=UF`),
+    );
+    const hellos = closer.hellos;
+    r = await httpsVia(pod.dial(3, LAN, closer.port), LAN, {
+      authority: `${LAN}:${closer.port}`,
+      ca: pod.trust(3),
+      servername: false,
+      headers: { "x-api-key": key("CLOSER_KEY") },
+    });
+    assert.equal(r.status, 502);
+    bodies.push(r.body);
+    assert.match(r.body, closed(`${LAN}:${closer.port}`));
+    assert.ok(closer.hellos > hellos, "the address's TLS went to the target");
+
+    r = await viaFailing("shut.test", shutPort, "SHUT_KEY");
+    bodies.push(r.body);
+    assert.equal(r.status, 502);
+    assert.match(r.body, new RegExp(`^jr2 custodian: shut\\.test:${shutPort} could not be reached: upstream_reset`));
+    assert.doesNotMatch(r.body, /TLS/);
+    await line(
+      new RegExp(`action=refuse target=shut\\.test:${shutPort} reason=unreachable method=GET status=502 flags=UF`),
+    );
+
+    // No value and no Stand-in in a body or a line of the log.
+    for (const secret of ["OLD_TLS_KEY", "CLOSER_KEY", "SHUT_KEY"]) {
+      for (const text of [...bodies, pod.output()]) {
+        assert.ok(!text.includes(VALUES[secret as keyof typeof VALUES]), secret);
+        assert.ok(!text.includes(key(secret)), secret);
+      }
+    }
   });
 
   test("7b. a target that closes the connection after it got the request → 502 that says the request may have reached it", async () => {

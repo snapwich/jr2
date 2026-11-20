@@ -42,6 +42,7 @@ import {
   mcpCheckVerdicts,
   mcpVerdictLines,
   envFromHeldRefusal,
+  tlsCauses,
   up,
 } from "../src/commands/up.ts";
 import {
@@ -3863,6 +3864,50 @@ test("provider preflight: before the first check, only the namespace, the Priori
     w.kube.applied.some((m) => /^\s*image:/m.test(m)),
     "the operator, after the check",
   );
+});
+
+test("provider preflight: a failed TLS handshake that the Custodian names puts the TLS cause first (ADR-0059)", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  const t = "jr2 custodian: api.anthropic.com:443 could not be reached:";
+  w.kube.checkAnswers["anthropic/claude-haiku-5-5"] =
+    `fault=502 ${t} the host closed the connection before the TLS handshake ended: the host may not accept TLS 1.2 ` +
+    "with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers: " +
+    "upstream_reset_before_response_started{remote_connection_failure} -";
+  w.kube.checkAnswers["anthropic/claude-sonnet-5-5"] =
+    `fault=502 ${t} the TLS handshake failed: the Custodian does not trust the certificate of the host, or the ` +
+    "certificate is not for this name (a private CA must be in harness.caBundle): upstream_reset_before_response_started" +
+    "{remote_connection_failure|TLS_error:|268435581:SSL_routines:OPENSSL_internal:CERTIFICATE_VERIFY_FAILED:TLS_error_end}";
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      const [haiku, sonnet] = err.message.split(/(?=provider preflight failed for model "anthropic\/claude-sonnet)/);
+      assert.match(
+        haiku!,
+        /TLS handshake ended[^\n]*\n {2}- the host may not accept TLS 1\.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers: put a TLS terminator, such as nginx, in front of a host that does not\n {2}- the pods may have no egress/,
+      );
+      assert.match(
+        sonnet!,
+        /TLS_error_end\}\n {2}- the Custodian does not trust the certificate of the host, or the certificate is not for the host's name: a private CA on that path must be in harness\.caBundle\n {2}- the pods may have no egress/,
+      );
+      assert.doesNotMatch(sonnet!, /may not accept TLS 1\.2\n/);
+      return true;
+    },
+  );
+});
+
+test("tlsCauses: nothing for a fault that names no failed TLS handshake", () => {
+  assert.equal(
+    tlsCauses(
+      "502 jr2 custodian: x:443 could not be reached: upstream_reset_before_response_started{remote_connection_failure,delayed_connect_error:_111} -",
+    ),
+    "",
+  );
+  assert.equal(tlsCauses("anthropic-messages call failed: 401 invalid x-api-key"), "");
 });
 
 test("provider preflight: every failure in one error, and the Instance as it was — nothing of it applied, no publish, no sweep", async () => {

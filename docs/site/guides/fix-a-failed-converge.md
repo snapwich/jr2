@@ -287,11 +287,15 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   local model with no key. `jr2 up` refuses to converge while such a host that jr2 uses has no entry, and it prints the
   entry to add. Add the host to `egress`.
 
-  When the provider refused the key (a 401 or a 403), the line about the held secret comes first, and the line about
-  egress is left out, because the provider answered. When no Harness pod holds a key of the provider, the line about the
-  key says which key to add to `secrets`. With a [`harness.catalog`](../reference/config.md#harness-catalog) gateway for
-  the provider, a line also says that the gateway may not answer, or may not serve the model. A 503 is an error: a
-  gateway with no backend, or a server that still loads its model, answers 503.
+  When the Custodian says that the TLS handshake failed, a line about TLS comes first. For a certificate, it says that a
+  private CA must be in `harness.caBundle`. Otherwise, it says that the host may not accept TLS 1.2 with an ECDHE cipher
+  suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers. Then put a TLS terminator, such as
+  nginx, in front of the host. When the provider refused the key (a 401 or a 403), the line about the held secret comes
+  first, and the line about egress is left out, because the provider answered. When no Harness pod holds a key of the
+  provider, the line about the key says which key to add to `secrets`. With a
+  [`harness.catalog`](../reference/config.md#harness-catalog) gateway for the provider, a line also says that the
+  gateway may not answer, or may not serve the model. A 503 is an error: a gateway with no backend, or a server that
+  still loads its model, answers 503.
 
   When the check pod cannot start, the error says why:
   - a node cannot pull an image;

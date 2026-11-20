@@ -162,13 +162,33 @@ and it replaces the Adapter.
       pair still gets 403.
   - Envoy opens its own TLS to the target, verifies the chain against `upstream.crt` and the name against the target's
     SAN (DNS or IP), and adds no header either way (`server`, `x-envoy-*`, `x-request-id` and `x-forwarded-*` are off).
-    A failure gives 502 and a body that names the target and the reason. Redirects pass back unchanged.
+    Envoy offers its client defaults: TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305. A failure
+    gives 502 and a body that names the target and the reason. Redirects pass back unchanged.
   - When the target gives no answer, the Custodian answers 502 with a body that names the target, says what jr2 knows
     about the request, and ends with Envoy's reason. It replaces Envoy's own answer for ten Envoy response flags, in two
-    mappers. One reply can carry several flags, and Envoy uses the first mapper that matches, in order. The first mapper
-    is for `UF`, `UH` and `DF`, so a reply with one of them gets the first text whatever else it carries:
+    mappers. Before them, up to three mappers say why a TLS handshake failed. One reply can carry several flags, and
+    Envoy uses the first mapper that matches, in order. The TLS mappers are for `UF` alone, and the next mapper is for
+    `UF`, `UH` and `DF`, so a reply with one of these flags gets a "could not be reached" text whatever else it carries:
     - `UF` (the connection to the target failed), `UH` (no healthy host) and `DF` (the DNS lookup failed) say that Envoy
       did not send the request. The body is `jr2 custodian: <target> could not be reached: <details> <reason>`.
+    - A `UF` whose TLS failed adds why, after `could not be reached: `, because Envoy's reason is BoringSSL's error code
+      and names no cause that a user can act on. Envoy's details carry `TLS_error:` when its TLS failed, and
+      `CERTIFICATE_VERIFY_FAILED` when the target's certificate failed the check. A target that closes the connection
+      after the connect, with no TLS alert, gives `upstream_reset_before_response_started{remote_connection_failure}`
+      alone (a refused connect adds `delayed_connect_error`). LiteLLM's own TLS, which speaks TLS 1.0 only, did so. The
+      words are:
+      - `the TLS handshake failed: the Custodian does not trust the certificate of the host, or the certificate is not for this name (a private CA must be in harness.caBundle)`,
+        for `CERTIFICATE_VERIFY_FAILED`;
+      - `the TLS handshake failed: the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers`,
+        for each other TLS error;
+      - `the host closed the connection before the TLS handshake ended: ` and the same words about TLS 1.2, for the
+        close. Only a route on which Envoy itself dials TLS has this mapper, because on a route of plain HTTP the same
+        details say nothing about TLS.
+
+      The dial listener's log line says the same: `reason=tls-certificate` and `reason=tls`, where another failure is
+      `reason=unreachable`. Neither the words nor the line hold a value or a Stand-in. `jr2 up`'s provider check puts
+      the matching cause first in its list.
+
     - `UC` (the target closed the connection), `DPE` (a downstream protocol error, which a body framing error can cause
       after the headers went), `UPE` (an upstream protocol error), `UR` (the target reset the stream) and `LR` (Envoy
       reset it) can come after the request went to the target. The body is

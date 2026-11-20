@@ -29,8 +29,11 @@ test("the image is upstream Envoy pinned by digest, re-homed by kitRegistry like
   assert.equal(CUSTODIAN_POD_ARGS[CUSTODIAN_POD_ARGS.indexOf("--drain-time-s") + 1], String(CUSTODIAN_DRAIN_SECONDS));
 });
 
+type FlagFilter = { response_flag_filter?: { flags: string[] } };
 type Mapper = {
-  filter: { response_flag_filter: { flags: string[] } };
+  filter: FlagFilter & {
+    and_filter?: { filters: Array<FlagFilter & { extension_filter?: { typed_config: { expression: string } } }> };
+  };
   status_code: number;
   body_format_override: { text_format_source: { inline_string: string } };
 };
@@ -39,7 +42,7 @@ test("the Orchestrator's unreachable answer names every Envoy flag of a stream i
   const mappers = ORCHESTRATOR_UNREACHABLE.mappers as Array<{ filter: Mapper["filter"]; status_code: number }>;
   assert.equal(mappers.length, 1);
   assert.equal(mappers[0]!.status_code, 502);
-  assert.deepEqual([...mappers[0]!.filter.response_flag_filter.flags].sort(), [
+  assert.deepEqual([...mappers[0]!.filter.response_flag_filter!.flags].sort(), [
     "DF",
     "DPE",
     "LR",
@@ -51,37 +54,59 @@ test("the Orchestrator's unreachable answer names every Envoy flag of a stream i
     "UR",
     "URX",
   ]);
-  assert.deepEqual(mappers[0]!.filter.response_flag_filter.flags, [...NOT_SENT_FLAGS, ...MAY_HAVE_SENT_FLAGS]);
+  assert.deepEqual(mappers[0]!.filter.response_flag_filter!.flags, [...NOT_SENT_FLAGS, ...MAY_HAVE_SENT_FLAGS]);
 });
 
-test("an intercepted target that gave no answer has two 502 texts, one per flag group (ADR-0059)", () => {
+test("an intercepted target that gave no answer has two 502 texts, one per flag group, and says why a TLS handshake failed (ADR-0059)", () => {
   const target = "litellm.corp.example:443";
-  const intercept = unreachable(target).mappers as Mapper[];
   const details = "%RESPONSE_CODE_DETAILS% %UPSTREAM_TRANSPORT_FAILURE_REASON%\n";
-  assert.deepEqual(
-    intercept.map((m) => [
-      m.status_code,
-      m.filter.response_flag_filter.flags,
-      m.body_format_override.text_format_source.inline_string,
-    ]),
+  const reached = `jr2 custodian: ${target} could not be reached`;
+  const offered =
+    "the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers";
+  const certificate =
+    `${reached}: the TLS handshake failed: the Custodian does not trust the certificate of the host, or the ` +
+    "certificate is not for this name (a private CA must be in harness.caBundle)";
+  const handshake = `${reached}: the TLS handshake failed: ${offered}`;
+  const closed = `${reached}: the host closed the connection before the TLS handshake ended: ${offered}`;
+  const cel = (m: Mapper) => m.filter.and_filter?.filters[1]!.extension_filter!.typed_config.expression;
+  const flagsOf = (m: Mapper) =>
+    (m.filter.and_filter?.filters[0]!.response_flag_filter ?? m.filter.response_flag_filter)!.flags;
+  const rows = (mappers: Mapper[]) =>
+    mappers.map((m) => [m.status_code, flagsOf(m), cel(m), m.body_format_override.text_format_source.inline_string]);
+  const plain = unreachable(target).mappers as Mapper[];
+  assert.deepEqual(rows(plain), [
+    [502, ["UF"], "response.code_details.contains('CERTIFICATE_VERIFY_FAILED')", `${certificate}: ${details}`],
+    [502, ["UF"], "response.code_details.contains('TLS_error')", `${handshake}: ${details}`],
+    [502, ["UF", "UH", "DF"], undefined, `${reached}: ${details}`],
     [
-      [502, ["UF", "UH", "DF"], `jr2 custodian: ${target} could not be reached: ${details}`],
-      [
-        502,
-        ["UC", "DPE", "UMSDR", "URX", "UPE", "UR", "LR"],
-        `jr2 custodian: ${target} did not answer; the request may have reached it: ${details}`,
-      ],
+      502,
+      ["UC", "DPE", "UMSDR", "URX", "UPE", "UR", "LR"],
+      undefined,
+      `jr2 custodian: ${target} did not answer; the request may have reached it: ${details}`,
     ],
-  );
+  ]);
+  // On a route to TLS, a close with no TLS alert after the connect is a close in the handshake. The
+  // details are that text alone: a refused connect adds `delayed_connect_error`.
+  const tls = unreachable(target, { tls: true }).mappers as Mapper[];
+  assert.deepEqual(rows(tls).slice(0, 3), [
+    ...rows(plain).slice(0, 2),
+    [
+      502,
+      ["UF"],
+      "response.code_details == 'upstream_reset_before_response_started{remote_connection_failure}'",
+      `${closed}: ${details}`,
+    ],
+  ]);
+  assert.deepEqual(rows(tls).slice(3), rows(plain).slice(2));
   // One reply can carry several flags, and Envoy uses the first mapper that matches any of them, in
   // order. `URX` comes with the last attempt's own flag: `UF,URX` was never sent, `UC,URX` may have
   // been.
   const textFor = (flags: string[]) =>
-    intercept
-      .find((m) => m.filter.response_flag_filter.flags.some((f) => flags.includes(f)))
+    plain
+      .find((m) => !cel(m) && flagsOf(m).some((f) => flags.includes(f)))
       ?.body_format_override.text_format_source.inline_string.split(": %")[0];
-  assert.equal(textFor(["UF", "URX"]), `jr2 custodian: ${target} could not be reached`);
+  assert.equal(textFor(["UF", "URX"]), reached);
   assert.equal(textFor(["UC", "URX"]), `jr2 custodian: ${target} did not answer; the request may have reached it`);
-  assert.equal(textFor(["UH"]), `jr2 custodian: ${target} could not be reached`);
+  assert.equal(textFor(["UH"]), reached);
   assert.equal(textFor(["UPE"]), `jr2 custodian: ${target} did not answer; the request may have reached it`);
 });

@@ -111,8 +111,9 @@ export type Upstream = {
 };
 
 /** An HTTPS target on the LAN address, with a certificate for `name` (and the LAN address) from its
- * own CA. */
-export async function startUpstream(name?: string): Promise<Upstream> {
+ * own CA. `tls` narrows what its TLS accepts: `"1.0"` is a host that speaks TLS 1.0 alone, as the
+ * TLS of LiteLLM itself does. */
+export async function startUpstream(name?: string, tls?: "1.0"): Promise<Upstream> {
   const host = lanAddress();
   const ca = issueCa(`upstream-${name ?? "address"}`);
   const leaf = issueLeaf(ca, name ?? host);
@@ -129,7 +130,10 @@ export async function startUpstream(name?: string): Promise<Upstream> {
     },
     close: async () => {},
   };
-  const server = createServer({ cert: leaf.cert, key: leaf.key }, (req, res) => {
+  // OpenSSL 3 takes TLS 1.0 only at security level 0.
+  const only10 =
+    tls === "1.0" ? ({ minVersion: "TLSv1", maxVersion: "TLSv1", ciphers: "DEFAULT:@SECLEVEL=0" } as const) : {};
+  const server = createServer({ cert: leaf.cert, key: leaf.key, ...only10 }, (req, res) => {
     const entry: Seen = { method: req.method ?? "", url: req.url ?? "", headers: req.headers };
     seen.push(entry);
     req.socket.once("close", () => (entry.closedAt = Date.now()));

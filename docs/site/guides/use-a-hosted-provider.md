@@ -105,7 +105,8 @@ Obey these conditions:
 - `baseUrl` is `https://`, because the Custodian sends a key over TLS only.
 - The gateway accepts TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305. The Custodian offers only
   these. The TLS of LiteLLM itself (`--ssl_certfile_path`, v1.83) gives TLS 1.0 only, and the Custodian then stops with
-  `could not be reached`. Put a TLS terminator, such as nginx, in front of LiteLLM.
+  `could not be reached: the host closed the connection before the TLS handshake ended`. Put a TLS terminator, such as
+  nginx, in front of LiteLLM.
 - The gateway serves each model under its catalog id. The Harness sends the catalog id, not a name that you choose.
 - The key has the name that the provider reads, here `ANTHROPIC_API_KEY`. With no `hosts`, the key goes to the host of
   `baseUrl`, not to `api.anthropic.com`.

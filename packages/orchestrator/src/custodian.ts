@@ -109,9 +109,9 @@ export const MAY_HAVE_SENT_FLAGS = ["UC", "DPE", "UMSDR", "URX", "UPE", "UR", "L
 
 /** One of the Custodian's own 502s for a target that gave no answer (§5.4): the target, what
  * jr2 knows about the request, and Envoy's reason — never a retry without verification. */
-function noAnswer(target: string, flags: readonly string[], words: string): Json {
+function noAnswer(target: string, filter: Json, words: string): Json {
   return {
-    filter: { response_flag_filter: { flags: [...flags] } },
+    filter,
     status_code: 502,
     body_format_override: {
       text_format_source: {
@@ -124,21 +124,78 @@ function noAnswer(target: string, flags: readonly string[], words: string): Json
 const NOT_REACHED = "could not be reached";
 const MAY_HAVE_REACHED = "did not answer; the request may have reached it";
 
-/**
- * An intercepted target that gave no answer (ADR-0059). Two mappers, because the words must be
- * true: after a `NOT_SENT_FLAGS` failure the target did not get the request, and after a
- * `MAY_HAVE_SENT_FLAGS` one it may have it — so an Agent that sends a POST again can write twice,
- * and the text must not tell it the first one went nowhere. One reply can carry several flags,
- * and Envoy uses the first mapper that matches, in order: the `NOT_SENT_FLAGS` mapper is first, so
- * a reply with `UF`, `UH` or `DF` reads "could not be reached" whatever else it carries. Without
- * the mappers, Envoy answers each of these flags itself (503 for most, 502 for `UPE`) with a body
- * that names no target, which a caller can read as the target's answer. No caller reads the flags;
- * the Orchestrator route's go to the Harness, which tells "never reached" from "not known"
- * (ADR-0002).
- */
-export function unreachable(target: string): Json {
+/** What Envoy says when its TLS to the target failed (ADR-0059): BoringSSL's error is in the
+ * details, between `TLS_error:` and `TLS_error_end`. A failed check of the target's certificate is
+ * `CERTIFICATE_VERIFY_FAILED`, for a CA that `upstream.crt` does not hold and for a name that the
+ * certificate does not carry. */
+export const TLS_FAILED = "response.code_details.contains('TLS_error')";
+export const CERTIFICATE_FAILED = "response.code_details.contains('CERTIFICATE_VERIFY_FAILED')";
+/** What Envoy says when the target closed the connection after it connected, with no TLS alert: the
+ * details are this text alone, with no `TLS_error` and no `delayed_connect_error` (a refused
+ * connect). On a route to TLS, the close came before the handshake ended. A host that does not
+ * speak TLS 1.2 can close so: LiteLLM's own TLS did. */
+export const CLOSED_IN_HANDSHAKE =
+  "response.code_details == 'upstream_reset_before_response_started{remote_connection_failure}'";
+
+/** The TLS that the Custodian offers a target: Envoy's client defaults at the pin. A host that does
+ * not accept it ends the handshake. */
+const OFFERED_TLS =
+  "TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers";
+const TLS_WORDS = {
+  certificate:
+    `${NOT_REACHED}: the TLS handshake failed: the Custodian does not trust the certificate of the host, or the ` +
+    "certificate is not for this name (a private CA must be in harness.caBundle)",
+  tls: `${NOT_REACHED}: the TLS handshake failed: the host may not accept ${OFFERED_TLS}`,
+  closed:
+    `${NOT_REACHED}: the host closed the connection before the TLS handshake ended: the host may not accept ` +
+    OFFERED_TLS,
+} as const;
+
+/** `UF` and a CEL expression on the reply: a connection that failed, for the reason that it names. */
+function failedConnection(expression: string): Json {
   return {
-    mappers: [noAnswer(target, NOT_SENT_FLAGS, NOT_REACHED), noAnswer(target, MAY_HAVE_SENT_FLAGS, MAY_HAVE_REACHED)],
+    and_filter: {
+      filters: [
+        { response_flag_filter: { flags: ["UF"] } },
+        {
+          extension_filter: {
+            name: "envoy.access_loggers.extension_filters.cel",
+            typed_config: {
+              "@type": "type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter",
+              expression,
+            },
+          },
+        },
+      ],
+    },
+  };
+}
+
+const flagged = (flags: readonly string[]): Json => ({ response_flag_filter: { flags: [...flags] } });
+
+/**
+ * An intercepted target that gave no answer (ADR-0059). The words must be true: after a
+ * `NOT_SENT_FLAGS` failure the target did not get the request, and after a `MAY_HAVE_SENT_FLAGS`
+ * one it may have it — so an Agent that sends a POST again can write twice, and the text must not
+ * tell it the first one went nowhere. One reply can carry several flags, and Envoy uses the first
+ * mapper that matches, in order. The first mappers are for a connection (`UF`) whose TLS failed:
+ * the certificate, then any other TLS error, then, on a route to TLS (`tls`), a close with no TLS
+ * alert. Each says "could not be reached" and why, because a user must otherwise read BoringSSL's
+ * error code to learn that the cause is TLS. Then the `NOT_SENT_FLAGS` mapper, so a reply with
+ * `UF`, `UH` or `DF` reads "could not be reached" whatever else it carries. Without the mappers,
+ * Envoy answers each of these flags itself (503 for most, 502 for `UPE`) with a body that names no
+ * target, which a caller can read as the target's answer. No caller reads the flags; the
+ * Orchestrator route's go to the Harness, which tells "never reached" from "not known" (ADR-0002).
+ */
+export function unreachable(target: string, opts: { tls?: boolean } = {}): Json {
+  return {
+    mappers: [
+      noAnswer(target, failedConnection(CERTIFICATE_FAILED), TLS_WORDS.certificate),
+      noAnswer(target, failedConnection(TLS_FAILED), TLS_WORDS.tls),
+      ...(opts.tls ? [noAnswer(target, failedConnection(CLOSED_IN_HANDSHAKE), TLS_WORDS.closed)] : []),
+      noAnswer(target, flagged(NOT_SENT_FLAGS), NOT_REACHED),
+      noAnswer(target, flagged(MAY_HAVE_SENT_FLAGS), MAY_HAVE_REACHED),
+    ],
   };
 }
 

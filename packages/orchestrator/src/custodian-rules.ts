@@ -57,6 +57,9 @@ import {
   ORCHESTRATOR_UNREACHABLE,
   SLOT_LISTENER_BASE,
   slotFolder,
+  CERTIFICATE_FAILED,
+  CLOSED_IN_HANDSHAKE,
+  TLS_FAILED,
   unreachable,
   type OrchestratorAddress,
 } from "./custodian.ts";
@@ -658,12 +661,20 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
     direct_response: { status: 403 },
     metadata: meta({ role: "refuse", status: "403", reason, body }),
   });
-  const httpChain = (stat: string, target: string, routes: Json[], extra: Partial<Parameters<typeof http>[0]> = {}) =>
+  // `tls`: the chain dials the target with Envoy's own TLS (an Intercepted address on a port that
+  // is not 80); an Intercepted name goes through the `dial-tls` listener, which says its own.
+  const httpChain = (
+    stat: string,
+    target: string,
+    routes: Json[],
+    extra: Partial<Parameters<typeof http>[0]> = {},
+    tls = false,
+  ) =>
     http({
       stat,
       log: httpLog(who, target),
       lua: program,
-      local: { mappers: unreachable(target).mappers as Json[] },
+      local: { mappers: unreachable(target, { tls }).mappers as Json[] },
       routes: { virtual_hosts: routes },
       ...extra,
     });
@@ -783,6 +794,7 @@ export function renderSlot(inputs: SlotInputs): SlotRules {
           },
         ],
         { strictPath: true },
+        tls && isAddress,
       );
       if (tls) {
         chains.push(
@@ -1211,11 +1223,14 @@ const CODEC_REFUSED = "response.code_details.startsWith('http1.')";
 
 /** A dial listener's log (ADR-0059): one line for a refusal by the dial guard, one for a name that it
  * refuses, one for a name refused while the cache of names is full, one for a target that gave no
- * answer, each with the slot and its Harness pod that the slot's chain named. A CONNECT that the
- * listener's codec refuses (a TLS name that is not a DNS name, which Envoy writes as `invalid:…`)
- * is a name refused; no header of it was read, so its line names no slot, and the slot's own line
- * names the Sandbox and the TLS name. */
-function dialLog(): Json[] {
+ * answer, each with the slot and its Harness pod that the slot's chain named. Of a target that gave
+ * no answer, a failed TLS handshake has its own reason: `reason=tls-certificate` for a certificate
+ * that the Custodian does not trust, `reason=tls` for each other TLS failure and, on the `dial-tls`
+ * listener (`tls`), for a close before the handshake ended. A CONNECT that the listener's codec
+ * refuses (a TLS name that is not a DNS name, which Envoy writes as `invalid:…`) is a name refused;
+ * no header of it was read, so its line names no slot, and the slot's own line names the Sandbox
+ * and the TLS name. */
+function dialLog(tls: boolean): Json[] {
   const line = (reason: string, expression: string): Json => ({
     name: "envoy.access_loggers.stdout",
     filter: {
@@ -1238,16 +1253,18 @@ function dialLog(): Json[] {
       },
     },
   });
+  const noAnswer =
+    `response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream' && ` +
+    `!(${GUARDED}) && !${CODEC_REFUSED}`;
+  const handshake = tls ? `${TLS_FAILED} || ${CLOSED_IN_HANDSHAKE}` : TLS_FAILED;
   return [
     line("guard", GUARDED),
     line("name", `(response.code_details == 'direct_response' && response.code == 403) || ${CODEC_REFUSED}`),
     line("name-cache", NAME_CACHE_FULL),
     // A flag on an answer of the target, or on a tunnel that its client closed (`DC`), is no refusal.
-    line(
-      "unreachable",
-      `response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream' && ` +
-        `!(${GUARDED}) && !${CODEC_REFUSED}`,
-    ),
+    line("tls-certificate", `${noAnswer} && ${CERTIFICATE_FAILED}`),
+    line("tls", `${noAnswer} && !${CERTIFICATE_FAILED} && (${handshake})`),
+    line("unreachable", `${noAnswer} && !(${handshake})`),
   ];
 }
 
@@ -1315,7 +1332,7 @@ function dialListener(name: "dial" | "dial-http" | "dial-tls", ranges: FenceRang
               ...(connect ? { upgrade_configs: [{ upgrade_type: "CONNECT" }] } : {}),
               stream_idle_timeout: "3600s",
               common_http_protocol_options: { idle_timeout: "3600s" },
-              access_log: dialLog(),
+              access_log: dialLog(name === "dial-tls"),
               ...(connect
                 ? {}
                 : {
@@ -1323,7 +1340,7 @@ function dialListener(name: "dial" | "dial-http" | "dial-tls", ranges: FenceRang
                       mappers: [
                         guardReply(),
                         nameCacheReply(),
-                        ...(unreachable("%REQ(:AUTHORITY)%").mappers as Json[]),
+                        ...(unreachable("%REQ(:AUTHORITY)%", { tls: name === "dial-tls" }).mappers as Json[]),
                       ],
                     },
                   }),

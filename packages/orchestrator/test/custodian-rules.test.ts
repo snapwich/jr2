@@ -224,8 +224,17 @@ test("an Intercepted name: TLS ended with the slot's leaf for that host, the pro
     (m: { body_format_override: { text_format_source: { inline_string: string } } }) =>
       m.body_format_override.text_format_source.inline_string,
   );
-  assert.match(bodies[0], /could not be reached/);
-  assert.match(bodies[1], /may have reached it/);
+  // An Intercepted name dials through `dial-tls`, which says why its TLS failed; this chain's own
+  // upstream is that listener, so it has no mapper for a close in a handshake.
+  assert.deepEqual(
+    bodies.map((b: string) => b.split(": %")[0]),
+    [
+      "jr2 custodian: api.anthropic.com:443 could not be reached: the TLS handshake failed: the Custodian does not trust the certificate of the host, or the certificate is not for this name (a private CA must be in harness.caBundle)",
+      "jr2 custodian: api.anthropic.com:443 could not be reached: the TLS handshake failed: the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers",
+      "jr2 custodian: api.anthropic.com:443 could not be reached",
+      "jr2 custodian: api.anthropic.com:443 did not answer; the request may have reached it",
+    ],
+  );
   // An intercepted entry on port 80 is HTTP with the program, no TLS.
   const http80 = chainOf(r, "action=intercept target=registry.npmjs.org:80");
   assert.equal(http80.transport_socket, undefined);
@@ -787,10 +796,25 @@ test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also whe
       ).filter.extension_filter.typed_config.expression as string;
     // A target that gave no answer: not the guard's refusal, and not a request that the codec
     // refused (`DPE`: a TLS name that is not a DNS name), which is a name refused.
-    assert.equal(
-      lineOf("unreachable"),
+    const noAnswer =
       "response.flags != 0u && response.code != 200 && response.code_details != 'via_upstream' && " +
-        "!(response.code_details.contains('address_denied')) && !response.code_details.startsWith('http1.')",
+      "!(response.code_details.contains('address_denied')) && !response.code_details.startsWith('http1.')";
+    // A failed TLS handshake has its own reasons. Only on `dial-tls` is a close with no TLS alert
+    // one: the other two listeners dial no TLS of their own.
+    const handshake =
+      name === "dial-tls"
+        ? "response.code_details.contains('TLS_error') || " +
+          "response.code_details == 'upstream_reset_before_response_started{remote_connection_failure}'"
+        : "response.code_details.contains('TLS_error')";
+    assert.equal(lineOf("unreachable"), `${noAnswer} && !(${handshake})`, name);
+    assert.equal(
+      lineOf("tls-certificate"),
+      `${noAnswer} && response.code_details.contains('CERTIFICATE_VERIFY_FAILED')`,
+    );
+    assert.equal(
+      lineOf("tls"),
+      `${noAnswer} && !response.code_details.contains('CERTIFICATE_VERIFY_FAILED') && (${handshake})`,
+      name,
     );
     assert.equal(
       lineOf("name"),
