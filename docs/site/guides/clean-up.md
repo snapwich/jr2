@@ -205,7 +205,11 @@ build cache of docker.
 - On a kind node, jr2 removes a whole image. Thus it keeps a tag whose image also has a tag that a live root names. It
   prints: `kept <count> tag(s) — their image id also carries a tag a live root names: <tags>`. On your computer, jr2
   removes each tag that no live root names.
-- When docker or a node refuses to remove an image, jr2 prints: `failed to remove <count> image(s): <images>`
+- When docker or a node refuses to remove an image, jr2 prints: `failed to remove <count> image(s): <images>`. Each
+  image is `<tag> (<reason>)`, and the reason is the first line that docker or the node said. A docker
+  `conflict: unable to remove repository reference … container <id> is using its referenced image` names a container
+  that holds the image, also a stopped one. Find it with `docker ps -a --filter ancestor=<tag>`. Remove it if it is
+  yours, then run `jr2 gc`.
 - When `jr2 up` cannot remove the old images, the converge still succeeds. It prints:
   `images: sweep skipped (<error>) — the converge stands`. Run `jr2 gc` later.
 
