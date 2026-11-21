@@ -43,7 +43,8 @@ function mkKube(
     label: async () => assert.fail("down labels nothing"),
     deleteObject: async (o: { kind: string; name: string; namespace?: string }) =>
       void fake.deleted.push(`${o.namespace ?? ""}/${o.kind}/${o.name}`),
-    deleteManifest: async () => {
+    deleteManifest: async (o: { manifest: string }) => {
+      if (o.manifest.includes("name: kube-multus-ds")) return void fake.deleted.push("(multus manifest)");
       fake.deleted.push("(operator manifest)");
       // The manifest CARRIES the `sandboxes.core.jr2.dev` CRD, so `--all` takes the resource type
       // with it — and the sweep runs after (see the `--all` test).
@@ -185,6 +186,47 @@ test("down deletes the instance's namespace; --all takes the operator too, BEFOR
   assert.equal(await down(["--all"], w2.io), 0);
   assert.deepEqual(kube2.deleted, ["/Namespace/myinst", "(operator manifest)"]);
   assert.deepEqual(sweep.listed, ["host", "node test"], "the stores are read only once both roots are gone");
+});
+
+test("--all removes what jr2 installed for the Fence: the plugins' DaemonSet and jr2's Multus; the plugin files stay; a plain down removes neither (ADR-0084)", async () => {
+  const installed = {
+    ...ownNs,
+    "jr2-system/daemonset/jr2-cni-plugins": { metadata: { name: "jr2-cni-plugins" } },
+    "kube-system/daemonset/kube-multus-ds": {
+      metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": "v4.3.2-thick-namespace-isolation-1" } },
+    },
+  };
+  const plain = mkKube(installed);
+  assert.equal(await down([], (await mkWorld(plain, true)).io), 0);
+  assert.deepEqual(plain.deleted, ["/Namespace/myinst"]);
+
+  const all = mkKube(installed);
+  const w = await mkWorld(all, true);
+  assert.equal(await down(["--all"], w.io), 0);
+  assert.match(
+    w.confirms[0]!,
+    /delete namespace "myinst" AND the per-cluster operator, the DaemonSet of the Fence's CNI plugins, and a Multus that jr2 installed\)\?$/,
+  );
+  assert.deepEqual(all.deleted, [
+    "/Namespace/myinst",
+    "jr2-system/daemonset/jr2-cni-plugins",
+    "(multus manifest)",
+    "(operator manifest)",
+  ]);
+  const err = w.err.join("");
+  assert.match(
+    err,
+    /uninstalling the DaemonSet jr2-system\/jr2-cni-plugins; the CNI plugins bridge, static, tuning stay in \/opt\/cni\/bin on each node\n/,
+  );
+  assert.match(err, /uninstalling Multus \(kube-system\), which jr2 installed\n/);
+
+  // A Multus that jr2 did not install stays.
+  const foreign = mkKube({
+    ...ownNs,
+    "kube-system/daemonset/kube-multus-ds": { metadata: { name: "kube-multus-ds" } },
+  });
+  assert.equal(await down(["--all"], (await mkWorld(foreign, true)).io), 0);
+  assert.deepEqual(foreign.deleted, ["/Namespace/myinst", "(operator manifest)"]);
 });
 
 test("down gives back the Instance's VLAN range of the Fence, after its namespace is gone, and no other (ADR-0084)", async () => {

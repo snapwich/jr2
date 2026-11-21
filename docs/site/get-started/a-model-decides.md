@@ -79,14 +79,18 @@ jr2 up
 
 This `jr2 up` is the first that converges the [Instance Harness](../reference/glossary.md#instance-harness), which runs
 the Turns of `triager`. The Instance Harness is behind a [Fence](../reference/glossary.md#fence), as a Sandbox is. The
-first `jr2 up` made the parts of the Fence on the node of your kind cluster
-([Create an Instance](create-an-instance.md)). Now `jr2 up` also checks them on each node.
+Fence needs two parts on the cluster, which `kind create cluster` does not give: Multus, and the CNI plugins `bridge`,
+`static` and `tuning` on each node. So this `jr2 up` asks before it installs them. Type `y`. The lines that start with
+`fence:` are the install and then a check of the Fence on each node. Each next `jr2 up` finds the parts, asks nothing,
+and prints one `fence: prerequisites in place` line.
 
 ::: tabs key:provider
 
 == Anthropic
 
 The output shows where the model key goes. Then `jr2 up` asks your model for one tool call, from inside the cluster:
+
+<!-- output: not run -->
 
 ```text
 → .env: ANTHROPIC_API_KEY
@@ -97,16 +101,23 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
   triage.clarify gate: [answer]
 agents: triager (carried by 2 workflow machine(s))
 …
+first setup of the Fence on context kind-jr2: install the Fence's prerequisites: apply the DaemonSet jr2-system/jr2-cni-plugins, which writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never replaces a file, and the files stay after jr2 down --all); and apply Multus v4.3.2 (thick, namespaceIsolation, no global namespace) to kube-system, from the manifest that the CLI ships? [y/N] y
+…
+fence: applying the DaemonSet jr2-system/jr2-cni-plugins (ghcr.io/snapwich/jr2-operator:<version>)
+fence: jr2-control-plane: CNI plugins ok wrote=bridge static tuning kept=
+fence: applying Multus v4.3.2 (thick, namespaceIsolation) to kube-system
+fence: Multus is ready on each node
+…
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
 the Instance Harness: Egress list Intercepted api.anthropic.com:443
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
 held secrets: minted the Instance's CA into jr2-held-ca
 …
-custodian: converging on each Sandbox node (VLAN range 2)
-custodian: verified — 2 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
-fence: probing the bridge and the rule set on 2 Sandbox node(s): jr2-worker, jr2-worker2
-fence: verified — the bridge and the rule set answer on each Sandbox node
+custodian: converging on each Sandbox node (VLAN range 0)
+custodian: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+fence: probing the bridge on 1 Sandbox node(s): jr2-control-plane
+fence: verified — the uplink answers on the bridge of each Sandbox node, and the node does not
 provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for api.anthropic.com
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
 provider: the check pod is not running yet — check: ContainerCreating
@@ -131,6 +142,8 @@ prints what to examine.
 
 `jr2 up` asks your model for one tool call, from inside the cluster:
 
+<!-- output: not run -->
+
 ```text
 → .env: LOCAL_MODEL_URL
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
@@ -140,14 +153,21 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
   triage.clarify gate: [answer]
 agents: triager (carried by 2 workflow machine(s))
 …
+first setup of the Fence on context kind-jr2: install the Fence's prerequisites: apply the DaemonSet jr2-system/jr2-cni-plugins, which writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never replaces a file, and the files stay after jr2 down --all); and apply Multus v4.3.2 (thick, namespaceIsolation, no global namespace) to kube-system, from the manifest that the CLI ships? [y/N] y
+…
+fence: applying the DaemonSet jr2-system/jr2-cni-plugins (ghcr.io/snapwich/jr2-operator:<version>)
+fence: jr2-control-plane: CNI plugins ok wrote=bridge static tuning kept=
+fence: applying Multus v4.3.2 (thick, namespaceIsolation) to kube-system
+fence: Multus is ready on each node
+…
 the Instance Harness: Custodian holds nothing
 the Instance Harness: Egress list Tunneled <address>:8000
 held secrets: minted the Instance's CA into jr2-held-ca
 …
-custodian: converging on each Sandbox node (VLAN range 2)
-custodian: verified — 2 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
-fence: probing the bridge and the rule set on 2 Sandbox node(s): jr2-worker, jr2-worker2
-fence: verified — the bridge and the rule set answer on each Sandbox node
+custodian: converging on each Sandbox node (VLAN range 0)
+custodian: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+fence: probing the bridge on 1 Sandbox node(s): jr2-control-plane
+fence: verified — the uplink answers on the bridge of each Sandbox node, and the node does not
 provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), through the Custodian, as a Turn calls it
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
 provider: the check pod is not running yet — check: ContainerCreating

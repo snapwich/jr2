@@ -75,26 +75,23 @@ the cluster, see [Architecture](architecture.md).
 4. It makes the Assembly from the folder, and calculates its hash. See [The Assembly](#the-assembly).
 5. It checks the Kubernetes version of the cluster.
 6. It checks that the namespace is this Instance's. Before it uses a namespace for the first time, it asks you.
-7. On a kind cluster, it makes the parts of the [Fence](../reference/glossary.md#fence) that a node does not have: the
-   stock CNI plugins `bridge`, `static` and `tuning`, the `8021q` module, the bridge, the rule set and the `unreachable`
-   route on each node, and the second network of a pod (Multus). A kind node is a container on your computer, and
-   `jr2 up` changes it through Docker. The first time that it installs a part on the cluster (the plugins or Multus), it
-   says what it will do, in the question of step 6. A part that a restart of a node lost, it makes again with no
-   question. On another cluster, it makes none of these parts.
+7. When a Machine has a Sandbox or a Menu-only Agent, it reads the two prerequisites of the
+   [Fence](../reference/glossary.md#fence) from the cluster: Multus, and the stock CNI plugins `bridge`, `static` and
+   `tuning` on each node. When one is missing, it says what it will install, in the question of step 6. It refuses, and
+   applies nothing, when it cannot install safely: a Multus that jr2 did not install with other settings, Cilium with
+   `cni-exclusive: "true"`, or nodes whose CNI folders are not the default ones. This is the same on each cluster, kind
+   or not.
 8. It checks that the cluster keeps pod-level resources.
 9. It finds the platforms of the nodes, and it decides the address of each image.
 10. It builds the Sandbox Images.
 11. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
-12. When a Machine has a Sandbox or a Menu-only Agent, it checks each Sandbox node for the parts of the Fence: the
-    second network of a pod (Multus), the bridge of the node, and the rule set of the node. First it reads Multus from
-    the cluster. Then it applies the Custodian, its uplink on each Sandbox node and its resolver. When the Custodian is
-    ready, two short pods on each Sandbox node check the bridge and the rule set. These pods have no privilege, so they
-    see what the rule set does, not the rule set itself. While a Sandbox node lacks a part, the converge fails, and the
-    error names the node and the part. There is one exception: when the check of the node's `unreachable` route gets no
-    answer, it writes a warning, and the converge continues. The check cannot tell why it got no answer: the node has no
-    route, or something drops the check's packets, or the cluster gives a pod no answer although the node has the route
-    (this was seen on Cilium with BPF host routing). So a node with no route can pass with the warning. On a kind
-    cluster, `jr2 up` made the route in step 7.
+12. When a Machine has a Sandbox or a Menu-only Agent, it installs what step 7 found missing, with kubectl. First the
+    DaemonSet `jr2-system/jr2-cni-plugins`: its pod copies each plugin onto a node that has no file of that name, and
+    `jr2 up` waits for it on each Sandbox node. Then Multus. When both were there, it prints one line. Then it reads
+    Multus from the cluster, and applies the Custodian, its uplink on each Sandbox node and its resolver. When the
+    Custodian is ready, a short pod on each Sandbox node checks the Fence: the pod gets the address of its slot, the
+    Custodian answers it, and the node does not. The pod has no privilege, so it sees what the bridge does, not its
+    VLANs. While a Sandbox node fails, the converge fails, and the error names the node, the part and the likely causes.
 13. It checks each model that an Agent uses: one pod on a Sandbox node, behind the Fence as each Harness pod is, asks
     the provider through the Custodian for one tool call for each model. Until each check passes, `jr2 up` writes
     nothing else that the Instance or the operator reads. The pod has up to 5 minutes to start, and each model has up to
@@ -245,10 +242,10 @@ would remove, and removes nothing.
   keep pod-level resources.
 - `jr2 up` refuses a namespace that belongs to a different Instance. It asks you before it uses a namespace for the
   first time. `--yes` gives the answer for CI.
-- On a kind cluster, `jr2 up` makes each part of the Fence that a node does not have, at each converge. It asks you
-  before it installs a part on the cluster for the first time. It refuses when the kernel of the computer that runs the
-  kind nodes does not give the `8021q` module. On another cluster, it makes no part of the Fence, and it refuses while a
-  Sandbox node does not have one.
+- When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` installs each prerequisite of the Fence that the cluster
+  does not have, on any cluster. It asks you before it installs for the first time. It refuses, and applies nothing,
+  when it cannot install safely. It never changes a Multus that it did not install, and never replaces a plugin file on
+  a node.
 - `jr2 up` refuses a cluster that is not kind when `registry` is not set and it must build an image. When no registered
   Machine makes a [Sandbox](../reference/glossary.md#sandbox), `jr2 up` builds no image and needs no `registry`.
 - Each verb that reads the Instance, other than `jr2 version`, refuses when the Instance and the CLI do not use the same
@@ -292,4 +289,4 @@ would remove, and removes nothing.
 - [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): the
   Orchestrator is a Kit image, and an Instance publishes its Assembly
 - [ADR-0084](../reference/decisions/0084-a-sandboxs-only-network-leads-to-the-custodian.md): `jr2 up` installs the
-  Custodian, its uplink and its resolver, and checks the other parts of the Fence
+  Custodian, its uplink and its resolver, installs the prerequisites of the Fence, and checks the Fence

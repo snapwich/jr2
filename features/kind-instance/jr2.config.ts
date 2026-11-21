@@ -1,6 +1,6 @@
 // The @kind tier's instance config (ADR-0010): bring-up is the product's own path — one shared
-// kind cluster with no image in it (`just e2e-kind-up`), whose Fence node parts `jr2 up` makes
-// (ADR-0084), then `jr2 up` per scenario into a FRESH namespace (`-n` at the CLI;
+// kind cluster with no image in it (`just e2e-kind-up`), on which `jr2 up` installs the Fence's
+// prerequisites (ADR-0084), then `jr2 up` per scenario into a FRESH namespace (`-n` at the CLI;
 // namespace-as-identity makes the scenario the isolation unit, ADR-0019).
 //
 // No Repo is named here (ADR-0051): the tier's workflows bind their one slot to the seed

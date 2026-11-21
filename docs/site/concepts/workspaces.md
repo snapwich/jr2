@@ -408,8 +408,8 @@ The wait shows in the [Console](../reference/glossary.md#console) and in the CLI
 marks a run that has a Workspace in `placing`. `jr2 status <run id>` gives the reason, in the words of the scheduler or
 the quota. `<run id>` is the id that `jr2 run` printed, or a prefix of it. The body gets no event.
 
-A Sandbox lands where an ordinary pod lands. Each such node needs the parts of the Fence (see
-[Converge](converge.md#what-jr2-up-does)). To limit the nodes, set
+A Sandbox lands where an ordinary pod lands. Each such node needs the prerequisites of the Fence, which `jr2 up`
+installs (see [Converge](converge.md#what-jr2-up-does)). To limit the nodes, set
 [`sandbox.nodeSelector`](../reference/config.md#sandbox-nodeselector) and
 [`sandbox.tolerations`](../reference/config.md#sandbox-tolerations) in `jr2.config.ts`. After Placing, the pod has 120
 seconds to become ready. A Sandbox that waits for the Repo cache to clone has 25 minutes.

@@ -31,6 +31,29 @@ RUN set -eux; \
     tar -xzf "/tmp/${tgz}" -C /tmp "git-lfs-${GIT_LFS_VERSION}/git-lfs"; \
     install -m 0755 "/tmp/git-lfs-${GIT_LFS_VERSION}/git-lfs" /workspace/git-lfs
 
+# The stock CNI plugins bridge, static and tuning, for the DaemonSet jr2-cni-plugins (ADR-0084): it
+# copies each one into a node's CNI bin directory when the node has no file of that name, so the pod
+# downloads nothing. The OFFICIAL release tarball, checked by sha256, and then each plugin checked by
+# its own sha256: both sums are in cni-plugins.sha256, beside this file. Fetched here, on the build
+# platform, for TARGETARCH: the plugins are static. packages/cli/src/fence-install.ts names the same
+# version (CNI_VERSION), and test/fence-install.test.ts fails when the two differ.
+ARG CNI_PLUGINS_VERSION=v1.10.0
+COPY cni-plugins.sha256 /tmp/cni-plugins.sha256
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64|arm64) ;; \
+      *) echo "jr2: no CNI plugins for TARGETARCH='${TARGETARCH}' in cni-plugins.sha256" >&2; exit 1 ;; \
+    esac; \
+    tgz="cni-plugins-linux-${TARGETARCH}-${CNI_PLUGINS_VERSION}.tgz"; \
+    curl -fsSLo "/tmp/${tgz}" "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/${tgz}"; \
+    cd /tmp; \
+    grep "  ${tgz}\$" cni-plugins.sha256 | sha256sum -c -; \
+    mkdir -p "linux-${TARGETARCH}"; \
+    tar -xzf "${tgz}" -C "linux-${TARGETARCH}" ./bridge ./static ./tuning; \
+    test "$(grep -c "  linux-${TARGETARCH}/" cni-plugins.sha256)" -eq 3; \
+    grep "  linux-${TARGETARCH}/" cni-plugins.sha256 | sha256sum -c -; \
+    mv "linux-${TARGETARCH}" /workspace/cni-bin
+
 # Copy the Go source (relies on .dockerignore to filter)
 COPY . .
 
@@ -51,6 +74,8 @@ RUN apk add --no-cache git openssh-client ca-certificates
 WORKDIR /
 COPY --from=builder /workspace/manager /manager
 COPY --from=builder /workspace/git-lfs /usr/local/bin/git-lfs
+# The DaemonSet jr2-cni-plugins copies these into the node (ADR-0084); nothing here runs them.
+COPY --from=builder /workspace/cni-bin/ /opt/jr2/cni/bin/
 # `asyncpreemptoff` because in a multi-arch build this run can be the emulated one, and the emulator
 # mishandles Go's preemption signal (deploy/harness/Dockerfile); GODEBUG is the process's, not the binary's.
 RUN GODEBUG=asyncpreemptoff=1 git lfs version

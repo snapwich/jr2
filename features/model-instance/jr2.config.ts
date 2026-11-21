@@ -1,6 +1,6 @@
 // The @model tier's instance config (ADR-0066): the @kind instance's shape (ADR-0010) with the
 // last fake removed. Bring-up is the product's own path — one shared kind cluster with no image in it
-// (`just e2e-kind-up`), whose Fence node parts `jr2 up` makes (ADR-0084), then
+// (`just e2e-kind-up`), on which `jr2 up` installs the Fence's prerequisites (ADR-0084), then
 // `jr2 up` per scenario into a FRESH namespace; the workflows bind the seed Repo the suite serves
 // in-cluster, and the fence admits that host alone (ADR-0051).
 //

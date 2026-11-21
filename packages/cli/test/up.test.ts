@@ -72,11 +72,7 @@ const { preflightLine, PREFLIGHT_MODEL_BUDGET_SECONDS } = harnessLines;
 import type { KubeAdmin, KubeObject, PodEnd } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
 import type { Io } from "../src/output.ts";
-import { MULTUS_VERSION, shippedSums } from "../src/kind-fence.ts";
-import { FakeKindDocker } from "./support/kind-docker.ts";
-
-/** The shipped plugin sums (ADR-0084): a world's kind node has these, so it lacks no part. */
-const SHIPPED_SUMS = await shippedSums();
+import { MULTUS_VERSION } from "../src/fence-install.ts";
 
 /** The instance List of a converge: the one that carries the Orchestrator's Deployment — not the
  * apply of the provider preflight's inputs before it, nor a check pod's own List (ADR-0019). */
@@ -95,9 +91,17 @@ class FakeCluster implements KubeAdmin {
   ctx = "kind-test";
 
   constructor() {
-    // Multus of this CLI's manifest (ADR-0084): a kind cluster that `jr2 up` prepared before.
+    // The Fence's prerequisites (ADR-0084), as an earlier `jr2 up` installed them: Multus of this
+    // CLI's manifest, and the DaemonSet of the CNI plugins.
     this.set("kube-system", "daemonset", "kube-multus-ds", {
-      metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": MULTUS_VERSION } },
+      metadata: {
+        name: "kube-multus-ds",
+        labels: { app: "multus" },
+        annotations: { "jr2.dev/multus": MULTUS_VERSION },
+      },
+    });
+    this.set("jr2-system", "daemonset", "jr2-cni-plugins", {
+      metadata: { name: "jr2-cni-plugins", labels: { app: "jr2-cni-plugins", "jr2.dev/version": KIT_VERSION } },
     });
   }
 
@@ -133,18 +137,18 @@ class FakeCluster implements KubeAdmin {
     this.labeled.push(opts);
   }
   /** The Fence's probe pods (ADR-0084): each one has ended when it is applied, with the result that
-   * `fenceProbeResults` scripts for `<node> fence|route` (default: passed). */
-  fenceProbeResults: Record<string, { ok: boolean; part?: string; why?: string; warn?: string }> = {};
-  /** The probe pods applied, as `<node> fence|route`. */
+   * `fenceProbeResults` scripts for its node (default: passed). */
+  fenceProbeResults: Record<string, { ok: boolean; part?: string; why?: string }> = {};
+  /** The probe pods applied, as `<node> fence`. */
   fenceProbes: string[] = [];
   private runFenceProbes(manifest: string): void {
     if (!manifest.includes(`"app":"jr2-fence-probe"`)) return;
     const items = (JSON.parse(manifest) as { items: Array<Record<string, any>> }).items;
     for (const pod of items) {
       const node = pod.spec.nodeName as string;
-      const probe = pod.metadata.annotations["v1.multus-cni.io/default-network"] ? "fence" : "route";
+      const probe = "fence";
       this.fenceProbes.push(`${node} ${probe}`);
-      const result = this.fenceProbeResults[`${node} ${probe}`] ?? { ok: true };
+      const result = this.fenceProbeResults[node] ?? { ok: true };
       const message = `jr2.fence-probe ${JSON.stringify({ probe, ...result })}`;
       this.set(pod.metadata.namespace, "pod", pod.metadata.name, {
         metadata: { name: pod.metadata.name },
@@ -160,6 +164,8 @@ class FakeCluster implements KubeAdmin {
   attachmentCrd = true;
   /** The nodes with no Ready Multus pod; each other node has one. */
   nodesWithoutMultus = new Set<string>();
+  /** What the init container of the CNI plugins' pod says on each node (ADR-0084): unset, it passed. */
+  pluginsResults: Record<string, string> = {};
   /** Each object `create` made, as `<namespace>/<kind>/<name>` (ADR-0084's range claims). */
   created: string[] = [];
   private keyOf(manifest: string): { key: string; obj: KubeObject & { metadata: { resourceVersion?: string } } } {
@@ -281,9 +287,32 @@ class FakeCluster implements KubeAdmin {
     }
     if (opts.kind === "node") return this.nodes as T[];
     if (opts.kind === "customresourcedefinition") {
+      const name = "network-attachment-definitions.k8s.cni.cncf.io";
       return (
-        this.attachmentCrd ? [{ metadata: { name: "network-attachment-definitions.k8s.cni.cncf.io" } }] : []
+        this.attachmentCrd && opts.fieldSelector === `metadata.name=${name}` ? [{ metadata: { name } }] : []
       ) as T[];
+    }
+    // The DaemonSets by label (ADR-0084's read of Multus): what `set` and the applies put there.
+    if (opts.kind === "daemonset" && opts.selector) {
+      const [key, value] = opts.selector.split("=");
+      return [...this.objects]
+        .filter(([k, o]) => k.includes("/daemonset/") && o.metadata.labels?.[key!] === value)
+        .map(([k, o]) => ({ ...o, metadata: { ...o.metadata, namespace: k.split("/")[0] } })) as T[];
+    }
+    // The pods of the CNI plugins' DaemonSet (ADR-0084): one Ready pod on each node.
+    if (opts.kind === "pod" && opts.selector === "app=jr2-cni-plugins") {
+      return this.nodes.map((n) => {
+        const message = this.pluginsResults[n.metadata.name] ?? "jr2.cni-plugins ok wrote= kept=bridge static tuning";
+        const ok = message.includes(" ok ");
+        return {
+          metadata: { name: `jr2-cni-plugins-${n.metadata.name}` },
+          spec: { nodeName: n.metadata.name },
+          status: {
+            conditions: [{ type: "Ready", status: ok ? "True" : "False" }],
+            initContainerStatuses: [{ state: { terminated: { exitCode: ok ? 0 : 1, message } } }],
+          },
+        };
+      }) as T[];
     }
     if (opts.kind === "pod" && opts.selector === "app=multus") {
       return this.nodes
@@ -793,8 +822,6 @@ async function mkKit(): Promise<string> {
 type World = {
   io: Io;
   kube: FakeCluster;
-  /** The kind cluster's node containers (ADR-0084): one node of cluster "test", prepared. */
-  docker: FakeKindDocker;
   orchestrator: FakeOrchestrator;
   built: string[];
   err: string[];
@@ -834,8 +861,6 @@ function mkWorld(
   } = {},
 ): World {
   const kube = new FakeCluster();
-  const docker = new FakeKindDocker();
-  docker.add("test-control-plane", { cluster: "test", prepared: true, sums: SHIPPED_SUMS });
   const orchestrator = new FakeOrchestrator();
   const built: string[] = [];
   const err: string[] = [];
@@ -848,10 +873,6 @@ function mkWorld(
     cwd: root,
     kitDir: over.kitDir ?? root,
     kubeAdmin: kube,
-    docker: docker.run,
-    download: async () => {
-      throw new Error("no download in a test");
-    },
     kube: orchestrator.kube,
     fetch: orchestrator.fetch,
     typecheck: over.typecheck ?? TYPECHECK_OK,
@@ -875,7 +896,7 @@ function mkWorld(
       return typeof over.choose === "function" ? over.choose(options) : over.choose;
     },
   };
-  return { io, kube, docker, orchestrator, built, err, confirms, choices };
+  return { io, kube, orchestrator, built, err, confirms, choices };
 }
 
 /** The Orchestrator Deployment this converge applied. */
@@ -1012,70 +1033,115 @@ test("first contact asks; declining bails before anything is applied; --yes skip
   assert.ok(yes.kube.applied.length > 0, "converged without prompting");
 });
 
-test("on kind, jr2 up makes the Fence's node parts before the Custodian, asking under first contact; a second converge changes nothing (ADR-0084)", async () => {
+test("jr2 up installs the Fence's prerequisites that the cluster lacks, before the Custodian, asking under first contact; a second converge asks nothing and prints one line (ADR-0084)", async () => {
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  // A stock cluster: no Multus, no DaemonSet of the CNI plugins.
   const stock = () => {
     const w = mkWorld(root, { confirm: false });
-    // A node that a restart left with its plugins only, on a cluster with no Multus of jr2's.
-    const node = w.docker.add("test-control-plane", { cluster: "test", prepared: false, sums: SHIPPED_SUMS });
-    for (const p of ["bridge", "static", "tuning"]) node.plugins[p] = SHIPPED_SUMS.get(`linux-amd64/${p}`)!;
     w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
+    w.kube.objects.delete("jr2-system/daemonset/jr2-cni-plugins");
     return w;
   };
 
-  // Declined: nothing is made, nothing applied.
+  // Declined: nothing applied.
   const declined = stock();
   assert.equal(await up([], declined.io), 1);
   assert.equal(declined.confirms.length, 1, "one question for the namespace and the Fence");
-  assert.match(
-    declined.confirms[0]!,
-    /^first contact: deploy instance "myinst" to context kind-test \(create namespace "myinst"; on kind cluster "test": make the bridge jr2fence0, the rule set inet jr2_fence, the route unreachable 198\.19\.0\.0\/20 and the 8021q module where missing on 1 node; apply Multus v4\.3\.2 thick with namespaceIsolation to kube-system\)\?$/,
+  assert.equal(
+    declined.confirms[0],
+    'first contact: deploy instance "myinst" to context kind-test (create namespace "myinst"; install the ' +
+      "Fence's prerequisites: apply the DaemonSet jr2-system/jr2-cni-plugins, which writes the CNI plugins " +
+      "bridge, static, tuning v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never " +
+      "replaces a file, and the files stay after jr2 down --all); and apply Multus v4.3.2 (thick, " +
+      "namespaceIsolation, no global namespace) to kube-system, from the manifest that the CLI ships)?",
   );
   assert.deepEqual(declined.kube.applied, []);
-  assert.ok(!declined.docker.calls.some((c) => c.includes("-- make ")), "no node was changed");
 
-  // --yes: each part is made, Multus applied and rolled out, before the Custodian.
+  // --yes: the plugins, then Multus and its rollout, then the Custodian.
   const w = stock();
   assert.equal(await up(["--yes"], w.io), 0);
   assert.equal(w.confirms.length, 0);
   const err = w.err.join("");
-  assert.match(err, /fence: kind node test-control-plane: made 8021q bridge rule-set route\n/);
-  assert.match(err, /fence: multus: applying v4\.3\.2 thick with namespaceIsolation to kind cluster "test"\n/);
+  assert.match(
+    err,
+    /fence: applying the DaemonSet jr2-system\/jr2-cni-plugins \(ghcr\.io\/snapwich\/jr2-operator:[0-9.]+\)\n/,
+  );
+  assert.match(err, /fence: kind-test-control-plane: CNI plugins ok wrote= kept=bridge static tuning\n/);
+  assert.match(err, /fence: applying Multus v4\.3\.2 \(thick, namespaceIsolation\) to kube-system\n/);
+  const plugins = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-cni-plugins"'));
   const multus = w.kube.applied.findIndex((m) => m.includes("name: kube-multus-ds"));
   const custodian = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-custodian"'));
-  assert.ok(multus >= 0 && custodian > multus, "Multus is applied before the Custodian");
+  assert.ok(plugins >= 0 && multus > plugins && custodian > multus, "plugins, then Multus, then the Custodian");
   assert.ok(w.kube.rollouts.includes("kube-system/daemonset/kube-multus-ds"));
-  assert.deepEqual([...w.docker.nodes.get("test-control-plane")!.missing], []);
+  // The DaemonSet runs the operator image of this converge, and its namespace was made first.
+  const ds = JSON.parse(w.kube.applied[plugins]!) as {
+    spec: { template: { spec: { containers: [{ image: string }] } } };
+  };
+  assert.equal(ds.spec.template.spec.containers[0].image, imagesOf(w).operator);
+  assert.ok(w.kube.created.includes("/namespace/jr2-system"));
 
-  // A second converge on the same nodes: one line, no change, no question about the Fence.
+  // A second converge with both there: no question, nothing installed, one line.
   w.kube.set("kube-system", "daemonset", "kube-multus-ds", {
-    metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": MULTUS_VERSION } },
+    metadata: { name: "kube-multus-ds", labels: { app: "multus" }, annotations: { "jr2.dev/multus": MULTUS_VERSION } },
   });
+  w.kube.set("jr2-system", "daemonset", "jr2-cni-plugins", {
+    metadata: { name: "jr2-cni-plugins", labels: { app: "jr2-cni-plugins", "jr2.dev/version": KIT_VERSION } },
+    spec: { template: { spec: { containers: [{ image: ds.spec.template.spec.containers[0].image }] } } },
+  } as Partial<KubeObject>);
   w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
   w.err.length = 0;
-  const calls = w.docker.calls.length;
+  w.kube.applied.length = 0;
   assert.equal(await up([], w.io), 0);
   assert.equal(w.confirms.length, 0, "no question: the namespace is home and nothing is installed");
-  assert.match(
-    w.err.join(""),
-    /fence: the node parts on kind cluster "test" are unchanged \(1 node, segment 198\.19\.0\.0\/20\)\n/,
-  );
-  assert.ok(!w.docker.calls.slice(calls).some((c) => c.includes("-- make ") || c.startsWith("cp ")));
+  assert.match(w.err.join(""), /fence: prerequisites in place — jr2's Multus, and the CNI plugins on 1 Sandbox node\n/);
+  assert.ok(!w.kube.applied.some((m) => m.includes("jr2-cni-plugins") || m.includes("kube-multus-ds")));
 
-  // Home already, but the cluster's Multus is not jr2's: the Fence alone is asked about.
+  // Home already, but the cluster has no DaemonSet of the plugins: the Fence alone is asked about.
   const home = stock();
   home.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
   assert.equal(await up([], home.io), 1);
-  assert.match(home.confirms[0]!, /^first setup of the Fence: on kind cluster "test": .*apply Multus v4\.3\.2/);
+  assert.match(
+    home.confirms[0]!,
+    /^first setup of the Fence on context kind-test: install the Fence's prerequisites: apply the DaemonSet jr2-system\/jr2-cni-plugins, .*\?$/,
+  );
 });
 
-test("on kind, an Instance with no Harness pod gets the node parts too, and no probe runs (ADR-0084)", async () => {
+test("an Instance with no Harness pod reads and installs nothing of the Fence, and no probe runs (ADR-0084)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const w = mkWorld(root);
-  w.docker.nodes.get("test-control-plane")!.missing.add("route");
+  const w = mkWorld(root, { confirm: false });
+  w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
+  w.kube.objects.delete("jr2-system/daemonset/jr2-cni-plugins");
+  assert.equal(await up([], w.io), 1);
+  assert.doesNotMatch(w.confirms[0]!, /Fence|Multus|plugins/);
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.match(w.err.join(""), /fence: kind node test-control-plane: made route\n/);
+  assert.ok(!w.kube.applied.some((m) => m.includes("jr2-cni-plugins") || m.includes("kube-multus-ds")));
+  assert.doesNotMatch(w.err.join(""), /fence:/);
   assert.deepEqual(w.kube.fenceProbes, [], "no Harness pod: nothing on the Fence to probe");
+});
+
+test("jr2 up refuses, before the question and with nothing applied, a Multus of another owner without namespaceIsolation (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root, { confirm: false });
+  w.kube.set("kube-system", "daemonset", "kube-multus-ds", {
+    metadata: { name: "kube-multus-ds", labels: { app: "multus" } },
+    spec: {
+      template: {
+        spec: {
+          containers: [{ name: "kube-multus" }],
+          volumes: [{ name: "multus-daemon-config", configMap: { name: "multus-daemon-config" } }],
+        },
+      },
+    },
+  } as Partial<KubeObject>);
+  w.kube.set("kube-system", "configmap", "multus-daemon-config", {
+    data: { "daemon-config.json": JSON.stringify({ cniConfigDir: "/host/etc/cni/net.d", namespaceIsolation: false }) },
+  } as Partial<KubeObject>);
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    /fence: the cluster's Multus \(DaemonSet kube-system\/kube-multus-ds, which jr2 did not install\) does not have namespaceIsolation .* Nothing was applied\.$/s,
+  );
+  assert.deepEqual(w.kube.applied, []);
+  assert.deepEqual(w.confirms, []);
 });
 
 test("operator: never downgraded — a newer deployed operator is left, with a warning", async () => {
@@ -2847,8 +2913,6 @@ test("an installed Instance with no workspace() needs no docker and no registry 
   // anywhere else that a caller caught would still show here.
   assert.match(w.err.join("\n"), /images: sweep skipped \(docker image ls was called\)/);
   assert.deepEqual(called, ["image ls"], "no docker call but the sweep's listing");
-  // Not kind: the Fence's node parts are not jr2's to make, and no node is read through docker.
-  assert.deepEqual(w.docker.calls, []);
 });
 
 test("secret: token + signing key persist across re-runs; harness.env literals materialize", async () => {
@@ -3821,9 +3885,7 @@ test("provider preflight: a Harness-shaped pod on slot 1 with its own objects, a
   // A failed check writes no other object the Instance reads: before it, the namespace holds the
   // Custodian's, the probe pods of the Fence, and the check pod's own.
   const before = namespaced(appliedBefore, "myinst").filter(
-    (n) =>
-      !/^(NetworkAttachmentDefinition\/jr2-fence-|Pod\/jr2-fence-(probe|route)-)/.test(n) &&
-      !n.endsWith("/jr2-custodian"),
+    (n) => !/^(NetworkAttachmentDefinition\/jr2-fence-|Pod\/jr2-fence-probe-)/.test(n) && !n.endsWith("/jr2-custodian"),
   );
   assert.deepEqual(
     before.sort(),
@@ -3910,7 +3972,7 @@ test("provider preflight: a Harness-shaped pod on slot 1 with its own objects, a
   assert.match(said, /provider: anthropic\/claude-sonnet-5-5 reachable, and it completed a tool call/);
 });
 
-test("provider preflight: before the first check, only the namespace, the PriorityClasses, the Custodian and the check's own objects are written — no operator, no deploy key (ADR-0019, ADR-0084)", async () => {
+test("provider preflight: before the first check, only the namespace, the PriorityClasses, the Fence's prerequisites, the Custodian and the check's own objects are written — no operator, no deploy key (ADR-0019, ADR-0084)", async () => {
   const { home } = await mkSshHome();
   const root = await withWorkspace(
     await mkInstance(
@@ -3935,10 +3997,12 @@ test("provider preflight: before the first check, only the namespace, the Priori
   });
   const o = pod.metadata.name as string;
   assert.deepEqual(kinds.slice(0, 3), ["Namespace/myinst", "PriorityClass/jr2-control", "PriorityClass/jr2-sandbox"]);
-  // The Custodian (its attachments, its DaemonSet and the rest), then the probe of each Sandbox node.
-  assert.match(kinds[3]!, /^List NetworkAttachmentDefinition\/jr2-fence-0,.*,DaemonSet\/jr2-custodian$/);
-  assert.match(kinds[4]!, /^List Pod\/jr2-fence-probe-[0-9a-f]+,Pod\/jr2-fence-route-[0-9a-f]+$/);
-  assert.deepEqual(kinds.slice(5), [
+  // The DaemonSet of the Fence's CNI plugins (here an update to this converge's image), the
+  // Custodian (its attachments, its DaemonSet and the rest), then the probe of each Sandbox node.
+  assert.equal(kinds[3], "DaemonSet/jr2-cni-plugins");
+  assert.match(kinds[4]!, /^List NetworkAttachmentDefinition\/jr2-fence-0,.*,DaemonSet\/jr2-custodian$/);
+  assert.match(kinds[5]!, /^List Pod\/jr2-fence-probe-[0-9a-f]+$/);
+  assert.deepEqual(kinds.slice(6), [
     `List Secret/jr2-custodian-slot-1,ConfigMap/${o}-trust,Secret/${o}-standins`,
     `List ConfigMap/${o},Secret/${o}-env,Pod/${o}`,
   ]);
@@ -4036,7 +4100,7 @@ test("provider preflight: every failure in one error, and the Instance as it was
   const own = (n: string) =>
     n.split("/")[1]!.startsWith(o) ||
     n === "Secret/jr2-custodian-slot-1" ||
-    /^(NetworkAttachmentDefinition\/jr2-fence-|Pod\/jr2-fence-(probe|route)-)/.test(n) ||
+    /^(NetworkAttachmentDefinition\/jr2-fence-|Pod\/jr2-fence-probe-)/.test(n) ||
     n.split("/")[1]!.startsWith("jr2-custodian");
   assert.ok(
     namespaced(w.kube.applied, "myinst").every(own),
@@ -7240,13 +7304,14 @@ test("the Orchestrator gets the Instance's VLAN range, claimed before it is appl
   assert.ok(!gone.kube.applied.some((m) => m.includes(`"name":"jr2-fence"`)));
 });
 
-test("after the Custodian is Ready, jr2 up probes the bridge and the rule set on each node of a Custodian pod (ADR-0084)", async () => {
+test("after the Custodian is Ready, jr2 up probes the bridge on each node of a Custodian pod (ADR-0084)", async () => {
   const w = mkWorld(await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)));
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.deepEqual(w.kube.fenceProbes, ["kind-test-control-plane fence", "kind-test-control-plane route"]);
+  assert.deepEqual(w.kube.fenceProbes, ["kind-test-control-plane fence"]);
   const err = w.err.join("\n");
-  assert.match(err, /fence: probing the bridge and the rule set on 1 Sandbox node\(s\): kind-test-control-plane/);
-  assert.match(err, /fence: verified — the bridge and the rule set answer on each Sandbox node/);
+  assert.match(err, /fence: probing the bridge on 1 Sandbox node\(s\): kind-test-control-plane/);
+  assert.match(err, /fence: verified — the uplink answers on the bridge of each Sandbox node, and the node does not/);
+  assert.doesNotMatch(err, /rule set|unreachable route|warning: fence/);
   // The probe pods come after the Custodian's rollout, and go again.
   const at = (needle: string) => w.kube.applied.findIndex((m) => m.includes(needle));
   assert.ok(at(`"app":"jr2-fence-probe"`) > at(`"kind":"DaemonSet","metadata":{"name":"jr2-custodian"`));
@@ -7255,37 +7320,10 @@ test("after the Custodian is Ready, jr2 up probes the bridge and the rule set on
   assert.ok(probes.every((p) => p.spec.hostNetwork === undefined && p.spec.nodeName === "kind-test-control-plane"));
 });
 
-test("a route probe that passed with a warning writes the warning, says on how many nodes, and the converge goes on (ADR-0084)", async () => {
-  const w = mkWorld(await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)));
-  w.kube.fenceProbeResults["kind-test-control-plane route"] = {
-    ok: true,
-    warn: "the check could not see the unreachable route for 198.19.0.0/20 on kind-test-control-plane",
-  };
-  assert.equal(await up(["--yes"], w.io), 0);
-  const err = w.err.join("\n");
-  assert.match(
-    err,
-    /warning: fence: the check could not see the unreachable route for 198\.19\.0\.0\/20 on kind-test-control-plane/,
-  );
-  assert.match(
-    err,
-    /fence: verified — the bridge and the rule set answer on each Sandbox node, except the unreachable route that the check could not see on 1 node\(s\) \(see the warning\)/,
-  );
-  assert.ok(
-    w.kube.rollouts.includes("myinst/jr2-orchestrator"),
-    `the converge goes on; got: ${w.kube.rollouts.join(", ")}`,
-  );
-});
-
-test("a Sandbox node that lacks a part of the Fence refuses the converge, and names the node and the part (ADR-0084)", async () => {
+test("a Sandbox node that fails the check of the Fence refuses the converge, and names the node, the part and the likely causes (ADR-0084)", async () => {
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   const w = mkWorld(root);
-  w.kube.fenceProbeResults["kind-test-control-plane route"] = {
-    ok: false,
-    part: "rule-set",
-    why: "no unreachable route for 198.19.0.0/20 on the node",
-  };
-  w.kube.fenceProbeResults["kind-test-control-plane fence"] = {
+  w.kube.fenceProbeResults["kind-test-control-plane"] = {
     ok: false,
     part: "bridge",
     why: "no answer from the uplink at 198.19.0.1 on VLAN 2",
@@ -7293,17 +7331,12 @@ test("a Sandbox node that lacks a part of the Fence refuses the converge, and na
   await assert.rejects(
     () => up(["--yes"], w.io),
     (e: Error) => {
-      assert.match(e.message, /^fence: a Sandbox node lacks a part of the Fence \(ADR-0084\)/);
-      // The world is kind: `jr2 up` made the parts, so the fix names no recipe.
-      assert.match(e.message, /jr2 up made the Fence's node parts on each node of the kind cluster "test"/);
-      assert.match(
-        e.message,
-        /\n {2}kind-test-control-plane: the rule set — no unreachable route for 198\.19\.0\.0\/20/,
-      );
+      assert.match(e.message, /^fence: a Sandbox node fails the check of the Fence \(ADR-0084\)/);
       assert.match(
         e.message,
         /\n {2}kind-test-control-plane: the bridge, its VLAN filtering, or the Custodian pod of this node — no answer/,
       );
+      assert.match(e.message, /\nThe likely causes: the node's container runtime reads its CNI plugins/);
       return true;
     },
   );
@@ -7313,13 +7346,31 @@ test("a Sandbox node that lacks a part of the Fence refuses the converge, and na
   assert.ok(!w.kube.rollouts.includes("myinst/statefulset/jr2-instance-harness"));
 });
 
+test("a Sandbox node whose CNI folders are not the default ones refuses the converge before Multus and the Custodian (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
+  w.kube.pluginsResults["kind-test-control-plane"] =
+    "jr2.cni-plugins fail no CNI configuration in /etc/cni/net.d on the node: the container runtime reads it from another folder";
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    /fence: the CNI plugins bridge, static, tuning cannot go onto a Sandbox node \(ADR-0084\):\n {2}kind-test-control-plane: no CNI configuration in \/etc\/cni\/net\.d on the node/,
+  );
+  assert.ok(!w.kube.applied.some((m) => m.includes("kube-multus-ds")), "Multus is not applied");
+  assert.equal(custodianList(w), undefined);
+});
+
 test("without Multus's attachment definition, or with a Sandbox node that has no Ready Multus pod, jr2 up refuses before the Custodian (ADR-0084)", async () => {
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   const none = mkWorld(root);
   none.kube.attachmentCrd = false;
   await assert.rejects(() => up(["--yes"], none.io), /no CustomResourceDefinition network-attachment-definitions/);
   assert.equal(custodianList(none), undefined);
-  assert.deepEqual(none.kube.created, [], "no range is claimed");
+  assert.deepEqual(
+    none.kube.created.filter((k) => k.includes("/lease/")),
+    [],
+    "no range is claimed",
+  );
 
   const gap = mkWorld(root);
   gap.kube.nodes = [

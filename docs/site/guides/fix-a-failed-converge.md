@@ -191,24 +191,40 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `jr2.config.ts`, or add `-n <namespace>`.
 - Before `jr2 up` uses a namespace for the first time, it asks:
   `first contact: deploy instance "<instance>" to context <context> (create namespace "<namespace>")? [y/N]`. For a
-  namespace that exists but holds no Instance, it asks to `adopt existing namespace "<namespace>"`. On a kind cluster
-  where `jr2 up` installs a part of the Fence for the first time, the question also says what, after a `;`:
-  `on kind cluster "<cluster>": <what it will do>`. When the namespace is the Instance's already, the question starts
-  with `first setup of the Fence:`. When you do not type `y`, it prints `aborted — nothing was changed`. When no
-  terminal is attached, it prints `<question> — not a tty; pass --yes to proceed non-interactively` first. In CI, add
-  `--yes`.
-- On a kind cluster, `jr2 up` makes the parts of the Fence on each node through Docker (see
-  [Converge](../concepts/converge.md#what-jr2-up-does)). It stops when it cannot:
-  - `fence: the context names the kind cluster "<cluster>", but docker on this computer has no node container of it`:
-    run `jr2 up` on the computer whose Docker runs the cluster. When `docker ps` fails, the error gives Docker's reason.
-    Start Docker, then run `jr2 up` again.
-  - `fence: the kind node <node> cannot have the 8021q module: <why>`. A kind node uses the kernel of the computer that
-    runs its container (on macOS and Windows, the kernel of the virtual machine of Docker). That kernel must give the
-    module. Load it there (`modprobe 8021q`), or use a kernel that has it.
-  - `fence: jr2 up could not get the CNI plugins for a kind node (<why>). Download <url> on a computer that can reach it, and put it at <path>.`
-    `jr2 up` downloads the release tarball of the plugins once, into `~/.cache/jr2/cni-plugins/`
-    (`$XDG_CACHE_HOME/jr2/cni-plugins/` when that variable is set), and checks its sha256. Put the file at the path that
-    the error gives, then run `jr2 up` again.
+  namespace that exists but holds no Instance, it asks to `adopt existing namespace "<namespace>"`. When a Machine has a
+  Sandbox or a Menu-only Agent and the cluster lacks a prerequisite of the Fence, the question also says what `jr2 up`
+  will install, after a `;`: `install the Fence's prerequisites: <what it will apply>`. When the namespace is the
+  Instance's already, the question starts with `first setup of the Fence on context <context>:`. When you do not type
+  `y`, it prints `aborted — nothing was changed`. When no terminal is attached, it prints
+  `<question> — not a tty; pass --yes to proceed non-interactively` first. In CI, add `--yes`.
+- When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` installs the prerequisites of the Fence that the cluster
+  lacks (see [Converge](../concepts/converge.md#what-jr2-up-does)). It does not install when that is not safe. Then it
+  stops before it applies anything, and the error names what the owner of the cluster must change. Each one ends with
+  `Nothing was applied.`:
+  - `fence: the cluster's Multus (DaemonSet <namespace>/<name>, which jr2 did not install) does not have namespaceIsolation in <where>, …`.
+    Without it, a pod of another namespace can join the VLANs of the Instance. `jr2 up` never changes a Multus that it
+    did not install. The error names where to set it: `"namespaceIsolation": true` in the JSON of a ConfigMap (the thick
+    form of Multus, `multus-daemon-config`), or `--namespace-isolation=true` in the arguments of the container (the thin
+    form). Set it, restart the Multus DaemonSet, and run `jr2 up` again.
+  - `fence: the cluster's Multus (…) has the global namespaces "<namespaces>" in <where>, …`. Set
+    `"globalNamespaces": ""`, or remove `--global-namespaces`, in the place that the error names.
+  - `fence: … jr2 cannot read the ConfigMap <namespace>/<name> that holds its settings, …`. Give the user of your
+    kubectl context read access to that ConfigMap.
+  - `fence: Cilium has cni-exclusive: "true" in the ConfigMap kube-system/cilium-config, …`. With it, Cilium removes the
+    configuration of Multus on each node. Set `cni-exclusive: "false"` (with Helm: `--set cni.exclusive=false`), restart
+    the Cilium agents, and run `jr2 up` again. When a `CiliumNodeConfig` sets it for a Sandbox node, the error names
+    that object: set `"cni-exclusive": "false"` in its `spec.defaults`.
+  - `fence: the cluster's Multus (DaemonSet <namespace>/<name>) mounts the node's CNI bin directory from <folder>, not /opt/cni/bin. …`
+    (or the CNI configuration directory, not `/etc/cni/net.d`). jr2 puts the plugins into `/opt/cni/bin`. Keep such
+    nodes out of the Sandbox nodes with [`sandbox.nodeSelector`](../reference/config.md#sandbox-nodeselector) or a
+    taint, or use a cluster whose nodes use the default folders.
+  - `fence: the CNI plugins bridge, static, tuning cannot go onto a Sandbox node (ADR-0084):`, then one line for each
+    node: the node has no CNI configuration in `/etc/cni/net.d`, its `/opt/cni/bin` is empty, or the kubelet cannot
+    mount one of the two folders. The pod of the DaemonSet `jr2-system/jr2-cni-plugins` on the node found this. Its
+    container runtime uses other folders: keep the node out of the Sandbox nodes, as above. Multus is not applied.
+  - `fence: no Ready pod of the DaemonSet jr2-system/jr2-cni-plugins on the Sandbox node <node> in 300 s, …`. Read
+    `kubectl -n jr2-system describe pod -l app=jr2-cni-plugins`, for example for an image that the node cannot pull, or
+    a policy of the cluster that refuses a pod with a hostPath volume in `jr2-system`.
 - The cluster must keep pod-level resources. `jr2 up` makes the namespace, and then it stops:
   `refusing: <context> (Kubernetes <version>) drops pod-level resources — the PodLevelResources feature gate is off, and a Workspace's Size cannot hold (ADR-0060). Enable the gate on the API server and kubelets. The namespace was created; nothing else was applied.`
 - When `jr2 up` cannot confirm pod-level resources, it warns and continues:
@@ -346,23 +362,19 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   A server that does not answer is a warning. [Give an Agent MCP tools](give-an-agent-mcp-tools.md#rules) gives each
   text.
 
-- When a Machine has a Sandbox or a Menu-only Agent, each Sandbox node must have the parts of the Fence: the second
-  network of a pod (Multus), the bridge of the node, and the rule set of the node. While a node lacks one, `jr2 up`
-  refuses to converge, with one exception for the `unreachable` route (below). The error starts with
-  `error: fence: a Sandbox node lacks a part of the Fence (ADR-0084):`, and each next line names a node, the part and
+- When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` checks the Fence on each Sandbox node, after it installed
+  or found its prerequisites. While a node fails, `jr2 up` refuses to converge. The error starts with
+  `error: fence: a Sandbox node fails the check of the Fence (ADR-0084):`, and each next line names a node, the part and
   what the check saw: `Multus`, `Multus or the attachment`,
-  `the bridge, its VLAN filtering, or the Custodian pod of this node`, or `the rule set`. When the probe pod on the
-  Fence got no answer from the Custodian on the bridge, `jr2 up` also replaces the Custodian pod of that node, so that
-  the pod joins the bridge again. When the cluster has no Multus, the error says
-  `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`. On a cluster that
-  is not kind, give the node the part, then run `jr2 up` again. The last line of the error gives the page that lists
-  each part: [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#check-the-cluster). On a kind
-  cluster, `jr2 up` made each part before the check, so the last line says that a part changed since, or does not work
-  on this computer. Run `jr2 up` again. When the check of the `unreachable` route of a node got no answer, `jr2 up` does
-  not refuse. It writes
-  `warning: fence: the check could not see the unreachable route for <segment> on <node>, because a connection to <address>:9 from the cluster's network got no answer in 1 s in each of 3 tries. The check cannot tell two causes apart. The node has no such route, or something drops the probe's packets. Or the cluster gives a pod no answer although the node has the route (this was seen on Cilium with BPF host routing). Make sure that the node has the route (ADR-0084)`.
-  So a node with no route can pass with this warning. On a kind cluster, `jr2 up` made the route before the check. On
-  another cluster, make sure that each Sandbox node has the route.
+  `the bridge, its VLAN filtering, or the Custodian pod of this node`, `the node's firewall on the bridge` or
+  `the VLANs of the bridge`. When the probe pod on the Fence got no answer from the Custodian on the bridge, `jr2 up`
+  also replaces the Custodian pod of that node, so that the pod joins the bridge again. When the cluster has no Multus,
+  the error says `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`.
+  Run `jr2 up` again: it installs Multus when the cluster has none. The last line of the error names the likely causes:
+  a container runtime that reads its CNI plugins or configuration from other folders; a file `bridge`, `static` or
+  `tuning` in `/opt/cni/bin` that is not a recent stock CNI plugin (jr2 never replaces one); a primary CNI that removes
+  the configuration of Multus; or a node firewall that changes bridged VLAN frames. It also gives the page of the
+  prerequisites: [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#prerequisites-of-the-fence).
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See
   [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). Every rollout comes after the provider

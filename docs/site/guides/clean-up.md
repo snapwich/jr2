@@ -111,24 +111,31 @@ To remove the Instance in CI, add `--yes`. To remove it from a different namespa
 
 ## Remove the operator too
 
-The operator is in the namespace `jr2-system`. All the Instances on a cluster share it. When you remove the last
-Instance, run `jr2 down --all` in place of `jr2 down`:
+The operator is in the namespace `jr2-system`. All the Instances on a cluster share it, and the prerequisites of the
+[Fence](../reference/glossary.md#fence) that `jr2 up` installed: the DaemonSet `jr2-system/jr2-cni-plugins`, and Multus
+when the cluster had none. When you remove the last Instance, run `jr2 down --all` in place of `jr2 down`:
 
 ```sh
 jr2 down --all
 ```
 
+<!-- output: not run -->
+
 ```text
-remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator)? [y/N] y
+remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator, the DaemonSet of the Fence's CNI plugins, and a Multus that jr2 installed)? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
 gave back VLAN range 2 of the Fence
+uninstalling the DaemonSet jr2-system/jr2-cni-plugins; the CNI plugins bridge, static, tuning stay in /opt/cni/bin on each node
+uninstalling Multus (kube-system), which jr2 installed
 uninstalling the operator (jr2-system)
 swept 3 image(s) (532.7 MB)
 …
 removed
 ```
 
-The range of VLANs and the image counts and sizes depend on your cluster. Your values can be different.
+The range of VLANs and the image counts and sizes depend on your cluster. Your values can be different. A Multus that
+jr2 did not install stays, and so do the files of the CNI plugins in `/opt/cni/bin` on each node: jr2 cannot tell them
+from files that a different tool put there. A plain `jr2 down` removes neither the DaemonSet nor Multus.
 
 ::: danger
 

@@ -209,18 +209,9 @@ import {
   fenceConfigObject,
   custodianValueSecrets,
 } from "../deploy.ts";
-import { claimRange, makeSlotLive, type LiveKube } from "../fence.ts";
+import { claimRange, ensureNamespace, makeSlotLive, type LiveKube } from "../fence.ts";
 import { checkFenceApi, fenceRefusal, probeFenceNodes } from "../fence-probe.ts";
-import {
-  cacheDirOf,
-  describePlan,
-  dockerRunner,
-  httpDownload,
-  makeKindFence,
-  planAsks,
-  planKindFence,
-  type KindFencePorts,
-} from "../kind-fence.ts";
+import { describeInstall, installFence, planFenceInstall } from "../fence-install.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { planCallerTokens } from "../caller-tokens.ts";
 import { resolveRoot } from "../instance.ts";
@@ -439,45 +430,37 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
   if (volumePlan.line) activity(io, volumePlan.line);
 
-  // --- the Fence's node parts on a kind cluster (ADR-0084, ADR-0019): read now, made after the ask -
-  // A kind node is a container on this host, which jr2 reaches through docker as `kind load` does,
-  // so `jr2 up` makes each part that a node lacks, at every converge, before anything needs it. On
-  // any other cluster it makes none, and the probe below names what a node lacks. On kind it makes
-  // them also for an Instance with no Harness pod: the cluster is then ready when one comes, and
-  // the first contact is the one question.
+  // --- the Fence's prerequisites (ADR-0084, ADR-0019): read now, installed after the question ----
+  // An Instance with a Harness pod (a Sandbox, or the Instance Harness) is on the Fence. Its
+  // prerequisites are Multus and the CNI plugins bridge, static and tuning on each Sandbox node,
+  // and `jr2 up` installs each one that the cluster lacks, with kubectl, on any cluster. The read
+  // refuses, before anything is applied, a cluster where an install is not safe: a Multus of
+  // another owner with other settings, a Cilium that removes each other CNI configuration, or a
+  // node whose CNI folders are elsewhere. The Sandbox nodes come from the same read of the nodes
+  // as the platforms below.
   const fenced = carried.composesSandbox || carried.instanceHarness !== undefined;
-  const cluster = kindCluster(context);
-  const kindPorts: KindFencePorts = {
-    docker: io.docker ?? dockerRunner,
-    download: io.download ?? httpDownload,
-    cacheDir: cacheDirOf(io.env),
-    kube,
-  };
-  const kindPlan =
-    cluster !== undefined
-      ? await planKindFence(kindPorts, { cluster, segment: fenceRangesOf(config.fence).segment, ...ctx })
-      : undefined;
-  // The first time a plan installs something on the cluster (the plugins or Multus), the converge
-  // says what and asks, in the first-contact question when there is one: one question, one `--yes`.
-  const kindAsk = kindPlan !== undefined && planAsks(kindPlan) ? describePlan(kindPlan) : undefined;
+  const allNodes =
+    config.platforms === undefined || fenced ? await kube.listJson<NodeObject>({ kind: "node", ...ctx }) : [];
+  const fenceNodes = sandboxNodes(allNodes, config.sandbox).nodes;
+  const fencePlan = fenced ? await planFenceInstall(kube, { nodes: fenceNodes, ...ctx }) : undefined;
+  // The first time a converge installs something on the cluster, it says what and asks, in the
+  // first-contact question when there is one: one question, one `--yes`.
+  const fenceAsk = fencePlan !== undefined ? describeInstall(fencePlan) : undefined;
 
-  if (!ns || !owner || kindAsk !== undefined) {
+  if (!ns || !owner || fenceAsk !== undefined) {
     const what = [
       ...(!ns ? [`create namespace "${namespace}"`] : !owner ? [`adopt existing namespace "${namespace}"`] : []),
-      ...(kindAsk !== undefined ? [kindAsk] : []),
+      ...(fenceAsk !== undefined ? [fenceAsk] : []),
     ].join("; ");
     const question =
       !ns || !owner
         ? `first contact: deploy instance "${name}" to context ${context} (${what})?`
-        : `first setup of the Fence: ${what}?`;
+        : `first setup of the Fence on context ${context}: ${what}?`;
     const ok = values.yes === true || (await confirmOrBail(io, question));
     if (!ok) {
       activity(io, "aborted — nothing was changed");
       return 1;
     }
-  }
-  if (kindPlan !== undefined) {
-    await makeKindFence(kindPorts, kindPlan, { ...ctx, log: (line) => activity(io, line) });
   }
   await kube.apply({
     manifest: JSON.stringify({
@@ -506,6 +489,7 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- image resolution (ADR-0038): decide every ref BEFORE any layer spends a build -----------
   const registry = config.registry;
+  const cluster = kindCluster(context);
 
   // The CLUSTER chooses what every image is built for (ADR-0045): the schedulable nodes'
   // architectures, intersected with the platforms the kit releases for. The set then rides the tag
@@ -520,7 +504,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // "Schedulable" is the union of where an ordinary pod lands (the Orchestrator's own placement)
   // and the Instance's Sandbox nodes (ADR-0052): a tainted pool no Sandbox reaches is not a platform
   // this instance owes an image. The same read reports the Sandbox nodes themselves below.
-  const nodes = config.platforms === undefined ? await kube.listJson<NodeObject>({ kind: "node", ...ctx }) : [];
+  const nodes = config.platforms === undefined ? allNodes : [];
   const schedulable = buildNodes(nodes, config.sandbox);
   const {
     platforms,
@@ -749,11 +733,24 @@ export async function up(args: string[], io: Io): Promise<number> {
   // The operator IMAGE is resolved whenever anything this converge deploys runs it: the operator
   // layer itself, or the data plane's cache agent, which is the same binary (`/manager repo-cache`,
   // ADR-0051) and rides the instance's namespace even when the controller loop is somebody else's.
-  const operatorImage =
-    config.operator?.manage === false && !carried.composesSandbox ? undefined : await ensureKitImage("operator");
+  // And the Fence's CNI plugins ride it (ADR-0084): an Instance with a Harness pod resolves it too.
+  const operatorImage = config.operator?.manage === false && !fenced ? undefined : await ensureKitImage("operator");
   if (operatorImage !== undefined) converged.operator = operatorImage;
   // Applied after the provider preflight (below): the operator is the cluster's, and a converge
   // whose provider check fails must not have changed it.
+
+  // --- the Fence's prerequisites (ADR-0084): installed now that the operator image is delivered --
+  // Before the Custodian, whose pods need both; the plugins first, and then Multus. The DaemonSet
+  // of the plugins is in the operator's namespace, which this converge may be the first to need.
+  if (fencePlan !== undefined) {
+    await ensureNamespace(kube, OPERATOR_NAMESPACE, ctx);
+    await installFence(kube, fencePlan, {
+      image: operatorImage!,
+      nodes: fenceNodes.map((n) => n.metadata.name),
+      ...ctx,
+      log: (line) => activity(io, line),
+    });
+  }
 
   // --- the kit's own runtime images (ADR-0038) ---------------------------------------------------
   // Built here rather than lazily beside its consumers. The Harness is the injection source
@@ -1021,14 +1018,9 @@ export async function up(args: string[], io: Io): Promise<number> {
       : undefined;
   let fenceRange: number | undefined;
   if (fenced) {
-    // The parts of the Fence (ADR-0084), which `jr2 up` made above on kind and installs nowhere
-    // else: first what the API shows, because without them the Custodian's attachments cannot be
-    // applied and its pods do not start.
-    const fenceNodes = sandboxNodes(
-      nodes.length > 0 ? nodes : await kube.listJson<NodeObject>({ kind: "node", ...ctx }),
-      config.sandbox,
-    ).nodes.map((n) => n.metadata.name);
-    await checkFenceApi(kube, { nodes: fenceNodes, ...ctx, ...(cluster !== undefined ? { kind: cluster } : {}) });
+    // The prerequisites that `jr2 up` installed or found above, as the API shows them now: without
+    // them the Custodian's attachments cannot be applied and its pods do not start.
+    await checkFenceApi(kube, { nodes: fenceNodes.map((n) => n.metadata.name), ...ctx });
   }
   if (fenced || custodianLeft !== undefined) {
     fenceRange = await claimRange(kube, { namespace, ...ctx, log: (line) => activity(io, line) });
@@ -1077,8 +1069,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       container: "control",
       ...ctx,
     });
-    // Then what only a pod on each node shows: the bridge and the rule set.
-    let unseen = 0;
+    // Then what only a pod on each node shows: the bridge and its VLANs.
     const gaps = await probeFenceNodes(kube, {
       name,
       namespace,
@@ -1088,19 +1079,9 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...(config.sandbox ? { placement: config.sandbox } : {}),
       ...ctx,
       log: (line) => activity(io, line),
-      warn: (line) => {
-        unseen++;
-        activity(io, `warning: ${line}`);
-      },
     });
-    if (gaps.length > 0) throw fenceRefusal(gaps, cluster);
-    activity(
-      io,
-      unseen === 0
-        ? "fence: verified — the bridge and the rule set answer on each Sandbox node"
-        : "fence: verified — the bridge and the rule set answer on each Sandbox node, except the unreachable route " +
-            `that the check could not see on ${unseen} node(s) (see the warning)`,
-    );
+    if (gaps.length > 0) throw fenceRefusal(gaps);
+    activity(io, "fence: verified — the uplink answers on the bridge of each Sandbox node, and the node does not");
   } else if (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx })) {
     // A Custodian of a converge that had a Harness pod. Its range stays claimed until `jr2 down`
     // (ADR-0084): a pod of the Instance can still be on a VLAN of it. The Custodian goes only when no

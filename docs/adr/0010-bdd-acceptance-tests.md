@@ -45,7 +45,7 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   tagged `@kind` and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is the
   product's own path (ADR-0019): one shared kind cluster with no image in it and nothing on its nodes, then **`jr2 up`
   per scenario into a fresh namespace** — which since ADR-0038 builds and loads every image it deploys, so no image is
-  pre-loaded by hand, and which makes the Fence's node parts on a kind cluster
+  pre-loaded by hand, and which installs the Fence's prerequisites, Multus and the CNI plugins
   ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), so no recipe prepares the nodes.
   Namespace-as-identity makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster.
   **The host address behind the provider's name is discovered, not assumed.** The scripted provider runs host-side. A

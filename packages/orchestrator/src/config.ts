@@ -934,9 +934,8 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
  * your network is in it. Each is a network address with its prefix, at least as large as its
  * default, outside loopback, link-local and `0.0.0.0/8`, which the Custodian never dials, and
  * outside multicast and reserved IPv4 (`224.0.0.0/4`, `240.0.0.0/4`), and the two do not overlap.
- * The config load refuses another value: `<file> at fence.<key>: <problem>`. The `unreachable`
- * route of each Sandbox node must be for the same segment: on a kind cluster, `jr2 up` makes it from
- * this value. The load
+ * The config load refuses another value: `<file> at fence.<key>: <problem>`. When you give a
+ * Sandbox node the optional `unreachable` route of the Fence, make it for the same segment. The load
  * runs in the Orchestrator too, where `.env` is absent: write each value as a literal.
  */
 export type FenceConfig = {

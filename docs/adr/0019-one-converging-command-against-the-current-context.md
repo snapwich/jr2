@@ -13,10 +13,10 @@ the interface has failed.
 
 **The Orchestrator always runs in-cluster.** There is no host dev mode. `jr2` targets whatever cluster the current
 `kubectl` context points at (the argo/cilium model) — which may be a local kind cluster. No baked mounts, no recorded
-pod→host route, no `.jr2/dev.json` / `.jr2/cluster.json`. A kind cluster is special in two ways only, both because its
-nodes are containers on the user's own host that jr2 reaches through docker: `up` delivers images with `kind load`
-([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)), and `up` makes the Fence's node parts (below). `jr2 dev`,
-`jr2 cluster up|down`, and `jr2 harness build` are removed.
+pod→host route, no `.jr2/dev.json` / `.jr2/cluster.json`. A kind cluster is special in one way only, because its nodes
+are containers on the user's own host that jr2 reaches through docker: `up` delivers images with `kind load`
+([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)). The Fence's prerequisites are installed in the same way on
+each cluster (below). `jr2 dev`, `jr2 cluster up|down`, and `jr2 harness build` are removed.
 
 **`jr2 up` is the one command.** It idempotently converges the target namespace to match the instance — every layer,
 loudly narrated, safe to re-run:
@@ -65,15 +65,17 @@ loudly narrated, safe to re-run:
   stdin ([ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)) — declining bails. A personal key never enters
   a cluster silently: only by that explicit, warned choice.
 - **The Fence**: `up` installs the Custodian's uplink, the Custodian and its resolver
-  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). On a kind cluster it also makes the Fence's node
-  parts — a second network for a pod (Multus), the CNI plugins, the `8021q` module, and the bridge, the rule set and the
-  route on each node — at each converge, before the Custodian: a kind node is a container on the user's own host, which
-  jr2 already reaches through docker. The first time it installs something there, it asks under the first-contact
-  confirmation. On any other cluster it installs none of them. On each cluster it probes them: it refuses to converge
-  while a Sandbox node lacks one, and names the node and the part (a probe of the node's route that gets no answer only
-  warns, ADR-0084). It reads Multus from the API before it applies the Custodian, and probes the bridge and the rule set
-  after the Custodian is Ready, with two one-shot pods on each Sandbox node that have no privilege; ADR-0084 states what
-  they check and what they cannot see.
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). It also installs the Fence's two node
+  prerequisites when the cluster lacks one, on any cluster, with kubectl: Multus, from the manifest that the CLI ships,
+  and a DaemonSet of jr2 that puts the stock CNI plugins `bridge`, `static` and `tuning` on each node that has no file
+  of that name. The first time it installs something, it says exactly what, and that it writes plugin files on the
+  nodes, under the first-contact confirmation (`--yes` answers it); a converge that finds both asks nothing. It refuses,
+  and applies nothing, where an install is not safe: a Multus that jr2 did not install with other settings, a Cilium
+  with `cni-exclusive: "true"`, or a node whose CNI folders are not the default ones. It still creates no cluster. Then
+  it probes the Fence: it refuses to converge while a Sandbox node fails, and names the node, the part and the likely
+  causes. It reads Multus from the API before it applies the Custodian, and probes the bridge after the Custodian is
+  Ready, with a one-shot pod on each Sandbox node that has no privilege; ADR-0084 states what it checks and what it
+  cannot see. `jr2 down --all` removes the DaemonSet and a Multus that jr2 installed; the plugin files stay.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep
@@ -292,7 +294,7 @@ from env.
 - **A committed or locally-cached deployment target.** Rejected twice: committed addresses break repo reuse; a local
   cache (`.jr2/target.json`) is derived state that can lie. The cluster itself is the record.
 - **`jr2` creating clusters** (`jr2 cluster up`, or an interactive offer). Rejected: with no baked mounts, a cluster
-  needs nothing of jr2 beyond the Fence's node parts, which `jr2 up` makes on a kind cluster and probes on any other
+  needs nothing of jr2 beyond the Fence's prerequisites, which `jr2 up` installs on any cluster after it asks
   ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)); creating a cluster is infrastructure
   provisioning, like installing docker.
 

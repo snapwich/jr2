@@ -3,11 +3,13 @@
 // the Custodian pod's `uplink` init container runs. Pure builders, except the claim, which reads and
 // writes through the converge's KubeAdmin.
 //
-// Many Instances share one bridge on each node (`jr2fence0`). Each Instance claims a range of 128
-// VLANs, the same on every node, because a Harness pod's VLAN is chosen before the scheduler picks a
-// node. Slot i of range k is VLAN 2 + 128k + i, and its address is the segment's network address
-// plus the VLAN. The trunk port of an Instance's Custodian pod is a member of its range only, and no
-// port has VLAN 1, so a frame of one Instance never reaches the trunk of another.
+// Many Instances share one bridge on each node (`jr2fence0`), which the stock bridge plugin makes,
+// with VLAN filtering, from these attachments. Each Instance claims a range of 128 VLANs, the same on
+// every node, because a Harness pod's VLAN is chosen before the scheduler picks a node. Slot i of
+// range k is VLAN 2 + 128k + i, and its address is the segment's network address plus the VLAN. The
+// trunk port of an Instance's Custodian pod is a member of its range only, and no pod's port has
+// VLAN 1, the VLAN of the bridge's own side (the node), so a frame of one Instance never reaches the
+// trunk of another, and no frame of a pod reaches the node. This VLAN state is the boundary (ADR-0084).
 //
 // The uplink script is here, in TypeScript, and not in a file beside the package: a `files:` list
 // cannot miss it, and the installed CLI writes the same script as a checkout does.
@@ -39,7 +41,7 @@ export const LABEL_FENCE_RANGE = "jr2.dev/fence-range";
 /** The label of each range claim: the namespace that holds it, so that `jr2 down` finds its own. */
 export const LABEL_FENCE_HOLDER = "jr2.dev/fence-holder";
 
-/** The node's bridge that each Harness pod and each Custodian pod is a port of (a prerequisite). */
+/** The node's bridge that each Harness pod and each Custodian pod is a port of: the bridge plugin makes it. */
 export const FENCE_BRIDGE = "jr2fence0";
 /** The Custodian pod's interface on its trunk attachment. */
 export const FENCE_TRUNK_INTERFACE = "net1";
@@ -371,6 +373,25 @@ const rangeOf = (claim: ClaimObject): number | undefined => {
 };
 
 /**
+ * Create a namespace that is not there, such as the operator's (`jr2-system`), which the range
+ * claims and the Fence's CNI plugins need before the operator is applied. A read first: a user who
+ * may write objects there but may not create a namespace gets Forbidden from a create, also when the
+ * namespace exists.
+ */
+export async function ensureNamespace(
+  kube: Pick<KubeAdmin, "getJson" | "create">,
+  name: string,
+  ctx: { context?: string },
+): Promise<void> {
+  if ((await kube.getJson({ kind: "namespace", name, ...ctx })) === undefined) {
+    await kube.create({
+      manifest: JSON.stringify({ apiVersion: "v1", kind: "Namespace", metadata: { name } }),
+      ...ctx,
+    });
+  }
+}
+
+/**
  * The VLAN range of the Instance in `namespace` (ADR-0084): the range it holds, or the lowest range
  * that it can claim. A claim is the atomic create of `jr2-fence-range-<k>`. A claim whose holder's
  * namespace is NotFound is taken again, by a replace at the version that was read, so two converges
@@ -400,14 +421,8 @@ export async function claimRange(
     return rangeOf(mine[0]!)!;
   }
   // The claims live in the operator's namespace, which an Instance whose operator is not managed by
-  // jr2 may not have yet. A read first: a user who may write claims there but may not create a
-  // namespace gets Forbidden from a create, also when the namespace exists.
-  if ((await kube.getJson({ kind: "namespace", name: FENCE_CLAIM_NAMESPACE, ...ctx })) === undefined) {
-    await kube.create({
-      manifest: JSON.stringify({ apiVersion: "v1", kind: "Namespace", metadata: { name: FENCE_CLAIM_NAMESPACE } }),
-      ...ctx,
-    });
-  }
+  // jr2 may not have yet.
+  await ensureNamespace(kube, FENCE_CLAIM_NAMESPACE, ctx);
   const read = (range: number) =>
     kube.getJson<ClaimObject>({
       kind: "lease",

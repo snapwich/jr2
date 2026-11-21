@@ -2,9 +2,12 @@
 // cluster — its namespace and everything `jr2 up` converged into it. Confirms unless `--yes`
 // (deleting a namespace takes the runs, the store PVC, the Instance Harness's conversations PVC
 // (ADR-0031), and every live Sandbox with it). `--all` also uninstalls the
-// per-cluster operator — only sane when this was the cluster's last instance. That is the caller's
-// judgment, except for an Instance that holds a VLAN range of the Fence (ADR-0084): its claim is in
-// `jr2-system`, so `--all` refuses while another namespace that is still there holds one.
+// per-cluster operator, and what `jr2 up` installed for the Fence (ADR-0084): the DaemonSet of the
+// CNI plugins and a Multus that carries jr2's annotation — only sane when this was the cluster's
+// last instance. That is the caller's judgment, except for an Instance that holds a VLAN range of
+// the Fence: its claim is in `jr2-system`, so `--all` refuses while another namespace that is still
+// there holds one. Each Instance that needs the Fence holds a range, so past that refusal no
+// Instance needs what `--all` removes. The plugin files stay on the nodes.
 //
 // It also sweeps IMAGES — on the host daemon that built them and, on kind, on every node (ADR-0039).
 // Content addressing means ten Dockerfile iterations leave ten full images per store — invisible to
@@ -26,6 +29,7 @@ import { basename } from "node:path";
 import { loadConfig } from "@jr2/orchestrator/internal";
 import { pnpmDockerBuild } from "../build.ts";
 import { otherHolders, releaseRanges } from "../fence.ts";
+import { uninstallFence } from "../fence-install.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import { kubectlAdmin } from "../kube.ts";
@@ -74,7 +78,9 @@ export async function down(args: string[], io: Io): Promise<number> {
     }
   }
 
-  const scope = values.all ? " AND the per-cluster operator" : "";
+  const scope = values.all
+    ? " AND the per-cluster operator, the DaemonSet of the Fence's CNI plugins, and a Multus that jr2 installed"
+    : "";
   const ok =
     values.yes === true ||
     (await confirmOrBail(
@@ -97,6 +103,7 @@ export async function down(args: string[], io: Io): Promise<number> {
   // BEFORE the sweep, not after: while the operator Deployment stands, its pod is a live root and
   // the operator image would survive its own uninstall.
   if (values.all) {
+    await uninstallFence(kube, { ...ctx, log: (line) => activity(io, line) });
     activity(io, "uninstalling the operator (jr2-system)");
     // The image ref doesn't matter for a delete-by-manifest; the object names do.
     await kube.deleteManifest({ manifest: await operatorManifest(`jr2-operator:${KIT_VERSION}`), ...ctx });

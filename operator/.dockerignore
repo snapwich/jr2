@@ -9,3 +9,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# The sums of the CNI plugins (ADR-0084): the Dockerfile checks the tarball and each plugin.
+!cni-plugins.sha256

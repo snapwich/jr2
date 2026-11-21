@@ -1,6 +1,6 @@
-// The probe of the Fence's node prerequisites (ADR-0084, ADR-0019): its two pods, the two probe
-// programs (called here with real sockets on the loopback and a fake ARP table and address list), what
-// `jr2 up` reads from each ended pod, and the refusal that names each node and part.
+// The probe of the Fence on each Sandbox node (ADR-0084, ADR-0019): its pod, the probe program
+// (called here with real sockets on the loopback and a fake ARP table and address list), what `jr2 up`
+// reads from each ended pod, and the refusal that names each node, the part and the likely causes.
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -19,19 +19,17 @@ import {
   FENCE_PROBE_PROGRAM,
   fenceProbeMain,
   fenceProbePods,
-  FENCE_PARTS_URL,
   fenceRefusal,
   gapOf,
   nodesWithoutMultus,
   probeFenceNodes,
-  probePodNames,
+  probePodName,
   probeResultOf,
-  routeProbeMain,
-  routeProbeTarget,
   type ProbeKube,
   type ProbeResult,
   type ProbeSys,
 } from "../src/fence-probe.ts";
+import { FENCE_PREREQUISITES_URL } from "../src/fence-install.ts";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -46,7 +44,7 @@ async function scratch(): Promise<string> {
 
 // ---- the pods ---------------------------------------------------------------------------------------
 
-test("two one-shot pods on each node, pinned by nodeName, with no privilege, no token and no node network", () => {
+test("one one-shot pod on each node, pinned by nodeName, with no privilege, no token and no node network", () => {
   const list = JSON.parse(
     fenceProbePods({
       name: "inst",
@@ -61,10 +59,8 @@ test("two one-shot pods on each node, pinned by nodeName, with no privilege, no 
   assert.deepEqual(
     list.items.map((p) => [p.metadata.name, p.spec.nodeName]),
     [
-      [probePodNames("node-a").fence, "node-a"],
-      [probePodNames("node-a").route, "node-a"],
-      [probePodNames("node-b").fence, "node-b"],
-      [probePodNames("node-b").route, "node-b"],
+      [probePodName("node-a"), "node-a"],
+      [probePodName("node-b"), "node-b"],
     ],
   );
   for (const pod of list.items) {
@@ -88,7 +84,7 @@ test("two one-shot pods on each node, pinned by nodeName, with no privilege, no 
     assert.equal(pod.metadata.labels.app, "jr2-fence-probe");
     assert.equal(pod.metadata.labels["jr2.dev/instance"], "inst");
   }
-  const [fence, route] = list.items;
+  const [fence] = list.items;
   const env = (p: any) =>
     Object.fromEntries(p.spec.containers[0].env.map((e: any) => [e.name, e.value ?? e.valueFrom]));
   // The Fence probe: slot 2 of range 2 is VLAN 260, and the uplink is the only nameserver.
@@ -98,17 +94,6 @@ test("two one-shot pods on each node, pinned by nodeName, with no privilege, no 
   assert.equal(env(fence).JR2_PROBE_ADDRESS, "198.19.1.4");
   assert.equal(env(fence).JR2_PROBE_UPLINK_MAC, "02:00:c6:12:01:04");
   assert.deepEqual(env(fence).JR2_PROBE_NODE, { fieldRef: { fieldPath: "status.hostIP" } });
-  // The route probe: on the cluster's network, at the segment's last address but one.
-  assert.equal(route!.metadata.annotations["v1.multus-cni.io/default-network"], undefined);
-  assert.equal(route!.spec.dnsConfig, undefined);
-  assert.equal(env(route).JR2_PROBE_TARGET, "198.19.15.254");
-  // The node's name, so that a warning names the node and not "the node".
-  assert.equal(env(route).JR2_PROBE_NODE_NAME, route!.spec.nodeName);
-});
-
-test("the route probe dials the last address but one of the segment that `fence` sets", () => {
-  assert.equal(routeProbeTarget("198.19.0.0/20"), "198.19.15.254");
-  assert.equal(routeProbeTarget("10.200.0.0/16"), "10.200.255.254");
 });
 
 // ---- the Fence probe's program ------------------------------------------------------------------------
@@ -207,14 +192,17 @@ test("the Fence probe passes when the resolver answers and the node's address an
   }
 });
 
-test("the Fence probe names the rule set when the node answers on the bridge", async () => {
+test("the Fence probe names the VLANs of the bridge when the node answers on the bridge", async () => {
   const dns = await refusingResolver();
   const kubelet = await answering("HTTP/1.0 400 Bad Request\r\n\r\nClient sent an HTTP request to an HTTPS server.\n");
   try {
     const run = await runFence({ dnsPort: dns.port, nodePort: kubelet.port });
     assert.equal(run.code, 1);
-    assert.equal(run.message?.part, "rule-set");
-    assert.match(run.message!.why!, /^the node answers on the bridge: a connection to its address 127\.0\.0\.1:\d+/);
+    assert.equal(run.message?.part, "node");
+    assert.match(
+      run.message!.why!,
+      /^the node answers on the bridge \(its own side of the bridge is in the slot's VLAN\): a connection to its address 127\.0\.0\.1:\d+/,
+    );
   } finally {
     dns.close();
     kubelet.close();
@@ -228,7 +216,7 @@ test("the Fence probe names the attachment when its address is not the slot's", 
   assert.match(run.message!.why!, /address is 10\.244\.1\.7, not the slot's address 198\.19\.1\.4: Multus did not/);
 });
 
-test("no DNS answer: the uplink's MAC in the ARP table names the rule set, no ARP answer names the bridge", async () => {
+test("no DNS answer: the uplink's MAC in the ARP table names the node's firewall on the bridge, no ARP answer names the bridge", async () => {
   const port = await closedPort();
   // Each waits 3 s for a DNS answer that does not come: at the same time.
   const [nat, none, other] = await Promise.all([
@@ -237,9 +225,9 @@ test("no DNS answer: the uplink's MAC in the ARP table names the rule set, no AR
     runFence({ dnsPort: port, nodePort: port, arp: arpWith("aa:bb:cc:dd:ee:ff") }),
   ]);
   assert.equal(nat.code, 1);
-  assert.equal(nat.message?.part, "rule-set");
+  assert.equal(nat.message?.part, "frames");
   assert.match(nat.message!.why!, /the uplink answers on VLAN 260 of the bridge \(ARP from 02:00:c6:12:01:04\)/);
-  assert.match(nat.message!.why!, /NAT or conntrack/);
+  assert.match(nat.message!.why!, /NAT or conntrack on bridged VLAN frames/);
 
   assert.equal(none.message?.part, "bridge");
   assert.match(
@@ -267,112 +255,6 @@ test("the program text runs as `node -e`, writes its result as the termination m
   assert.equal(result?.part, "attachment");
 });
 
-// ---- the route probe's program ------------------------------------------------------------------------
-
-async function runRoute(netModule: typeof net, target: string, port: number): Promise<Run> {
-  const dir = await scratch();
-  const run: Run = { log: [] };
-  await routeProbeMain({
-    dgram,
-    net: netModule,
-    os,
-    fs,
-    env: {
-      JR2_PROBE_TARGET: target,
-      JR2_PROBE_TARGET_PORT: String(port),
-      JR2_PROBE_SEGMENT: "198.19.0.0/20",
-      JR2_PROBE_NODE_NAME: "node-a",
-      JR2_PROBE_MESSAGE: join(dir, "message"),
-    },
-    log: (line) => run.log.push(line),
-    exit: (code) => void (run.code = code),
-  });
-  run.message = probeResultOf({
-    status: {
-      containerStatuses: [{ state: { terminated: { message: await readFile(join(dir, "message"), "utf8") } } }],
-    },
-  });
-  return run;
-}
-
-test("the route probe passes on 'no route to host' and names the rule set on any other answer", async () => {
-  const unreachable = {
-    connect: () => {
-      const s = new net.Socket();
-      setImmediate(() => s.emit("error", Object.assign(new Error("connect EHOSTUNREACH"), { code: "EHOSTUNREACH" })));
-      return s;
-    },
-  } as unknown as typeof net;
-  const ok = await runRoute(unreachable, "198.19.15.254", 9);
-  assert.equal(ok.code, 0);
-  assert.deepEqual(ok.message, { probe: "route", ok: true });
-
-  const refused = await runRoute(net, "127.0.0.1", await closedPort());
-  assert.equal(refused.code, 1);
-  assert.equal(refused.message?.part, "rule-set");
-  assert.match(refused.message!.why!, /^no unreachable route for 198\.19\.0\.0\/20 on the node: .* got ECONNREFUSED/);
-});
-
-/** A fake net whose n-th socket does what `script[n]` says: "silent" emits nothing, a code emits that error. */
-function scriptedNet(script: string[]): { net: typeof net; sockets: () => number } {
-  let n = 0;
-  return {
-    net: {
-      connect: () => {
-        const s = new net.Socket();
-        const step = script[n++] ?? "silent";
-        if (step !== "silent") {
-          setImmediate(() => s.emit("error", Object.assign(new Error(`connect ${step}`), { code: step })));
-        }
-        return s;
-      },
-    } as unknown as typeof net,
-    sockets: () => n,
-  };
-}
-
-test("the route probe tries again with a new socket when a try gets no answer, and passes on a later 'no route to host'", async () => {
-  const fake = scriptedNet(["silent", "EHOSTUNREACH"]);
-  const run = await runRoute(fake.net, "198.19.15.254", 9);
-  assert.equal(fake.sockets(), 2);
-  assert.equal(run.code, 0);
-  assert.deepEqual(run.message, { probe: "route", ok: true });
-});
-
-test("the route probe passes with a warning when none of its 3 tries gets an answer, and any other answer refuses", async () => {
-  // No answer has two causes that the probe cannot tell apart: no route (or something drops the
-  // probe's packets), or a cluster that gives a pod no answer although the node has the route (seen
-  // on Cilium with BPF host routing). So it warns, names both, and does not refuse.
-  const fake = scriptedNet(["silent", "silent", "silent"]);
-  const run = await runRoute(fake.net, "198.19.15.254", 9);
-  assert.equal(fake.sockets(), 3);
-  assert.equal(run.code, 0);
-  assert.equal(run.message?.ok, true);
-  assert.equal(run.message?.part, undefined);
-  assert.equal(
-    run.message?.warn,
-    "the check could not see the unreachable route for 198.19.0.0/20 on node-a, because a connection to " +
-      "198.19.15.254:9 from the cluster's network got no answer in 1 s in each of 3 tries. The check cannot tell " +
-      "two causes apart. The node has no such route, or something drops the probe's packets. Or the cluster gives a " +
-      "pod no answer although the node has the route (this was seen on Cilium with BPF host routing). Make sure " +
-      "that the node has the route (ADR-0084)",
-  );
-
-  // No answer, then an answer that is not "no route to host": it refuses.
-  for (const other of ["ECONNREFUSED", "ENETUNREACH"]) {
-    const later = scriptedNet(["silent", other]);
-    const refused = await runRoute(later.net, "198.19.15.254", 9);
-    assert.equal(later.sockets(), 2);
-    assert.equal(refused.code, 1);
-    assert.equal(refused.message?.part, "rule-set");
-    assert.equal(refused.message?.warn, undefined);
-    assert.match(
-      refused.message!.why!,
-      new RegExp(`^no unreachable route for 198\\.19\\.0\\.0/20 on the node: .* got ${other} after \\d+ ms`),
-    );
-  }
-});
-
 // ---- what `jr2 up` reads --------------------------------------------------------------------------------
 
 const ended = (message: string, exitCode = 1) => ({
@@ -383,39 +265,36 @@ const ended = (message: string, exitCode = 1) => ({
 });
 
 test("a gap names the node, the part and why; a pod with no result is a gap of the probe itself", () => {
-  const line = `jr2.fence-probe ${JSON.stringify({ probe: "route", ok: false, part: "rule-set", why: "no route" })}`;
-  assert.deepEqual(gapOf("n1", "route", ended(line)), { node: "n1", part: "the rule set", why: "no route" });
+  const line = `jr2.fence-probe ${JSON.stringify({ probe: "fence", ok: false, part: "frames", why: "no DNS" })}`;
+  assert.deepEqual(gapOf("n1", ended(line)), { node: "n1", part: "the node's firewall on the bridge", why: "no DNS" });
   // FallbackToLogsOnError: the line inside the log.
-  assert.equal(gapOf("n1", "route", ended(`some log\n${line}\n`))?.part, "the rule set");
-  assert.equal(
-    gapOf("n1", "fence", ended(`jr2.fence-probe ${JSON.stringify({ probe: "fence", ok: true })}`, 0)),
-    undefined,
-  );
-  const crashed = gapOf("n2", "fence", ended("TypeError: x is not a function", 2));
+  assert.equal(gapOf("n1", ended(`some log\n${line}\n`))?.part, "the node's firewall on the bridge");
+  assert.equal(gapOf("n1", ended(`jr2.fence-probe ${JSON.stringify({ probe: "fence", ok: true })}`, 0)), undefined);
+  const crashed = gapOf("n2", ended("TypeError: x is not a function", 2));
   assert.equal(crashed?.part, "the probe");
-  assert.match(crashed!.why, /the fence probe ended with no result \(Failed, exit 2\): TypeError: x is not a function/);
+  assert.match(crashed!.why, /the probe ended with no result \(Failed, exit 2\): TypeError: x is not a function/);
 });
 
-test("the refusal names each node and part, and the fix: the page of the parts, and on kind no recipe", () => {
+test("the refusal names each node and part, and the likely causes, with the page of the prerequisites", () => {
   const gaps = [
-    { node: "n2", part: "the rule set", why: "no unreachable route" },
+    { node: "n2", part: "the VLANs of the bridge", why: "the node answers on the bridge" },
     { node: "n2", part: "the bridge, its VLAN filtering, or the Custodian pod of this node", why: "no answer" },
     { node: "n1", part: "Multus", why: "no Ready Multus pod" },
   ];
   const lines = fenceRefusal(gaps).message.split("\n");
-  assert.equal(lines[0], "fence: 2 Sandbox nodes lack a part of the Fence (ADR-0084):");
-  assert.equal(lines[1], "  n2: the rule set — no unreachable route");
+  assert.equal(lines[0], "fence: 2 Sandbox nodes fail the check of the Fence (ADR-0084):");
+  assert.equal(lines[1], "  n2: the VLANs of the bridge — the node answers on the bridge");
   assert.equal(
     lines.at(-1)!,
-    `Give each such node the part as ${FENCE_PARTS_URL} lists it, or keep the node out of the Sandbox nodes with ` +
-      "sandbox.nodeSelector or a taint (ADR-0052). Then run `jr2 up` again.",
+    "The likely causes: the node's container runtime reads its CNI plugins or configuration from a folder other " +
+      "than /opt/cni/bin and /etc/cni/net.d; a file bridge, static or tuning in /opt/cni/bin that is not a stock " +
+      "CNI plugin that knows vlanTrunk and preserveDefaultVlan (jr2 never replaces one); a primary CNI that " +
+      "removes Multus's configuration; or a node firewall that changes bridged VLAN frames. See " +
+      `${FENCE_PREREQUISITES_URL}. Or keep the node out of the Sandbox nodes with sandbox.nodeSelector or a taint ` +
+      "(ADR-0052). Then run `jr2 up` again.",
   );
-  assert.doesNotMatch(fenceRefusal(gaps).message, /kind cluster|just /);
-  // On kind, `jr2 up` made the parts at this converge: the text says so, and names no recipe.
-  const kind = fenceRefusal(gaps, "jr2").message;
-  assert.match(kind, /jr2 up made the Fence's node parts on each node of the kind cluster "jr2" before this check/);
-  assert.doesNotMatch(kind, /just |clone/);
-  assert.match(fenceRefusal([{ node: "x", part: "p", why: "w" }]).message, /^fence: a Sandbox node lacks/);
+  assert.doesNotMatch(fenceRefusal(gaps).message, /kind cluster|just |rule set|route/);
+  assert.match(fenceRefusal([{ node: "x", part: "p", why: "w" }]).message, /^fence: a Sandbox node fails/);
 });
 
 test("from the API: no attachment definition, or a Sandbox node with no Ready Multus pod, refuses", async () => {
@@ -443,37 +322,24 @@ test("from the API: no attachment definition, or a Sandbox node with no Ready Mu
       e.message.includes(
         "no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io, so Multus is not installed",
       ) &&
-      e.message.includes(`Install Multus as ${FENCE_PARTS_URL} says`) &&
+      e.message.includes("run `jr2 up` again, and it installs Multus when the cluster has none") &&
       !/kind cluster|just /.test(e.message),
   );
   await assert.rejects(
-    checkFenceApi(kube([], []), { nodes: ["a"], kind: "jr2" }),
-    /applied Multus to the kind cluster "jr2"/,
-  );
-  await assert.rejects(
     checkFenceApi(kube([{}], [ready("a")]), { nodes: ["a", "b"] }),
-    /fence: a Sandbox node lacks .*\n {2}b: Multus — no Ready Multus pod \(app=multus\) on the node/,
+    /fence: a Sandbox node fails .*\n {2}b: Multus — no Ready Multus pod \(app=multus\) on the node/,
   );
   await checkFenceApi(kube([{}], [ready("a"), ready("b")]), { nodes: ["a", "b"] });
 });
 
 // ---- the probe of the nodes, through a fake API -----------------------------------------------------------
 
-test("each Custodian node gets both pods; their gaps come back; a passed probe's warning comes back; a node with no uplink answer gets a new Custodian pod", async () => {
+test("each Custodian node gets a probe pod; their gaps come back; a node with no uplink answer gets a new Custodian pod", async () => {
   const fence = (r: object) => `jr2.fence-probe ${JSON.stringify({ probe: "fence", ...r })}`;
-  const route = (r: object) => `jr2.fence-probe ${JSON.stringify({ probe: "route", ...r })}`;
   const results: Record<string, string> = {
-    [probePodNames("node-a").fence]: fence({ ok: true }),
-    [probePodNames("node-a").route]: route({
-      ok: false,
-      part: "rule-set",
-      why: "no unreachable route for 198.19.0.0/20",
-    }),
-    [probePodNames("node-b").fence]: fence({ ok: false, part: "bridge", why: "no answer from the uplink" }),
-    [probePodNames("node-b").route]: route({
-      ok: true,
-      warn: "the check could not see the unreachable route for 198.19.0.0/20 on node-b",
-    }),
+    [probePodName("node-a")]: fence({ ok: false, part: "node", why: "the node answers on the bridge" }),
+    [probePodName("node-b")]: fence({ ok: false, part: "bridge", why: "no answer from the uplink" }),
+    [probePodName("node-c")]: fence({ ok: true }),
   };
   const calls: string[] = [];
   let polls = 0;
@@ -484,7 +350,8 @@ test("each Custodian node gets both pods; their gaps come back; a passed probe's
         return [
           { metadata: { name: "cust-b" }, spec: { nodeName: "node-b" } },
           { metadata: { name: "cust-a" }, spec: { nodeName: "node-a" } },
-          { metadata: { name: "cust-old", deletionTimestamp: "now" }, spec: { nodeName: "node-c" } },
+          { metadata: { name: "cust-c" }, spec: { nodeName: "node-c" } },
+          { metadata: { name: "cust-old", deletionTimestamp: "now" }, spec: { nodeName: "node-d" } },
         ] as T[];
       }
       // One probe pod of an earlier converge is still there.
@@ -501,7 +368,7 @@ test("each Custodian node gets both pods; their gaps come back; a passed probe's
     async getJson<T>(opts: { name: string }): Promise<T | undefined> {
       // Each pod runs on the first read, and has ended on the second.
       polls++;
-      if (polls <= 4) return { status: { phase: "Running", containerStatuses: [{ state: { running: {} } }] } } as T;
+      if (polls <= 3) return { status: { phase: "Running", containerStatuses: [{ state: { running: {} } }] } } as T;
       const ok = results[opts.name]!.includes('"ok":true');
       return ended(results[opts.name]!, ok ? 0 : 1) as T;
     },
@@ -510,7 +377,6 @@ test("each Custodian node gets both pods; their gaps come back; a passed probe's
     },
   };
   const lines: string[] = [];
-  const warnings: string[] = [];
   const gaps = await probeFenceNodes(kube, {
     name: "inst",
     namespace: "ns",
@@ -518,19 +384,17 @@ test("each Custodian node gets both pods; their gaps come back; a passed probe's
     ranges: fenceRangesOf(undefined),
     image: "img",
     log: (l) => lines.push(l),
-    warn: (l) => warnings.push(l),
     pollMs: 1,
   });
-  assert.deepEqual(warnings, ["fence: the check could not see the unreachable route for 198.19.0.0/20 on node-b"]);
   assert.deepEqual(gaps, [
-    { node: "node-a", part: "the rule set", why: "no unreachable route for 198.19.0.0/20" },
+    { node: "node-a", part: "the VLANs of the bridge", why: "the node answers on the bridge" },
     {
       node: "node-b",
       part: "the bridge, its VLAN filtering, or the Custodian pod of this node",
       why: "no answer from the uplink",
     },
   ]);
-  const names = [probePodNames("node-a"), probePodNames("node-b")].flatMap((n) => [n.fence, n.route]);
+  const names = ["node-a", "node-b", "node-c"].map(probePodName);
   assert.deepEqual(calls, [
     "list pod app=jr2-custodian",
     "list pod app=jr2-fence-probe",
@@ -539,7 +403,7 @@ test("each Custodian node gets both pods; their gaps come back; a passed probe's
     "list pod app=jr2-fence-probe",
     "delete pod cust-b",
   ]);
-  assert.match(lines[0]!, /probing the bridge and the rule set on 2 Sandbox node\(s\): node-a, node-b/);
+  assert.match(lines[0]!, /probing the bridge on 3 Sandbox node\(s\): node-a, node-b, node-c/);
   assert.match(lines[1]!, /node-b: replacing the Custodian pod cust-b, whose trunk did not answer on the bridge/);
 });
 
@@ -568,16 +432,12 @@ test("a probe pod that gets no network ends with the kubelet's reason", async ()
     ranges: fenceRangesOf(undefined),
     image: "img",
     log: () => {},
-    warn: () => {},
     pollMs: 1,
     now: () => (t += 20_000),
   });
   assert.deepEqual(
     gaps.map((g) => [g.part, g.why]),
-    [
-      ["Multus or the attachment", "the fence probe pod got no network: plugin type=multus failed (add): no bridge"],
-      ["the network of the cluster", "the route probe pod got no network: plugin type=multus failed (add): no bridge"],
-    ],
+    [["Multus or the attachment", "the probe pod got no network: plugin type=multus failed (add): no bridge"]],
   );
 });
 
@@ -595,7 +455,6 @@ test("no Custodian pod: nothing to probe", async () => {
       ranges: fenceRangesOf(undefined),
       image: "x",
       log: () => {},
-      warn: () => {},
     }),
     [],
   );

@@ -40,45 +40,9 @@ below explains one field. Set only the fields that your cluster needs.
   node. To keep a node out, use `sandbox.nodeSelector` or a taint (see
   [Choose the Sandbox nodes](#choose-the-sandbox-nodes)). A node that joins later and has no Landlock gets no working
   Sandbox: its Harness does not start.
-- The parts of the [Fence](../reference/glossary.md#fence) on each Sandbox node. The Fence is the only network of a
-  Sandbox and of the [Instance Harness](../reference/glossary.md#instance-harness). It is a second pod network, apart
-  from the network of the cluster. `jr2 up` installs the [Custodian](../reference/glossary.md#custodian), its uplink on
-  each Sandbox node and its resolver. On kind, `jr2 up` also made the parts below on each node. On a cluster that is not
-  kind, it does not install them. Give each Sandbox node these parts:
-  - Multus (on kind, `jr2 up` installs the thick form v4.3.2, which jr2 is tested with), with `namespaceIsolation: true`
-    and no global namespace, so that a Sandbox pod gets the Fence as its only network, and a pod can use an attachment
-    of its own namespace only. `jr2 up` does not check this isolation.
-  - The stock CNI plugins `bridge`, `static` and `tuning` on each Sandbox node. jr2 is tested with v1.10.0.
-  - One bridge on each Sandbox node, named `jr2fence0`, with `vlan_filtering 1` and `vlan_default_pvid 0`, no VLAN of
-    its own, no address, IPv6 off, and `arp_ignore 8`, so that the node answers no ARP request on it. Then a port of a
-    Sandbox gets only its own VLAN.
-  - The `8021q` module in the kernel of each Sandbox node. The uplink of the Custodian has a VLAN interface for each
-    slot.
-  - The rule set of each Sandbox node, which keeps the node's own network stack off the bridge: a frame that the bridge
-    carries skips the node's conntrack, and nothing from the bridge reaches the node or is routed off the bridge.
-  - An `unreachable` route for the segment on each Sandbox node (`198.19.0.0/20`, or `segment` of
-    [`fence`](../reference/config.md#fence)), so that the node never sends a packet of the segment on its default route.
-
-  The bridge and its settings, the loaded `8021q` module, the rule set and the `unreachable` route do not survive a
-  restart of the node unless the node makes them at boot (a unit or the node's provisioning). On a cluster that is not
-  kind, `jr2 up` checks them only at a converge. Multus and the CNI plugins survive a restart.
-
-  On kind, the script `manifests/fence/kind-node.sh` of the `@jr2/cli` package makes the bridge, the module, the rule
-  set and the route on each node, and `manifests/fence/multus-v4.3.2.yaml` is the Multus that `jr2 up` applies. Read
-  them as an example of each part for your own nodes.
-
-  `jr2 up` checks each part, and refuses to converge while a Sandbox node lacks one. It names the node and the part. The
-  check has no privilege on the node, so it sees what the rule set does, not the rule set. A node that does not change
-  the frames on the bridge today passes without the rule that keeps conntrack off the bridge. The check also cannot see
-  the default VLAN of the bridge. The check of the `unreachable` route is the one exception to the refusal: when a
-  connection from the network of the cluster gets no answer, `jr2 up` writes a warning that names the node, and does not
-  refuse. The check cannot tell why: the node has no route, or something drops the check's packets, or the cluster gives
-  a pod no answer although the node has the route (this was seen on Cilium with BPF host routing). So a node with no
-  route can pass with the warning. On your own nodes, make sure that each node has the route. Make each part as this
-  list says, also when the check passes. On Cilium, the config of the node must let a different CNI plugin run
-  (`cni-exclusive: false`). A managed cluster that permits no second pod network and no rule set on its nodes cannot
-  have the Fence.
-
+- The two prerequisites of the [Fence](../reference/glossary.md#fence): Multus, and the CNI plugins `bridge`, `static`
+  and `tuning` on each Sandbox node. `jr2 up` installs each one that the cluster lacks, after it asks. See
+  [Prerequisites of the Fence](#prerequisites-of-the-fence).
 - No node credential that a pod can get. At a cloud metadata address, the metadata service of a node can give the node's
   cloud credential to a pod. A Sandbox and the Instance Harness cannot dial such an address: the Custodian refuses each
   IP address that is not an entry of the Egress list, and its dial guard refuses a permitted name that resolves to a
@@ -96,6 +60,60 @@ below explains one field. Set only the fields that your cluster needs.
 
 All the Instances on a cluster share one operator. `jr2 up` does not downgrade it. See
 [Converge](../concepts/converge.md#kit-version-and-forward).
+
+### Prerequisites of the Fence
+
+The Fence is the only network of a Sandbox and of the [Instance Harness](../reference/glossary.md#instance-harness). It
+is a second pod network, apart from the network of the cluster. `jr2 up` installs the
+[Custodian](../reference/glossary.md#custodian), its uplink on each Sandbox node and its resolver. The Fence needs two
+parts on the cluster, and nothing else on a node:
+
+- Multus, with `namespaceIsolation: true` and no global namespace, so that a Sandbox pod gets the Fence as its only
+  network, and a pod can use an attachment of its own namespace only. When the cluster has no Multus, `jr2 up` applies
+  the thick form v4.3.2 to `kube-system`, from the file `manifests/fence/multus-v4.3.2.yaml` of the `@jr2/cli` package.
+  Its DaemonSet has the annotation `jr2.dev/multus`. When the cluster has a Multus that jr2 did not install, `jr2 up`
+  reads its settings and never changes it. With other settings, `jr2 up` refuses and names the setting to change.
+- The stock CNI plugins `bridge`, `static` and `tuning` in `/opt/cni/bin` of each Sandbox node. `jr2 up` applies the
+  DaemonSet `jr2-system/jr2-cni-plugins`. Its pod copies each plugin of v1.10.0 from the operator image onto the node
+  when the node has no file of that name, and then idles, so a node that joins later gets them too. It never replaces a
+  file: a node that has the plugins keeps them. The pod runs as root, with no capability, no privilege escalation, no
+  host namespace and no token. It mounts `/opt/cni/bin` and, read-only, `/etc/cni/net.d` of the node. A policy of the
+  cluster must permit such a pod in `jr2-system`.
+
+The first time that `jr2 up` installs one of them, it says exactly what it will apply, and asks (`--yes` answers it).
+Then a converge that finds both asks nothing. `jr2 down --all` removes the DaemonSet and the Multus that jr2 installed.
+The plugin files stay on the nodes.
+
+`jr2 up` does not install when that is not safe. It refuses, applies nothing, and names what to change:
+
+- a Multus that jr2 did not install, with no `namespaceIsolation` or with a global namespace;
+- Cilium with `cni-exclusive: "true"`, in `kube-system/cilium-config` or in a `CiliumNodeConfig` of a Sandbox node.
+  Cilium then removes the configuration of Multus. Set it to `"false"`;
+- a node whose container runtime reads its CNI plugins or configuration from a folder other than `/opt/cni/bin` and
+  `/etc/cni/net.d`, where `jr2 up` can see it. Keep such a node out of the Sandbox nodes (see
+  [Choose the Sandbox nodes](#choose-the-sandbox-nodes)).
+
+The bridge plugin makes the bridge `jr2fence0` and its VLANs from the attachments of each Instance. Each port of a
+Sandbox is in its own VLAN only, the uplink of the Custodian is in the VLANs of its Instance only, and the side of the
+node is in VLAN 1 only, which no pod uses. That is the boundary. After a restart of the node, the plugin makes the
+bridge again when the pods of the node start again: there is nothing to do.
+
+After the Custodian is ready, `jr2 up` runs a short pod on the Fence of each Sandbox node. It refuses to converge while
+a node fails, and it names the node, the part and the likely causes. The check has no privilege on the node, so it sees
+what the VLANs do, not the VLANs. A managed cluster that permits no second CNI plugin cannot have the Fence.
+
+### Optional hardening
+
+The VLANs of the bridge are the boundary. Two settings of a node add a second layer. jr2 does not need them, does not
+make them and does not check them. Make them at boot (a unit, or the provisioning of the node), because a restart loses
+them:
+
+- A rule set that keeps the network stack of the node off the bridge: no address on `jr2fence0`, and no NAT and no
+  conntrack for a frame that the bridge carries. It holds when someone puts the side of the node into the VLAN of a pod,
+  or turns on the firewall hooks for VLAN frames (`net.bridge.bridge-nf-filter-vlan-tagged = 1`).
+- An `unreachable` route for the segment (`198.19.0.0/20`, or `segment` of [`fence`](../reference/config.md#fence)).
+  Then a connection from the node, or from a pod on the network of the cluster, to the address of a Sandbox fails at
+  once, not after a timeout.
 
 ## Set the registry
 
@@ -278,7 +296,9 @@ converged — `jr2 run <workflow>` when ready
 ```
 
 In this output, the cluster runs Kubernetes v1.36.1 and has one node, `jr2-control-plane`, with the label
-`pool: agents`. The Workflows are `ping` and `hold`, a Workflow with a Workspace. `<version>` is the
+`pool: agents`, and it has the [prerequisites of the Fence](#prerequisites-of-the-fence) already. On a cluster that
+lacks one, the question also says what `jr2 up` will install, and lines that start with `fence:` show the install. The
+Workflows are `ping` and `hold`, a Workflow with a Workspace. `<version>` is the
 [Kit version](../reference/glossary.md#kit-version) of the Instance. `5e601a543032` changes when the inputs of the image
 change. `42e515b3343d` is the hash of the [Assembly](../reference/glossary.md#assembly) of the Instance. Your version of
 Kubernetes, your nodes and your hashes are different.
@@ -306,6 +326,8 @@ These things also change in a shared cluster:
 - `jr2 up` refuses a namespace that a different Instance owns:
   `refusing: namespace "<namespace>" on <context> belongs to another instance ("<instance>")`. Give a different
   namespace with `-n`, or a different context.
+- `jr2 up` refuses, and applies nothing, a cluster where it cannot install a prerequisite of the Fence safely. See
+  [Prerequisites of the Fence](#prerequisites-of-the-fence) and [Fix a failed converge](fix-a-failed-converge.md#rules).
 - A first converge into a namespace needs an answer. With no terminal and no `--yes`, `jr2 up` stops:
   `first contact: deploy instance "<name>" to context <context> (<what>)? — not a tty; pass --yes to proceed non-interactively`
 - `platforms` holds `linux/amd64` and `linux/arm64` only:
