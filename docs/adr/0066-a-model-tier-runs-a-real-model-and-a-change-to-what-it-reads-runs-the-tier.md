@@ -55,8 +55,10 @@ recover, finish — are exercised only one scripted tool call at a time.
   at the floor can hold: 9 of 10 where the ADR measured 10/10. Every run writes a scorecard,
   `features/.tmp/model-scorecard.json`, keyed by model id and cell; a committed baseline per model id sits in
   `features/model-baselines/`, and a cell that fell below its baseline while still above its floor is **reported**, not
-  failed. Drift is a signal to read; a floor is a defect. Each cell also records what its trials spent: the tokens and
-  the cost summed off each trial's Settlements
+  failed. Drift is a signal to read; a floor is a defect, but for one cell: unchanged code reads below the floor of
+  `chart-refusal` in some single runs, so one such run is not by itself a defect
+  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)). Each cell also records what its trials spent: the tokens
+  and the cost summed off each trial's Settlements
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)), in the scorecard and as one line of
   `features/.tmp/model-usage.jsonl`, and the tier prints the cell's cost beside the cost of the month so far. A trial
   whose usage cannot be read records that, and never fails.
@@ -65,14 +67,16 @@ recover, finish — are exercised only one scripted tool call at a time.
   model obeys either placement and hides the regression. A model qualifies when the known regressions, put back, take
   their cells below the floor: (a) ADR-0029's, the Allowed picks stated ahead of the prompt (`obedience`; Qwen obeyed 0
   of 10), and (b) a draft's Chart briefing text that Qwen admitted 5 of 10 times (`chart-refusal`, floor 7; a snapshot
-  kept outside the repo). On 2026-10-25 Claude Haiku 5.5 caught neither: with the picks ahead of the prompt its first
-  call was the allowed `hold` in 20 of 20 trials, and on the draft's text it admitted 10 of 10. So a Haiku run checks
-  the tier's machinery, cheaply, and never a change to what the model reads. The same model served another way is
-  another instrument: NVIDIA's NVFP4 checkpoint on vLLM 0.32 with MTP, about twice the throughput, took `answered` from
-  10 of 10 to 6 of 10 (4 trials fixed the failing test and shipped) and `chart-refusal` to 4 of 10, so the home lab
-  serves the FP8 weights on the image the baselines were measured on. Any other model must clear the same floors and
-  cannot lower them; adding a model adds a baseline row, never a floor. The run is measured once per invocation, on
-  whichever endpoint is selected, because it costs minutes and its failure is a defect to read, not a rate.
+  kept outside the repo). Unchanged code reads about 0.69 on that cell, and 5 of 10 in some single runs (ADR-0070). So
+  one run at or below the floor does not tell regression (b) from the cell's noise: a pattern over runs, or over cells,
+  does. On 2026-10-25 Claude Haiku 5.5 caught neither: with the picks ahead of the prompt its first call was the allowed
+  `hold` in 20 of 20 trials, and on the draft's text it admitted 10 of 10. So a Haiku run checks the tier's machinery,
+  cheaply, and never a change to what the model reads. The same model served another way is another instrument: NVIDIA's
+  NVFP4 checkpoint on vLLM 0.32 with MTP, about twice the throughput, took `answered` from 10 of 10 to 6 of 10 (4 trials
+  fixed the failing test and shipped) and `chart-refusal` to 4 of 10, so the home lab serves the FP8 weights on the
+  image the baselines were measured on. Any other model must clear the same floors and cannot lower them; adding a model
+  adds a baseline row, never a floor. The run is measured once per invocation, on whichever endpoint is selected,
+  because it costs minutes and its failure is a defect to read, not a rate.
 - **The endpoint is a profile, selected by env, and the key never enters a file.**
   `features/model-endpoints/<name>.json` carries `id`, `api`, `baseUrl` and `model`, plus the tier's own `thinking`
   cells, `trials`, `parallel` and `workers` (below), and optionally a `caBundle` path for a private CA

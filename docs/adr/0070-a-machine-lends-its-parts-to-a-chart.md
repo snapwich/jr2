@@ -339,6 +339,6 @@ their own maintainers, and the escapes shipped in systems that used them were in
   unchanged code. The misses were of the same kinds in each period: the next Chart sent as a string of malformed JSON,
   and a second Chart that the door refused for a state `output` beside the Chart's or for an optional field written to
   context. No change of what the planner reads explains a difference. So the baseline is 7 of 10 and the floor stays 7:
-  a run below the floor is expected about one time in two, and one such run is not a regression. What the next Chart
-  gets wrong is in the trial evidence.
+  a run below the floor is expected about two times in five (the binomial at 0.69; 5 of the 10 runs above were below
+  it), and one such run is not a regression. What the next Chart gets wrong is in the trial evidence.
 - Deferred, named: a spend ceiling; a CEL-class reference kind; `publishChart`.

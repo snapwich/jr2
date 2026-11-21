@@ -40,9 +40,8 @@ Feature: a real model drives the kit
     admits it. A trial whose first Chart admits saw no refusal, and is void. The floor, 7 of 10, was
     set ahead of a measured run. The `off` cell's rate is about 0.69 (103 of 150 trials, 2026-10-25
     to 2026-11-19), so its baseline is 7 of 10, and a run below the floor is not by itself a
-    regression. A
-    thinking-on cell was measured once and not kept: 5 of 10, the same misses, a third more wall
-    time (ADR-0070).
+    regression. A thinking-on cell was measured once and not kept: 5 of 10, the same misses, a
+    third more wall time (ADR-0070).
 
     Scenario: after the door refuses its Chart, the planner's next Chart admits
       Given the model instance is serving

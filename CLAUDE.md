@@ -142,7 +142,7 @@ and step-boundary claims (`mode-follow`, `mode-refusal`, `mode-stop`, `wake`, `p
 (`chain-answer`, `cut-pick`), the command-Effect claims (`answered`, `allowed-after-route`, `unknown-outcome`), the push
 claim (`continue-after-signed-push`: the push after a signed push publishes), and the Chart claim (`chart-refusal`:
 after the door refuses a planner's Chart, its next Chart admits; its floor of 7 of 10 was set ahead of a measured run,
-and its measured rate is about 0.69, so a run below the floor is expected about one time in two and is not by itself a
+and its measured rate is about 0.69, so a run below the floor is expected about two times in five and is not by itself a
 regression, ADR-0070), and the steering claims (`steer-follow`: a Caller's Steering message in an open Turn is followed;
 `peer-not-order`: a peer's relayed word is not obeyed as an order; ADR-0002), and the MCP claim (`mcp-then-pick`: an
 Agent calls its MCP tool, then picks; its floor waits for a measured run, ADR-0079). Two are THE RUN — `ticket`:
@@ -166,7 +166,9 @@ tokens and the cost its trials spent, off their Settlements, and prints
 thresholds, two meanings:
 
 - **A floor** is in the scenario (`at least 9 trials`). Below it the scenario FAILS: a defect in what jr2 shows the
-  model, or in the step. Read the failure list — each trial prints its run id and what it observed — and the pod log
+  model, or in the step (except `chart-refusal`, above: one run below its floor is not by itself a defect, and so one
+  run cannot tell its known regression from noise; a pattern over runs or cells can). Read the failure list — each trial
+  prints its run id and what it observed — and the pod log
   (`kubectl -n <ns> logs statefulset/jr2-instance-harness -c harness`) before touching a prompt or a floor. Do not raise
   a floor to pass; do not re-run until it passes.
 - **A baseline** is committed in `features/model-baselines/<id>--<model>.json`. Below it while above the floor, the cell
