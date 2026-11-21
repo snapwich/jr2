@@ -590,6 +590,22 @@ export async function awaitPlugins(
 
 // ---- the install -----------------------------------------------------------------------------------
 
+/** An apply, and once more after a short wait when it fails: two first converges on one cluster at
+ * the same moment can each create the same object, and the second create fails (AlreadyExists). */
+async function applyOnceMore(
+  kube: Pick<KubeAdmin, "apply">,
+  manifest: string,
+  ctx: { context?: string },
+  retryMs = 2000,
+): Promise<void> {
+  try {
+    await kube.apply({ manifest, ...ctx });
+  } catch {
+    await sleep(retryMs);
+    await kube.apply({ manifest, ...ctx });
+  }
+}
+
 /**
  * Install what the plan says, after the question. The plugins first, so that a node whose CNI
  * folders are elsewhere refuses before Multus changes the cluster's CNI configuration; then Multus.
@@ -606,6 +622,8 @@ export async function installFence(
     log: (line: string) => void;
     pollMs?: number;
     now?: () => number;
+    /** The wait before the second apply; a test gives 0. */
+    retryMs?: number;
   },
 ): Promise<void> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
@@ -622,7 +640,7 @@ export async function installFence(
     if (plan.plugins === "install") {
       opts.log(`fence: applying the DaemonSet ${OPERATOR_NAMESPACE}/${PLUGINS_DAEMONSET} (${opts.image})`);
     }
-    await kube.apply({ manifest: JSON.stringify(pluginsDaemonSet(opts.image)), ...ctx });
+    await applyOnceMore(kube, JSON.stringify(pluginsDaemonSet(opts.image)), ctx, opts.retryMs);
   }
   const results = await awaitPlugins(kube, opts);
   if (plan.plugins === "install") {
@@ -631,13 +649,7 @@ export async function installFence(
   if (plan.multus === "install" || plan.multus === "upgrade") {
     const text = await multusManifest();
     opts.log(`fence: applying Multus v4.3.2 (thick, namespaceIsolation) to ${MULTUS_NAMESPACE}`);
-    try {
-      await kube.apply({ manifest: text, ...ctx });
-    } catch {
-      // Another converge at the same moment can make the same objects first (AlreadyExists): once more.
-      await sleep(2000);
-      await kube.apply({ manifest: text, ...ctx });
-    }
+    await applyOnceMore(kube, text, ctx, opts.retryMs);
     await kube.waitRollout({
       kind: "daemonset",
       name: MULTUS_DAEMONSET,

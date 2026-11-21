@@ -531,6 +531,33 @@ test("the install: the plugins first, then Multus and its rollout, with a line f
   assert.deepEqual(newer.applied, []);
 });
 
+test("two first converges at once: an apply that fails (AlreadyExists) is made once more, for the plugins and for Multus", async () => {
+  const kube = cluster();
+  kube.pods = [readyPod("n1")];
+  const failed = new Set<string>();
+  const apply = kube.apply.bind(kube);
+  kube.apply = async (o: { manifest: string }) => {
+    const key = o.manifest.includes("jr2-cni-plugins") ? "plugins" : "multus";
+    if (!failed.has(key)) {
+      failed.add(key);
+      throw new Error('Error from server (AlreadyExists): error when creating "STDIN"');
+    }
+    await apply(o);
+  };
+  await installFence(
+    kube,
+    { multus: "install", plugins: "install" },
+    {
+      image: "jr2-operator:1",
+      nodes: ["n1"],
+      log: () => {},
+      retryMs: 0,
+    },
+  );
+  assert.deepEqual([...failed].sort(), ["multus", "plugins"]);
+  assert.equal(kube.applied.length, 2);
+});
+
 test("the CLI names the CNI plugins' version of the operator image, and the image's sums file has each plugin", async () => {
   const kitRoot = join(import.meta.dirname, "../../..");
   const dockerfile = await readFile(join(kitRoot, "operator/Dockerfile"), "utf8");
