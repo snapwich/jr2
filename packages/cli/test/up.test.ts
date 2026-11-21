@@ -122,7 +122,7 @@ class FakeCluster implements KubeAdmin {
   }
   /** The Fence's probe pods (ADR-0084): each one has ended when it is applied, with the result that
    * `fenceProbeResults` scripts for `<node> fence|route` (default: passed). */
-  fenceProbeResults: Record<string, { ok: boolean; part?: string; why?: string }> = {};
+  fenceProbeResults: Record<string, { ok: boolean; part?: string; why?: string; warn?: string }> = {};
   /** The probe pods applied, as `<node> fence|route`. */
   fenceProbes: string[] = [];
   private runFenceProbes(manifest: string): void {
@@ -7165,6 +7165,28 @@ test("after the Custodian is Ready, jr2 up probes the bridge and the rule set on
   // No pod of the probe has the node's network.
   const probes = (JSON.parse(w.kube.applied[at(`"app":"jr2-fence-probe"`)]!) as { items: any[] }).items;
   assert.ok(probes.every((p) => p.spec.hostNetwork === undefined && p.spec.nodeName === "kind-test-control-plane"));
+});
+
+test("a route probe that passed with a warning writes the warning, says on how many nodes, and the converge goes on (ADR-0084)", async () => {
+  const w = mkWorld(await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)));
+  w.kube.fenceProbeResults["kind-test-control-plane route"] = {
+    ok: true,
+    warn: "the check could not see the unreachable route for 198.19.0.0/20 on kind-test-control-plane",
+  };
+  assert.equal(await up(["--yes"], w.io), 0);
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /warning: fence: the check could not see the unreachable route for 198\.19\.0\.0\/20 on kind-test-control-plane/,
+  );
+  assert.match(
+    err,
+    /fence: verified — the bridge and the rule set answer on each Sandbox node, except the unreachable route that the check could not see on 1 node\(s\) \(see the warning\)/,
+  );
+  assert.ok(
+    w.kube.rollouts.includes("myinst/jr2-orchestrator"),
+    `the converge goes on; got: ${w.kube.rollouts.join(", ")}`,
+  );
 });
 
 test("a Sandbox node that lacks a part of the Fence refuses the converge, and names the node and the part (ADR-0084)", async () => {

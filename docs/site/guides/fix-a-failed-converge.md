@@ -333,9 +333,9 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
 
 - When a Machine has a Sandbox or a Menu-only Agent, each Sandbox node must have the parts of the Fence that `jr2 up`
   does not install: the second network of a pod (Multus), the bridge of the node, and the rule set of the node. While a
-  node lacks one, `jr2 up` refuses to converge. The error starts with
-  `error: fence: a Sandbox node lacks a part of the Fence that jr2 up does not install (ADR-0084):`, and each next line
-  names a node, the part and what the check saw: `Multus`, `Multus or the attachment`,
+  node lacks one, `jr2 up` refuses to converge, with one exception for the `unreachable` route (below). The error starts
+  with `error: fence: a Sandbox node lacks a part of the Fence that jr2 up does not install (ADR-0084):`, and each next
+  line names a node, the part and what the check saw: `Multus`, `Multus or the attachment`,
   `the bridge, its VLAN filtering, or the Custodian pod of this node`, or `the rule set`. When the probe pod on the
   Fence got no answer from the Custodian on the bridge, `jr2 up` also replaces the Custodian pod of that node, so that
   the pod joins the bridge again. When the cluster has no Multus, the error says
@@ -344,9 +344,10 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   (`just cluster=<name> fence-node-prep` for a cluster that is not named `jr2`): it adds each part to each node
   (`deploy/fence/node-prep.sh`). See
   [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#check-the-cluster) for each part. When the
-  check could not see the `unreachable` route of a node, `jr2 up` does not refuse. It writes
-  `warning: fence: the check could not see the unreachable route for <segment> on <node>, because a connection to <address>:9 from the cluster's network got no answer in 1 s in each of 3 tries. This is what a cluster shows whose pods do not use the node's route table (for example Cilium with BPF host routing). Make sure that the node has the route (ADR-0084)`.
-  On such a cluster, make sure that each Sandbox node has the route.
+  check of the `unreachable` route of a node got no answer, `jr2 up` does not refuse. It writes
+  ``warning: fence: the check could not see the unreachable route for <segment> on <node>, because a connection to <address>:9 from the cluster's network got no answer in 1 s in each of 3 tries. The check cannot tell two causes apart. The node has no such route, or something drops the probe's packets (on a kind cluster of this repo, this is the cause: run `just fence-node-prep`). Or the cluster gives a pod no answer although the node has the route (this was seen on Cilium with BPF host routing). Make sure that the node has the route (ADR-0084)``.
+  So a node with no route can pass with this warning. On a kind cluster of the jr2 repository, the warning means that
+  the route is missing: run `just fence-node-prep`. On another cluster, make sure that each Sandbox node has the route.
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See
   [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). Every rollout comes after the provider

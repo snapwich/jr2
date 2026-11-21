@@ -101,6 +101,8 @@ test("two one-shot pods on each node, pinned by nodeName, with no privilege, no 
   assert.equal(route!.metadata.annotations["v1.multus-cni.io/default-network"], undefined);
   assert.equal(route!.spec.dnsConfig, undefined);
   assert.equal(env(route).JR2_PROBE_TARGET, "198.19.15.254");
+  // The node's name, so that a warning names the node and not "the node".
+  assert.equal(env(route).JR2_PROBE_NODE_NAME, route!.spec.nodeName);
 });
 
 test("the route probe dials the last address but one of the segment that `fence` sets", () => {
@@ -337,8 +339,9 @@ test("the route probe tries again with a new socket when a try gets no answer, a
 });
 
 test("the route probe passes with a warning when none of its 3 tries gets an answer, and any other answer refuses", async () => {
-  // A cluster whose pods do not use the node's route table (Cilium with BPF host routing) drops the
-  // packet with no answer: the probe cannot see the route there, so it warns and does not refuse.
+  // No answer has two causes that the probe cannot tell apart: no route (or something drops the
+  // probe's packets), or a cluster that gives a pod no answer although the node has the route (seen
+  // on Cilium with BPF host routing). So it warns, names both, and does not refuse.
   const fake = scriptedNet(["silent", "silent", "silent"]);
   const run = await runRoute(fake.net, "198.19.15.254", 9);
   assert.equal(fake.sockets(), 3);
@@ -348,9 +351,11 @@ test("the route probe passes with a warning when none of its 3 tries gets an ans
   assert.equal(
     run.message?.warn,
     "the check could not see the unreachable route for 198.19.0.0/20 on node-a, because a connection to " +
-      "198.19.15.254:9 from the cluster's network got no answer in 1 s in each of 3 tries. This is what a cluster " +
-      "shows whose pods do not use the node's route table (for example Cilium with BPF host routing). Make sure " +
-      "that the node has the route (ADR-0084)",
+      "198.19.15.254:9 from the cluster's network got no answer in 1 s in each of 3 tries. The check cannot tell " +
+      "two causes apart. The node has no such route, or something drops the probe's packets (on a kind cluster of " +
+      "this repo, this is the cause: run `just fence-node-prep`). Or the cluster gives a pod no answer although " +
+      "the node has the route (this was seen on Cilium with BPF host routing). Make sure that the node has the " +
+      "route (ADR-0084)",
   );
 
   // No answer, then an answer that is not "no route to host": it refuses.

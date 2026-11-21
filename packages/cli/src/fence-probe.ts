@@ -1,6 +1,7 @@
 // `jr2 up` probes the parts of the Fence that it does not install (ADR-0084, ADR-0019): the second
 // network of a pod (Multus), the bridge of each Sandbox node and the node's rule set. It refuses to
-// converge while a Sandbox node lacks one, and it names the node and the part.
+// converge while a Sandbox node lacks one, and it names the node and the part. One exception: a
+// route probe with no answer in each try warns and does not refuse (below).
 //
 // From the API, before the Custodian is applied: the CustomResourceDefinition of the attachments
 // exists, and a Ready Multus pod runs on each Sandbox node. After the Custodian's pods are Ready, on
@@ -17,9 +18,13 @@
 //                     the node's address must give no answer but the Custodian's.
 //   the route probe   a pod on the cluster's network that dials the last address of the segment
 //                     and must get "no route to host" within 1 s: the node's unreachable route.
-//                     When each try gets no answer, it passes with a warning: a cluster whose pods
-//                     do not use the node's route table (for example Cilium with BPF host routing)
-//                     drops the packet with no answer, so the probe cannot see the route there.
+//                     When each try gets no answer, it passes with a warning, whatever the cause.
+//                     The probe cannot tell two causes apart: the node has no such route (or
+//                     something drops the probe's packets), and nothing on the default route
+//                     answers; or the cluster gives a pod no answer although the node has the route
+//                     (seen on Cilium with BPF host routing). On a kind cluster of this repo, no
+//                     answer means that the route is missing. So on any cluster, a node with no
+//                     route can pass with the warning.
 //
 // A behaviour probe with no privilege: neither pod has the node's network, a capability, a writable
 // root or a token. It writes its result as its termination message, as the Repo cache agent writes
@@ -255,9 +260,9 @@ export async function routeProbeMain(sys: ProbeSys): Promise<void> {
   const port = Number(env.JR2_PROBE_TARGET_PORT ?? "9");
   // A try with no answer in 1 s is made again with a new socket, at most 3 times: on a loaded node the
   // refusal can come after the timer, and TCP sends the SYN again only at 1 s. "No route to host"
-  // passes; any other answer refuses at once. No answer in each try passes with a warning: on a
-  // cluster whose pods do not use the node's route table (Cilium with BPF host routing), the node's
-  // route never answers a pod, so the probe cannot see it.
+  // passes; any other answer refuses at once. No answer in each try passes with a warning that names
+  // both causes, because the probe cannot tell them apart: no route, or a cluster that gives a pod no
+  // answer although the node has the route (seen on Cilium with BPF host routing).
   const tries = 3;
   let started = Date.now();
   let code = "";
@@ -281,9 +286,11 @@ export async function routeProbeMain(sys: ProbeSys): Promise<void> {
       ok: true,
       warn:
         `the check could not see the unreachable route for ${segment} on ${node}, because a connection to ` +
-        `${target}:${port} from the cluster's network got no answer in 1 s in each of ${tries} tries. This is what ` +
-        "a cluster shows whose pods do not use the node's route table (for example Cilium with BPF host routing). " +
-        "Make sure that the node has the route (ADR-0084)",
+        `${target}:${port} from the cluster's network got no answer in 1 s in each of ${tries} tries. The check ` +
+        "cannot tell two causes apart. The node has no such route, or something drops the probe's packets (on a " +
+        "kind cluster of this repo, this is the cause: run `just fence-node-prep`). Or the cluster gives a pod no " +
+        "answer although the node has the route (this was seen on Cilium with BPF host routing). Make sure that " +
+        "the node has the route (ADR-0084)",
     });
   }
   return end({
@@ -544,8 +551,9 @@ export type ProbeKube = Pick<KubeAdmin, "apply" | "getJson" | "listJson" | "dele
  * Run the two probe pods on each node where a Custodian pod of the Instance runs, wait for each to
  * end, and return each part that a node lacks (none when each passed). A probe that passed but could
  * not see its part goes to `warn`. The pods go again in every case. A node whose Fence probe saw no
- * answer at all from the uplink has a Custodian pod whose trunk is not on the bridge that the node has now (a bridge deleted and made again): that pod is
- * replaced, so that the next converge after the fix finds its trunk there.
+ * answer at all from the uplink has a Custodian pod whose trunk is not on the bridge that the node
+ * has now (a bridge deleted and made again): that pod is replaced, so that the next converge after
+ * the fix finds its trunk there.
  */
 export async function probeFenceNodes(
   kube: ProbeKube,
