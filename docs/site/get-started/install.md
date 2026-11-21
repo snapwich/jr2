@@ -20,7 +20,8 @@ kubectl is the tool that `jr2 up`, `jr2 run` and the other commands use to speak
 
 The kind cluster uses the Linux kernel of Docker: the kernel of your computer, or on macOS and Windows, the kernel of
 the virtual machine of Docker. jr2 needs Landlock in that kernel: Linux 6.2 or later, with `landlock` in its list of
-security modules. `jr2 up` refuses to converge without Landlock.
+security modules. `jr2 up` refuses to converge without Landlock. jr2 also needs the `8021q` module in that kernel.
+`jr2 up` loads it, and refuses to converge when the kernel does not have it.
 
 ## Check Node.js
 
@@ -122,11 +123,10 @@ version that runs is the version that the Instance pins. The glossary calls this
 You also made a kind cluster. It runs Kubernetes 1.35 or later, which jr2 needs. `jr2 up` puts in it the parts that an
 Instance needs, such as the [Orchestrator](../reference/glossary.md#orchestrator) and the
 [Custodian](../reference/glossary.md#custodian). A [Sandbox](../reference/glossary.md#sandbox) and the
-[Instance Harness](../reference/glossary.md#instance-harness) also need parts of their network that `jr2 up` does not
-install: Multus, a bridge on each node, and a rule set on each node. `jr2 up` checks them, and names each node that does
-not have one. For a kind cluster, the jr2 repository has a script that adds them to each node:
-`deploy/fence/node-prep.sh`. In a clone of the repository, `just fence-node-prep` runs it against the cluster `jr2`. It
-needs [just](https://github.com/casey/just), and the `8021q` module in the kernel of the computer or of Docker's VM.
+[Instance Harness](../reference/glossary.md#instance-harness) also need parts of their network on each node: Multus,
+three CNI plugins, a bridge, the `8021q` module, a rule set and a route. The cluster that `kind create cluster` makes
+has none of them. On a kind cluster, `jr2 up` makes them on each node through Docker, and asks you first. On a cluster
+that is not kind, `jr2 up` does not make them: it checks them, and names each node that does not have one.
 [Move from kind to a shared cluster](../guides/move-from-kind-to-a-shared-cluster.md) gives each part.
 [Converge](../concepts/converge.md) explains what `jr2 up` makes. The [CLI reference](../reference/cli.md) gives each
 command and its options.

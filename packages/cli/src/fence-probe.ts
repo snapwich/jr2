@@ -22,9 +22,9 @@
 //                     The probe cannot tell two causes apart: the node has no such route (or
 //                     something drops the probe's packets), and nothing on the default route
 //                     answers; or the cluster gives a pod no answer although the node has the route
-//                     (seen on Cilium with BPF host routing). On a kind cluster of this repo, no
-//                     answer means that the route is missing. So on any cluster, a node with no
-//                     route can pass with the warning.
+//                     (seen on Cilium with BPF host routing). So on any cluster, a node with no
+//                     route can pass with the warning. On a kind cluster, `jr2 up` made the route
+//                     before the probe (`kind-fence.ts`).
 //
 // A behaviour probe with no privilege: neither pod has the node's network, a capability, a writable
 // root or a token. It writes its result as its termination message, as the Repo cache agent writes
@@ -287,10 +287,9 @@ export async function routeProbeMain(sys: ProbeSys): Promise<void> {
       warn:
         `the check could not see the unreachable route for ${segment} on ${node}, because a connection to ` +
         `${target}:${port} from the cluster's network got no answer in 1 s in each of ${tries} tries. The check ` +
-        "cannot tell two causes apart. The node has no such route, or something drops the probe's packets (on a " +
-        "kind cluster of this repo, this is the cause: run `just fence-node-prep`). Or the cluster gives a pod no " +
-        "answer although the node has the route (this was seen on Cilium with BPF host routing). Make sure that " +
-        "the node has the route (ADR-0084)",
+        "cannot tell two causes apart. The node has no such route, or something drops the probe's packets. Or the " +
+        "cluster gives a pod no answer although the node has the route (this was seen on Cilium with BPF host " +
+        "routing). Make sure that the node has the route (ADR-0084)",
     });
   }
   return end({
@@ -469,17 +468,30 @@ export function gapOf(node: string, probe: "fence" | "route", pod: ProbePod | un
   };
 }
 
-/** The refusal (ADR-0084, ADR-0019): each node, its part, why, and the fix. */
-export function fenceRefusal(gaps: readonly FenceGap[]): Error {
+/** The page that lists the parts of the Fence on a node, for a cluster that is not kind. */
+export const FENCE_PARTS_URL =
+  "https://snapwich.github.io/jr2/guides/move-from-kind-to-a-shared-cluster.html#check-the-cluster";
+
+/** What to do about a missing part. On a kind cluster, `jr2 up` made each part at this converge
+ * (`kind-fence.ts`), so a part that is still missing changed since, or cannot work on this host. */
+function fenceFix(kind: string | undefined): string {
+  return kind === undefined
+    ? `Give each such node the part as ${FENCE_PARTS_URL} lists it, or keep the node out of the Sandbox nodes ` +
+        "with sandbox.nodeSelector or a taint (ADR-0052). Then run `jr2 up` again."
+    : `jr2 up made the Fence's node parts on each node of the kind cluster "${kind}" before this check, so a part ` +
+        "that the check misses changed since, or does not work on this host. Run `jr2 up` again. When the check " +
+        `fails again, compare each node with the parts that ${FENCE_PARTS_URL} lists.`;
+}
+
+/** The refusal (ADR-0084, ADR-0019): each node, its part, why, and the fix. `kind` is the name of a
+ * kind cluster, whose parts `jr2 up` made. */
+export function fenceRefusal(gaps: readonly FenceGap[], kind?: string): Error {
   const nodes = new Set(gaps.map((g) => g.node)).size;
   return new Error(
     [
-      `fence: ${nodes === 1 ? "a Sandbox node lacks" : `${nodes} Sandbox nodes lack`} a part of the Fence that ` +
-        "jr2 up does not install (ADR-0084):",
+      `fence: ${nodes === 1 ? "a Sandbox node lacks" : `${nodes} Sandbox nodes lack`} a part of the Fence (ADR-0084):`,
       ...gaps.map((g) => `  ${g.node}: ${g.part} — ${g.why}`),
-      "Give each such node the part as the prerequisites say (on a kind cluster of this repo: `just " +
-        "fence-node-prep`), or keep the node out of the Sandbox nodes with sandbox.nodeSelector or a taint " +
-        "(ADR-0052). Then run `jr2 up` again.",
+      fenceFix(kind),
     ].join("\n"),
   );
 }
@@ -514,7 +526,7 @@ export function nodesWithoutMultus(nodes: readonly string[], pods: readonly Mult
  */
 export async function checkFenceApi(
   kube: Pick<KubeAdmin, "listJson">,
-  opts: { nodes: readonly string[]; context?: string },
+  opts: { nodes: readonly string[]; context?: string; kind?: string },
 ): Promise<void> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
   const crds = await kube.listJson({
@@ -525,8 +537,11 @@ export async function checkFenceApi(
   if (crds.length === 0) {
     throw new Error(
       `fence: the cluster has no CustomResourceDefinition ${ATTACHMENT_CRD}, so Multus is not installed, and ` +
-        "no Harness pod can have the Fence as its network (ADR-0084). Install Multus (on a kind cluster of this " +
-        "repo: `just fence-node-prep`), then run `jr2 up` again.",
+        "no Harness pod can have the Fence as its network (ADR-0084). " +
+        (opts.kind === undefined
+          ? `Install Multus as ${FENCE_PARTS_URL} says, then run \`jr2 up\` again.`
+          : `jr2 up applied Multus to the kind cluster "${opts.kind}" at this converge, and the definition is not ` +
+            "there now: run `jr2 up` again."),
     );
   }
   const pods = await kube.listJson<MultusPod>({ kind: "pod", selector: MULTUS_SELECTOR, allNamespaces: true, ...ctx });
@@ -538,6 +553,7 @@ export async function checkFenceApi(
         part: "Multus",
         why: `no Ready Multus pod (${MULTUS_SELECTOR}) on the node, so no pod there gets the Fence as its network`,
       })),
+      opts.kind,
     );
   }
 }

@@ -151,12 +151,30 @@ and that holds when Workspace code is root in the Sandbox.
   cluster's network.
 - **How a Sandbox's traffic reaches the Custodian is one seam.** The segment is the only form that is built. A cluster
   that cannot have it needs another form behind the same seam, and the rules of the Custodian do not change.
-- **`jr2 up` installs the uplink, the Custodian and the resolver, and it probes what it does not install.** The second
-  network of a pod (Multus), the bridge and the node's rule set are prerequisites. The second network must refuse a pod
-  an attachment of another namespace (Multus's `namespaceIsolation`, with no global namespace): without it, a pod of
-  another namespace can name the Instance's uplink or slot attachment and join its VLANs. `jr2 up` does not probe this
-  isolation. `jr2 up` refuses to converge while a Sandbox node lacks one of the other parts, and it names the node and
-  the part, with one exception for the `unreachable` route (below). Before it applies the Custodian, it reads the API:
+- **`jr2 up` installs the uplink, the Custodian and the resolver. On a kind cluster it also makes the node parts. On
+  each cluster it probes them.** The node parts are the prerequisites of the Fence: the second network of a pod
+  (Multus), the stock CNI plugins `bridge`, `static` and `tuning`, the `8021q` module, the bridge, the node's rule set
+  and the `unreachable` route of the segment. The second network must refuse a pod an attachment of another namespace
+  (Multus's `namespaceIsolation`, with no global namespace): without it, a pod of another namespace can name the
+  Instance's uplink or slot attachment and join its VLANs. `jr2 up` does not probe this isolation.
+- **On a kind cluster (a context `kind-<name>`), `jr2 up` makes each node part that a node lacks, and on any other
+  cluster it makes none.** A kind node is a container on the user's own host, and jr2 already reaches it through docker,
+  as `kind load` does. So the parts are the converge's, as the images are, and a user who installed jr2 from npm and ran
+  `kind create cluster` needs no other step. The nodes of any other cluster belong to its owner: there, jr2 owns no
+  privileged code on a node beyond the uplink. On kind, at each converge, also of an Instance with no Harness pod (so
+  that the cluster is ready when one comes), and before the Custodian is applied, `jr2 up` reads each node container
+  (`docker exec`, under a lock on the node, so that two converges at once are safe) and the Multus DaemonSet. It writes
+  the plugins that are absent or not the pinned v1.10.0, from the release tarball, downloaded once into the CLI's cache
+  folder and checked by sha256 against a list that the CLI package ships. It loads the `8021q` module, makes the bridge
+  and its settings, the rule set and the route, and applies the Multus manifest that the CLI package ships, when the
+  DaemonSet does not carry that manifest's version. The first time that a converge installs something on the cluster
+  (the plugins or Multus), it says what and asks, in the first-contact question when there is one (`--yes` answers it).
+  A part that a restart of a node lost is made again with no question, because the user accepted it before. A kind node
+  shares the kernel of its host, so a kernel that cannot give the `8021q` module is refused by name: the host's kernel
+  must give it. The node script that the CLI package ships (`manifests/fence/kind-node.sh`) is also an example of each
+  part for the nodes of another cluster.
+- \*\*`jr2 up` refuses to converge while a Sandbox node lacks one of the other parts, and it names the node and the
+  part, with one exception for the `unreachable` route (below). Before it applies the Custodian, it reads the API:
   Multus's CustomResourceDefinition must exist, and a Ready Multus pod must run on each Sandbox node. After the
   Custodian's pods are Ready, it runs two one-shot pods on each node of a Custodian pod. One is on slot 2 of the
   Instance's range: its address must be the slot's address, the Custodian's resolver must answer it, and the node's
@@ -168,11 +186,11 @@ and that holds when Workspace code is root in the Sandbox.
   times, because on a loaded node the refusal can come after the timer. Any answer other than "no route to host" refuses
   the converge. When each dial gets no answer, `jr2 up` does not refuse, whatever the cause: it writes a warning that
   names the node and both causes, and goes on. A node with no route gives no answer when nothing on its default route
-  answers for the segment; this repo's kind cluster does so, and a NetworkPolicy that drops the probe pod's egress does
-  so too. A cluster with Cilium and BPF host routing also gave no answer to the probe while the node had the route. The
-  probe cannot tell these causes apart, so it warns for each of them. The node's owner must make sure that the route is
-  there; on a kind cluster of this repo, the warning means that the route is missing. The probe is a probe of behaviour
-  with no privilege: no pod of it has the node's network, a capability or a token, because jr2 owns no privileged code
+  answers for the segment; a kind cluster does so, and a NetworkPolicy that drops the probe pod's egress does so too. A
+  cluster with Cilium and BPF host routing also gave no answer to the probe while the node had the route. The probe
+  cannot tell these causes apart, so it warns for each of them. The node's owner must make sure that the route is there;
+  on a kind cluster, `jr2 up` made it before the probe. The probe is a probe of behaviour with no privilege: no pod of
+  it has the node's network, a capability or a token, because on a cluster that is not kind, jr2 owns no privileged code
   on a node beyond the uplink. So it cannot read the route itself: on any cluster, a node with no route can pass with
   the warning. And it sees the effect of the rule set, not the rule set: a node that does not change bridged frames
   today passes without the rule that keeps conntrack off the bridge, and the probe cannot see the bridge's default VLAN
@@ -194,6 +212,11 @@ and that holds when Workspace code is root in the Sandbox.
   pod, and the pod keeps the cluster's network. But jr2 would own privileged code on each node, and the boundary fails
   open when another agent on the node removes the rules. It is the candidate for a cluster that cannot have a second pod
   network.
+- **A recipe of the jr2 repository that prepares a kind cluster, or a `jr2` command of its own for it.** Replaced by the
+  converge. A user who installed jr2 from npm has no clone, so a recipe gave the tutorial a step outside jr2. A command
+  of its own is a second step that the user can forget, which `jr2 up` would have to find anyway, as
+  [ADR-0019](0019-one-converging-command-against-the-current-context.md) says of setup. And a part that a restart of a
+  kind node lost came back only when the user ran the recipe again.
 - **One Custodian port for each SSH host, or no SSH.** Rejected: the placeholder address gives the name for each
   protocol with one mechanism, and a stock client needs no setting.
 - **An SSH proxy in the Custodian that holds the push key.** Not built. It keeps the key out of the pod, but the client
@@ -258,7 +281,8 @@ and that holds when Workspace code is root in the Sandbox.
   another CNI plugin run. A managed cluster that permits neither cannot have the segment.
 - **The bridge and its settings, the loaded `8021q` module, the rule set and the `unreachable` route do not survive a
   restart of the node** unless the node makes them at boot (a unit, or the node's provisioning). Multus and the CNI
-  plugins do. `jr2 up` checks them only at a converge, so a restarted node can lack a part until the next converge
-  refuses (or, for the route, warns). A restarted node was seen with the bridge and no rule set.
+  plugins do. On a kind cluster, the next `jr2 up` makes them again. On another cluster, `jr2 up` checks them only at a
+  converge, so a restarted node can lack a part until the next converge refuses (or, for the route, warns). A restarted
+  node was seen with the bridge and no rule set.
 - **An Instance with no Workspace needs the Fence too,** because its Instance Harness is behind one. So the first model
   call of a new Instance needs the prerequisites on a node.

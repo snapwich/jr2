@@ -1,10 +1,13 @@
 # Multus CNI v4.3.2, thick plugin: the upstream quickstart file
 # (https://github.com/k8snetworkplumbingwg/multus-cni/blob/v4.3.2/deployments/multus-daemonset-thick.yml),
-# vendored for the Fence on kind (ADR-0084). Two changes from upstream, both made by this repo:
+# vendored for the Fence on kind (ADR-0084). Three changes from upstream, all made by jr2:
 #   - the daemon's memory request and limit are 300Mi, raised from the upstream value (prototype round r3);
 #   - "namespaceIsolation": true with no global namespace, so a pod can name a NetworkAttachmentDefinition of its
-#     own namespace only.
-# `just fence-node-prep` applies it. It is a kind prerequisite of this repo, not a part of jr2.
+#     own namespace only;
+#   - the DaemonSet has the annotation jr2.dev/multus, which names this file's version. Change the value when you
+#     change this file.
+# `jr2 up` applies it on a kind cluster when the DaemonSet does not have that annotation (src/kind-fence.ts). On any
+# other cluster, jr2 applies none of it.
 # Note:
 #   This deployment file is designed for 'quickstart' of multus, easy installation to test it,
 #   hence this deployment yaml does not care about following things intentionally.
@@ -148,6 +151,8 @@ kind: DaemonSet
 metadata:
   name: kube-multus-ds
   namespace: kube-system
+  annotations:
+    jr2.dev/multus: v4.3.2-thick-namespace-isolation-1
   labels:
     tier: node
     app: multus

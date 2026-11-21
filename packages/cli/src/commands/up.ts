@@ -211,6 +211,16 @@ import {
 } from "../deploy.ts";
 import { claimRange, makeSlotLive, type LiveKube } from "../fence.ts";
 import { checkFenceApi, fenceRefusal, probeFenceNodes } from "../fence-probe.ts";
+import {
+  cacheDirOf,
+  describePlan,
+  dockerRunner,
+  httpDownload,
+  makeKindFence,
+  planAsks,
+  planKindFence,
+  type KindFencePorts,
+} from "../kind-fence.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { planCallerTokens } from "../caller-tokens.ts";
 import { resolveRoot } from "../instance.ts";
@@ -429,15 +439,45 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
   if (volumePlan.line) activity(io, volumePlan.line);
 
-  if (!ns || !owner) {
-    const what = ns ? `adopt existing namespace "${namespace}"` : `create namespace "${namespace}"`;
-    const ok =
-      values.yes === true ||
-      (await confirmOrBail(io, `first contact: deploy instance "${name}" to context ${context} (${what})?`));
+  // --- the Fence's node parts on a kind cluster (ADR-0084, ADR-0019): read now, made after the ask -
+  // A kind node is a container on this host, which jr2 reaches through docker as `kind load` does,
+  // so `jr2 up` makes each part that a node lacks, at every converge, before anything needs it. On
+  // any other cluster it makes none, and the probe below names what a node lacks. On kind it makes
+  // them also for an Instance with no Harness pod: the cluster is then ready when one comes, and
+  // the first contact is the one question.
+  const fenced = carried.composesSandbox || carried.instanceHarness !== undefined;
+  const cluster = kindCluster(context);
+  const kindPorts: KindFencePorts = {
+    docker: io.docker ?? dockerRunner,
+    download: io.download ?? httpDownload,
+    cacheDir: cacheDirOf(io.env),
+    kube,
+  };
+  const kindPlan =
+    cluster !== undefined
+      ? await planKindFence(kindPorts, { cluster, segment: fenceRangesOf(config.fence).segment, ...ctx })
+      : undefined;
+  // The first time a plan installs something on the cluster (the plugins or Multus), the converge
+  // says what and asks, in the first-contact question when there is one: one question, one `--yes`.
+  const kindAsk = kindPlan !== undefined && planAsks(kindPlan) ? describePlan(kindPlan) : undefined;
+
+  if (!ns || !owner || kindAsk !== undefined) {
+    const what = [
+      ...(!ns ? [`create namespace "${namespace}"`] : !owner ? [`adopt existing namespace "${namespace}"`] : []),
+      ...(kindAsk !== undefined ? [kindAsk] : []),
+    ].join("; ");
+    const question =
+      !ns || !owner
+        ? `first contact: deploy instance "${name}" to context ${context} (${what})?`
+        : `first setup of the Fence: ${what}?`;
+    const ok = values.yes === true || (await confirmOrBail(io, question));
     if (!ok) {
       activity(io, "aborted — nothing was changed");
       return 1;
     }
+  }
+  if (kindPlan !== undefined) {
+    await makeKindFence(kindPorts, kindPlan, { ...ctx, log: (line) => activity(io, line) });
   }
   await kube.apply({
     manifest: JSON.stringify({
@@ -466,7 +506,6 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- image resolution (ADR-0038): decide every ref BEFORE any layer spends a build -----------
   const registry = config.registry;
-  const cluster = kindCluster(context);
 
   // The CLUSTER chooses what every image is built for (ADR-0045): the schedulable nodes'
   // architectures, intersected with the platforms the kit releases for. The set then rides the tag
@@ -945,8 +984,6 @@ export async function up(args: string[], io: Io): Promise<number> {
     const digest = "value" in t ? callerTokenDigest(t.value) : valueShas.get(`${t.secret}/${t.key}`);
     if (digest !== undefined) hookDigests[t.name] = digest;
   }
-  // An Instance with a Harness pod (a Sandbox, or the Instance Harness) is on the Fence (ADR-0084).
-  const fenced = carried.composesSandbox || carried.instanceHarness !== undefined;
   const held = await resolveHeld(io, kube, {
     pods: placements.held,
     claimed: placements.claimed,
@@ -984,13 +1021,14 @@ export async function up(args: string[], io: Io): Promise<number> {
       : undefined;
   let fenceRange: number | undefined;
   if (fenced) {
-    // The parts of the Fence that `jr2 up` does not install (ADR-0084): first what the API shows,
-    // because without them the Custodian's attachments cannot be applied and its pods do not start.
+    // The parts of the Fence (ADR-0084), which `jr2 up` made above on kind and installs nowhere
+    // else: first what the API shows, because without them the Custodian's attachments cannot be
+    // applied and its pods do not start.
     const fenceNodes = sandboxNodes(
       nodes.length > 0 ? nodes : await kube.listJson<NodeObject>({ kind: "node", ...ctx }),
       config.sandbox,
     ).nodes.map((n) => n.metadata.name);
-    await checkFenceApi(kube, { nodes: fenceNodes, ...ctx });
+    await checkFenceApi(kube, { nodes: fenceNodes, ...ctx, ...(cluster !== undefined ? { kind: cluster } : {}) });
   }
   if (fenced || custodianLeft !== undefined) {
     fenceRange = await claimRange(kube, { namespace, ...ctx, log: (line) => activity(io, line) });
@@ -1055,7 +1093,7 @@ export async function up(args: string[], io: Io): Promise<number> {
         activity(io, `warning: ${line}`);
       },
     });
-    if (gaps.length > 0) throw fenceRefusal(gaps);
+    if (gaps.length > 0) throw fenceRefusal(gaps, cluster);
     activity(
       io,
       unseen === 0

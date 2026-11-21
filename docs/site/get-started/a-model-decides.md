@@ -78,8 +78,9 @@ jr2 up
 `jr2 up` prints who can send each event, in each state of `triage`. Then it converges the cluster.
 
 This `jr2 up` is the first that converges the [Instance Harness](../reference/glossary.md#instance-harness), which runs
-the Turns of `triager`. The Instance Harness is behind a [Fence](../reference/glossary.md#fence), as a Sandbox is. Thus
-`jr2 up` checks each node for the parts of the Fence that it does not install ([Install](install.md)).
+the Turns of `triager`. The Instance Harness is behind a [Fence](../reference/glossary.md#fence), as a Sandbox is. The
+first `jr2 up` made the parts of the Fence on the node of your kind cluster
+([Create an Instance](create-an-instance.md)). Now `jr2 up` also checks them on each node.
 
 ::: tabs key:provider
 

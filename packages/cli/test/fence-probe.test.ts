@@ -19,6 +19,7 @@ import {
   FENCE_PROBE_PROGRAM,
   fenceProbeMain,
   fenceProbePods,
+  FENCE_PARTS_URL,
   fenceRefusal,
   gapOf,
   nodesWithoutMultus,
@@ -352,10 +353,9 @@ test("the route probe passes with a warning when none of its 3 tries gets an ans
     run.message?.warn,
     "the check could not see the unreachable route for 198.19.0.0/20 on node-a, because a connection to " +
       "198.19.15.254:9 from the cluster's network got no answer in 1 s in each of 3 tries. The check cannot tell " +
-      "two causes apart. The node has no such route, or something drops the probe's packets (on a kind cluster of " +
-      "this repo, this is the cause: run `just fence-node-prep`). Or the cluster gives a pod no answer although " +
-      "the node has the route (this was seen on Cilium with BPF host routing). Make sure that the node has the " +
-      "route (ADR-0084)",
+      "two causes apart. The node has no such route, or something drops the probe's packets. Or the cluster gives a " +
+      "pod no answer although the node has the route (this was seen on Cilium with BPF host routing). Make sure " +
+      "that the node has the route (ADR-0084)",
   );
 
   // No answer, then an answer that is not "no route to host": it refuses.
@@ -396,19 +396,25 @@ test("a gap names the node, the part and why; a pod with no result is a gap of t
   assert.match(crashed!.why, /the fence probe ended with no result \(Failed, exit 2\): TypeError: x is not a function/);
 });
 
-test("the refusal names each node and part, and the fix", () => {
-  const err = fenceRefusal([
+test("the refusal names each node and part, and the fix: the page of the parts, and on kind no recipe", () => {
+  const gaps = [
     { node: "n2", part: "the rule set", why: "no unreachable route" },
     { node: "n2", part: "the bridge, its VLAN filtering, or the Custodian pod of this node", why: "no answer" },
     { node: "n1", part: "Multus", why: "no Ready Multus pod" },
-  ]);
-  const lines = err.message.split("\n");
-  assert.equal(lines[0], "fence: 2 Sandbox nodes lack a part of the Fence that jr2 up does not install (ADR-0084):");
+  ];
+  const lines = fenceRefusal(gaps).message.split("\n");
+  assert.equal(lines[0], "fence: 2 Sandbox nodes lack a part of the Fence (ADR-0084):");
   assert.equal(lines[1], "  n2: the rule set — no unreachable route");
-  assert.match(
+  assert.equal(
     lines.at(-1)!,
-    /just fence-node-prep.*sandbox\.nodeSelector or a taint \(ADR-0052\)\. Then run `jr2 up` again\.$/,
+    `Give each such node the part as ${FENCE_PARTS_URL} lists it, or keep the node out of the Sandbox nodes with ` +
+      "sandbox.nodeSelector or a taint (ADR-0052). Then run `jr2 up` again.",
   );
+  assert.doesNotMatch(fenceRefusal(gaps).message, /kind cluster|just /);
+  // On kind, `jr2 up` made the parts at this converge: the text says so, and names no recipe.
+  const kind = fenceRefusal(gaps, "jr2").message;
+  assert.match(kind, /jr2 up made the Fence's node parts on each node of the kind cluster "jr2" before this check/);
+  assert.doesNotMatch(kind, /just |clone/);
   assert.match(fenceRefusal([{ node: "x", part: "p", why: "w" }]).message, /^fence: a Sandbox node lacks/);
 });
 
@@ -433,7 +439,16 @@ test("from the API: no attachment definition, or a Sandbox node with no Ready Mu
     }) as unknown as ProbeKube;
   await assert.rejects(
     checkFenceApi(kube([], []), { nodes: ["a"] }),
-    /no CustomResourceDefinition network-attachment-definitions\.k8s\.cni\.cncf\.io, so Multus is not installed/,
+    (e: Error) =>
+      e.message.includes(
+        "no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io, so Multus is not installed",
+      ) &&
+      e.message.includes(`Install Multus as ${FENCE_PARTS_URL} says`) &&
+      !/kind cluster|just /.test(e.message),
+  );
+  await assert.rejects(
+    checkFenceApi(kube([], []), { nodes: ["a"], kind: "jr2" }),
+    /applied Multus to the kind cluster "jr2"/,
   );
   await assert.rejects(
     checkFenceApi(kube([{}], [ready("a")]), { nodes: ["a", "b"] }),

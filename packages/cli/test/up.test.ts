@@ -72,6 +72,11 @@ const { preflightLine, PREFLIGHT_MODEL_BUDGET_SECONDS } = harnessLines;
 import type { KubeAdmin, KubeObject, PodEnd } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
 import type { Io } from "../src/output.ts";
+import { MULTUS_VERSION, shippedSums } from "../src/kind-fence.ts";
+import { FakeKindDocker } from "./support/kind-docker.ts";
+
+/** The shipped plugin sums (ADR-0084): a world's kind node has these, so it lacks no part. */
+const SHIPPED_SUMS = await shippedSums();
 
 /** The instance List of a converge: the one that carries the Orchestrator's Deployment — not the
  * apply of the provider preflight's inputs before it, nor a check pod's own List (ADR-0019). */
@@ -88,6 +93,13 @@ class FakeCluster implements KubeAdmin {
   deleted: string[] = [];
   rollouts: string[] = [];
   ctx = "kind-test";
+
+  constructor() {
+    // Multus of this CLI's manifest (ADR-0084): a kind cluster that `jr2 up` prepared before.
+    this.set("kube-system", "daemonset", "kube-multus-ds", {
+      metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": MULTUS_VERSION } },
+    });
+  }
 
   set(namespace: string, kind: string, name: string, obj: Partial<KubeObject>): void {
     this.objects.set(`${namespace}/${kind.toLowerCase()}/${name}`, {
@@ -781,6 +793,8 @@ async function mkKit(): Promise<string> {
 type World = {
   io: Io;
   kube: FakeCluster;
+  /** The kind cluster's node containers (ADR-0084): one node of cluster "test", prepared. */
+  docker: FakeKindDocker;
   orchestrator: FakeOrchestrator;
   built: string[];
   err: string[];
@@ -820,6 +834,8 @@ function mkWorld(
   } = {},
 ): World {
   const kube = new FakeCluster();
+  const docker = new FakeKindDocker();
+  docker.add("test-control-plane", { cluster: "test", prepared: true, sums: SHIPPED_SUMS });
   const orchestrator = new FakeOrchestrator();
   const built: string[] = [];
   const err: string[] = [];
@@ -832,6 +848,10 @@ function mkWorld(
     cwd: root,
     kitDir: over.kitDir ?? root,
     kubeAdmin: kube,
+    docker: docker.run,
+    download: async () => {
+      throw new Error("no download in a test");
+    },
     kube: orchestrator.kube,
     fetch: orchestrator.fetch,
     typecheck: over.typecheck ?? TYPECHECK_OK,
@@ -855,7 +875,7 @@ function mkWorld(
       return typeof over.choose === "function" ? over.choose(options) : over.choose;
     },
   };
-  return { io, kube, orchestrator, built, err, confirms, choices };
+  return { io, kube, docker, orchestrator, built, err, confirms, choices };
 }
 
 /** The Orchestrator Deployment this converge applied. */
@@ -990,6 +1010,72 @@ test("first contact asks; declining bails before anything is applied; --yes skip
   assert.equal(await up(["--yes"], yes.io), 0);
   assert.equal(yes.confirms.length, 0);
   assert.ok(yes.kube.applied.length > 0, "converged without prompting");
+});
+
+test("on kind, jr2 up makes the Fence's node parts before the Custodian, asking under first contact; a second converge changes nothing (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const stock = () => {
+    const w = mkWorld(root, { confirm: false });
+    // A node that a restart left with its plugins only, on a cluster with no Multus of jr2's.
+    const node = w.docker.add("test-control-plane", { cluster: "test", prepared: false, sums: SHIPPED_SUMS });
+    for (const p of ["bridge", "static", "tuning"]) node.plugins[p] = SHIPPED_SUMS.get(`linux-amd64/${p}`)!;
+    w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
+    return w;
+  };
+
+  // Declined: nothing is made, nothing applied.
+  const declined = stock();
+  assert.equal(await up([], declined.io), 1);
+  assert.equal(declined.confirms.length, 1, "one question for the namespace and the Fence");
+  assert.match(
+    declined.confirms[0]!,
+    /^first contact: deploy instance "myinst" to context kind-test \(create namespace "myinst"; on kind cluster "test": make the bridge jr2fence0, the rule set inet jr2_fence, the route unreachable 198\.19\.0\.0\/20 and the 8021q module where missing on 1 node; apply Multus v4\.3\.2 thick with namespaceIsolation to kube-system\)\?$/,
+  );
+  assert.deepEqual(declined.kube.applied, []);
+  assert.ok(!declined.docker.calls.some((c) => c.includes("-- make ")), "no node was changed");
+
+  // --yes: each part is made, Multus applied and rolled out, before the Custodian.
+  const w = stock();
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(w.confirms.length, 0);
+  const err = w.err.join("");
+  assert.match(err, /fence: kind node test-control-plane: made 8021q bridge rule-set route\n/);
+  assert.match(err, /fence: multus: applying v4\.3\.2 thick with namespaceIsolation to kind cluster "test"\n/);
+  const multus = w.kube.applied.findIndex((m) => m.includes("name: kube-multus-ds"));
+  const custodian = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-custodian"'));
+  assert.ok(multus >= 0 && custodian > multus, "Multus is applied before the Custodian");
+  assert.ok(w.kube.rollouts.includes("kube-system/daemonset/kube-multus-ds"));
+  assert.deepEqual([...w.docker.nodes.get("test-control-plane")!.missing], []);
+
+  // A second converge on the same nodes: one line, no change, no question about the Fence.
+  w.kube.set("kube-system", "daemonset", "kube-multus-ds", {
+    metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": MULTUS_VERSION } },
+  });
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
+  w.err.length = 0;
+  const calls = w.docker.calls.length;
+  assert.equal(await up([], w.io), 0);
+  assert.equal(w.confirms.length, 0, "no question: the namespace is home and nothing is installed");
+  assert.match(
+    w.err.join(""),
+    /fence: the node parts on kind cluster "test" are unchanged \(1 node, segment 198\.19\.0\.0\/20\)\n/,
+  );
+  assert.ok(!w.docker.calls.slice(calls).some((c) => c.includes("-- make ") || c.startsWith("cp ")));
+
+  // Home already, but the cluster's Multus is not jr2's: the Fence alone is asked about.
+  const home = stock();
+  home.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
+  assert.equal(await up([], home.io), 1);
+  assert.match(home.confirms[0]!, /^first setup of the Fence: on kind cluster "test": .*apply Multus v4\.3\.2/);
+});
+
+test("on kind, an Instance with no Harness pod gets the node parts too, and no probe runs (ADR-0084)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  w.docker.nodes.get("test-control-plane")!.missing.add("route");
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join(""), /fence: kind node test-control-plane: made route\n/);
+  assert.deepEqual(w.kube.fenceProbes, [], "no Harness pod: nothing on the Fence to probe");
 });
 
 test("operator: never downgraded — a newer deployed operator is left, with a warning", async () => {
@@ -2761,6 +2847,8 @@ test("an installed Instance with no workspace() needs no docker and no registry 
   // anywhere else that a caller caught would still show here.
   assert.match(w.err.join("\n"), /images: sweep skipped \(docker image ls was called\)/);
   assert.deepEqual(called, ["image ls"], "no docker call but the sweep's listing");
+  // Not kind: the Fence's node parts are not jr2's to make, and no node is read through docker.
+  assert.deepEqual(w.docker.calls, []);
 });
 
 test("secret: token + signing key persist across re-runs; harness.env literals materialize", async () => {
@@ -7205,7 +7293,9 @@ test("a Sandbox node that lacks a part of the Fence refuses the converge, and na
   await assert.rejects(
     () => up(["--yes"], w.io),
     (e: Error) => {
-      assert.match(e.message, /^fence: a Sandbox node lacks a part of the Fence that jr2 up does not install/);
+      assert.match(e.message, /^fence: a Sandbox node lacks a part of the Fence \(ADR-0084\)/);
+      // The world is kind: `jr2 up` made the parts, so the fix names no recipe.
+      assert.match(e.message, /jr2 up made the Fence's node parts on each node of the kind cluster "test"/);
       assert.match(
         e.message,
         /\n {2}kind-test-control-plane: the rule set — no unreachable route for 198\.19\.0\.0\/20/,

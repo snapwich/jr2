@@ -43,11 +43,12 @@ below explains one field. Set only the fields that your cluster needs.
 - The parts of the [Fence](../reference/glossary.md#fence) on each Sandbox node. The Fence is the only network of a
   Sandbox and of the [Instance Harness](../reference/glossary.md#instance-harness). It is a second pod network, apart
   from the network of the cluster. `jr2 up` installs the [Custodian](../reference/glossary.md#custodian), its uplink on
-  each Sandbox node and its resolver. It does not install these parts:
-  - Multus (the script installs the thick form, which jr2 is tested with), with `namespaceIsolation: true` and no global
-    namespace, so that a Sandbox pod gets the Fence as its only network, and a pod can use an attachment of its own
-    namespace only. `jr2 up` does not check this isolation.
-  - The stock CNI plugins `bridge`, `static` and `tuning` on each Sandbox node. The script below installs v1.10.0.
+  each Sandbox node and its resolver. On kind, `jr2 up` also made the parts below on each node. On a cluster that is not
+  kind, it does not install them. Give each Sandbox node these parts:
+  - Multus (on kind, `jr2 up` installs the thick form v4.3.2, which jr2 is tested with), with `namespaceIsolation: true`
+    and no global namespace, so that a Sandbox pod gets the Fence as its only network, and a pod can use an attachment
+    of its own namespace only. `jr2 up` does not check this isolation.
+  - The stock CNI plugins `bridge`, `static` and `tuning` on each Sandbox node. jr2 is tested with v1.10.0.
   - One bridge on each Sandbox node, named `jr2fence0`, with `vlan_filtering 1` and `vlan_default_pvid 0`, no VLAN of
     its own, no address, IPv6 off, and `arp_ignore 8`, so that the node answers no ARP request on it. Then a port of a
     Sandbox gets only its own VLAN.
@@ -59,11 +60,12 @@ below explains one field. Set only the fields that your cluster needs.
     [`fence`](../reference/config.md#fence)), so that the node never sends a packet of the segment on its default route.
 
   The bridge and its settings, the loaded `8021q` module, the rule set and the `unreachable` route do not survive a
-  restart of the node unless the node makes them at boot (a unit or the node's provisioning), and `jr2 up` checks them
-  only at a converge. Multus and the CNI plugins survive a restart.
+  restart of the node unless the node makes them at boot (a unit or the node's provisioning). On a cluster that is not
+  kind, `jr2 up` checks them only at a converge. Multus and the CNI plugins survive a restart.
 
-  `deploy/fence/node-prep.sh` in the jr2 repository makes each part on the nodes of a kind cluster
-  (`just fence-node-prep` in a clone of the repository). Read it as an example of each part for your own nodes.
+  On kind, the script `manifests/fence/kind-node.sh` of the `@jr2/cli` package makes the bridge, the module, the rule
+  set and the route on each node, and `manifests/fence/multus-v4.3.2.yaml` is the Multus that `jr2 up` applies. Read
+  them as an example of each part for your own nodes.
 
   `jr2 up` checks each part, and refuses to converge while a Sandbox node lacks one. It names the node and the part. The
   check has no privilege on the node, so it sees what the rule set does, not the rule set. A node that does not change
@@ -72,9 +74,8 @@ below explains one field. Set only the fields that your cluster needs.
   connection from the network of the cluster gets no answer, `jr2 up` writes a warning that names the node, and does not
   refuse. The check cannot tell why: the node has no route, or something drops the check's packets, or the cluster gives
   a pod no answer although the node has the route (this was seen on Cilium with BPF host routing). So a node with no
-  route can pass with the warning. On a kind cluster of the jr2 repository, the warning means that the route is missing:
-  run `just fence-node-prep`. On your own nodes, make sure that each node has the route. Make each part as this list
-  says, also when the check passes. On Cilium, the config of the node must let a different CNI plugin run
+  route can pass with the warning. On your own nodes, make sure that each node has the route. Make each part as this
+  list says, also when the check passes. On Cilium, the config of the node must let a different CNI plugin run
   (`cni-exclusive: false`). A managed cluster that permits no second pod network and no rule set on its nodes cannot
   have the Fence.
 

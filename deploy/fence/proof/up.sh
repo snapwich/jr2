@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bring up the M1 proof of the Fence (ADR-0084) on a kind cluster that `just fence-kind-up` made.
+# Bring up the M1 proof of the Fence (ADR-0084) on a kind cluster that `just fence-kind-up` made, after a `jr2 up` on
+# it made the Fence's node parts on each node.
 #
 #   KUBECONFIG=features/.tmp/kubeconfig-jr2 deploy/fence/proof/up.sh [cluster]
 #

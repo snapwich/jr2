@@ -194,7 +194,11 @@ jobs:
       - name: Setup just
         uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
 
+      # The tier's own stock cluster, which no recipe prepares: its `jr2 up` makes the Fence's node
+      # parts, as on a user's computer (ADR-0084).
       - uses: ./.github/actions/kind-cluster
+        with:
+          recipe: e2e-dist-up
 
       - name: "@dist tier"
         run: just e2e-dist

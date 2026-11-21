@@ -77,7 +77,10 @@ jr2 up
 ```
 
 `jr2 up` checks the folder with the TypeScript compiler before it changes the cluster. Then it converges the cluster of
-your current kubectl context. The first time, it asks before it makes the namespace. Type `y`:
+your current kubectl context. The first time, it asks before it makes the namespace and the parts of the
+[Fence](../reference/glossary.md#fence) on the node of your kind cluster. Type `y`:
+
+<!-- output: not run -->
 
 ```text
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
@@ -86,7 +89,11 @@ agents: (none) (carried by 1 workflow machine(s))
 assembly: staging
 assembly: 50e6f81e3bfb (kit v<version>; 1 workflow(s): ping)
 kubernetes: v1.36.1 (floor 1.35, ADR-0037)
-first contact: deploy instance "my-instance" to context kind-jr2 (create namespace "my-instance")? [y/N] y
+first contact: deploy instance "my-instance" to context kind-jr2 (create namespace "my-instance"; on kind cluster "jr2": install the CNI plugins bridge, static, tuning v1.10.0 on 1 node; make the bridge jr2fence0, the rule set inet jr2_fence, the route unreachable 198.19.0.0/20 and the 8021q module where missing on 1 node; apply Multus v4.3.2 thick with namespaceIsolation to kube-system)? [y/N] y
+fence: downloading https://github.com/containernetworking/plugins/releases/download/v1.10.0/cni-plugins-linux-amd64-v1.10.0.tgz into /home/<you>/.cache/jr2/cni-plugins
+fence: kind node jr2-control-plane: made plugin:bridge plugin:static plugin:tuning bridge bridge:no-ipv6 bridge:arp_ignore bridge:up rule-set route
+fence: multus: applying v4.3.2 thick with namespaceIsolation to kind cluster "jr2"
+fence: multus: ready on each node
 platforms: linux/amd64 (from 1 schedulable node(s))
 images: installed kit — the published v<version> Harness, operator and Orchestrator, pulled from ghcr.io/snapwich
 …
@@ -104,9 +111,12 @@ converged — `jr2 run <workflow>` when ready
 [Assembly](../reference/glossary.md#assembly) of your Instance: your Workflows and your config. Your hash can be
 different. It changes each time that your Workflows or your config change.
 
-The namespace is `my-instance`, because `jr2.config.ts` sets no `name`. The first `jr2 up` takes longer than the next
-ones, because the cluster pulls the images of the Orchestrator and of the operator. If `jr2 up` stops with `refusing:`,
-read [Fix a failed converge](../guides/fix-a-failed-converge.md).
+The namespace is `my-instance`, because `jr2.config.ts` sets no `name`. The lines that start with `fence:` are the parts
+of the Fence that `jr2 up` made on the node: the CNI plugins, from a release file that it downloads once, the bridge,
+the rule set, the route, and Multus. A Sandbox and the Instance Harness need them on a later page. Each next `jr2 up`
+makes only a part that the node lost, for example in a restart, and prints one `fence:` line. The first `jr2 up` takes
+longer than the next ones, because the cluster pulls the images of the Orchestrator, of the operator and of Multus. If
+`jr2 up` stops with `refusing:`, read [Fix a failed converge](../guides/fix-a-failed-converge.md).
 
 ## Run ping
 

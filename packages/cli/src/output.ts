@@ -7,6 +7,7 @@
 // hono app so the whole client path runs without a socket.
 
 import type { BuildPort } from "./build.ts";
+import type { DockerRunner, Download } from "./kind-fence.ts";
 import type { FetchLike } from "./client.ts";
 import type { KubeAdmin, KubePort } from "./kube.ts";
 import type { WorkspaceKube } from "./workspaces.ts";
@@ -27,6 +28,10 @@ export type Io = {
   kubeAdmin?: KubeAdmin;
   /** Override the image build port; default → pnpm + docker + kind subprocesses. */
   build?: BuildPort;
+  /** Override `docker` for the Fence's node parts on a kind cluster (ADR-0084); default → the `docker` binary. */
+  docker?: DockerRunner;
+  /** Override the download of the CNI plugin tarball (ADR-0084); default → `fetch`. */
+  download?: Download;
   /** Override the Instance typecheck of `jr2 up` and `jr2 check` (ADR-0050); default → the Instance's own `tsc`. */
   typecheck?: TypecheckPort;
   /** Where kit-checkout detection starts walking up from (ADR-0038); default → the CLI's own

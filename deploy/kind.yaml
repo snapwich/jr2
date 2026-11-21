@@ -1,7 +1,7 @@
-# Local kind cluster for jr2 (`just kind-up` / `just e2e-kind-up`). Nothing is baked for any
-# instance (ADR-0019): no mounts, no instance binding. `jr2 up` converges everything an instance
-# needs into it, except the Fence's node prerequisites, which `jr2 up` probes and does not install
-# (ADR-0084): `just e2e-kind-up` (or `just fence-node-prep`) prepares each node after the create.
+# Local kind cluster for jr2 (`just kind-up` / `just e2e-kind-up` / `just e2e-dist-up`). Nothing is
+# baked for any instance (ADR-0019): no mounts, no instance binding. `jr2 up` converges everything an
+# instance needs into it, the Fence's node parts too, which it makes on each node of a kind cluster
+# (ADR-0084).
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: jr2

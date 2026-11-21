@@ -2,6 +2,8 @@
 set shell := ["bash", "-uc"]
 
 cluster := "jr2"
+# The @dist tier's own kind cluster: a stock one, which no recipe prepares (see `e2e-dist-up`).
+dist_cluster := "jr2-dist"
 
 # install JS deps
 install:
@@ -37,24 +39,19 @@ kind-up:
 kind-down:
     kind delete cluster --name {{ cluster }}
 
-# --- the Fence on kind (ADR-0084; requires docker + kind, and network on the first run) ---
+# --- the Fence on kind (ADR-0084; requires docker + kind) ---
 #
-# A kind cluster with three nodes and the Fence's node prerequisites: the second pod network (Multus),
-# the stock bridge plugins, the bridge, the rule set and the route (deploy/fence/node-prep.sh). The
-# prerequisites are this repo's kind recipe, not jr2 code: `jr2 up` probes them and installs none.
-# Each command names the cluster's own kubeconfig file, never the shell's current context.
+# A kind cluster with three nodes, so that a test can put two Sandboxes of one Instance on two nodes.
+# The Fence's node parts (Multus, the stock bridge plugins, the 8021q module, the bridge, the rule set
+# and the route) are not this recipe's: on a kind cluster, `jr2 up` makes each part that a node lacks
+# at each converge (packages/cli/src/kind-fence.ts). The command names the cluster's own kubeconfig
+# file, never the shell's current context.
 
-# create the three-node kind cluster for the Fence and prepare its nodes (a second run changes nothing)
+# create the three-node kind cluster for the Fence (a second run changes nothing)
 fence-kind-up:
     mkdir -p features/.tmp
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind-fence.yaml --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
     kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
-    just cluster={{ cluster }} fence-node-prep
-
-# prepare each node of the cluster for the Fence (idempotent); segment = the Fence's IPv4 prefix
-fence-node-prep segment="198.19.0.0/20":
-    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} deploy/fence/node-prep.sh {{ cluster }} {{ segment }}
 
 # delete the Fence's kind cluster
 fence-kind-down:
@@ -98,15 +95,13 @@ custodian-test:
 # Sandbox Images. The one image it deploys and never builds — the Custodian's pinned Envoy
 # (ADR-0059) — a kind node pulls from its registry itself, so the cluster needs network to docker.io
 # (or a `kitRegistry` mirror). Pre-loading a `:local` tag here would be exactly the
-# invisible-stale-image bug that deletes. The one thing added to the nodes is the Fence's node
-# prerequisites (`fence-node-prep`: Multus, the stock bridge plugins, the bridge, the rule set and
-# the route), which `jr2 up` probes and does not install (ADR-0084); the node's kernel needs the
-# 8021q module. An existing cluster of this name is kept, and its nodes are prepared again, which
-# changes nothing on a prepared node. Nothing is instance-bound to the cluster (ADR-0019): each
-# @kind scenario `jr2 up`s into a fresh namespace, operator included.
+# invisible-stale-image bug that deletes. Nothing is added to the nodes either: the first `jr2 up`
+# of the tier makes the Fence's node parts on each node, as it does on any kind cluster (ADR-0084),
+# and a later one finds them; the kernel of the host must give the 8021q module. An existing
+# cluster of this name is kept. Nothing is instance-bound to the cluster (ADR-0019): each @kind
+# scenario `jr2 up`s into a fresh namespace, operator included.
 e2e-kind-up:
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml --name {{ cluster }}
-    just cluster={{ cluster }} fence-node-prep
     @echo "now: \`just e2e-kind\`"
 
 # run the kind e2e tier (needs `just e2e-kind-up`). The tier addresses the kind cluster by its own
@@ -326,21 +321,29 @@ dist-down:
 # default to the same two: the tier refuses to start while a manual loop holds them
 # (`just dist-down`).
 #
-# The cluster is the one `e2e-kind-up` makes: deploy/kind.yaml tells containerd that per-registry
-# config exists (ADR-0044), which is what lets the fixture point the nodes at its own registry, and
-# `fence-node-prep` gives each node the Fence's prerequisites, which `jr2 up` probes (ADR-0084). A
-# cluster created before the containerd patch is refused by name at bring-up, not diagnosed later
-# as a pull failure.
+# The cluster is the tier's own, `jr2-dist`: a STOCK one-node kind cluster, as a user makes it with
+# `kind create cluster`, with no node part of the Fence. So the tier's first `jr2 up` is the one
+# that makes them (ADR-0084), as on a user's computer, and no recipe of this repo hides a step the
+# user would miss. deploy/kind.yaml tells containerd that per-registry config exists (ADR-0044),
+# which is what lets the fixture point the node at its own registry; a cluster created before the
+# containerd patch is refused by name at bring-up, not diagnosed later as a pull failure. The
+# cluster is made fresh, so `e2e-dist-up` deletes one that a run left; `e2e-dist-down` deletes it.
 
-# a kind cluster with no image in it and the Fence's node prerequisites (the same one @kind uses)
+# a fresh stock kind cluster for the @dist tier, with no image and no part of the Fence in it
 e2e-dist-up:
-    just cluster={{ cluster }} e2e-kind-up
-    @echo "now: \`just e2e-dist\`"
+    mkdir -p features/.tmp
+    kind delete cluster --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
+    kind create cluster --config deploy/kind.yaml --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
+    @echo "now: \`just e2e-dist\`, then \`just e2e-dist-down\`"
 
 # run the @dist e2e tier (needs `just e2e-dist-up`, and network on every run — the storage is wiped)
 e2e-dist:
-    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} pnpm --filter @jr2/e2e test:e2e:dist
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ dist_cluster }} pnpm --filter @jr2/e2e test:e2e:dist
+
+# delete the @dist tier's kind cluster
+e2e-dist-down:
+    kind delete cluster --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
 
 # --- @model e2e tier (ADR-0066; requires docker + kind + a model endpoint) ---
 #

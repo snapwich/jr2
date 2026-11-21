@@ -75,37 +75,42 @@ the cluster, see [Architecture](architecture.md).
 4. It makes the Assembly from the folder, and calculates its hash. See [The Assembly](#the-assembly).
 5. It checks the Kubernetes version of the cluster.
 6. It checks that the namespace is this Instance's. Before it uses a namespace for the first time, it asks you.
-7. It checks that the cluster keeps pod-level resources.
-8. It finds the platforms of the nodes, and it decides the address of each image.
-9. It builds the Sandbox Images.
-10. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
-11. When a Machine has a Sandbox or a Menu-only Agent, it checks each Sandbox node for the parts of the
-    [Fence](../reference/glossary.md#fence) that it does not install: the second network of a pod (Multus), the bridge
-    of the node, and the rule set of the node. First it reads Multus from the cluster. Then it applies the Custodian,
-    its uplink on each Sandbox node and its resolver. When the Custodian is ready, two short pods on each Sandbox node
-    check the bridge and the rule set. These pods have no privilege, so they see what the rule set does, not the rule
-    set itself. While a Sandbox node lacks a part, the converge fails, and the error names the node and the part. There
-    is one exception: when the check of the node's `unreachable` route gets no answer, it writes a warning, and the
-    converge continues. The check cannot tell why it got no answer: the node has no route, or something drops the
-    check's packets, or the cluster gives a pod no answer although the node has the route (this was seen on Cilium with
-    BPF host routing). So a node with no route can pass with the warning. On a kind cluster of the jr2 repository, the
-    warning means that the route is missing: run `just fence-node-prep`.
-12. It checks each model that an Agent uses: one pod on a Sandbox node, behind the Fence as each Harness pod is, asks
+7. On a kind cluster, it makes the parts of the [Fence](../reference/glossary.md#fence) that a node does not have: the
+   stock CNI plugins `bridge`, `static` and `tuning`, the `8021q` module, the bridge, the rule set and the `unreachable`
+   route on each node, and the second network of a pod (Multus). A kind node is a container on your computer, and
+   `jr2 up` changes it through Docker. The first time that it installs a part on the cluster (the plugins or Multus), it
+   says what it will do, in the question of step 6. A part that a restart of a node lost, it makes again with no
+   question. On another cluster, it makes none of these parts.
+8. It checks that the cluster keeps pod-level resources.
+9. It finds the platforms of the nodes, and it decides the address of each image.
+10. It builds the Sandbox Images.
+11. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
+12. When a Machine has a Sandbox or a Menu-only Agent, it checks each Sandbox node for the parts of the Fence: the
+    second network of a pod (Multus), the bridge of the node, and the rule set of the node. First it reads Multus from
+    the cluster. Then it applies the Custodian, its uplink on each Sandbox node and its resolver. When the Custodian is
+    ready, two short pods on each Sandbox node check the bridge and the rule set. These pods have no privilege, so they
+    see what the rule set does, not the rule set itself. While a Sandbox node lacks a part, the converge fails, and the
+    error names the node and the part. There is one exception: when the check of the node's `unreachable` route gets no
+    answer, it writes a warning, and the converge continues. The check cannot tell why it got no answer: the node has no
+    route, or something drops the check's packets, or the cluster gives a pod no answer although the node has the route
+    (this was seen on Cilium with BPF host routing). So a node with no route can pass with the warning. On a kind
+    cluster, `jr2 up` made the route in step 7.
+13. It checks each model that an Agent uses: one pod on a Sandbox node, behind the Fence as each Harness pod is, asks
     the provider through the Custodian for one tool call for each model. Until each check passes, `jr2 up` writes
     nothing else that the Instance or the operator reads. The pod has up to 5 minutes to start, and each model has up to
     6 minutes. `jr2 up` writes each model's result as it comes. With `--skip-provider-preflight`, no pod checks the
     models, and `jr2 up` writes a warning that names each model that it did not check. The same pod asks each remote MCP
     server that an Agent names for its tools, through the Custodian. `jr2 up` refuses an allowlisted tool that the
     server does not list, and a server that refuses the token. The flag skips this check too.
-13. It applies the operator. For a Repo with an ssh url, it asks where the deploy key comes from.
-14. It applies the Secrets and the Orchestrator, and waits for the rollout. When the Machines need them, it also waits
+14. It applies the operator. For a Repo with an ssh url, it asks where the deploy key comes from.
+15. It applies the Secrets and the Orchestrator, and waits for the rollout. When the Machines need them, it also waits
     for the Repo cache, the Instance Harness and the [Instance Effector](../reference/glossary.md#instance-effector).
     The Repo cache agent on each Sandbox node checks that the kernel of its node has Landlock, which jr2 needs. While a
     Sandbox node has no Landlock, the converge fails. The error names each such node, the reason, and the fix: keep the
     node out with `sandbox.nodeSelector` or a taint, or enable Landlock in its kernel. Then run `jr2 up` again.
-15. It publishes the Assembly to the Orchestrator. When the Orchestrator already has this Assembly, it publishes
+16. It publishes the Assembly to the Orchestrator. When the Orchestrator already has this Assembly, it publishes
     nothing.
-16. It removes the images that nothing uses now.
+17. It removes the images that nothing uses now.
 
 `jr2 up` also refuses to converge while a host that jr2 uses with no secret has no entry on the Egress list, such as a
 model endpoint with no key or an MCP server with no token. A secret in the path of a url does not count, because the
@@ -240,6 +245,10 @@ would remove, and removes nothing.
   keep pod-level resources.
 - `jr2 up` refuses a namespace that belongs to a different Instance. It asks you before it uses a namespace for the
   first time. `--yes` gives the answer for CI.
+- On a kind cluster, `jr2 up` makes each part of the Fence that a node does not have, at each converge. It asks you
+  before it installs a part on the cluster for the first time. It refuses when the kernel of the computer that runs the
+  kind nodes does not give the `8021q` module. On another cluster, it makes no part of the Fence, and it refuses while a
+  Sandbox node does not have one.
 - `jr2 up` refuses a cluster that is not kind when `registry` is not set and it must build an image. When no registered
   Machine makes a [Sandbox](../reference/glossary.md#sandbox), `jr2 up` builds no image and needs no `registry`.
 - Each verb that reads the Instance, other than `jr2 version`, refuses when the Instance and the CLI do not use the same

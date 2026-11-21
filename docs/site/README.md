@@ -766,12 +766,6 @@ change it here and on each page that uses it.
 
 The user must decide these items. Until then, obey the rule for each item.
 
-- **The Fence on kind.** A Sandbox and the Instance Harness need Multus, a bridge on each node and the rule set of each
-  node. `jr2 up` checks them, and it does not install them. `kind create cluster` gives none of them, and the tutorial
-  has no step that installs them. Until the user decides that step (a published script, a `jr2` command that prepares a
-  kind cluster, or a page only), page 1 says that `jr2 up` checks them, and names the script of the jr2 repository that
-  adds them to a kind cluster (`just fence-node-prep`). The pages that give the parts (`install`,
-  `move-from-kind-to-a-shared-cluster`, `fix-a-failed-converge`) name the same script.
 - **The fork and its tags.** No test shows that a fork with "Copy the main branch only" cleared has the release tags.
   The manual check confirms it.
 - **The output.** The writers of stage 3 have no cluster, no key and no model endpoint. Write the output from the code,
@@ -779,10 +773,9 @@ The user must decide these items. Until then, obey the rule for each item.
   each command, replaces the output, and removes the comment. `scripts/release.sh` refuses to make a release commit, and
   `scripts/publish.sh` refuses a release, while a page has this comment. Thus do the manual check before `just release`,
   in these steps:
-  1. Make the kind cluster `jr2` with `just e2e-kind-up`, or prepare an existing one with `just fence-node-prep`, so
-     that its nodes have the parts of the Fence. A cluster that only `kind create cluster` made has none of them, and
-     `jr2 up` stops at its check of the Fence. Then run `just dist-up`. Use the `jr2` that it installs, because the
-     reader uses the installed CLI, not a checkout.
+  1. Make the kind cluster `jr2` as page 1 tells the reader (`kind create cluster --name jr2`), with no other step: the
+     first `jr2 up` makes the parts of the Fence on its node, as it does for the reader. Then run `just dist-up`. Use
+     the `jr2` that it installs, because the reader uses the installed CLI, not a checkout.
   2. Make the Instance as the pages tell the reader: `jr2 init my-instance`, with the model of the Local tab. When a
      page needs a fork, use a public GitHub repo that has the `main` and the release tags of jr2, and show it as
      `<you>/jr2`. When a page needs a remote MCP server, serve the fake of `features/steps/fake-mcp.ts` on the host with
@@ -795,14 +788,15 @@ The user must decide these items. Until then, obey the rule for each item.
 
 ### The tools and the cluster
 
-| Fact                | Value                                                                                                                               |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                                                                      |
-| The kernel (page 1) | Linux 6.2 or later with Landlock, and the 8021q module, for the script of the Fence: the kernel of the computer, or of Docker's VM. |
-| The jr2 CLI         | `npm i -g @jr2/cli`                                                                                                                 |
-| The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                                                                |
-| The package manager | npm.                                                                                                                                |
-| The Sandbox Image   | The `images/default/Dockerfile` that `jr2 init` writes. The tutorial does not change it.                                            |
+| Fact                | Value                                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                                                                             |
+| The kernel (page 1) | Linux 6.2 or later with Landlock, and the 8021q module, for the Fence: the kernel of the computer, or of Docker's VM.                      |
+| The Fence on kind   | The first `jr2 up` (page 2) makes the parts of the Fence on the node, after the first-contact question. The tutorial has no step for them. |
+| The jr2 CLI         | `npm i -g @jr2/cli`                                                                                                                        |
+| The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                                                                       |
+| The package manager | npm.                                                                                                                                       |
+| The Sandbox Image   | The `images/default/Dockerfile` that `jr2 init` writes. The tutorial does not change it.                                                   |
 
 `jr2 up` converges into the current kubectl context. `kind create cluster` makes `kind-jr2` the current context.
 
