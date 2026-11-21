@@ -42,10 +42,10 @@ kind-down:
 # --- the Fence on kind (ADR-0084; requires docker + kind) ---
 #
 # A kind cluster with three nodes, so that a test can put two Sandboxes of one Instance on two nodes.
-# The Fence's node parts (Multus, the stock bridge plugins, the 8021q module, the bridge, the rule set
-# and the route) are not this recipe's: on a kind cluster, `jr2 up` makes each part that a node lacks
-# at each converge (packages/cli/src/kind-fence.ts). The command names the cluster's own kubeconfig
-# file, never the shell's current context.
+# It is a stock cluster: the Fence's prerequisites (Multus and the CNI plugins bridge, static and
+# tuning) are not this recipe's, because `jr2 up` installs each one that the cluster lacks
+# (packages/cli/src/fence-install.ts). The command names the cluster's own kubeconfig file, never the
+# shell's current context.
 
 # create the three-node kind cluster for the Fence (a second run changes nothing)
 fence-kind-up:
@@ -95,10 +95,9 @@ custodian-test:
 # Sandbox Images. The one image it deploys and never builds — the Custodian's pinned Envoy
 # (ADR-0059) — a kind node pulls from its registry itself, so the cluster needs network to docker.io
 # (or a `kitRegistry` mirror). Pre-loading a `:local` tag here would be exactly the
-# invisible-stale-image bug that deletes. Nothing is added to the nodes either: the first `jr2 up`
-# of the tier makes the Fence's node parts on each node, as it does on any kind cluster (ADR-0084),
-# and a later one finds them; the kernel of the host must give the 8021q module. An existing
-# cluster of this name is kept. Nothing is instance-bound to the cluster (ADR-0019): each @kind
+# invisible-stale-image bug that deletes. Nothing is added to the cluster either: the first `jr2 up`
+# of the tier installs the Fence's prerequisites, Multus and the CNI plugins, as it does on any
+# cluster (ADR-0084), and a later one finds them. An existing cluster of this name is kept. Nothing is instance-bound to the cluster (ADR-0019): each @kind
 # scenario `jr2 up`s into a fresh namespace, operator included.
 e2e-kind-up:
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml --name {{ cluster }}
@@ -119,7 +118,8 @@ e2e-kind-up:
 # Instance Harness 250m, the Repo cache and the Instance Effector 50m each), the Custodian pod
 # (ADR-0084: 100m and 1,920Mi) and a 500m Sandbox (features/kind-instance/jr2.config.ts) — so four
 # at once ask a node for 5.8 cpu. A 4-vCPU hosted runner allocates 4, of which the system pods ask
-# 1,050m with Multus (100m and 300Mi on each node; measured on jr2-control-plane) (v0.4.0's run:
+# 1,050m with Multus (100m and 300Mi on each node; measured on jr2-control-plane), and the pod of
+# jr2-cni-plugins asks 10m (v0.4.0's run:
 # every Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.9, which
 # fits and leaves about 50m; the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
 # of 47, 2 pass 47 of 47. Requests are the kit's, sized for a real cluster, and are not lowered for a runner.
@@ -322,14 +322,14 @@ dist-down:
 # (`just dist-down`).
 #
 # The cluster is the tier's own, `jr2-dist`: a STOCK one-node kind cluster, as a user makes it with
-# `kind create cluster`, with no node part of the Fence. So the tier's first `jr2 up` is the one
-# that makes them (ADR-0084), as on a user's computer, and no recipe of this repo hides a step the
-# user would miss. deploy/kind.yaml tells containerd that per-registry config exists (ADR-0044),
+# `kind create cluster`, with no prerequisite of the Fence. So the tier's first `jr2 up` is the one
+# that installs them (ADR-0084), as on a user's computer, and no recipe of this repo hides a step
+# the user would miss. deploy/kind.yaml tells containerd that per-registry config exists (ADR-0044),
 # which is what lets the fixture point the node at its own registry; a cluster created before the
 # containerd patch is refused by name at bring-up, not diagnosed later as a pull failure. The
 # cluster is made fresh, so `e2e-dist-up` deletes one that a run left; `e2e-dist-down` deletes it.
 
-# a fresh stock kind cluster for the @dist tier, with no image and no part of the Fence in it
+# a fresh stock kind cluster for the @dist tier, with no image and no prerequisite of the Fence in it
 e2e-dist-up:
     mkdir -p features/.tmp
     kind delete cluster --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
