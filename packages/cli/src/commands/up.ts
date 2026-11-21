@@ -3644,19 +3644,29 @@ function providerFault(p: CheckedProvider, model: string, where: string, fault: 
       ? `  - harness.catalog.${p.id}.baseUrl (${p.gateway}) may not answer, or may not serve "${model.slice(p.id.length + 1)}" ` +
         "(a LiteLLM model_name alias)\n"
       : "") +
-    "  - a private CA on that path must be in harness.caBundle"
-  );
+    // The certificate's cause, first, already names harness.caBundle.
+    (tls === CERTIFICATE_CAUSE ? "" : "  - a private CA on that path must be in harness.caBundle\n")
+  ).replace(/\n$/, "");
 }
+
+/** The cause of a certificate that the Custodian does not trust (ADR-0059). */
+const CERTIFICATE_CAUSE =
+  "  - the Custodian does not trust the certificate of the host, or the certificate is not for the host's name: " +
+  "a private CA on that path must be in harness.caBundle\n";
+/** The Custodian's own 502 for a target that it could not reach: a match is anchored on it, so that a
+ * gateway's own error text that names TLS does not count. */
+const NOT_REACHED = String.raw`jr2 custodian: \S+ could not be reached: `;
 
 /** The causes of a failed TLS handshake, when the Custodian's 502 names one (ADR-0059), else nothing. */
 export function tlsCauses(fault: string): string {
-  if (/the TLS handshake failed: the Custodian does not trust the certificate/.test(fault)) {
-    return (
-      "  - the Custodian does not trust the certificate of the host, or the certificate is not for the host's name: " +
-      "a private CA on that path must be in harness.caBundle\n"
-    );
+  if (new RegExp(`${NOT_REACHED}the TLS handshake failed: the Custodian does not trust the certificate`).test(fault)) {
+    return CERTIFICATE_CAUSE;
   }
-  if (/the TLS handshake failed|before the TLS handshake ended/.test(fault)) {
+  if (
+    new RegExp(
+      `${NOT_REACHED}(the TLS handshake failed|the host closed the connection before the TLS handshake ended)`,
+    ).test(fault)
+  ) {
     return (
       "  - the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all " +
       "that the Custodian offers: put a TLS terminator, such as nginx, in front of a host that does not\n"

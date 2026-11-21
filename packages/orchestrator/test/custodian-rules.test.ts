@@ -225,12 +225,10 @@ test("an Intercepted name: TLS ended with the slot's leaf for that host, the pro
       m.body_format_override.text_format_source.inline_string,
   );
   // An Intercepted name dials through `dial-tls`, which says why its TLS failed; this chain's own
-  // upstream is that listener, so it has no mapper for a close in a handshake.
+  // upstream is that listener, so it has no TLS mapper.
   assert.deepEqual(
     bodies.map((b: string) => b.split(": %")[0]),
     [
-      "jr2 custodian: api.anthropic.com:443 could not be reached: the TLS handshake failed: the Custodian does not trust the certificate of the host, or the certificate is not for this name (a private CA must be in harness.caBundle)",
-      "jr2 custodian: api.anthropic.com:443 could not be reached: the TLS handshake failed: the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers",
       "jr2 custodian: api.anthropic.com:443 could not be reached",
       "jr2 custodian: api.anthropic.com:443 did not answer; the request may have reached it",
     ],
@@ -808,11 +806,11 @@ test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also whe
         : "response.code_details.contains('TLS_error')";
     assert.equal(lineOf("unreachable"), `${noAnswer} && !(${handshake})`, name);
     assert.equal(
-      lineOf("tls-certificate"),
+      lineOf("upstream-tls-certificate"),
       `${noAnswer} && response.code_details.contains('CERTIFICATE_VERIFY_FAILED')`,
     );
     assert.equal(
-      lineOf("tls"),
+      lineOf("upstream-tls"),
       `${noAnswer} && !response.code_details.contains('CERTIFICATE_VERIFY_FAILED') && (${handshake})`,
       name,
     );
@@ -925,6 +923,62 @@ test("the dial guard refuses GUARDED_RANGES and the Fence's own ranges, also whe
     rangesOf(cacheOf(dialMoved.filter_chains[0].filters[0].typed_config.http_filters[1].typed_config)).slice(-3),
     ["100.64.0.0/16", "100.65.0.0/16", "198.18.0.0/15"],
   );
+});
+
+test("only a route where Envoy itself dials TLS says why a TLS handshake failed: the `dial-tls` listener and an Intercepted address on a TLS port (ADR-0059)", () => {
+  // Each mapper by what it says, in Envoy's order.
+  const kindOf = (m: { status_code: number; body_format_override?: unknown }) => {
+    const body = JSON.stringify(m.body_format_override ?? m);
+    if (m.status_code === 403) return "guard";
+    if (/cache of names is full/.test(body)) return "name-cache";
+    if (/does not trust the certificate/.test(body)) return "certificate";
+    if (/the TLS handshake failed/.test(body)) return "tls";
+    if (/closed the connection before the TLS handshake ended/.test(body)) return "closed";
+    if (/may have reached it/.test(body)) return "may-have-sent";
+    if (/could not be reached: %/.test(body)) return "not-sent";
+    if (/the Orchestrator never answered/.test(body)) return "orchestrator";
+    return body;
+  };
+  const kinds = (hcm: Record<string, any>) => hcm.local_reply_config.mappers.map(kindOf);
+  const answered = ["not-sent", "may-have-sent"];
+  const boot = custodianPodBootstrap({ orchestrator: { host: "o", port: 4000 }, range: 0, ranges: RANGES }) as any;
+  const dial = (name: string) =>
+    boot.static_resources.listeners.find((l: { name: string }) => l.name === name).filter_chains[0].filters[0]
+      .typed_config;
+  assert.deepEqual(kinds(dial("dial-tls")), ["guard", "name-cache", "certificate", "tls", "closed", ...answered]);
+  assert.deepEqual(kinds(dial("dial-http")), ["guard", "name-cache", ...answered]);
+
+  // A slot: the Sandbox's entries and an Intercepted address on port 80. Only the Intercepted address
+  // on a TLS port dials TLS from the slot's chain; a name goes through `dial-tls` or `dial-http`, and
+  // the HTTP chains of a port through `dial-http`.
+  const r = renderSlot(
+    inputsOf(
+      3,
+      { ...SANDBOX_MANIFEST, egress: [...SANDBOX_MANIFEST.egress, rule("10.0.0.8", 80, "address", true, "entry")] },
+      { sandbox: "ticket-a1b2c" },
+    ),
+  );
+  const withMappers = chainsOf(r).filter((c) => manager(c)?.local_reply_config !== undefined);
+  assert.deepEqual(kinds(manager(chainOf(r, "action=intercept target=10.0.0.7:8443"))!), [
+    "certificate",
+    "tls",
+    "closed",
+    ...answered,
+  ]);
+  for (const name of [
+    "action=intercept target=10.0.0.8:80",
+    "action=intercept target=api.anthropic.com:443",
+    "action=intercept target=registry.npmjs.org:80",
+  ]) {
+    assert.deepEqual(kinds(manager(chainOf(r, name))!), answered, name);
+  }
+  // Each other chain: jr2's own name dials the Orchestrator, whose one mapper the Harness reads
+  // (ADR-0002); the rest have the two mappers alone.
+  for (const c of withMappers.filter((c) => c.name !== "action=intercept target=10.0.0.7:8443")) {
+    const own =
+      c.name.endsWith(`target=${JR2_CUSTODIAN_NAME}:443`) || c.name.endsWith(`target=${JR2_CUSTODIAN_NAME}:80`);
+    assert.deepEqual(kinds(manager(c)!), own ? ["orchestrator"] : answered, c.name);
+  }
 });
 
 test("the pod's bootstrap: admin on loopback, health, the Orchestrator's dial to this Instance's slots alone, the dial listener, LDS and CDS from watched files", () => {

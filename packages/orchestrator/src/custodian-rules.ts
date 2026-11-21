@@ -1224,9 +1224,12 @@ const CODEC_REFUSED = "response.code_details.startsWith('http1.')";
 /** A dial listener's log (ADR-0059): one line for a refusal by the dial guard, one for a name that it
  * refuses, one for a name refused while the cache of names is full, one for a target that gave no
  * answer, each with the slot and its Harness pod that the slot's chain named. Of a target that gave
- * no answer, a failed TLS handshake has its own reason: `reason=tls-certificate` for a certificate
- * that the Custodian does not trust, `reason=tls` for each other TLS failure and, on the `dial-tls`
- * listener (`tls`), for a close before the handshake ended. A CONNECT that the listener's codec
+ * no answer, a failed TLS handshake has its own reason: `reason=upstream-tls-certificate` for a
+ * certificate that the Custodian does not trust, `reason=upstream-tls` for each other TLS failure
+ * and, on the `dial-tls` listener (`tls`), for a close before the handshake ended. (`reason=tls` is
+ * a slot chain's: a Sandbox sent TLS to a port of plain HTTP.) Unlike the 502's mappers, these
+ * lines do not need `UF`: a TLS error after the connect (`UC`) also logs `reason=upstream-tls`,
+ * while its body says that the request may have reached the target. A CONNECT that the listener's codec
  * refuses (a TLS name that is not a DNS name, which Envoy writes as `invalid:…`) is a name refused;
  * no header of it was read, so its line names no slot, and the slot's own line names the Sandbox
  * and the TLS name. */
@@ -1262,8 +1265,8 @@ function dialLog(tls: boolean): Json[] {
     line("name", `(response.code_details == 'direct_response' && response.code == 403) || ${CODEC_REFUSED}`),
     line("name-cache", NAME_CACHE_FULL),
     // A flag on an answer of the target, or on a tunnel that its client closed (`DC`), is no refusal.
-    line("tls-certificate", `${noAnswer} && ${CERTIFICATE_FAILED}`),
-    line("tls", `${noAnswer} && !${CERTIFICATE_FAILED} && (${handshake})`),
+    line("upstream-tls-certificate", `${noAnswer} && ${CERTIFICATE_FAILED}`),
+    line("upstream-tls", `${noAnswer} && !${CERTIFICATE_FAILED} && (${handshake})`),
     line("unreachable", `${noAnswer} && !(${handshake})`),
   ];
 }

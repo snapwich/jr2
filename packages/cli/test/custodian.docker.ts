@@ -535,7 +535,9 @@ describe("toward a bound host (an Intercepted host of the slot)", () => {
     );
     assert.equal(d.seen.length, 0);
     await line(
-      new RegExp(`action=refuse target=d\\.test:${d.port} reason=tls-certificate method=GET status=502 flags=UF`),
+      new RegExp(
+        `action=refuse target=d\\.test:${d.port} reason=upstream-tls-certificate method=GET status=502 flags=UF`,
+      ),
     );
   });
 
@@ -551,7 +553,9 @@ describe("toward a bound host (an Intercepted host of the slot)", () => {
       ),
     );
     assert.equal(old.seen.length, 0);
-    await line(new RegExp(`action=refuse target=old\\.test:${old.port} reason=tls method=GET status=502 flags=UF`));
+    await line(
+      new RegExp(`action=refuse target=old\\.test:${old.port} reason=upstream-tls method=GET status=502 flags=UF`),
+    );
 
     // The close has no TLS error: Envoy says `{remote_connection_failure}` alone, on the `dial-tls`
     // listener (a name) and on the slot's own chain (an address).
@@ -565,7 +569,9 @@ describe("toward a bound host (an Intercepted host of the slot)", () => {
     assert.equal(r.status, 502);
     assert.match(r.body, closed(`closer.test:${closer.port}`));
     await line(
-      new RegExp(`action=refuse target=closer\\.test:${closer.port} reason=tls method=GET status=502 flags=UF`),
+      new RegExp(
+        `action=refuse target=closer\\.test:${closer.port} reason=upstream-tls method=GET status=502 flags=UF`,
+      ),
     );
     const hellos = closer.hellos;
     r = await httpsVia(pod.dial(3, LAN, closer.port), LAN, {

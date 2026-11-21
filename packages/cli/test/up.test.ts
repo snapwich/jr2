@@ -3895,6 +3895,9 @@ test("provider preflight: a failed TLS handshake that the Custodian names puts t
         /TLS_error_end\}\n {2}- the Custodian does not trust the certificate of the host, or the certificate is not for the host's name: a private CA on that path must be in harness\.caBundle\n {2}- the pods may have no egress/,
       );
       assert.doesNotMatch(sonnet!, /may not accept TLS 1\.2\n/);
+      // The certificate's cause names harness.caBundle; the list does not say it again.
+      assert.equal(sonnet!.match(/harness\.caBundle/g)!.length, 2, "the Custodian's text and the cause");
+      assert.match(haiku!, /\n {2}- a private CA on that path must be in harness\.caBundle\n/);
       return true;
     },
   );
@@ -3908,6 +3911,8 @@ test("tlsCauses: nothing for a fault that names no failed TLS handshake", () => 
     "",
   );
   assert.equal(tlsCauses("anthropic-messages call failed: 401 invalid x-api-key"), "");
+  // A gateway's own error that names TLS is not the Custodian's 502.
+  assert.equal(tlsCauses("502 litellm: upstream error: the TLS handshake failed: bad record mac"), "");
 });
 
 test("provider preflight: every failure in one error, and the Instance as it was — nothing of it applied, no publish, no sweep", async () => {

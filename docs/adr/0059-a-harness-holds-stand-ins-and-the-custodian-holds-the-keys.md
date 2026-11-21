@@ -166,9 +166,10 @@ and it replaces the Adapter.
     gives 502 and a body that names the target and the reason. Redirects pass back unchanged.
   - When the target gives no answer, the Custodian answers 502 with a body that names the target, says what jr2 knows
     about the request, and ends with Envoy's reason. It replaces Envoy's own answer for ten Envoy response flags, in two
-    mappers. Before them, up to three mappers say why a TLS handshake failed. One reply can carry several flags, and
-    Envoy uses the first mapper that matches, in order. The TLS mappers are for `UF` alone, and the next mapper is for
-    `UF`, `UH` and `DF`, so a reply with one of these flags gets a "could not be reached" text whatever else it carries:
+    mappers. Before them, on a route where Envoy itself dials TLS, three mappers say why a TLS handshake failed. One
+    reply can carry several flags, and Envoy uses the first mapper that matches, in order. The TLS mappers are for `UF`
+    alone, and the next mapper is for `UF`, `UH` and `DF`, so a reply with one of these flags gets a "could not be
+    reached" text whatever else it carries:
     - `UF` (the connection to the target failed), `UH` (no healthy host) and `DF` (the DNS lookup failed) say that Envoy
       did not send the request. The body is `jr2 custodian: <target> could not be reached: <details> <reason>`.
     - A `UF` whose TLS failed adds why, after `could not be reached: `, because Envoy's reason is BoringSSL's error code
@@ -182,12 +183,15 @@ and it replaces the Adapter.
       - `the TLS handshake failed: the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers`,
         for each other TLS error;
       - `the host closed the connection before the TLS handshake ended: ` and the same words about TLS 1.2, for the
-        close. Only a route on which Envoy itself dials TLS has this mapper, because on a route of plain HTTP the same
-        details say nothing about TLS.
+        close.
 
-      The dial listener's log line says the same: `reason=tls-certificate` and `reason=tls`, where another failure is
-      `reason=unreachable`. Neither the words nor the line hold a value or a Stand-in. `jr2 up`'s provider check puts
-      the matching cause first in its list.
+      Only the `dial-tls` listener and the chain of an Intercepted address on a port other than 80 dial TLS, so only
+      they have these mappers. On another route they cannot match, and on a route of plain HTTP the details of the close
+      say nothing about TLS. The dial listener's log line names the same causes: `reason=upstream-tls-certificate` and
+      `reason=upstream-tls`, where another failure is `reason=unreachable` (`reason=tls` is a slot chain's: a Sandbox
+      sent TLS to a port of plain HTTP). The line does not need `UF`, so a TLS error after the connect (`UC`) also logs
+      `reason=upstream-tls`, and its body says that the request may have reached the target. Neither the words nor the
+      line hold a value or a Stand-in. `jr2 up`'s provider check puts the matching cause first in its list.
 
     - `UC` (the target closed the connection), `DPE` (a downstream protocol error, which a body framing error can cause
       after the headers went), `UPE` (an upstream protocol error), `UR` (the target reset the stream) and `LR` (Envoy
@@ -526,16 +530,18 @@ and it replaces the Adapter.
   names, two `Host` headers, idle connections on the health listener, 421, 400 and 403 on paths, a secret bound to an
   address, the Stand-ins and values of two slots kept apart, a Tunneled name, an address entry, raw TCP by name, a
   wildcard that carries TLS and HTTP only, the dial guard by every spelling, by resolved name and by each address of a
-  name, 502 on an untrusted upstream, SSE timing, abort, a 302, the refusal of a bad value, the log, a TLS name or a
-  `Host` header that does not agree with the name of the address, another slot's placeholder, a wildcard's `Host` that
-  names another port than the entry's, a Tunneled name with an exact entry carried at its own placeholder as a wildcard
-  permits, the six routes of jr2's own name and the fetch to the slot's own Sandbox, the Orchestrator's dial (the dial
-  token, the slot targets, 503 with `x-jr2-custodian: unreachable`, a duplex body and SSE), the dial listener's own
-  bound, the refusal of a new name while the cache of names is full, an update of one slot that does not cut a stream of
-  another, the time of one update of one slot in a pod of 128 slots of 30 entries (about 0.3 seconds), the Anthropic SDK
-  with no proxy setting, and the control process of a Custodian pod: it makes each slot live by Envoy's own admin, takes
-  a changed value live, and removes a slot whose Secret is gone or whose rules Envoy refuses. The first SSE event
-  arrives through the Custodian about half a millisecond later than direct.
+  name, 502 on an untrusted upstream, the 502 that names a failed TLS handshake (an untrusted certificate, a host that
+  speaks TLS 1.0 alone, a close in the handshake, toward a name and toward an address), a refused connect, whose 502
+  names no TLS, SSE timing, abort, a 302, the refusal of a bad value, the log, a TLS name or a `Host` header that does
+  not agree with the name of the address, another slot's placeholder, a wildcard's `Host` that names another port than
+  the entry's, a Tunneled name with an exact entry carried at its own placeholder as a wildcard permits, the six routes
+  of jr2's own name and the fetch to the slot's own Sandbox, the Orchestrator's dial (the dial token, the slot targets,
+  503 with `x-jr2-custodian: unreachable`, a duplex body and SSE), the dial listener's own bound, the refusal of a new
+  name while the cache of names is full, an update of one slot that does not cut a stream of another, the time of one
+  update of one slot in a pod of 128 slots of 30 entries (about 0.3 seconds), the Anthropic SDK with no proxy setting,
+  and the control process of a Custodian pod: it makes each slot live by Envoy's own admin, takes a changed value live,
+  and removes a slot whose Secret is gone or whose rules Envoy refuses. The first SSE event arrives through the
+  Custodian about half a millisecond later than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses the Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

@@ -178,10 +178,12 @@ const flagged = (flags: readonly string[]): Json => ({ response_flag_filter: { f
  * `NOT_SENT_FLAGS` failure the target did not get the request, and after a `MAY_HAVE_SENT_FLAGS`
  * one it may have it — so an Agent that sends a POST again can write twice, and the text must not
  * tell it the first one went nowhere. One reply can carry several flags, and Envoy uses the first
- * mapper that matches, in order. The first mappers are for a connection (`UF`) whose TLS failed:
- * the certificate, then any other TLS error, then, on a route to TLS (`tls`), a close with no TLS
- * alert. Each says "could not be reached" and why, because a user must otherwise read BoringSSL's
- * error code to learn that the cause is TLS. Then the `NOT_SENT_FLAGS` mapper, so a reply with
+ * mapper that matches, in order. On a route where Envoy itself dials TLS (`tls`), the first mappers
+ * are for a connection (`UF`) whose TLS failed: the certificate, then any other TLS error, then a
+ * close with no TLS alert. Each says "could not be reached" and why, because a user must otherwise
+ * read BoringSSL's error code to learn that the cause is TLS. On another route they can never
+ * match, and each costs config and a compiled CEL expression, so it has none. Then the
+ * `NOT_SENT_FLAGS` mapper, so a reply with
  * `UF`, `UH` or `DF` reads "could not be reached" whatever else it carries. Without the mappers,
  * Envoy answers each of these flags itself (503 for most, 502 for `UPE`) with a body that names no
  * target, which a caller can read as the target's answer. No caller reads the flags; the
@@ -190,9 +192,13 @@ const flagged = (flags: readonly string[]): Json => ({ response_flag_filter: { f
 export function unreachable(target: string, opts: { tls?: boolean } = {}): Json {
   return {
     mappers: [
-      noAnswer(target, failedConnection(CERTIFICATE_FAILED), TLS_WORDS.certificate),
-      noAnswer(target, failedConnection(TLS_FAILED), TLS_WORDS.tls),
-      ...(opts.tls ? [noAnswer(target, failedConnection(CLOSED_IN_HANDSHAKE), TLS_WORDS.closed)] : []),
+      ...(opts.tls
+        ? [
+            noAnswer(target, failedConnection(CERTIFICATE_FAILED), TLS_WORDS.certificate),
+            noAnswer(target, failedConnection(TLS_FAILED), TLS_WORDS.tls),
+            noAnswer(target, failedConnection(CLOSED_IN_HANDSHAKE), TLS_WORDS.closed),
+          ]
+        : []),
       noAnswer(target, flagged(NOT_SENT_FLAGS), NOT_REACHED),
       noAnswer(target, flagged(MAY_HAVE_SENT_FLAGS), MAY_HAVE_REACHED),
     ],

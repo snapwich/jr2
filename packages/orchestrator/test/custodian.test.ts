@@ -73,10 +73,9 @@ test("an intercepted target that gave no answer has two 502 texts, one per flag 
     (m.filter.and_filter?.filters[0]!.response_flag_filter ?? m.filter.response_flag_filter)!.flags;
   const rows = (mappers: Mapper[]) =>
     mappers.map((m) => [m.status_code, flagsOf(m), cel(m), m.body_format_override.text_format_source.inline_string]);
+  // A route where Envoy dials no TLS of its own has no TLS mapper: none could match.
   const plain = unreachable(target).mappers as Mapper[];
   assert.deepEqual(rows(plain), [
-    [502, ["UF"], "response.code_details.contains('CERTIFICATE_VERIFY_FAILED')", `${certificate}: ${details}`],
-    [502, ["UF"], "response.code_details.contains('TLS_error')", `${handshake}: ${details}`],
     [502, ["UF", "UH", "DF"], undefined, `${reached}: ${details}`],
     [
       502,
@@ -85,11 +84,13 @@ test("an intercepted target that gave no answer has two 502 texts, one per flag 
       `jr2 custodian: ${target} did not answer; the request may have reached it: ${details}`,
     ],
   ]);
-  // On a route to TLS, a close with no TLS alert after the connect is a close in the handshake. The
-  // details are that text alone: a refused connect adds `delayed_connect_error`.
+  // On a route where Envoy dials TLS: the certificate, any other TLS error, and a close with no TLS
+  // alert after the connect, which is a close in the handshake. Its details are that text alone: a
+  // refused connect adds `delayed_connect_error`.
   const tls = unreachable(target, { tls: true }).mappers as Mapper[];
   assert.deepEqual(rows(tls).slice(0, 3), [
-    ...rows(plain).slice(0, 2),
+    [502, ["UF"], "response.code_details.contains('CERTIFICATE_VERIFY_FAILED')", `${certificate}: ${details}`],
+    [502, ["UF"], "response.code_details.contains('TLS_error')", `${handshake}: ${details}`],
     [
       502,
       ["UF"],
@@ -97,7 +98,7 @@ test("an intercepted target that gave no answer has two 502 texts, one per flag 
       `${closed}: ${details}`,
     ],
   ]);
-  assert.deepEqual(rows(tls).slice(3), rows(plain).slice(2));
+  assert.deepEqual(rows(tls).slice(3), rows(plain));
   // One reply can carry several flags, and Envoy uses the first mapper that matches any of them, in
   // order. `URX` comes with the last attempt's own flag: `UF,URX` was never sent, `UC,URX` may have
   // been.
