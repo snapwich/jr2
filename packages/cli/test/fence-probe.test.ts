@@ -112,6 +112,8 @@ async function runFence(opts: {
   nodePort: number;
   /** The port of the "API Service" on the loopback; a closed port (a reset, as the Custodian's) by default. */
   servicePort?: number;
+  /** The dial to the "API Service" gets no SYN-ACK: the sign of the node's NAT. */
+  serviceBlackhole?: boolean;
   arp?: string;
 }): Promise<Run> {
   const dir = await scratch();
@@ -121,9 +123,16 @@ async function runFence(opts: {
     opts.arp ?? "IP address       HW type     Flags       HW address            Mask     Device\n",
   );
   const run: Run = { log: [] };
+  const servicePort = opts.servicePort ?? (await closedPort());
+  // A socket that never connects and never fails, as a dial whose SYN the node's NAT sent elsewhere.
+  const blackhole = {
+    ...net,
+    connect: (o: net.NetConnectOpts) =>
+      (o as net.TcpNetConnectOpts).port === servicePort ? new net.Socket() : net.connect(o),
+  } as typeof net;
   const sys: ProbeSys = {
     dgram,
-    net,
+    net: opts.serviceBlackhole ? blackhole : net,
     os: {
       networkInterfaces: () => ({
         lo: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
@@ -137,7 +146,7 @@ async function runFence(opts: {
       JR2_PROBE_UPLINK_MAC: "02:00:c6:12:01:04",
       JR2_PROBE_VLAN: "260",
       JR2_PROBE_SERVICE: "127.0.0.1",
-      JR2_PROBE_SERVICE_PORT: String(opts.servicePort ?? (await closedPort())),
+      JR2_PROBE_SERVICE_PORT: String(servicePort),
       JR2_PROBE_NODE: "127.0.0.1",
       JR2_PROBE_NODE_PORT: String(opts.nodePort),
       JR2_PROBE_DNS_PORT: String(opts.dnsPort),
@@ -219,7 +228,7 @@ test("the Fence probe passes when the resolver answers and the node's address an
   }
 });
 
-test("the Fence probe passes a dial to the API Service that the Custodian refuses (a reset, or a line of jr2's), and names the rule table when no answer comes", async () => {
+test("the Fence probe passes a dial to the API Service that the Custodian refuses (a reset, or a line of jr2's); a SYN with no answer names the rule table; a silent peer has its own cause", async () => {
   const dns = await refusingResolver();
   const custodian = await answering("jr2 custodian: refused: 10.96.0.1:443 is not on the Egress list\n");
   const quiet = await silent();
@@ -229,15 +238,23 @@ test("the Fence probe passes a dial to the API Service that the Custodian refuse
   try {
     const nodePort = await closedPort();
     assert.equal((await runFence({ dnsPort: dns.port, nodePort, servicePort: custodian.port })).code, 0);
-    const [none, other] = await Promise.all([
+    const [nat, accepted, other] = await Promise.all([
+      runFence({ dnsPort: dns.port, nodePort, serviceBlackhole: true }),
       runFence({ dnsPort: dns.port, nodePort, servicePort: quiet.port }),
       runFence({ dnsPort: dns.port, nodePort, servicePort: apiServer.port }),
     ]);
-    assert.equal(none.code, 1);
-    assert.equal(none.message?.part, "rules");
+    assert.equal(nat.code, 1);
+    assert.equal(nat.message?.part, "rules");
     assert.match(
-      none.message!.why!,
-      /^a connection to the API Service's address 127\.0\.0\.1:\d+ got no answer in 3 s \(silent\), where the Custodian refuses it at once: the node changes a Sandbox's frames before the bridge carries them to the uplink \(the NAT of kube-proxy, with net\.bridge\.bridge-nf-call-iptables = 1\), so the rule table inet jr2_fence is not loaded on the node$/,
+      nat.message!.why!,
+      /^a connection to the API Service's address 127\.0\.0\.1:\d+ got no answer to its SYN in 3 s \(timeout\), where the Custodian refuses it at once: the node changes a Sandbox's frames before the bridge carries them to the uplink \(the NAT of kube-proxy, with net\.bridge\.bridge-nf-call-iptables = 1\), so the rule table inet jr2_fence is not loaded on the node$/,
+    );
+    // Something took the connection and says nothing: not the NAT's sign, and not the rule table.
+    assert.equal(accepted.code, 1);
+    assert.equal(accepted.message?.part, "service");
+    assert.match(
+      accepted.message!.why!,
+      /^a connection to the API Service's address 127\.0\.0\.1:\d+ was accepted, but no byte and no close came in 3 s, where the Custodian refuses it at once: a peer that is not the Custodian took the connection$/,
     );
     assert.equal(other.code, 1);
     assert.equal(other.message?.part, "node");
@@ -348,12 +365,18 @@ test("the refusal names each node and part, and the likely causes, with the page
       "than /opt/cni/bin and /etc/cni/net.d; a file bridge, static or tuning in /opt/cni/bin that is not a stock " +
       "CNI plugin that knows vlanTrunk and preserveDefaultVlan (jr2 never replaces one); a primary CNI that " +
       "removes Multus's configuration; a node firewall that changes bridged VLAN frames; or a node with no rule " +
-      "table inet jr2_fence (jr2 up replaced the node's pod of jr2-system/jr2-fence-node, which loads it at its " +
-      "start). See " +
+      "table inet jr2_fence (the pod of jr2-system/jr2-fence-node on the node loads it at its start). See " +
       `${FENCE_PREREQUISITES_URL}. Or keep the node out of the Sandbox nodes with sandbox.nodeSelector or a taint ` +
       "(ADR-0052). Then run `jr2 up` again.",
   );
-  assert.doesNotMatch(fenceRefusal(gaps).message, /kind cluster|just |rule set|route/);
+  assert.doesNotMatch(fenceRefusal(gaps).message, /kind cluster|just |rule set|route|replaced/);
+  // A replacement is said only on the gap that it was made for.
+  const replaced = fenceRefusal([
+    { node: "n1", part: "the rule table inet jr2_fence", why: "w", replaced: "jr2 up replaced the pod jr2-system/p" },
+    { node: "n2", part: "the dial to a Service address", why: "v" },
+  ]).message.split("\n");
+  assert.equal(replaced[1], "  n1: the rule table inet jr2_fence — w. jr2 up replaced the pod jr2-system/p");
+  assert.equal(replaced[2], "  n2: the dial to a Service address — v");
   assert.equal(
     gapOf("n3", ended(`jr2.fence-probe ${JSON.stringify({ probe: "fence", ok: false, part: "rules", why: "w" })}`))
       ?.part,
@@ -362,27 +385,28 @@ test("the refusal names each node and part, and the likely causes, with the page
   assert.match(fenceRefusal([{ node: "x", part: "p", why: "w" }]).message, /^fence: a Sandbox node fails/);
 });
 
-test("from the API: no attachment definition, or a Sandbox node with no Ready Multus pod, refuses", async () => {
+test("from the API: no attachment definition, or a Sandbox node with no Ready pod of the Multus that the read found, refuses", async () => {
   const ready = (node: string, status = "True") => ({
     spec: { nodeName: node },
     status: { conditions: [{ type: "Ready", status }] },
   });
   assert.deepEqual(nodesWithoutMultus(["a", "b", "c"], [ready("a"), ready("b", "False"), ready("x")]), ["b", "c"]);
 
+  // The pods of the Multus that the read before the question found: here, a Multus of the cluster.
+  const multusPods = [{ namespace: "kube-system", selector: "app=rke2-multus" }];
   const kube = (crds: unknown[], pods: unknown[]) =>
     ({
-      async listJson(opts: { kind: string; selector?: string; allNamespaces?: boolean; fieldSelector?: string }) {
+      async listJson(opts: { kind: string; selector?: string; namespace?: string; fieldSelector?: string }) {
         if (opts.kind === "customresourcedefinition") {
           assert.equal(opts.fieldSelector, "metadata.name=network-attachment-definitions.k8s.cni.cncf.io");
           return crds;
         }
-        assert.equal(opts.selector, "app=multus");
-        assert.equal(opts.allNamespaces, true);
+        assert.deepEqual([opts.namespace, opts.selector], ["kube-system", "app=rke2-multus"]);
         return pods;
       },
     }) as unknown as ProbeKube;
   await assert.rejects(
-    checkFenceApi(kube([], []), { nodes: ["a"] }),
+    checkFenceApi(kube([], []), { nodes: ["a"], multusPods }),
     (e: Error) =>
       e.message.includes(
         "no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io, so Multus is not installed",
@@ -391,10 +415,10 @@ test("from the API: no attachment definition, or a Sandbox node with no Ready Mu
       !/kind cluster|just /.test(e.message),
   );
   await assert.rejects(
-    checkFenceApi(kube([{}], [ready("a")]), { nodes: ["a", "b"] }),
-    /fence: a Sandbox node fails .*\n {2}b: Multus — no Ready Multus pod \(app=multus\) on the node/,
+    checkFenceApi(kube([{}], [ready("a")]), { nodes: ["a", "b"], multusPods }),
+    /fence: a Sandbox node fails .*\n {2}b: Multus — no Ready Multus pod \(kube-system: app=rke2-multus\) on the node/,
   );
-  await checkFenceApi(kube([{}], [ready("a"), ready("b")]), { nodes: ["a", "b"] });
+  await checkFenceApi(kube([{}], [ready("a"), ready("b")]), { nodes: ["a", "b"], multusPods });
 });
 
 // ---- the probe of the nodes, through a fake API -----------------------------------------------------------
@@ -406,6 +430,7 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
     [probePodName("node-b")]: fence({ ok: false, part: "bridge", why: "no answer from the uplink" }),
     [probePodName("node-c")]: fence({ ok: true }),
     [probePodName("node-e")]: fence({ ok: false, part: "rules", why: "no answer from the API Service" }),
+    [probePodName("node-f")]: fence({ ok: false, part: "service", why: "a peer took the connection" }),
   };
   const calls: string[] = [];
   let polls = 0;
@@ -419,12 +444,14 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
           { metadata: { name: "cust-c" }, spec: { nodeName: "node-c" } },
           { metadata: { name: "cust-old", deletionTimestamp: "now" }, spec: { nodeName: "node-d" } },
           { metadata: { name: "cust-e" }, spec: { nodeName: "node-e" } },
+          { metadata: { name: "cust-f" }, spec: { nodeName: "node-f" } },
         ] as T[];
       }
       if (opts.selector === "app=jr2-fence-node") {
         return [
           { metadata: { name: "fn-a" }, spec: { nodeName: "node-a" } },
           { metadata: { name: "fn-e" }, spec: { nodeName: "node-e" } },
+          { metadata: { name: "fn-f" }, spec: { nodeName: "node-f" } },
         ] as T[];
       }
       // One probe pod of an earlier converge is still there.
@@ -445,7 +472,7 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
       }
       // Each pod runs on the first read, and has ended on the second.
       polls++;
-      if (polls <= 4) return { status: { phase: "Running", containerStatuses: [{ state: { running: {} } }] } } as T;
+      if (polls <= 5) return { status: { phase: "Running", containerStatuses: [{ state: { running: {} } }] } } as T;
       const ok = results[opts.name]!.includes('"ok":true');
       return ended(results[opts.name]!, ok ? 0 : 1) as T;
     },
@@ -469,10 +496,18 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
       node: "node-b",
       part: "the bridge, its VLAN filtering, or the Custodian pod of this node",
       why: "no answer from the uplink",
+      replaced: "jr2 up replaced the Custodian pod cust-b, so that it joins the bridge that the node has now",
     },
-    { node: "node-e", part: "the rule table inet jr2_fence", why: "no answer from the API Service" },
+    {
+      node: "node-e",
+      part: "the rule table inet jr2_fence",
+      why: "no answer from the API Service",
+      replaced: "jr2 up replaced the pod jr2-system/fn-e, which loads the table again at its start",
+    },
+    // A silent peer is not the sign of a missing table: no pod is replaced for it.
+    { node: "node-f", part: "the dial to a Service address", why: "a peer took the connection" },
   ]);
-  const names = ["node-a", "node-b", "node-c", "node-e"].map(probePodName);
+  const names = ["node-a", "node-b", "node-c", "node-e", "node-f"].map(probePodName);
   assert.deepEqual(calls, [
     "list pod app=jr2-custodian",
     "get service default/kubernetes",
@@ -484,7 +519,7 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
     "list pod app=jr2-fence-node",
     "delete pod jr2-system/fn-e",
   ]);
-  assert.match(lines[0]!, /probing the bridge on 4 Sandbox node\(s\): node-a, node-b, node-c, node-e/);
+  assert.match(lines[0]!, /probing the bridge on 5 Sandbox node\(s\): node-a, node-b, node-c, node-e, node-f/);
   assert.match(lines[1]!, /node-b: replacing the Custodian pod cust-b, whose trunk did not answer on the bridge/);
   assert.equal(
     lines[2],

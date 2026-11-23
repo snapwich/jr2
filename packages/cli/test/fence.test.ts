@@ -319,6 +319,7 @@ test("a slot's attachment: an isolated access port of its VLAN, with its fixed M
   assert.equal(bridge.bridge, "jr2fence0");
   assert.equal(bridge.vlan, 391);
   assert.equal(bridge.portIsolation, true);
+  assert.equal(bridge.preserveDefaultVlan, false, "VLAN 1, the bridge's own side, is not on the port");
   assert.equal(bridge.ipMasq, false);
   assert.equal(bridge.isGateway, false);
   assert.deepEqual(bridge.args, { cni: { mac: "02:00:c6:13:01:87" } });

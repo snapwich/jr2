@@ -9,7 +9,9 @@
 // range k is VLAN 2 + 128k + i, and its address is the segment's network address plus the VLAN. The
 // trunk port of an Instance's Custodian pod is a member of its range only, and no pod's port has
 // VLAN 1, the VLAN of the bridge's own side (the node), so a frame of one Instance never reaches the
-// trunk of another, and no frame of a pod reaches the node. This VLAN state is the boundary (ADR-0084).
+// trunk of another, and no frame of a pod reaches the node. This VLAN state keeps a Sandbox off the
+// node and off other pods, also with no rule table; the node's rule table (`fence-install.ts`) keeps
+// the node's NAT from changing a Sandbox's frames, and is a second barrier (ADR-0084).
 //
 // The uplink script is here, in TypeScript, and not in a file beside the package: a `files:` list
 // cannot miss it, and the installed CLI writes the same script as a checkout does.
@@ -81,7 +83,8 @@ function attachment(namespace: string, name: string, labels: Record<string, stri
  * The attachment of slot i (ADR-0084): the stock bridge plugin puts the pod on the node's bridge as
  * an access port of the slot's VLAN, with the slot's fixed MAC and its address. The pod's only
  * route leads to the uplink's address on that VLAN. The port is isolated: on the bridge it can
- * exchange frames with the trunk only.
+ * exchange frames with the trunk only. `preserveDefaultVlan: false` removes VLAN 1, the VLAN of the
+ * bridge's own side, from the port, as on the trunk: the port is a member of its slot's VLAN only.
  */
 export function slotAttachment(opts: {
   namespace: string;
@@ -103,6 +106,7 @@ export function slotAttachment(opts: {
       portIsolation: true,
       mtu: 1500,
       vlan,
+      preserveDefaultVlan: false,
       args: { cni: { mac: slotMac(vlan) } },
       ipam: {
         type: "static",

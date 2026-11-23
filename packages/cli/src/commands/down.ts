@@ -4,7 +4,8 @@
 // (ADR-0031), and every live Sandbox with it). `--all` also uninstalls the
 // per-cluster operator, and what `jr2 up` installed for the Fence (ADR-0084): the rule table on each
 // node (the DaemonSet jr2-fence-node removes it, then goes) and a Multus that carries jr2's
-// annotation — only sane when this was the cluster's
+// annotation, with its CustomResourceDefinition, unless the cluster has a NetworkAttachmentDefinition
+// of another owner (then both stay, with a warning) — only sane when this was the cluster's
 // last instance. That is the caller's judgment, except for an Instance that holds a VLAN range of
 // the Fence: its claim is in `jr2-system`, so `--all` refuses while another namespace that is still
 // there holds one. Each Instance that needs the Fence holds a range, so past that refusal no
@@ -81,7 +82,9 @@ export async function down(args: string[], io: Io): Promise<number> {
 
   const scope = values.all
     ? " AND the per-cluster operator, the Fence's rule table on each node and the DaemonSet jr2-fence-node that " +
-      "loads it, and a Multus that jr2 installed"
+      "loads it, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each " +
+      "NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another " +
+      "owner, jr2 keeps its Multus and says so"
     : "";
   const ok =
     values.yes === true ||

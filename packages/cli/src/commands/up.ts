@@ -432,25 +432,29 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- the Fence's prerequisites (ADR-0084, ADR-0019): read now, installed after the question ----
   // An Instance with a Harness pod (a Sandbox, or the Instance Harness) is on the Fence. Its
-  // prerequisites are Multus and the CNI plugins bridge, static and tuning on each Sandbox node,
-  // and `jr2 up` installs each one that the cluster lacks, with kubectl, on any cluster. The read
-  // refuses, before anything is applied, a cluster where an install is not safe: a Multus of
-  // another owner with other settings, a Cilium that removes each other CNI configuration, or a
-  // node whose CNI folders are elsewhere. The Sandbox nodes come from the same read of the nodes
-  // as the platforms below.
+  // prerequisites are Multus, and the DaemonSet jr2-fence-node, which puts the CNI plugins bridge,
+  // static and tuning on each node and loads the rule table there. `jr2 up` installs each one that
+  // the cluster lacks, with kubectl, on any cluster. The read refuses, before anything is applied, a
+  // cluster where an install is not safe: a Multus of another owner with other settings or with
+  // settings that jr2 cannot read, a definition of Multus with no Multus that jr2 can see, or a
+  // Cilium that removes each other CNI configuration. The Sandbox nodes come from the same read of
+  // the nodes as the platforms below.
   const fenced = carried.composesSandbox || carried.instanceHarness !== undefined;
   const allNodes =
     config.platforms === undefined || fenced ? await kube.listJson<NodeObject>({ kind: "node", ...ctx }) : [];
   const fenceNodes = sandboxNodes(allNodes, config.sandbox).nodes;
   const fencePlan = fenced ? await planFenceInstall(kube, { nodes: fenceNodes, ...ctx }) : undefined;
-  // The first time a converge installs something on the cluster, it says what and asks, in the
+  for (const note of fencePlan?.notes ?? []) activity(io, note);
+  // The first time a converge installs something on the cluster, it lists what, and asks in the
   // first-contact question when there is one: one question, one `--yes`.
-  const fenceAsk = fencePlan !== undefined ? describeInstall(fencePlan) : undefined;
+  const fenceList = fencePlan !== undefined ? describeInstall(fencePlan) : undefined;
 
-  if (!ns || !owner || fenceAsk !== undefined) {
+  if (!ns || !owner || fenceList !== undefined) {
+    for (const line of fenceList ?? []) activity(io, line);
+    const fenceAsk = "install the Fence's prerequisites in the list above";
     const what = [
       ...(!ns ? [`create namespace "${namespace}"`] : !owner ? [`adopt existing namespace "${namespace}"`] : []),
-      ...(fenceAsk !== undefined ? [fenceAsk] : []),
+      ...(fenceList !== undefined ? [fenceAsk] : []),
     ].join("; ");
     const question =
       !ns || !owner
@@ -733,15 +737,17 @@ export async function up(args: string[], io: Io): Promise<number> {
   // The operator IMAGE is resolved whenever anything this converge deploys runs it: the operator
   // layer itself, or the data plane's cache agent, which is the same binary (`/manager repo-cache`,
   // ADR-0051) and rides the instance's namespace even when the controller loop is somebody else's.
-  // And the Fence's CNI plugins ride it (ADR-0084): an Instance with a Harness pod resolves it too.
+  // And the DaemonSet jr2-fence-node runs it (ADR-0084): an Instance with a Harness pod resolves it too.
   const operatorImage = config.operator?.manage === false && !fenced ? undefined : await ensureKitImage("operator");
   if (operatorImage !== undefined) converged.operator = operatorImage;
   // Applied after the provider preflight (below): the operator is the cluster's, and a converge
   // whose provider check fails must not have changed it.
 
   // --- the Fence's prerequisites (ADR-0084): installed now that the operator image is delivered --
-  // Before the Custodian, whose pods need both; the plugins first, and then Multus. The DaemonSet
-  // of the plugins is in the operator's namespace, which this converge may be the first to need.
+  // Before the Custodian, whose pods need both: the DaemonSet jr2-fence-node first (the plugins and
+  // the rule table on each node, and the checks of each node), and then Multus. The DaemonSet is in
+  // the operator's namespace, which this converge may be the first to need. A node that the
+  // DaemonSet refuses stops the converge here, after these applies: they stay (ADR-0019).
   if (fencePlan !== undefined) {
     await ensureNamespace(kube, OPERATOR_NAMESPACE, ctx);
     await installFence(kube, fencePlan, {
@@ -1020,7 +1026,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   if (fenced) {
     // The prerequisites that `jr2 up` installed or found above, as the API shows them now: without
     // them the Custodian's attachments cannot be applied and its pods do not start.
-    await checkFenceApi(kube, { nodes: fenceNodes.map((n) => n.metadata.name), ...ctx });
+    await checkFenceApi(kube, {
+      nodes: fenceNodes.map((n) => n.metadata.name),
+      multusPods: fencePlan?.multusPods ?? [],
+      ...ctx,
+    });
   }
   if (fenced || custodianLeft !== undefined) {
     fenceRange = await claimRange(kube, { namespace, ...ctx, log: (line) => activity(io, line) });
@@ -1081,7 +1091,11 @@ export async function up(args: string[], io: Io): Promise<number> {
       log: (line) => activity(io, line),
     });
     if (gaps.length > 0) throw fenceRefusal(gaps);
-    activity(io, "fence: verified — the uplink answers on the bridge of each Sandbox node, and the node does not");
+    activity(
+      io,
+      "fence: verified on each Sandbox node — a pod on the Fence has its slot's address, the Custodian answers its " +
+        "DNS query, and only the Custodian answers its dials to the API Service's address and to the node's kubelet port",
+    );
   } else if (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx })) {
     // A Custodian of a converge that had a Harness pod. Its range stays claimed until `jr2 down`
     // (ADR-0084): a pod of the Instance can still be on a VLAN of it. The Custodian goes only when no

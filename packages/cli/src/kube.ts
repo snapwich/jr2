@@ -416,8 +416,6 @@ export type RolloutRequest = {
   timeoutSeconds?: number;
 };
 
-/** The argv of one rollout wait — pure, so the kind → `kubectl rollout status <kind>/<name>` mapping
- * is checkable without a cluster. */
 /**
  * An apply, and once more when it failed with AlreadyExists. Two converges on one cluster at the same
  * moment can each read that a cluster-wide object (a CRD, a PriorityClass, the DaemonSet
@@ -433,6 +431,8 @@ export async function onceMoreIfCreated<T>(apply: () => Promise<T>): Promise<T> 
   }
 }
 
+/** The argv of one rollout wait — pure, so the kind → `kubectl rollout status <kind>/<name>` mapping
+ * is checkable without a cluster. */
 export function rolloutStatusArgs({
   kind = "deployment",
   name,

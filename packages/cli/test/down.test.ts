@@ -57,7 +57,17 @@ function mkKube(
       crdGone = true;
     },
     waitRollout: async () => {},
-    listJson: async <T>(o: { kind: string }): Promise<T[]> => {
+    listJson: async <T>(o: { kind: string; fieldSelector?: string; namespace?: string }): Promise<T[]> => {
+      // One object by name (the DaemonSets that `--all` removes), and the NetworkAttachmentDefinitions.
+      if (o.kind === "daemonset" && o.fieldSelector?.startsWith("metadata.name=")) {
+        const one = store.get(`${o.namespace ?? ""}/${o.kind.toLowerCase()}/${o.fieldSelector.slice(14)}`);
+        return (one ? [one] : []) as T[];
+      }
+      if (o.kind === "network-attachment-definitions.k8s.cni.cncf.io") {
+        return [...store.entries()]
+          .filter(([k]) => k.includes("/network-attachment-definitions.k8s.cni.cncf.io/"))
+          .map(([, v]) => v) as T[];
+      }
       if (o.kind.startsWith("sandboxes") && crdGone) {
         throw new Error(
           'Command failed: kubectl get sandboxes.core.jr2.dev\nerror: the server doesn\'t have a resource type "sandboxes"',
@@ -215,7 +225,7 @@ test("--all removes what jr2 installed for the Fence: the rule table on each nod
   assert.equal(await down(["--all"], w.io), 0);
   assert.match(
     w.confirms[0]!,
-    /delete namespace "myinst" AND the per-cluster operator, the Fence's rule table on each node and the DaemonSet jr2-fence-node that loads it, and a Multus that jr2 installed\)\?$/,
+    /delete namespace "myinst" AND the per-cluster operator, the Fence's rule table on each node and the DaemonSet jr2-fence-node that loads it, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so\)\?$/,
   );
   // The table goes first: the removal form of the DaemonSet, with the image that it runs.
   assert.equal(all.applied.length, 1);
@@ -236,7 +246,23 @@ test("--all removes what jr2 installed for the Fence: the rule table on each nod
     err,
     /removing the rule table "inet jr2_fence" from each node\n.*uninstalling the DaemonSet jr2-system\/jr2-fence-node; the CNI plugins bridge, static, tuning stay in \/opt\/cni\/bin on each node\n/s,
   );
-  assert.match(err, /uninstalling Multus \(kube-system\), which jr2 installed\n/);
+  assert.match(
+    err,
+    /uninstalling Multus \(kube-system\), which jr2 installed, and its CustomResourceDefinition network-attachment-definitions\.k8s\.cni\.cncf\.io\n/,
+  );
+
+  // A NetworkAttachmentDefinition of another owner: jr2's Multus and its definition stay, with a warning.
+  const shared = mkKube({
+    ...installed,
+    "team/network-attachment-definitions.k8s.cni.cncf.io/macvlan": { metadata: { name: "macvlan", namespace: "team" } },
+  });
+  const sw = await mkWorld(shared, true);
+  assert.equal(await down(["--all"], sw.io), 0);
+  assert.ok(!shared.deleted.includes("(multus manifest)"));
+  assert.match(
+    sw.err.join(""),
+    /warning: the cluster has NetworkAttachmentDefinitions that are not jr2's \(team\/macvlan\), so jr2 keeps the Multus/,
+  );
 
   // A Multus that jr2 did not install stays.
   const foreign = mkKube({

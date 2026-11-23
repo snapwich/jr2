@@ -129,6 +129,8 @@ class FakeCluster implements KubeAdmin {
     const refused = this.refuseApply?.(opts.manifest);
     if (refused) throw new Error(typeof refused === "string" ? refused : 'pods "x" is forbidden: exceeded quota');
     this.applied.push(opts.manifest);
+    // The shipped Multus manifest makes Multus's CustomResourceDefinition.
+    if (opts.manifest.includes("name: network-attachment-definitions.k8s.cni.cncf.io")) this.attachmentCrd = true;
     this.runFenceProbes(opts.manifest);
     // A check pod's List is applied server-side too (ADR-0019); this records the named objects.
     const doc = opts.serverSide
@@ -296,10 +298,13 @@ class FakeCluster implements KubeAdmin {
       ) as T[];
     }
     // The DaemonSets by label (ADR-0084's read of Multus): what `set` and the applies put there.
-    if (opts.kind === "daemonset" && opts.selector) {
-      const [key, value] = opts.selector.split("=");
+    // With no selector: each DaemonSet of the cluster (the read of each Multus, of Cilium and of jr2-fence-node).
+    if (opts.kind === "daemonset" && (opts.selector || opts.allNamespaces)) {
+      const [key, value] = (opts.selector ?? "").split("=");
       return [...this.objects]
-        .filter(([k, o]) => k.includes("/daemonset/") && o.metadata.labels?.[key!] === value)
+        .filter(
+          ([k, o]) => k.includes("/daemonset/") && (opts.selector === undefined || o.metadata.labels?.[key!] === value),
+        )
         .map(([k, o]) => ({ ...o, metadata: { ...o.metadata, namespace: k.split("/")[0] } })) as T[];
     }
     // The pods of the fence node's DaemonSet (ADR-0084): one Ready pod on each node.
@@ -314,8 +319,8 @@ class FakeCluster implements KubeAdmin {
           status: {
             conditions: [{ type: "Ready", status: ok ? "True" : "False" }],
             initContainerStatuses: [
-              { name: "rules", state: { terminated: { exitCode: 0, message: "jr2.fence-node ok rules=loaded" } } },
               { name: "install", state: { terminated: { exitCode: ok ? 0 : 1, message } } },
+              { name: "rules", state: { terminated: { exitCode: 0, message: "jr2.fence-node ok rules=loaded" } } },
             ],
           },
         };
@@ -347,6 +352,11 @@ class FakeCluster implements KubeAdmin {
           const labels = o.metadata.labels ?? {};
           return key! in labels && (value === undefined || labels[key!] === value);
         }) as T[];
+    }
+    // One ConfigMap by name in a namespace (the read of a Multus's or Cilium's settings), else the image maps.
+    if (opts.kind === "configmap" && opts.fieldSelector?.startsWith("metadata.name=") && opts.namespace) {
+      const one = this.objects.get(`${opts.namespace}/configmap/${opts.fieldSelector.slice(14)}`);
+      return (one ? [one] : []) as T[];
     }
     if (opts.kind === "configmap") return this.imageMaps as T[];
     if (opts.kind === "networkpolicy") {
@@ -1047,6 +1057,7 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
     const w = mkWorld(root, { confirm: false });
     w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
     w.kube.objects.delete("jr2-system/daemonset/jr2-fence-node");
+    w.kube.attachmentCrd = false;
     return w;
   };
 
@@ -1057,14 +1068,20 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
   assert.equal(
     declined.confirms[0],
     'first contact: deploy instance "myinst" to context kind-test (create namespace "myinst"; install the ' +
-      "Fence's prerequisites: apply the DaemonSet jr2-system/jr2-fence-node to each node. It runs on the node's " +
-      "network with the capability NET_ADMIN (each other capability dropped), and at each start it loads the " +
-      "rule table \"inet jr2_fence\" into the node's nftables, which keeps the node's own network stack off the " +
-      "bridge jr2fence0; jr2 down --all removes the table. It also writes the CNI plugins bridge, static, tuning " +
-      "v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never replaces a file, and the " +
-      "files stay after jr2 down --all); and apply Multus v4.3.2 (thick, namespaceIsolation, no global " +
-      "namespace) to kube-system, from the manifest that the CLI ships)?",
+      "Fence's prerequisites in the list above)?",
   );
+  // The list comes before the question: each part, and what it can do on a node.
+  const said = declined.err.join("");
+  assert.match(said, /fence: this converge installs the Fence's prerequisites \(ADR-0084\):\n/);
+  assert.match(
+    said,
+    /\n {2}- the DaemonSet jr2-system\/jr2-fence-node, on each Linux node\. Its pod runs as root on the node's network\./,
+  );
+  assert.match(
+    said,
+    /\n {2}- Multus v4\.3\.2 \(thick, namespaceIsolation, no global namespace\), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system\/kube-multus-ds\./,
+  );
+  assert.ok(said.indexOf("this converge installs") < said.indexOf("aborted"));
   assert.deepEqual(declined.kube.applied, []);
 
   // --yes: the fence node, then Multus and its rollout, then the Custodian.
@@ -1076,7 +1093,7 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
     err,
     /fence: applying the DaemonSet jr2-system\/jr2-fence-node \(ghcr\.io\/snapwich\/jr2-operator:[0-9.]+\)\n/,
   );
-  assert.match(err, /fence: kind-test-control-plane: rules=loaded wrote= kept=bridge static tuning bridge=v1\.10\.0\n/);
+  assert.match(err, /fence: kind-test-control-plane: wrote= kept=bridge static tuning bridge=v1\.10\.0 rules=loaded\n/);
   assert.match(err, /fence: applying Multus v4\.3\.2 \(thick, namespaceIsolation\) to kube-system\n/);
   const plugins = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-fence-node"'));
   const multus = w.kube.applied.findIndex((m) => m.includes("name: kube-multus-ds"));
@@ -1117,7 +1134,7 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
   assert.equal(await up([], home.io), 1);
   assert.match(
     home.confirms[0]!,
-    /^first setup of the Fence on context kind-test: install the Fence's prerequisites: apply the DaemonSet jr2-system\/jr2-fence-node to each node\. .*\?$/,
+    /^first setup of the Fence on context kind-test: install the Fence's prerequisites in the list above\?$/,
   );
 });
 
@@ -7325,7 +7342,10 @@ test("after the Custodian is Ready, jr2 up probes the bridge on each node of a C
   assert.deepEqual(w.kube.fenceProbes, ["kind-test-control-plane fence"]);
   const err = w.err.join("\n");
   assert.match(err, /fence: probing the bridge on 1 Sandbox node\(s\): kind-test-control-plane/);
-  assert.match(err, /fence: verified — the uplink answers on the bridge of each Sandbox node, and the node does not/);
+  assert.match(
+    err,
+    /fence: verified on each Sandbox node — a pod on the Fence has its slot's address, the Custodian answers its DNS query, and only the Custodian answers its dials to the API Service's address and to the node's kubelet port/,
+  );
   assert.doesNotMatch(err, /rule set|unreachable route|warning: fence/);
   // The probe pods come after the Custodian's rollout, and go again.
   const at = (needle: string) => w.kube.applied.findIndex((m) => m.includes(needle));
@@ -7365,6 +7385,7 @@ test("a Sandbox node whose CNI folders are not the default ones refuses the conv
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   const w = mkWorld(root);
   w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
+  w.kube.attachmentCrd = false;
   w.kube.pluginsResults["kind-test-control-plane"] =
     "jr2.fence-node fail folder no CNI configuration in /etc/cni/net.d on the node: the container runtime reads it from another folder";
   await assert.rejects(
@@ -7395,7 +7416,7 @@ test("without Multus's attachment definition, or with a Sandbox node that has no
   gap.kube.nodesWithoutMultus.add("n2");
   await assert.rejects(
     () => up(["--yes"], gap.io),
-    /\n {2}n2: Multus — no Ready Multus pod \(app=multus\) on the node/,
+    /\n {2}n2: Multus — no Ready Multus pod \(kube-system: app=multus\) on the node/,
   );
   assert.equal(custodianList(gap), undefined);
 });
