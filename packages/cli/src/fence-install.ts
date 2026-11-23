@@ -1,19 +1,27 @@
 // The node prerequisites of the Fence (ADR-0084, ADR-0019), which `jr2 up` installs on any cluster
 // with kubectl alone, after it asks:
 //
-//   Multus   the second network of a pod, with `namespaceIsolation` and no global namespace, so a
-//            pod can name an attachment of its own namespace only. When the cluster has no Multus,
-//            `jr2 up` applies the thick manifest that the CLI ships (`manifests/fence/`). Its
-//            DaemonSet has the annotation `jr2.dev/multus`, so jr2 knows that it installed it.
-//   plugins  the stock CNI plugins bridge, static and tuning on each node. The DaemonSet
-//            `jr2-system/jr2-cni-plugins` runs the operator image, which holds the pinned v1.10.0
-//            plugins (operator/Dockerfile). Its init container copies each plugin into the node's
-//            /opt/cni/bin when the node has no file of that name, and never replaces a file. Then
-//            the pod idles, so a node that joins later gets the plugins too.
+//   Multus     the second network of a pod, with `namespaceIsolation` and no global namespace, so a
+//              pod can name an attachment of its own namespace only. When the cluster has no Multus,
+//              `jr2 up` applies the thick manifest that the CLI ships (`manifests/fence/`). Its
+//              DaemonSet has the annotation `jr2.dev/multus`, so jr2 knows that it installed it.
+//   DaemonSet  `jr2-system/jr2-fence-node`, which runs the operator image on each node,
+//              on the node's network, in two init containers:
+//              rules    with NET_ADMIN alone, it loads the rule table `inet jr2_fence` into the node
+//                       (`FENCE_RULES`), at each start of the pod, so a restart of the node gets it
+//                       again. The table replaces itself in one transaction: no window with no rule
+//                       and no rule twice.
+//              install  with no capability, it copies the pinned v1.10.0 plugins bridge, static and
+//                       tuning into the node's /opt/cni/bin when the node has no file of that name,
+//                       never replaces a file, and refuses a `bridge` older than v1.8.0.
+//              Then the pod idles, so a node that joins later gets both too.
 //
 // The boundary is the VLAN state that the bridge plugin makes from jr2's attachment objects
-// (`fence.ts`): the bridge, its VLAN filtering and the VLANs of each port. Nothing else on a node is
-// a prerequisite.
+// (`fence.ts`). The rule table keeps the node's own network stack off the bridge: a Sandbox's frame
+// enters the bridge untagged at its access port, so on a node with
+// `net.bridge.bridge-nf-call-iptables = 1` the node's prerouting rules see it before the bridge
+// tags it, and kube-proxy's NAT changes a dial to a Service address. The table's `notrack` stops
+// that, and its other chains drop each packet between the bridge and the node's own stack.
 //
 // `jr2 up` does not install when it cannot do so safely. It refuses, and applies nothing, when:
 //   (a) a Multus that jr2 did not install has other settings (no `namespaceIsolation`, or a global
@@ -21,8 +29,10 @@
 //   (b) Cilium has `cni-exclusive: "true"` for a Sandbox node, because then it removes each other
 //       CNI configuration of the node;
 //   (c) a Multus that jr2 did not install mounts a CNI directory other than /opt/cni/bin or
-//       /etc/cni/net.d. The plugins' pod finds the same on a node where jr2 installs Multus: no
-//       such directory, or no CNI configuration in it.
+//       /etc/cni/net.d. The pod of jr2-fence-node finds the same on a node where jr2 installs Multus:
+//       no such directory, or no CNI configuration in it.
+// After the DaemonSet is applied, a Sandbox node whose `bridge` plugin is older than v1.8.0, or
+// whose rule table did not load, refuses too.
 //
 // In two steps: `planFenceInstall` reads and changes nothing (before the first-time question), and
 // `installFence` applies (after the operator image exists, before the Custodian needs the Fence).
@@ -32,6 +42,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compareVersions, KIT_VERSION, LABEL_VERSION, OPERATOR_NAMESPACE } from "./deploy.ts";
+import { FENCE_BRIDGE } from "./fence.ts";
 import type { KubeAdmin, KubeObject } from "./kube.ts";
 
 /** The folder of the shipped Multus manifest. */
@@ -39,13 +50,54 @@ const FILES = fileURLToPath(new URL("../manifests/fence/", import.meta.url));
 /** The version of the CNI plugins in the operator image (operator/Dockerfile's CNI_PLUGINS_VERSION). */
 export const CNI_VERSION = "v1.10.0";
 export const PLUGINS = ["bridge", "static", "tuning"] as const;
+const BRIDGE = FENCE_BRIDGE;
+/** The node's rule table of the Fence: its family and name. */
+export const RULES_TABLE = "inet jr2_fence";
+
+/**
+ * The rule table of the Fence on each node (ADR-0084). It matches the bridge only, so it changes
+ * nothing else on the node.
+ *
+ * - `pre`: each packet that enters from the bridge skips the node's connection tracking, before
+ *   conntrack (-200) and NAT (-100) see it. Without it, kube-proxy's DNAT changes a Sandbox's dial
+ *   to a Service address, and the bridge then drops the frame: the dial times out, and the
+ *   Custodian sees nothing.
+ * - `input`, `forward`, `out`: no packet goes from the bridge to the node's own stack, is routed
+ *   between the bridge and another interface, or goes from the node's stack to the bridge. The VLAN
+ *   state already keeps the node's side of the bridge off each pod's VLAN; these chains hold when
+ *   that side is put into a pod's VLAN.
+ */
+export const FENCE_RULES = `table ${RULES_TABLE} {
+  chain pre {
+    type filter hook prerouting priority -350; policy accept;
+    iifname "${BRIDGE}" counter notrack
+  }
+  chain input {
+    type filter hook input priority -200; policy accept;
+    iifname "${BRIDGE}" counter drop
+  }
+  chain forward {
+    type filter hook forward priority -200; policy accept;
+    iifname "${BRIDGE}" oifname != "${BRIDGE}" counter drop
+    iifname != "${BRIDGE}" oifname "${BRIDGE}" counter drop
+  }
+  chain out {
+    type filter hook output priority -200; policy accept;
+    oifname "${BRIDGE}" counter drop
+  }
+}`;
 /** The node's CNI directories: where jr2 writes the plugins, and where the runtime reads its configuration. */
 export const CNI_BIN_DIR = "/opt/cni/bin";
 export const CNI_CONF_DIR = "/etc/cni/net.d";
-/** The DaemonSet that puts the plugins on each node. */
-export const PLUGINS_DAEMONSET = "jr2-cni-plugins";
-/** The start of the plugins' result line (the init container's termination message). */
-export const PLUGINS_PREFIX = "jr2.cni-plugins ";
+/** The first version of the `bridge` plugin that does what the attachments say (`fence.ts`):
+ * `preserveDefaultVlan` came in v1.3.0, `portIsolation` in v1.7.0, and v1.8.0 is the first that
+ * takes `vlan` and `vlanTrunk` together (v1.3.0 to v1.7.1 refuse them: "cannot set vlan and
+ * vlanTrunk at the same time"). */
+export const BRIDGE_MIN_VERSION = "1.8.0";
+/** The DaemonSet that loads the rule table and puts the plugins on each node. */
+export const FENCE_NODE_DAEMONSET = "jr2-fence-node";
+/** The start of each result line (an init container's termination message). */
+export const FENCE_NODE_PREFIX = "jr2.fence-node ";
 export const MULTUS_DAEMONSET = "kube-multus-ds";
 export const MULTUS_NAMESPACE = "kube-system";
 /** The annotation of the Multus DaemonSet that jr2 installed: the version of the shipped manifest. */
@@ -57,8 +109,8 @@ export const MULTUS_SELECTOR = "app=multus";
 /** The page of the prerequisites. */
 export const FENCE_PREREQUISITES_URL =
   "https://snapwich.github.io/jr2/guides/move-from-kind-to-a-shared-cluster.html#prerequisites-of-the-fence";
-/** How long the plugins' pods may take on each Sandbox node: the image can be pulled there first. */
-const PLUGINS_WAIT_MS = 300_000;
+/** How long the pods of jr2-fence-node may take on each Sandbox node: the image can be pulled there first. */
+const FENCE_NODE_WAIT_MS = 300_000;
 /** How long a pod may wait for a volume before the kubelet's reason counts. */
 const MOUNT_GRACE_MS = 20_000;
 const POLL_MS = 2_000;
@@ -71,19 +123,22 @@ export type FenceInstallPlan = {
   /** `install`: no Multus. `upgrade`: jr2's, of another version. `jr2`: jr2's, current. `foreign`: accepted. */
   multus: "install" | "upgrade" | "jr2" | "foreign";
   /** `install`: no DaemonSet. `present`: the DaemonSet is there (the converge updates it with no question). */
-  plugins: "install" | "present";
+  node: "install" | "present";
 };
 
 /** The plan asks: it installs something on the cluster that the cluster does not have. */
 export const planAsks = (plan: FenceInstallPlan): boolean =>
-  plan.multus === "install" || plan.multus === "upgrade" || plan.plugins === "install";
+  plan.multus === "install" || plan.multus === "upgrade" || plan.node === "install";
 
 /** What the plan installs, as the first-time question says it. Undefined when it installs nothing. */
 export function describeInstall(plan: FenceInstallPlan): string | undefined {
   const said: string[] = [];
-  if (plan.plugins === "install") {
+  if (plan.node === "install") {
     said.push(
-      `apply the DaemonSet ${OPERATOR_NAMESPACE}/${PLUGINS_DAEMONSET}, which writes the CNI plugins ` +
+      `apply the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} to each node. It runs on the node's ` +
+        `network with the capability NET_ADMIN (each other capability dropped), and at each start it loads the ` +
+        `rule table "${RULES_TABLE}" into the node's nftables, which keeps the node's own network stack off ` +
+        `the bridge ${BRIDGE}; jr2 down --all removes the table. It also writes the CNI plugins ` +
         `${PLUGINS.join(", ")} ${CNI_VERSION} into ${CNI_BIN_DIR} on each node that has no file of that name ` +
         "(it never replaces a file, and the files stay after jr2 down --all)",
     );
@@ -364,34 +419,72 @@ export async function planFenceInstall(
         : ours.every((d) => d.metadata.annotations?.[MULTUS_ANNOTATION] === MULTUS_VERSION)
           ? "jr2"
           : "upgrade";
-  const plugins = await kube.getJson({
+  const node = await kube.getJson({
     kind: "daemonset",
-    name: PLUGINS_DAEMONSET,
+    name: FENCE_NODE_DAEMONSET,
     namespace: OPERATOR_NAMESPACE,
     ...ctx,
   });
-  return { multus, plugins: plugins === undefined ? "install" : "present" };
+  return { multus, node: node === undefined ? "install" : "present" };
 }
 
-// ---- the plugins' DaemonSet ------------------------------------------------------------------------
+// ---- the DaemonSet jr2-fence-node --------------------------------------------------------------------
+
+/** The `say` function of each script: one result line, as the termination message and in the log. */
+const SAY = `say() { echo "${FENCE_NODE_PREFIX}$1" > /dev/termination-log; echo "${FENCE_NODE_PREFIX}$1"; }`;
 
 /**
- * The init container's script. It runs as root with no capability, so it can write a file into the
- * node's /opt/cni/bin (root's own folder) and nothing that needs a capability. It writes a plugin only
- * when the node has no file of that name: a plugin of another version stays (v1.9.1 was seen to make
- * the same VLAN state). Each one goes in under a name of its own and then moves, so the runtime never
- * runs half a file. A node with no CNI configuration in /etc/cni/net.d, or with an empty
- * /opt/cni/bin, does not use those folders: the script fails and says so.
+ * The script of the `rules` init container. It loads the rule table in one nft transaction: the
+ * first line makes the table when the node has none, the second deletes it, and the rest makes it
+ * again, so a second load replaces the table, never adds rules to it, and the node has no moment
+ * with no rule. Then it reads the table back and counts its chains.
+ */
+export const RULES_SCRIPT = `set -eu
+${SAY}
+if ! out=$(printf '%s\\n' 'table ${RULES_TABLE}' 'delete table ${RULES_TABLE}' '${FENCE_RULES}' | nft -f - 2>&1); then
+  say "fail rules nft could not load the table ${RULES_TABLE}: $(echo "$out" | tr '\\n' ' ' | cut -c1-300)"
+  exit 1
+fi
+chains=$(nft list table ${RULES_TABLE} | grep -c '^[[:space:]]*chain ')
+if [ "$chains" != 4 ]; then
+  say "fail rules the table ${RULES_TABLE} has $chains chains after the load, not 4"
+  exit 1
+fi
+say "ok rules=loaded"
+`;
+
+/** The script of the removal (`jr2 down --all`): the table goes, whether the node has it or not. */
+export const RULES_REMOVE_SCRIPT = `set -eu
+${SAY}
+if ! out=$(printf '%s\\n' 'table ${RULES_TABLE}' 'delete table ${RULES_TABLE}' | nft -f - 2>&1); then
+  say "fail rules nft could not remove the table ${RULES_TABLE}: $(echo "$out" | tr '\\n' ' ' | cut -c1-300)"
+  exit 1
+fi
+say "ok rules=removed"
+`;
+
+/**
+ * The script of the `install` init container. It runs as root with no capability, so it can write a
+ * file into the node's /opt/cni/bin (root's own folder) and nothing that needs a capability. It
+ * writes a plugin only when the node has no file of that name. Each one goes in under a name of its
+ * own and then moves, so the runtime never runs half a file. A node with no CNI configuration in
+ * /etc/cni/net.d, or with an empty /opt/cni/bin, does not use those folders: the script fails and
+ * says so.
+ *
+ * Then it reads the version of the node's `bridge`, which can be a file of another tool: it runs the
+ * file with no `CNI_COMMAND`, and a stock plugin prints `CNI bridge plugin v<version>` and stops. A
+ * version older than `BRIDGE_MIN_VERSION`, or none that it can read, fails: such a plugin puts the
+ * trunks of the Instances on a shared VLAN, or refuses the trunk's attachment.
  */
 export const PLUGINS_SCRIPT = `set -eu
 BIN=/host${CNI_BIN_DIR} CONF=/host${CNI_CONF_DIR} SRC=/opt/jr2/cni/bin
-say() { echo "${PLUGINS_PREFIX}$1" > /dev/termination-log; echo "${PLUGINS_PREFIX}$1"; }
+${SAY}
 if ! ls "$CONF" | grep -qE '\\.(conf|conflist|json)$'; then
-  say "fail no CNI configuration in ${CNI_CONF_DIR} on the node: the container runtime reads it from another folder"
+  say "fail folder no CNI configuration in ${CNI_CONF_DIR} on the node: the container runtime reads it from another folder"
   exit 1
 fi
 if [ -z "$(ls -A "$BIN")" ]; then
-  say "fail ${CNI_BIN_DIR} on the node is empty: the container runtime reads its plugins from another folder"
+  say "fail folder ${CNI_BIN_DIR} on the node is empty: the container runtime reads its plugins from another folder"
   exit 1
 fi
 wrote="" kept=""
@@ -402,27 +495,64 @@ for p in ${PLUGINS.join(" ")}; do
   mv -f "$BIN/.$p.jr2-new" "$BIN/$p"
   wrote="$wrote $p"
 done
-say "ok wrote=\${wrote# } kept=\${kept# }"
+printed=$(env -u CNI_COMMAND timeout 10 "$BIN/bridge" </dev/null 2>&1 | head -n 1) || true
+version=$(echo "$printed" | sed -n 's/^CNI bridge plugin v\\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p')
+if [ -z "$version" ]; then
+  say "fail bridge ${CNI_BIN_DIR}/bridge prints no version (it printed: $(echo "$printed" | cut -c1-120))"
+  exit 1
+fi
+num() { echo "$1" | awk -F. '{ print $1 * 1000000 + $2 * 1000 + $3 }'; }
+if [ "$(num "$version")" -lt "$(num ${BRIDGE_MIN_VERSION})" ]; then
+  say "fail bridge ${CNI_BIN_DIR}/bridge is v$version, older than v${BRIDGE_MIN_VERSION}"
+  exit 1
+fi
+say "ok wrote=\${wrote# } kept=\${kept# } bridge=v$version"
 `;
 
-/** The DaemonSet that puts the plugins on each node, from the operator image. */
-export function pluginsDaemonSet(image: string): Json {
-  const labels = { app: PLUGINS_DAEMONSET, "app.kubernetes.io/managed-by": "jr2" };
+/**
+ * The DaemonSet jr2-fence-node, from the operator image. `remove` is its form for
+ * `jr2 down --all`: its one init container removes the rule table, and it writes no plugin.
+ */
+export function fenceNodeDaemonSet(image: string, opts: { remove?: boolean } = {}): Json {
+  const labels = { app: FENCE_NODE_DAEMONSET, "app.kubernetes.io/managed-by": "jr2" };
   const restricted = {
     allowPrivilegeEscalation: false,
     readOnlyRootFilesystem: true,
     capabilities: { drop: ["ALL"] },
   };
+  const rules = {
+    name: "rules",
+    image,
+    imagePullPolicy: "IfNotPresent",
+    command: ["sh", "-c", opts.remove ? RULES_REMOVE_SCRIPT : RULES_SCRIPT],
+    terminationMessagePolicy: "FallbackToLogsOnError",
+    resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { memory: "64Mi" } },
+    // NET_ADMIN alone, for nft in the node's network namespace.
+    securityContext: { ...restricted, capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] } },
+  };
+  const install = {
+    name: "install",
+    image,
+    imagePullPolicy: "IfNotPresent",
+    command: ["sh", "-c", PLUGINS_SCRIPT],
+    terminationMessagePolicy: "FallbackToLogsOnError",
+    resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { memory: "64Mi" } },
+    securityContext: restricted,
+    volumeMounts: [
+      { name: "cni-bin", mountPath: `/host${CNI_BIN_DIR}` },
+      { name: "cni-conf", mountPath: `/host${CNI_CONF_DIR}`, readOnly: true },
+    ],
+  };
   return {
     apiVersion: "apps/v1",
     kind: "DaemonSet",
     metadata: {
-      name: PLUGINS_DAEMONSET,
+      name: FENCE_NODE_DAEMONSET,
       namespace: OPERATOR_NAMESPACE,
       labels: { ...labels, [LABEL_VERSION]: KIT_VERSION },
     },
     spec: {
-      selector: { matchLabels: { app: PLUGINS_DAEMONSET } },
+      selector: { matchLabels: { app: FENCE_NODE_DAEMONSET } },
       updateStrategy: { type: "RollingUpdate", rollingUpdate: { maxUnavailable: "100%" } },
       template: {
         metadata: { labels },
@@ -430,6 +560,8 @@ export function pluginsDaemonSet(image: string): Json {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
           terminationGracePeriodSeconds: 1,
+          // The node's network namespace, where the rule table must be. No other host namespace.
+          hostNetwork: true,
           nodeSelector: { "kubernetes.io/os": "linux" },
           // Where Multus runs: each node, also a tainted one, because any node can be a Sandbox node of
           // some Instance.
@@ -437,23 +569,9 @@ export function pluginsDaemonSet(image: string): Json {
             { operator: "Exists", effect: "NoSchedule" },
             { operator: "Exists", effect: "NoExecute" },
           ],
-          // Root, for the node's root-owned /opt/cni/bin, with no capability and no host namespace.
+          // Root, for nft and for the node's root-owned /opt/cni/bin.
           securityContext: { runAsUser: 0, runAsGroup: 0, seccompProfile: { type: "RuntimeDefault" } },
-          initContainers: [
-            {
-              name: "install",
-              image,
-              imagePullPolicy: "IfNotPresent",
-              command: ["sh", "-c", PLUGINS_SCRIPT],
-              terminationMessagePolicy: "FallbackToLogsOnError",
-              resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { memory: "64Mi" } },
-              securityContext: restricted,
-              volumeMounts: [
-                { name: "cni-bin", mountPath: `/host${CNI_BIN_DIR}` },
-                { name: "cni-conf", mountPath: `/host${CNI_CONF_DIR}`, readOnly: true },
-              ],
-            },
-          ],
+          initContainers: opts.remove ? [rules] : [rules, install],
           containers: [
             {
               name: "idle",
@@ -466,65 +584,112 @@ export function pluginsDaemonSet(image: string): Json {
           ],
           // `Directory`, never `DirectoryOrCreate`: a node with no such folder uses another one, and
           // jr2 makes no CNI folder on it.
-          volumes: [
-            { name: "cni-bin", hostPath: { path: CNI_BIN_DIR, type: "Directory" } },
-            { name: "cni-conf", hostPath: { path: CNI_CONF_DIR, type: "Directory" } },
-          ],
+          ...(opts.remove
+            ? {}
+            : {
+                volumes: [
+                  { name: "cni-bin", hostPath: { path: CNI_BIN_DIR, type: "Directory" } },
+                  { name: "cni-conf", hostPath: { path: CNI_CONF_DIR, type: "Directory" } },
+                ],
+              }),
         },
       },
     },
   };
 }
 
-type PluginsPod = {
+type Terminated = { exitCode?: number; message?: string };
+type FenceNodePod = {
   metadata?: { name?: string; deletionTimestamp?: string };
   spec?: { nodeName?: string };
   status?: {
     phase?: string;
     conditions?: Array<{ type?: string; status?: string }>;
     initContainerStatuses?: Array<{
-      state?: { terminated?: { exitCode?: number; message?: string }; waiting?: { reason?: string; message?: string } };
-      lastState?: { terminated?: { exitCode?: number; message?: string } };
+      name?: string;
+      state?: { terminated?: Terminated; waiting?: { reason?: string; message?: string } };
+      lastState?: { terminated?: Terminated };
     }>;
   };
 };
 
-/** The result line of a plugins pod's init container, when it has ended. */
-export function pluginsResultOf(pod: PluginsPod): string | undefined {
-  const s = pod.status?.initContainerStatuses?.[0];
-  const message = s?.state?.terminated?.message ?? s?.lastState?.terminated?.message ?? "";
-  const at = message.lastIndexOf(PLUGINS_PREFIX);
-  return at < 0
-    ? undefined
-    : message
-        .slice(at + PLUGINS_PREFIX.length)
-        .split("\n")[0]!
-        .trim();
+/** The result line of each init container of a pod of jr2-fence-node that has ended, in their order. */
+export function fenceNodeResultsOf(pod: FenceNodePod): string[] {
+  const out: string[] = [];
+  for (const s of pod.status?.initContainerStatuses ?? []) {
+    const message = s.state?.terminated?.message ?? s.lastState?.terminated?.message ?? "";
+    const at = message.lastIndexOf(FENCE_NODE_PREFIX);
+    if (at >= 0) {
+      out.push(
+        message
+          .slice(at + FENCE_NODE_PREFIX.length)
+          .split("\n")[0]!
+          .trim(),
+      );
+    }
+  }
+  return out;
 }
 
-const isReady = (p: PluginsPod): boolean =>
+const isReady = (p: FenceNodePod): boolean =>
   p.metadata?.deletionTimestamp === undefined &&
   (p.status?.conditions ?? []).some((c) => c.type === "Ready" && c.status === "True");
 
-/** The refusal (c) of a node whose CNI folders are not the default ones. */
-function folderRefusal(lines: readonly string[]): Error {
+/** What a pod of jr2-fence-node failed: the CNI folders, the `bridge` plugin, or the rule table. */
+type NodeFailure = { node: string; what: "folder" | "bridge" | "rules"; text: string };
+
+/** The refusal of the Sandbox nodes that a pod of jr2-fence-node failed on. */
+function nodeRefusal(failures: readonly NodeFailure[]): Error {
+  const has = (what: NodeFailure["what"]) => failures.some((f) => f.what === what);
+  const nodes = new Set(failures.map((f) => f.node)).size;
   return new Error(
     [
-      `fence: the CNI plugins ${PLUGINS.join(", ")} cannot go onto ${lines.length === 1 ? "a Sandbox node" : `${lines.length} Sandbox nodes`} (ADR-0084):`,
-      ...lines.map((l) => `  ${l}`),
-      `jr2 puts the plugins into ${CNI_BIN_DIR}, and the Fence needs nodes whose container runtime reads ` +
-        `${CNI_BIN_DIR} and ${CNI_CONF_DIR}. Keep such nodes out of the Sandbox nodes with sandbox.nodeSelector ` +
-        `or a taint (ADR-0052), or use a cluster whose nodes use those folders. See ${FENCE_PREREQUISITES_URL}.`,
+      `fence: the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} failed on ` +
+        `${nodes === 1 ? "a Sandbox node" : `${nodes} Sandbox nodes`} (ADR-0084):`,
+      ...failures.map((f) => `  ${f.node}: ${f.text}`),
+      ...(has("folder")
+        ? [
+            `jr2 puts the plugins ${PLUGINS.join(", ")} into ${CNI_BIN_DIR}, and the Fence needs nodes whose ` +
+              `container runtime reads ${CNI_BIN_DIR} and ${CNI_CONF_DIR}. Keep such nodes out of the Sandbox ` +
+              "nodes with sandbox.nodeSelector or a taint (ADR-0052), or use a cluster whose nodes use those folders.",
+          ]
+        : []),
+      ...(has("bridge")
+        ? [
+            `jr2 never replaces a plugin file. A bridge plugin older than v${BRIDGE_MIN_VERSION} does not do what ` +
+              "jr2's attachments say: it puts the trunks of the Instances on a shared VLAN, or refuses a trunk " +
+              `that has vlan and vlanTrunk. Replace ${CNI_BIN_DIR}/bridge on the node with the stock plugin of ` +
+              `v${BRIDGE_MIN_VERSION} or later, or delete it so that jr2 writes ${CNI_VERSION}; then delete the ` +
+              `node's pod of ${FENCE_NODE_DAEMONSET}.`,
+          ]
+        : []),
+      ...(has("rules")
+        ? [
+            `The node must have nftables with the inet family, and the pod needs the capability NET_ADMIN on the ` +
+              "node's network. A policy of the cluster that refuses a host-network pod or that capability in " +
+              `${OPERATOR_NAMESPACE} stops it.`,
+          ]
+        : []),
+      `See ${FENCE_PREREQUISITES_URL}. Then run \`jr2 up\` again.`,
     ].join("\n"),
   );
 }
 
+/** A failed result line as a node failure. */
+function failureOf(node: string, result: string): NodeFailure {
+  const rest = result.slice("fail ".length);
+  for (const what of ["folder", "bridge", "rules"] as const) {
+    if (rest.startsWith(`${what} `)) return { node, what, text: rest.slice(what.length + 1) };
+  }
+  return { node, what: "folder", text: rest };
+}
+
 /**
- * Wait until each Sandbox node has a Ready pod of the plugins' DaemonSet: its init container put the
- * plugins there, or found them. Returns each node's result line. A pod whose init container failed,
- * or whose folder the kubelet could not mount, refuses (c).
+ * Wait until each Sandbox node has a Ready pod of the DaemonSet jr2-fence-node: its init containers
+ * loaded the rule table, and put the plugins there or found them. Returns each node's result
+ * lines. A pod whose init container failed, or whose folder the kubelet could not mount, refuses.
  */
-export async function awaitPlugins(
+export async function awaitFenceNodes(
   kube: Pick<KubeAdmin, "listJson">,
   opts: { nodes: readonly string[]; context?: string; pollMs?: number; now?: () => number },
 ): Promise<Map<string, string>> {
@@ -532,25 +697,30 @@ export async function awaitPlugins(
   const now = opts.now ?? Date.now;
   const started = now();
   for (;;) {
-    const pods = await kube.listJson<PluginsPod>({
+    const pods = await kube.listJson<FenceNodePod>({
       kind: "pod",
-      selector: `app=${PLUGINS_DAEMONSET}`,
+      selector: `app=${FENCE_NODE_DAEMONSET}`,
       namespace: OPERATOR_NAMESPACE,
       ...ctx,
     });
     const results = new Map<string, string>();
-    const failed: string[] = [];
+    const failed: NodeFailure[] = [];
     const waiting: string[] = [];
     for (const node of opts.nodes) {
       const mine = pods.filter((p) => p.spec?.nodeName === node && p.metadata?.deletionTimestamp === undefined);
       const ready = mine.find(isReady);
       if (ready) {
-        results.set(node, pluginsResultOf(ready) ?? "ok");
+        results.set(
+          node,
+          fenceNodeResultsOf(ready)
+            .map((r) => r.replace(/^ok /, ""))
+            .join(" ") || "ok",
+        );
         continue;
       }
-      const result = mine.map(pluginsResultOf).find((r) => r?.startsWith("fail "));
+      const result = mine.flatMap(fenceNodeResultsOf).find((r) => r.startsWith("fail "));
       if (result) {
-        failed.push(`${node}: ${result.slice("fail ".length)}`);
+        failed.push(failureOf(node, result));
         continue;
       }
       waiting.push(node);
@@ -567,21 +737,25 @@ export async function awaitPlugins(
             .catch(() => []);
           const mount = events.filter((e) => e.reason === "FailedMount").pop();
           if (mount) {
-            failed.push(`${node}: the kubelet cannot mount a CNI folder: ${(mount.message ?? "").slice(0, 300)}`);
+            failed.push({
+              node,
+              what: "folder",
+              text: `the kubelet cannot mount a CNI folder: ${(mount.message ?? "").slice(0, 300)}`,
+            });
             waiting.pop();
             break;
           }
         }
       }
     }
-    if (failed.length > 0) throw folderRefusal(failed);
+    if (failed.length > 0) throw nodeRefusal(failed);
     if (waiting.length === 0) return results;
-    if (now() - started >= PLUGINS_WAIT_MS) {
+    if (now() - started >= FENCE_NODE_WAIT_MS) {
       throw new Error(
-        `fence: no Ready pod of the DaemonSet ${OPERATOR_NAMESPACE}/${PLUGINS_DAEMONSET} on the Sandbox ` +
-          `node${waiting.length === 1 ? "" : "s"} ${waiting.join(", ")} in ${PLUGINS_WAIT_MS / 1000} s, so jr2 cannot ` +
-          `see the CNI plugins there (ADR-0084). See \`kubectl -n ${OPERATOR_NAMESPACE} describe pod -l ` +
-          `app=${PLUGINS_DAEMONSET}\`.`,
+        `fence: no Ready pod of the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} on the Sandbox ` +
+          `node${waiting.length === 1 ? "" : "s"} ${waiting.join(", ")} in ${FENCE_NODE_WAIT_MS / 1000} s, so jr2 ` +
+          `cannot see the rule table and the CNI plugins there (ADR-0084). See \`kubectl -n ${OPERATOR_NAMESPACE} ` +
+          `describe pod -l app=${FENCE_NODE_DAEMONSET}\`.`,
       );
     }
     await sleep(opts.pollMs ?? POLL_MS);
@@ -590,27 +764,13 @@ export async function awaitPlugins(
 
 // ---- the install -----------------------------------------------------------------------------------
 
-/** An apply, and once more after a short wait when it fails: two first converges on one cluster at
- * the same moment can each create the same object, and the second create fails (AlreadyExists). */
-async function applyOnceMore(
-  kube: Pick<KubeAdmin, "apply">,
-  manifest: string,
-  ctx: { context?: string },
-  retryMs = 2000,
-): Promise<void> {
-  try {
-    await kube.apply({ manifest, ...ctx });
-  } catch {
-    await sleep(retryMs);
-    await kube.apply({ manifest, ...ctx });
-  }
-}
-
 /**
- * Install what the plan says, after the question. The plugins first, so that a node whose CNI
+ * Install what the plan says, after the question. The DaemonSet first, so that a node whose CNI
  * folders are elsewhere refuses before Multus changes the cluster's CNI configuration; then Multus.
  * The DaemonSet is applied at each converge whose Kit is not older than the one it runs, as the
- * operator is, so it runs this Kit's image. One quiet line when the plan installed nothing.
+ * operator is: an apply that changes nothing rolls nothing, and one that changes the image or the
+ * template (a newer Kit, or the removal form that an interrupted `jr2 down --all` left) rolls each
+ * pod, which loads the table again. One quiet line when the plan installed nothing.
  */
 export async function installFence(
   kube: Pick<KubeAdmin, "getJson" | "listJson" | "apply" | "waitRollout">,
@@ -622,34 +782,31 @@ export async function installFence(
     log: (line: string) => void;
     pollMs?: number;
     now?: () => number;
-    /** The wait before the second apply; a test gives 0. */
-    retryMs?: number;
   },
 ): Promise<void> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
   const existing = await kube.getJson<DaemonSetObject>({
     kind: "daemonset",
-    name: PLUGINS_DAEMONSET,
+    name: FENCE_NODE_DAEMONSET,
     namespace: OPERATOR_NAMESPACE,
     ...ctx,
   });
   const deployed = existing?.metadata.labels?.[LABEL_VERSION];
   const newer = deployed !== undefined && compareVersions(deployed, KIT_VERSION) > 0;
-  const image = existing?.spec?.template?.spec?.containers?.[0] as { image?: string } | undefined;
-  if (existing === undefined || (!newer && image?.image !== opts.image)) {
-    if (plan.plugins === "install") {
-      opts.log(`fence: applying the DaemonSet ${OPERATOR_NAMESPACE}/${PLUGINS_DAEMONSET} (${opts.image})`);
+  if (!newer) {
+    if (plan.node === "install") {
+      opts.log(`fence: applying the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} (${opts.image})`);
     }
-    await applyOnceMore(kube, JSON.stringify(pluginsDaemonSet(opts.image)), ctx, opts.retryMs);
+    await kube.apply({ manifest: JSON.stringify(fenceNodeDaemonSet(opts.image)), ...ctx });
   }
-  const results = await awaitPlugins(kube, opts);
-  if (plan.plugins === "install") {
-    for (const [node, line] of results) opts.log(`fence: ${node}: CNI plugins ${line}`);
+  const results = await awaitFenceNodes(kube, opts);
+  if (plan.node === "install") {
+    for (const [node, line] of results) opts.log(`fence: ${node}: ${line}`);
   }
   if (plan.multus === "install" || plan.multus === "upgrade") {
     const text = await multusManifest();
     opts.log(`fence: applying Multus v4.3.2 (thick, namespaceIsolation) to ${MULTUS_NAMESPACE}`);
-    await applyOnceMore(kube, text, ctx, opts.retryMs);
+    await kube.apply({ manifest: text, ...ctx });
     await kube.waitRollout({
       kind: "daemonset",
       name: MULTUS_DAEMONSET,
@@ -662,29 +819,64 @@ export async function installFence(
   if (!planAsks(plan)) {
     opts.log(
       `fence: prerequisites in place — ${plan.multus === "foreign" ? "the cluster's" : "jr2's"} Multus, and the ` +
-        `CNI plugins on ${results.size} Sandbox node${results.size === 1 ? "" : "s"}`,
+        `rule table and the CNI plugins on ${results.size} Sandbox node${results.size === 1 ? "" : "s"}`,
     );
   }
 }
 
 // ---- jr2 down --all --------------------------------------------------------------------------------
 
+/** How long the removal form of the DaemonSet may take on each node. */
+const REMOVE_WAIT_S = 120;
+
 /**
- * Remove what jr2 installed for the Fence on the cluster: the plugins' DaemonSet, and the Multus that
- * carries jr2's annotation. A Multus that jr2 did not install stays. The plugin files stay on the
- * nodes: jr2 cannot tell them from files that another tool put there.
+ * Remove what jr2 installed for the Fence on the cluster: the rule table on each node, the fence
+ * node's DaemonSet, and the Multus that carries jr2's annotation. A Multus that jr2 did not install
+ * stays. The plugin files stay on the nodes: jr2 cannot tell them from files that another tool put
+ * there.
+ *
+ * The table goes by the DaemonSet itself: its removal form, applied with the image that it runs,
+ * removes the table in each pod's init container, and the DaemonSet goes when each pod is Ready.
+ * No pod of jr2 is then left on a node with a capability. A node where no pod became Ready in time
+ * (a node that is down) keeps its table: the warning names the command that removes it.
  */
 export async function uninstallFence(
-  kube: Pick<KubeAdmin, "getJson" | "deleteObject" | "deleteManifest">,
+  kube: Pick<KubeAdmin, "getJson" | "apply" | "waitRollout" | "deleteObject" | "deleteManifest">,
   opts: { context?: string; log: (line: string) => void },
 ): Promise<void> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
-  if (await kube.getJson({ kind: "daemonset", name: PLUGINS_DAEMONSET, namespace: OPERATOR_NAMESPACE, ...ctx })) {
+  const existing = await kube.getJson<DaemonSetObject>({
+    kind: "daemonset",
+    name: FENCE_NODE_DAEMONSET,
+    namespace: OPERATOR_NAMESPACE,
+    ...ctx,
+  });
+  if (existing) {
+    const image = (existing.spec?.template?.spec?.containers?.[0] as { image?: string } | undefined)?.image;
+    if (image !== undefined) {
+      opts.log(`removing the rule table "${RULES_TABLE}" from each node`);
+      await kube.apply({ manifest: JSON.stringify(fenceNodeDaemonSet(image, { remove: true })), ...ctx });
+      try {
+        await kube.waitRollout({
+          kind: "daemonset",
+          name: FENCE_NODE_DAEMONSET,
+          namespace: OPERATOR_NAMESPACE,
+          timeoutSeconds: REMOVE_WAIT_S,
+          ...ctx,
+        });
+      } catch (err) {
+        opts.log(
+          `warning: the rule table "${RULES_TABLE}" was not removed from each node in ${REMOVE_WAIT_S} s ` +
+            `(${(err as Error).message.split("\n")[0]}); on a node that keeps it, run \`nft delete table ` +
+            `${RULES_TABLE}\` as root`,
+        );
+      }
+    }
     opts.log(
-      `uninstalling the DaemonSet ${OPERATOR_NAMESPACE}/${PLUGINS_DAEMONSET}; the CNI plugins ` +
+      `uninstalling the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET}; the CNI plugins ` +
         `${PLUGINS.join(", ")} stay in ${CNI_BIN_DIR} on each node`,
     );
-    await kube.deleteObject({ kind: "daemonset", name: PLUGINS_DAEMONSET, namespace: OPERATOR_NAMESPACE, ...ctx });
+    await kube.deleteObject({ kind: "daemonset", name: FENCE_NODE_DAEMONSET, namespace: OPERATOR_NAMESPACE, ...ctx });
   }
   const multus = await kube.getJson({ kind: "daemonset", name: MULTUS_DAEMONSET, namespace: MULTUS_NAMESPACE, ...ctx });
   if (multus?.metadata.annotations?.[MULTUS_ANNOTATION] !== undefined) {

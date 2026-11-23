@@ -2,8 +2,9 @@
 // cluster — its namespace and everything `jr2 up` converged into it. Confirms unless `--yes`
 // (deleting a namespace takes the runs, the store PVC, the Instance Harness's conversations PVC
 // (ADR-0031), and every live Sandbox with it). `--all` also uninstalls the
-// per-cluster operator, and what `jr2 up` installed for the Fence (ADR-0084): the DaemonSet of the
-// CNI plugins and a Multus that carries jr2's annotation — only sane when this was the cluster's
+// per-cluster operator, and what `jr2 up` installed for the Fence (ADR-0084): the rule table on each
+// node (the DaemonSet jr2-fence-node removes it, then goes) and a Multus that carries jr2's
+// annotation — only sane when this was the cluster's
 // last instance. That is the caller's judgment, except for an Instance that holds a VLAN range of
 // the Fence: its claim is in `jr2-system`, so `--all` refuses while another namespace that is still
 // there holds one. Each Instance that needs the Fence holds a range, so past that refusal no
@@ -79,7 +80,8 @@ export async function down(args: string[], io: Io): Promise<number> {
   }
 
   const scope = values.all
-    ? " AND the per-cluster operator, the DaemonSet of the Fence's CNI plugins, and a Multus that jr2 installed"
+    ? " AND the per-cluster operator, the Fence's rule table on each node and the DaemonSet jr2-fence-node that " +
+      "loads it, and a Multus that jr2 installed"
     : "";
   const ok =
     values.yes === true ||

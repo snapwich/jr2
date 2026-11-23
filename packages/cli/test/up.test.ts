@@ -92,7 +92,7 @@ class FakeCluster implements KubeAdmin {
 
   constructor() {
     // The Fence's prerequisites (ADR-0084), as an earlier `jr2 up` installed them: Multus of this
-    // CLI's manifest, and the DaemonSet of the CNI plugins.
+    // CLI's manifest, and the DaemonSet of the fence node. And the API Service, which the probe dials.
     this.set("kube-system", "daemonset", "kube-multus-ds", {
       metadata: {
         name: "kube-multus-ds",
@@ -100,9 +100,12 @@ class FakeCluster implements KubeAdmin {
         annotations: { "jr2.dev/multus": MULTUS_VERSION },
       },
     });
-    this.set("jr2-system", "daemonset", "jr2-cni-plugins", {
-      metadata: { name: "jr2-cni-plugins", labels: { app: "jr2-cni-plugins", "jr2.dev/version": KIT_VERSION } },
+    this.set("jr2-system", "daemonset", "jr2-fence-node", {
+      metadata: { name: "jr2-fence-node", labels: { app: "jr2-fence-node", "jr2.dev/version": KIT_VERSION } },
     });
+    this.set("default", "service", "kubernetes", {
+      spec: { clusterIP: "10.96.0.1", ports: [{ name: "https", port: 443 }] },
+    } as Partial<KubeObject>);
   }
 
   set(namespace: string, kind: string, name: string, obj: Partial<KubeObject>): void {
@@ -164,7 +167,7 @@ class FakeCluster implements KubeAdmin {
   attachmentCrd = true;
   /** The nodes with no Ready Multus pod; each other node has one. */
   nodesWithoutMultus = new Set<string>();
-  /** What the init container of the CNI plugins' pod says on each node (ADR-0084): unset, it passed. */
+  /** What the install init container of the fence node's pod says on each node (ADR-0084): unset, it passed. */
   pluginsResults: Record<string, string> = {};
   /** Each object `create` made, as `<namespace>/<kind>/<name>` (ADR-0084's range claims). */
   created: string[] = [];
@@ -299,17 +302,21 @@ class FakeCluster implements KubeAdmin {
         .filter(([k, o]) => k.includes("/daemonset/") && o.metadata.labels?.[key!] === value)
         .map(([k, o]) => ({ ...o, metadata: { ...o.metadata, namespace: k.split("/")[0] } })) as T[];
     }
-    // The pods of the CNI plugins' DaemonSet (ADR-0084): one Ready pod on each node.
-    if (opts.kind === "pod" && opts.selector === "app=jr2-cni-plugins") {
+    // The pods of the fence node's DaemonSet (ADR-0084): one Ready pod on each node.
+    if (opts.kind === "pod" && opts.selector === "app=jr2-fence-node") {
       return this.nodes.map((n) => {
-        const message = this.pluginsResults[n.metadata.name] ?? "jr2.cni-plugins ok wrote= kept=bridge static tuning";
+        const message =
+          this.pluginsResults[n.metadata.name] ?? "jr2.fence-node ok wrote= kept=bridge static tuning bridge=v1.10.0";
         const ok = message.includes(" ok ");
         return {
-          metadata: { name: `jr2-cni-plugins-${n.metadata.name}` },
+          metadata: { name: `jr2-fence-node-${n.metadata.name}` },
           spec: { nodeName: n.metadata.name },
           status: {
             conditions: [{ type: "Ready", status: ok ? "True" : "False" }],
-            initContainerStatuses: [{ state: { terminated: { exitCode: ok ? 0 : 1, message } } }],
+            initContainerStatuses: [
+              { name: "rules", state: { terminated: { exitCode: 0, message: "jr2.fence-node ok rules=loaded" } } },
+              { name: "install", state: { terminated: { exitCode: ok ? 0 : 1, message } } },
+            ],
           },
         };
       }) as T[];
@@ -1035,11 +1042,11 @@ test("first contact asks; declining bails before anything is applied; --yes skip
 
 test("jr2 up installs the Fence's prerequisites that the cluster lacks, before the Custodian, asking under first contact; a second converge asks nothing and prints one line (ADR-0084)", async () => {
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
-  // A stock cluster: no Multus, no DaemonSet of the CNI plugins.
+  // A stock cluster: no Multus, no DaemonSet of the fence node.
   const stock = () => {
     const w = mkWorld(root, { confirm: false });
     w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
-    w.kube.objects.delete("jr2-system/daemonset/jr2-cni-plugins");
+    w.kube.objects.delete("jr2-system/daemonset/jr2-fence-node");
     return w;
   };
 
@@ -1050,28 +1057,31 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
   assert.equal(
     declined.confirms[0],
     'first contact: deploy instance "myinst" to context kind-test (create namespace "myinst"; install the ' +
-      "Fence's prerequisites: apply the DaemonSet jr2-system/jr2-cni-plugins, which writes the CNI plugins " +
-      "bridge, static, tuning v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never " +
-      "replaces a file, and the files stay after jr2 down --all); and apply Multus v4.3.2 (thick, " +
-      "namespaceIsolation, no global namespace) to kube-system, from the manifest that the CLI ships)?",
+      "Fence's prerequisites: apply the DaemonSet jr2-system/jr2-fence-node to each node. It runs on the node's " +
+      "network with the capability NET_ADMIN (each other capability dropped), and at each start it loads the " +
+      "rule table \"inet jr2_fence\" into the node's nftables, which keeps the node's own network stack off the " +
+      "bridge jr2fence0; jr2 down --all removes the table. It also writes the CNI plugins bridge, static, tuning " +
+      "v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never replaces a file, and the " +
+      "files stay after jr2 down --all); and apply Multus v4.3.2 (thick, namespaceIsolation, no global " +
+      "namespace) to kube-system, from the manifest that the CLI ships)?",
   );
   assert.deepEqual(declined.kube.applied, []);
 
-  // --yes: the plugins, then Multus and its rollout, then the Custodian.
+  // --yes: the fence node, then Multus and its rollout, then the Custodian.
   const w = stock();
   assert.equal(await up(["--yes"], w.io), 0);
   assert.equal(w.confirms.length, 0);
   const err = w.err.join("");
   assert.match(
     err,
-    /fence: applying the DaemonSet jr2-system\/jr2-cni-plugins \(ghcr\.io\/snapwich\/jr2-operator:[0-9.]+\)\n/,
+    /fence: applying the DaemonSet jr2-system\/jr2-fence-node \(ghcr\.io\/snapwich\/jr2-operator:[0-9.]+\)\n/,
   );
-  assert.match(err, /fence: kind-test-control-plane: CNI plugins ok wrote= kept=bridge static tuning\n/);
+  assert.match(err, /fence: kind-test-control-plane: rules=loaded wrote= kept=bridge static tuning bridge=v1\.10\.0\n/);
   assert.match(err, /fence: applying Multus v4\.3\.2 \(thick, namespaceIsolation\) to kube-system\n/);
-  const plugins = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-cni-plugins"'));
+  const plugins = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-fence-node"'));
   const multus = w.kube.applied.findIndex((m) => m.includes("name: kube-multus-ds"));
   const custodian = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-custodian"'));
-  assert.ok(plugins >= 0 && multus > plugins && custodian > multus, "plugins, then Multus, then the Custodian");
+  assert.ok(plugins >= 0 && multus > plugins && custodian > multus, "fence node, then Multus, then the Custodian");
   assert.ok(w.kube.rollouts.includes("kube-system/daemonset/kube-multus-ds"));
   // The DaemonSet runs the operator image of this converge, and its namespace was made first.
   const ds = JSON.parse(w.kube.applied[plugins]!) as {
@@ -1080,12 +1090,13 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
   assert.equal(ds.spec.template.spec.containers[0].image, imagesOf(w).operator);
   assert.ok(w.kube.created.includes("/namespace/jr2-system"));
 
-  // A second converge with both there: no question, nothing installed, one line.
+  // A second converge with both there: no question, Multus untouched, the DaemonSet applied again
+  // (an apply that changes nothing), one line.
   w.kube.set("kube-system", "daemonset", "kube-multus-ds", {
     metadata: { name: "kube-multus-ds", labels: { app: "multus" }, annotations: { "jr2.dev/multus": MULTUS_VERSION } },
   });
-  w.kube.set("jr2-system", "daemonset", "jr2-cni-plugins", {
-    metadata: { name: "jr2-cni-plugins", labels: { app: "jr2-cni-plugins", "jr2.dev/version": KIT_VERSION } },
+  w.kube.set("jr2-system", "daemonset", "jr2-fence-node", {
+    metadata: { name: "jr2-fence-node", labels: { app: "jr2-fence-node", "jr2.dev/version": KIT_VERSION } },
     spec: { template: { spec: { containers: [{ image: ds.spec.template.spec.containers[0].image }] } } },
   } as Partial<KubeObject>);
   w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
@@ -1093,16 +1104,20 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
   w.kube.applied.length = 0;
   assert.equal(await up([], w.io), 0);
   assert.equal(w.confirms.length, 0, "no question: the namespace is home and nothing is installed");
-  assert.match(w.err.join(""), /fence: prerequisites in place — jr2's Multus, and the CNI plugins on 1 Sandbox node\n/);
-  assert.ok(!w.kube.applied.some((m) => m.includes("jr2-cni-plugins") || m.includes("kube-multus-ds")));
+  assert.match(
+    w.err.join(""),
+    /fence: prerequisites in place — jr2's Multus, and the rule table and the CNI plugins on 1 Sandbox node\n/,
+  );
+  assert.equal(w.kube.applied.filter((m) => m.includes('"name":"jr2-fence-node"')).length, 1);
+  assert.ok(!w.kube.applied.some((m) => m.includes("kube-multus-ds")));
 
-  // Home already, but the cluster has no DaemonSet of the plugins: the Fence alone is asked about.
+  // Home already, but the cluster has no DaemonSet of the fence node: the Fence alone is asked about.
   const home = stock();
   home.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
   assert.equal(await up([], home.io), 1);
   assert.match(
     home.confirms[0]!,
-    /^first setup of the Fence on context kind-test: install the Fence's prerequisites: apply the DaemonSet jr2-system\/jr2-cni-plugins, .*\?$/,
+    /^first setup of the Fence on context kind-test: install the Fence's prerequisites: apply the DaemonSet jr2-system\/jr2-fence-node to each node\. .*\?$/,
   );
 });
 
@@ -1110,11 +1125,11 @@ test("an Instance with no Harness pod reads and installs nothing of the Fence, a
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root, { confirm: false });
   w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
-  w.kube.objects.delete("jr2-system/daemonset/jr2-cni-plugins");
+  w.kube.objects.delete("jr2-system/daemonset/jr2-fence-node");
   assert.equal(await up([], w.io), 1);
   assert.doesNotMatch(w.confirms[0]!, /Fence|Multus|plugins/);
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.ok(!w.kube.applied.some((m) => m.includes("jr2-cni-plugins") || m.includes("kube-multus-ds")));
+  assert.ok(!w.kube.applied.some((m) => m.includes("jr2-fence-node") || m.includes("kube-multus-ds")));
   assert.doesNotMatch(w.err.join(""), /fence:/);
   assert.deepEqual(w.kube.fenceProbes, [], "no Harness pod: nothing on the Fence to probe");
 });
@@ -3997,9 +4012,9 @@ test("provider preflight: before the first check, only the namespace, the Priori
   });
   const o = pod.metadata.name as string;
   assert.deepEqual(kinds.slice(0, 3), ["Namespace/myinst", "PriorityClass/jr2-control", "PriorityClass/jr2-sandbox"]);
-  // The DaemonSet of the Fence's CNI plugins (here an update to this converge's image), the
+  // The DaemonSet of the fence node (applied at each converge), the
   // Custodian (its attachments, its DaemonSet and the rest), then the probe of each Sandbox node.
-  assert.equal(kinds[3], "DaemonSet/jr2-cni-plugins");
+  assert.equal(kinds[3], "DaemonSet/jr2-fence-node");
   assert.match(kinds[4]!, /^List NetworkAttachmentDefinition\/jr2-fence-0,.*,DaemonSet\/jr2-custodian$/);
   assert.match(kinds[5]!, /^List Pod\/jr2-fence-probe-[0-9a-f]+$/);
   assert.deepEqual(kinds.slice(6), [
@@ -7351,10 +7366,10 @@ test("a Sandbox node whose CNI folders are not the default ones refuses the conv
   const w = mkWorld(root);
   w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
   w.kube.pluginsResults["kind-test-control-plane"] =
-    "jr2.cni-plugins fail no CNI configuration in /etc/cni/net.d on the node: the container runtime reads it from another folder";
+    "jr2.fence-node fail folder no CNI configuration in /etc/cni/net.d on the node: the container runtime reads it from another folder";
   await assert.rejects(
     () => up(["--yes"], w.io),
-    /fence: the CNI plugins bridge, static, tuning cannot go onto a Sandbox node \(ADR-0084\):\n {2}kind-test-control-plane: no CNI configuration in \/etc\/cni\/net\.d on the node/,
+    /fence: the DaemonSet jr2-system\/jr2-fence-node failed on a Sandbox node \(ADR-0084\):\n {2}kind-test-control-plane: no CNI configuration in \/etc\/cni\/net\.d on the node/,
   );
   assert.ok(!w.kube.applied.some((m) => m.includes("kube-multus-ds")), "Multus is not applied");
   assert.equal(custodianList(w), undefined);

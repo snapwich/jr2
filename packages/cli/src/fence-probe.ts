@@ -12,8 +12,10 @@
 // ARP table tells the two causes apart: an answer from the uplink's MAC says that the bridge carries
 // the frames of the VLAN, so the node changed them (NAT or conntrack on bridged VLAN frames); no
 // answer says that the bridge, its VLAN filtering, or the Custodian pod of the node does not carry
-// them. Then the node's address must give no answer but the Custodian's: the node's own side of the
-// bridge is in no VLAN of a pod.
+// them. Then a dial to the API Service's cluster address must get the Custodian's answer at once:
+// with no rule table of the Fence on the node (`FENCE_RULES`), the node's NAT changes the dial
+// before the bridge carries it, and it gets no answer at all. Then the node's address must give no
+// answer but the Custodian's: the node's own side of the bridge is in no VLAN of a pod.
 //
 // A behaviour probe with no privilege: the pod has no node network, no capability, no writable root
 // and no token. It writes its result as its termination message, as the Repo cache agent writes a
@@ -31,7 +33,15 @@ import {
 } from "@jr2/orchestrator/internal";
 import { KIT_POD_SIZES, LABEL_INSTANCE } from "./deploy.ts";
 import { uplinkMac } from "./fence.ts";
-import { CNI_BIN_DIR, CNI_CONF_DIR, FENCE_PREREQUISITES_URL, MULTUS_SELECTOR } from "./fence-install.ts";
+import {
+  CNI_BIN_DIR,
+  CNI_CONF_DIR,
+  FENCE_NODE_DAEMONSET,
+  FENCE_PREREQUISITES_URL,
+  MULTUS_SELECTOR,
+  RULES_TABLE,
+} from "./fence-install.ts";
+import { OPERATOR_NAMESPACE } from "./deploy.ts";
 import type { KubeAdmin } from "./kube.ts";
 
 /** The slot of the Fence probe in each range (ADR-0084: slot 0 the Instance Harness, slot 1 the check
@@ -73,7 +83,7 @@ export type ProbeResult = {
   probe: "fence";
   ok: boolean;
   /** The part that a failed probe names. */
-  part?: "attachment" | "bridge" | "frames" | "node";
+  part?: "attachment" | "bridge" | "frames" | "rules" | "node";
   /** What the probe saw, in words a person acts on. */
   why?: string;
 };
@@ -82,9 +92,9 @@ export type ProbeResult = {
  * The Fence probe (on slot 2 of the range). Self-contained: its text is the pod's program, so it
  * names nothing outside itself. Its inputs are env variables that the pod sets: `JR2_PROBE_ADDRESS`
  * (the slot's address), `JR2_PROBE_UPLINK` (the uplink's address), `JR2_PROBE_UPLINK_MAC`,
- * `JR2_PROBE_VLAN`, `JR2_PROBE_NODE` (the node's address), `JR2_PROBE_NODE_PORT`,
- * `JR2_PROBE_DNS_PORT`, `JR2_PROBE_ARP` (the ARP table) and `JR2_PROBE_MESSAGE` (where the result
- * goes).
+ * `JR2_PROBE_VLAN`, `JR2_PROBE_SERVICE` and `JR2_PROBE_SERVICE_PORT` (the API Service's cluster
+ * address), `JR2_PROBE_NODE` (the node's address), `JR2_PROBE_NODE_PORT`, `JR2_PROBE_DNS_PORT`,
+ * `JR2_PROBE_ARP` (the ARP table) and `JR2_PROBE_MESSAGE` (where the result goes).
  */
 export async function fenceProbeMain(sys: ProbeSys): Promise<void> {
   const env = sys.env;
@@ -189,7 +199,56 @@ export async function fenceProbeMain(sys: ProbeSys): Promise<void> {
     });
   }
 
-  // 3. The node's address gives no answer but the Custodian's: the uplink takes each TCP connection.
+  // 3. A dial to the API Service's cluster address gets the Custodian's answer: the uplink takes the
+  // connection whatever its address, and the Custodian refuses it (a reset for the probe's slot,
+  // which has no rules; a line with jr2's reason for a slot that has rules). No answer in 3 s says
+  // that the node changed the frames before the bridge carried them: kube-proxy's DNAT, which the
+  // node's prerouting rules apply to a frame that enters the bridge untagged when
+  // net.bridge.bridge-nf-call-iptables is 1, and which the rule table of the Fence stops.
+  const service = env.JR2_PROBE_SERVICE ?? "";
+  const servicePort = Number(env.JR2_PROBE_SERVICE_PORT ?? "443");
+  const dialed = await new Promise<{ how: string; data: string }>((resolve) => {
+    let data = "";
+    let connected = false;
+    const socket = sys.net.connect({ host: service, port: servicePort });
+    const done = (how: string) => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({ how, data });
+    };
+    const timer = setTimeout(() => done(connected ? "silent" : "timeout"), 3000);
+    socket.on("connect", () => {
+      connected = true;
+      socket.write(`GET / HTTP/1.0\r\nHost: ${service}\r\n\r\n`);
+    });
+    socket.on("data", (b: Buffer) => {
+      data += b.toString("latin1");
+      if (data.length >= 256) done("data");
+    });
+    socket.on("end", () => done("end"));
+    socket.on("error", (e: NodeJS.ErrnoException) => done(e.code ?? "error"));
+  });
+  const custodians =
+    dialed.how === "ECONNREFUSED" ||
+    dialed.how === "ECONNRESET" ||
+    (dialed.data === "" && dialed.how === "end") ||
+    dialed.data.includes("jr2");
+  if (!custodians) {
+    return end({
+      ok: false,
+      part: dialed.data !== "" ? "node" : "rules",
+      why:
+        dialed.data !== ""
+          ? `a connection to the API Service's address ${service}:${servicePort} got an answer that is not the ` +
+            `Custodian's (${JSON.stringify(dialed.data.slice(0, 60))}): a Sandbox reaches a server of the cluster`
+          : `a connection to the API Service's address ${service}:${servicePort} got no answer in 3 s ` +
+            `(${dialed.how}), where the Custodian refuses it at once: the node changes a Sandbox's frames before ` +
+            "the bridge carries them to the uplink (the NAT of kube-proxy, with net.bridge.bridge-nf-call-iptables " +
+            "= 1), so the rule table inet jr2_fence is not loaded on the node",
+    });
+  }
+
+  // 4. The node's address gives no answer but the Custodian's: the uplink takes each TCP connection.
   const node = env.JR2_PROBE_NODE ?? "";
   const nodePort = Number(env.JR2_PROBE_NODE_PORT ?? "10250");
   const said = await new Promise<string>((resolve) => {
@@ -251,6 +310,8 @@ export function fenceProbePods(opts: {
   ranges: FenceRanges;
   /** The Orchestrator Kit image: the Custodian's `control` image, so each node has it. */
   image: string;
+  /** The API Service's cluster address and port (`default/kubernetes`). */
+  service: { address: string; port: number };
   placement?: SandboxPlacement;
 }): string {
   const vlan = slotVlan(opts.range, FENCE_PROBE_SLOT);
@@ -310,6 +371,8 @@ export function fenceProbePods(opts: {
         { name: "JR2_PROBE_UPLINK", value: uplink },
         { name: "JR2_PROBE_UPLINK_MAC", value: uplinkMac(vlan) },
         { name: "JR2_PROBE_VLAN", value: String(vlan) },
+        { name: "JR2_PROBE_SERVICE", value: opts.service.address },
+        { name: "JR2_PROBE_SERVICE_PORT", value: String(opts.service.port) },
         { name: "JR2_PROBE_NODE", valueFrom: { fieldRef: { fieldPath: "status.hostIP" } } },
         { name: "JR2_PROBE_NODE_PORT", value: String(NODE_PORT) },
         { name: "JR2_PROBE_DNS_PORT", value: "53" },
@@ -330,6 +393,7 @@ const PART: Record<NonNullable<ProbeResult["part"]>, string> = {
   attachment: "Multus or the attachment",
   bridge: "the bridge, its VLAN filtering, or the Custodian pod of this node",
   frames: "the node's firewall on the bridge",
+  rules: `the rule table ${RULES_TABLE}`,
   node: "the VLANs of the bridge",
 };
 
@@ -387,7 +451,9 @@ export function fenceRefusal(gaps: readonly FenceGap[]): Error {
       "The likely causes: the node's container runtime reads its CNI plugins or configuration from a folder other " +
         `than ${CNI_BIN_DIR} and ${CNI_CONF_DIR}; a file bridge, static or tuning in ${CNI_BIN_DIR} that is not ` +
         "a stock CNI plugin that knows vlanTrunk and preserveDefaultVlan (jr2 never replaces one); a primary CNI that removes Multus's " +
-        "configuration; or a node firewall that changes bridged VLAN frames. See " +
+        `configuration; a node firewall that changes bridged VLAN frames; or a node with no rule table ${RULES_TABLE} ` +
+        `(jr2 up replaced the node's pod of ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET}, which loads it at its ` +
+        "start). See " +
         `${FENCE_PREREQUISITES_URL}. Or keep the node out of the Sandbox nodes with sandbox.nodeSelector or a ` +
         "taint (ADR-0052). Then run `jr2 up` again.",
     ].join("\n"),
@@ -494,6 +560,22 @@ export async function probeFenceNodes(
   }
   const nodes = [...byNode.keys()].sort();
   if (nodes.length === 0) return [];
+  // The API Service's cluster address: each cluster has it, and kube-proxy (or what stands in its
+  // place) rewrites a dial to it. A read that fails throws: a probe that cannot look is no probe.
+  const api = await kube.getJson<{ spec?: { clusterIP?: string; ports?: Array<{ name?: string; port?: number }> } }>({
+    kind: "service",
+    name: "kubernetes",
+    namespace: "default",
+    ...ctx,
+  });
+  const apiPort = api?.spec?.ports?.find((p) => p.name === "https")?.port ?? api?.spec?.ports?.[0]?.port;
+  if (!api?.spec?.clusterIP || api.spec.clusterIP === "None" || apiPort === undefined) {
+    throw new Error(
+      "fence: the cluster's Service default/kubernetes has no cluster address and port, and the check of the " +
+        "Fence dials it from each Sandbox node (ADR-0084)",
+    );
+  }
+  const service = { address: api.spec.clusterIP, port: apiPort };
   const removeAll = async () => {
     const left = await kube.listJson<ProbePod>({
       kind: "pod",
@@ -518,12 +600,14 @@ export async function probeFenceNodes(
       range: opts.range,
       ranges: opts.ranges,
       image: opts.image,
+      service,
       ...(opts.placement ? { placement: opts.placement } : {}),
     }),
     ...ctx,
   });
   const gaps: FenceGap[] = [];
   const bridgeless: string[] = [];
+  const ruleless: string[] = [];
   try {
     const waits = nodes.map((node) => ({ node, pod: probePodName(node) }));
     const started = now();
@@ -538,6 +622,7 @@ export async function probeFenceNodes(
           const gap = gapOf(w.node, pod);
           if (gap) gaps.push(gap);
           if (probeResultOf(pod)?.part === "bridge") bridgeless.push(w.node);
+          if (probeResultOf(pod)?.part === "rules") ruleless.push(w.node);
           continue;
         }
         const running = pod?.status?.containerStatuses?.[0]?.state?.terminated === undefined && phase === "Running";
@@ -585,6 +670,25 @@ export async function probeFenceNodes(
         "joins the bridge that the node has now",
     );
     await kube.deleteObject({ kind: "pod", name: pod, namespace: opts.namespace, ...ctx });
+  }
+  // A node with no rule table: its pod of jr2-fence-node loads the table at its start, so a new pod
+  // loads it again (after a `nft flush ruleset` on the node, for example).
+  if (ruleless.length > 0) {
+    const pods = await kube.listJson<ProbePod>({
+      kind: "pod",
+      selector: `app=${FENCE_NODE_DAEMONSET}`,
+      namespace: OPERATOR_NAMESPACE,
+      ...ctx,
+    });
+    for (const node of ruleless) {
+      for (const p of pods.filter((p) => p.spec?.nodeName === node && p.metadata?.name)) {
+        opts.log(
+          `fence: ${node}: replacing the pod ${OPERATOR_NAMESPACE}/${p.metadata!.name}, so that it loads the rule ` +
+            `table ${RULES_TABLE} again`,
+        );
+        await kube.deleteObject({ kind: "pod", name: p.metadata!.name!, namespace: OPERATOR_NAMESPACE, ...ctx });
+      }
+    }
   }
   return gaps.sort((a, b) => a.node.localeCompare(b.node));
 }

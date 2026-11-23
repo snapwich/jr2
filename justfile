@@ -119,7 +119,7 @@ e2e-kind-up:
 # (ADR-0084: 100m and 1,920Mi) and a 500m Sandbox (features/kind-instance/jr2.config.ts) — so four
 # at once ask a node for 5.8 cpu. A 4-vCPU hosted runner allocates 4, of which the system pods ask
 # 1,050m with Multus (100m and 300Mi on each node; measured on jr2-control-plane), and the pod of
-# jr2-cni-plugins asks 10m (v0.4.0's run:
+# jr2-fence-node asks 10m (v0.4.0's run:
 # every Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.9, which
 # fits and leaves about 50m; the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
 # of 47, 2 pass 47 of 47. Requests are the kit's, sized for a real cluster, and are not lowered for a runner.

@@ -15,15 +15,21 @@ and that holds when Workspace code is root in the Sandbox.
   cluster's network. It has no interface on the cluster's own network: no pod address, no Service, no cluster DNS. On
   the segment, a Sandbox can exchange frames with one peer only, the Custodian's uplink on its node. It cannot reach
   another Sandbox, the node, the kubelet, the API server, a pod or a public address.
-- **The Fence is outside the pod, and the boundary is the VLAN state of a bridge.** Each Sandbox node has one bridge
-  (`jr2fence0`). The stock CNI plugin `bridge` makes it, with VLAN filtering, from jr2's attachment objects when the
-  first pod joins it: no other step makes or changes it. Each Sandbox's port is a member of the Sandbox's own VLAN only,
-  and the uplink's port is a member of its Instance's range only. The bridge's own side, the node's network stack, is a
-  member of VLAN 1 only, which no pod's port carries, so a Sandbox cannot exchange a frame with the node. The kernel
-  sends a VLAN frame on a bridge through no firewall hook by default (`net.bridge.bridge-nf-filter-vlan-tagged` is 0),
-  so the node's firewall does not change the frames. The Sandbox cannot choose its VLAN, so the uplink knows which
-  Sandbox sent a frame. The plugin writes the state when it adds a port, and no rule is written for a pod, so there is
-  no window at a pod's start. Nothing in the pod is part of the Fence.
+- **The Fence is outside the pod, and the boundary is the VLAN state of a bridge and a rule table of the node.** Each
+  Sandbox node has one bridge (`jr2fence0`). The stock CNI plugin `bridge` makes it, with VLAN filtering, from jr2's
+  attachment objects when the first pod joins it: no other step makes or changes it. Each Sandbox's port is a member of
+  the Sandbox's own VLAN only, and the uplink's port is a member of its Instance's range only. The bridge's own side,
+  the node's network stack, is a member of VLAN 1 only, which no pod's port carries, so a Sandbox cannot exchange a
+  frame with the node. A Sandbox's frame enters the bridge untagged at its access port, and the node's prerouting hooks
+  see it before the bridge gives it its VLAN: on a node with `net.bridge.bridge-nf-call-iptables = 1`, as with
+  kube-proxy, the NAT of the node changes a dial to a Service address there, and the bridge then drops the frame. So
+  each node has the rule table `inet jr2_fence`, which matches the bridge alone: each packet that enters from the bridge
+  skips the node's connection tracking, so no NAT of the node changes it, and no packet goes from the bridge to the
+  node's own network stack, between the bridge and another interface, or from the node's stack to the bridge. The tagged
+  frames of the uplink's trunk go through no firewall hook (`net.bridge.bridge-nf-filter-vlan-tagged` is 0 by default).
+  The Sandbox cannot choose its VLAN, so the uplink knows which Sandbox sent a frame. The plugin writes the VLAN state
+  when it adds a port, and no rule is written for a pod, so there is no window at a pod's start. Nothing in the pod is
+  part of the Fence.
 - **Instances share a node's bridge by VLAN ranges.** Each Instance with a Harness pod claims a range of 128 VLANs on
   the cluster: `jr2 up` creates the Kubernetes Lease object `jr2-fence-range-<k>` in `jr2-system`, which names the
   Instance's namespace, and a create of a name that exists fails, so two Instances cannot claim one range. The range is
@@ -156,29 +162,39 @@ and that holds when Workspace code is root in the Sandbox.
 - **How a Sandbox's traffic reaches the Custodian is one seam.** The segment is the only form that is built. A cluster
   that cannot have it needs another form behind the same seam, and the rules of the Custodian do not change.
 - **The Fence has two node prerequisites, and `jr2 up` installs each one that a cluster lacks, after it asks.** They are
-  the second network of a pod, Multus, with `namespaceIsolation` and no global namespace, and the stock CNI plugins
-  `bridge`, `static` and `tuning` on each Sandbox node. Without the isolation, a pod of another namespace can name the
-  Instance's uplink or slot attachment and join its VLANs. Nothing else on a node is a prerequisite: the bridge plugin
-  makes the bridge, and the kernel loads the module for the uplink's VLAN interfaces when the uplink makes the first
-  one. `jr2 up` installs with kubectl alone, on any cluster, so a user who installed jr2 from npm and ran
-  `kind create cluster` needs no other step, and the owner of a shared cluster gets the same steps that a kind user
-  gets. It reads the cluster at each converge of an Instance with a Harness pod, before it applies anything. When a
-  prerequisite is missing, it says in the first-time confirmation exactly what it will apply, and that it writes plugin
-  files on the nodes (`--yes` answers it). A converge that finds both asks nothing and writes one line.
+  the second network of a pod, Multus, with `namespaceIsolation` and no global namespace, and jr2's DaemonSet
+  `jr2-system/jr2-fence-node`, which loads the rule table and puts the stock CNI plugins `bridge`, `static` and `tuning`
+  on each node. Without the isolation, a pod of another namespace can name the Instance's uplink or slot attachment and
+  join its VLANs. Nothing else on a node is a prerequisite: the bridge plugin makes the bridge, and the kernel loads the
+  module for the uplink's VLAN interfaces when the uplink makes the first one. `jr2 up` installs with kubectl alone, on
+  any cluster, so a user who installed jr2 from npm and ran `kind create cluster` needs no other step, and the owner of
+  a shared cluster gets the same steps that a kind user gets. It reads the cluster at each converge of an Instance with
+  a Harness pod, before it applies anything. When a prerequisite is missing, it says in the first-time confirmation
+  exactly what it will apply: that the DaemonSet runs on the node's network with the capability `NET_ADMIN` and every
+  other capability dropped, that it loads the rule table into each node and that `jr2 down --all` removes it, and that
+  it writes plugin files on the nodes (`--yes` answers it). A converge that finds both asks nothing and writes one line.
   - **Multus:** when the cluster has none, `jr2 up` applies the thick Multus v4.3.2 manifest that the CLI package ships,
     with `namespaceIsolation` and no global namespace. Its DaemonSet has the annotation `jr2.dev/multus`, which names
     the manifest's version, so that jr2 knows that it installed it; jr2 updates only a Multus that has it. A Multus that
     jr2 did not install, with the right settings, is accepted and never changed.
-  - **The plugins:** `jr2 up` applies the DaemonSet `jr2-system/jr2-cni-plugins`. The operator image holds the plugins
-    of the pinned v1.10.0 release, checked by sha256 at its build, so the pod downloads nothing. On each node, an init
-    container copies each plugin into `/opt/cni/bin` when the node has no file of that name, and never replaces one: a
-    node that has the plugins keeps its own (v1.9.1 made the same VLAN state). Then the pod idles, so a node that joins
-    later gets the plugins too. The pod runs as root, for the node's root-owned folder, with no capability, no privilege
-    escalation, no host namespace, no token and a read-only root; it mounts the node's `/opt/cni/bin` and, read-only,
+  - **The DaemonSet `jr2-fence-node`:** `jr2 up` applies `jr2-system/jr2-fence-node`, which runs the operator image. Its
+    pod is on the node's network, because the rule table belongs to the node's network namespace, and it runs as root,
+    with no privilege escalation, no other host namespace, no token and a read-only root. Two init containers run at
+    each start of the pod, so after a restart of the node too. The first, with the capability `NET_ADMIN` alone, loads
+    the rule table with `nft` in one transaction that makes the table when the node has none, deletes it, and makes it
+    again: a second load replaces the table, never adds a rule to it, and leaves no moment with no rule. The second,
+    with no capability, copies each plugin of the pinned v1.10.0 release, which the operator image holds, checked by
+    sha256 at its build, into `/opt/cni/bin` when the node has no file of that name, and never replaces one. Then it
+    reads the version of the node's `bridge`: it runs the file with no `CNI_COMMAND`, and a stock plugin prints
+    `CNI bridge plugin v<version>` and stops. A version older than v1.8.0, or none, fails the pod, because v1.8.0 is the
+    first release that takes the trunk's `vlan` and `vlanTrunk` together (v1.3.0 to v1.7.1 refuse them, and an older one
+    ignores `preserveDefaultVlan` and `vlanTrunk` and puts the trunks of the Instances on a shared VLAN); a node that
+    has a newer `bridge` keeps its own (v1.9.1 made the same VLAN state). Then the pod idles, with no capability, so a
+    node that joins later gets the table and the plugins too. It mounts the node's `/opt/cni/bin` and, read-only,
     `/etc/cni/net.d`, and nothing else of the node. It runs on each Linux node, as Multus does, because any node can be
     a Sandbox node of some Instance. `jr2 up` applies it after the operator image is delivered and before Multus and the
-    Custodian, and waits until the pod on each Sandbox node is Ready. It applies it again at a converge whose Kit is not
-    older than the DaemonSet's, as it does the operator.
+    Custodian, and waits until the pod on each Sandbox node is Ready. It applies it again at each converge whose Kit is
+    not older than the DaemonSet's, as it does the operator: an apply that changes nothing restarts no pod.
 - **`jr2 up` does not install when it cannot do so safely: it refuses, names the setting for the cluster's owner to
   change, and applies nothing.**
   - A Multus that jr2 did not install and that has no `namespaceIsolation` or has a global namespace. `jr2 up` reads the
@@ -188,26 +204,30 @@ and that holds when Workspace code is root in the Sandbox.
     `kube-system/cilium-config`, or in a `CiliumNodeConfig` that selects a Sandbox node.
   - A node whose container runtime reads its CNI plugins or configuration from a folder other than `/opt/cni/bin` and
     `/etc/cni/net.d`, where jr2 can see it: a Multus that jr2 did not install mounts another folder, or the plugins' pod
-    finds no such folder, no CNI configuration in `/etc/cni/net.d`, or an empty `/opt/cni/bin`. This last refusal comes
-    after the DaemonSet is applied, and before Multus.
+    finds no such folder, no CNI configuration in `/etc/cni/net.d`, or an empty `/opt/cni/bin`. This refusal comes after
+    the DaemonSet is applied, and before Multus.
+  - A Sandbox node whose `bridge` plugin is older than v1.8.0 or prints no version, or where the rule table does not
+    load. These refusals also come after the DaemonSet is applied; each names the node, and the version or `nft`'s
+    reason.
 - **`jr2 up` probes the Fence on each Sandbox node, and refuses to converge while a node fails.** It names the node, the
   part and the likely causes. Before it applies the Custodian, it reads the API: Multus's CustomResourceDefinition must
   exist, and a Ready Multus pod must run on each Sandbox node. After the Custodian's pods are Ready, it runs a one-shot
   pod on slot 2 of the Instance's range on each node of a Custodian pod: its address must be the slot's address, the
-  Custodian's resolver must answer it, and the node's address must give no answer but the Custodian's. When no DNS
-  answer comes, an ARP answer from the uplink says that the bridge carries the frames and the node changes them (a
-  firewall hook on bridged VLAN frames), and no ARP answer says that the bridge or the Custodian pod does not carry
-  them. Then `jr2 up` also replaces that node's Custodian pod, so that the plugin puts its trunk on the bridge that the
-  node has now. The probe pod has no privilege: no node network, no capability and no token. So it sees the effect of
-  the VLAN state, not the state: a node where an older `bridge` plugin kept VLAN 1 on the trunk passes. The Sandbox node
-  set changes between converges, so the operator also does not count a Sandbox Ready until Multus reports its attachment
-  as the pod's default network: on a node where Multus did not act, the pod has the cluster's network, and its exec
-  probe passes there too.
-- **Two node settings are optional hardening, and nothing checks them.** A rule set that keeps the node's own network
-  stack off the bridge (no address, no NAT and no conntrack on `jr2fence0`) is a second layer if someone puts the node's
-  side of the bridge into a pod's VLAN or turns on the firewall hooks for VLAN frames. An `unreachable` route for the
-  segment makes a dial from the node, or from a pod on the cluster's network, to a Sandbox's address fail at once, not
-  after a timeout. The move guide gives both.
+  Custodian's resolver must answer it, a dial to the API Service's cluster address must get the Custodian's answer at
+  once, and the node's address must give no answer but the Custodian's. When no DNS answer comes, an ARP answer from the
+  uplink says that the bridge carries the frames and the node changes them (a firewall hook on bridged VLAN frames), and
+  no ARP answer says that the bridge or the Custodian pod does not carry them. Then `jr2 up` also replaces that node's
+  Custodian pod, so that the plugin puts its trunk on the bridge that the node has now. When the dial to the Service
+  address gets no answer in 3 seconds, the node's NAT changed it, so the node has no rule table: `jr2 up` names the node
+  and that cause, and replaces the node's pod of `jr2-fence-node`, which loads the table again at its start. The probe
+  pod has no privilege: no node network, no capability and no token. So it sees the effect of the VLAN state and of the
+  rule table, not the state; the version check of the `bridge` plugin covers what the effect does not show. The Sandbox
+  node set changes between converges, so the operator also does not count a Sandbox Ready until Multus reports its
+  attachment as the pod's default network: on a node where Multus did not act, the pod has the cluster's network, and
+  its exec probe passes there too.
+- **One node setting is optional, and nothing checks it.** An `unreachable` route for the segment makes a dial from the
+  node, or from a pod on the cluster's network, to a Sandbox's address fail at once, not after a timeout. The move guide
+  gives it.
 
 ## Considered options
 
@@ -220,14 +240,26 @@ and that holds when Workspace code is root in the Sandbox.
 - **Redirect rules on the pod's network device on the node.** Rejected: they do not work on Cilium with eBPF host
   routing, and a new pod sandbox loses them.
 - **A node plugin of jr2 that writes redirect rules when a pod is made.** Rejected for now. It held against root in the
-  pod, and the pod keeps the cluster's network. But jr2 would own privileged code on each node, and the boundary fails
-  open when another agent on the node removes the rules. It is the candidate for a cluster that cannot have a second pod
-  network.
-- **A bridge, a node rule set, the `8021q` module and an `unreachable` route that the node makes, as prerequisites.**
-  Rejected: the bridge plugin makes the bridge and its VLAN state from the attachment objects, and that state alone
-  keeps the node and each other VLAN off a Sandbox. The node parts needed privileged code on each node, or a step that
-  the cluster's owner could forget, and a restart of the node lost them. The rule set and the route stay as optional
-  hardening.
+  pod, and the pod keeps the cluster's network. But jr2 would own code on each node that writes rules for each pod, and
+  the boundary fails open when another agent on the node removes the rules. The rule table of the Fence is one table for
+  all pods: when another agent removes it, a Sandbox's dial to a Service address gets no answer, and the VLAN state
+  still keeps the Sandbox off the node. The plugin is the candidate for a cluster that cannot have a second pod network.
+- **The VLAN state alone, with no rule table of the node.** Rejected: a Sandbox's frame enters the bridge untagged, so
+  the node's prerouting hooks see it before the bridge tags it. On a stock kind cluster
+  (`net.bridge.bridge-nf-call-iptables = 1`), kube-proxy's DNAT changed a Sandbox's dial to `10.96.0.1:443`, the bridge
+  dropped the frame, the dial timed out, and the Custodian logged nothing. With the `notrack` chain alone, the same dial
+  got the Custodian's refusal at once. The table needs a pod with `NET_ADMIN` on the node's network, which the
+  confirmation says.
+- **The `notrack` chain alone.** Rejected: the three drop chains cost nothing, and they hold when the node's side of the
+  bridge is in a pod's VLAN. In a test on kind with the bridge's own side in the slot's VLAN and an address on the
+  segment, and with no drop chain, the kubelet answered the Sandbox, the node's dial reached the Sandbox, and a pod of
+  the cluster's network was routed into it. The `input`, `out` and `forward` chains each dropped one of those. With the
+  stock VLAN state, no packet from the bridge reached the node's stack in any test, also with the bridge in promiscuous
+  mode or with a loose reverse-path filter.
+- **A bridge, the `8021q` module and an `unreachable` route that the node makes, as prerequisites.** Rejected: the
+  bridge plugin makes the bridge and its VLAN state from the attachment objects, and the kernel loads the module when
+  the uplink needs it. The node parts needed privileged code on each node, or a step that the cluster's owner could
+  forget, and a restart of the node lost them. The route stays optional.
 - **`jr2 up` makes node parts on a kind cluster through `docker exec`, and none elsewhere.** Rejected: the install with
   kubectl works on any cluster, it needs no docker on the host that runs `jr2 up`, and the owner of a shared cluster
   gets the same confirmation.
@@ -297,13 +329,20 @@ and that holds when Workspace code is root in the Sandbox.
   of its whole range and the rules of each of its slots, so it is sized for a full range: about 1.9 GiB of memory on
   each Sandbox node for each Instance ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
 - **The cluster needs a second pod network.** On Cilium, the cluster's config must let another CNI plugin run. A managed
-  cluster that permits no second CNI plugin, or no hostPath pod in `jr2-system`, cannot have the segment.
-- **jr2 writes files on each node.** The plugins stay in `/opt/cni/bin` after `jr2 down --all`, because jr2 cannot tell
-  them from files that another tool put there. `jr2 down --all` removes the plugins' DaemonSet and a Multus that carries
-  jr2's annotation; `jr2 down` without `--all` removes neither.
-- **The Fence survives a restart of the node with no step.** The bridge and its VLAN state are gone after a restart, and
-  the bridge plugin makes them again when the first pod of the node joins the bridge: each Harness pod and Custodian pod
-  of the node starts again, so each port gets its VLANs again. Multus and the plugins are files on the node's disk. Only
-  the optional hardening must be made at boot (a unit, or the node's provisioning).
+  cluster that permits no second CNI plugin, no hostPath pod, or no pod on the node's network with `NET_ADMIN` in
+  `jr2-system` cannot have the segment.
+- **jr2 writes files and a rule table on each node.** The plugins stay in `/opt/cni/bin` after `jr2 down --all`, because
+  jr2 cannot tell them from files that another tool put there. `jr2 down --all` removes the rule table, the DaemonSet
+  `jr2-fence-node` and a Multus that carries jr2's annotation; `jr2 down` without `--all` removes none of them. It
+  removes the table with the DaemonSet itself: it applies the DaemonSet's removal form, whose one init container deletes
+  the table, waits until each pod of it is Ready, and then deletes the DaemonSet. So no other pod with `NET_ADMIN` is
+  needed, and no pod of jr2 stays on a node. A node where no pod became Ready in 2 minutes keeps its table, and
+  `jr2 down` names the command that removes it.
+- **The Fence survives a restart of the node with no step.** The bridge, its VLAN state and the rule table are gone
+  after a restart. The bridge plugin makes the bridge and the VLAN state again when the first pod of the node joins the
+  bridge: each Harness pod and Custodian pod of the node starts again, so each port gets its VLANs again. The pod of
+  `jr2-fence-node` starts again and loads the table again. Until it has, a Sandbox's dial to a Service address gets no
+  answer, and the VLAN state still keeps the Sandbox off the node. Multus and the plugins are files on the node's disk.
+  Only the optional route must be made at boot (a unit, or the node's provisioning).
 - **An Instance with no Workspace needs the Fence too,** because its Instance Harness is behind one. So the first model
   call of a new Instance needs the prerequisites on a node.

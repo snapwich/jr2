@@ -122,10 +122,11 @@ version that runs is the version that the Instance pins. The glossary calls this
 You also made a kind cluster. It runs Kubernetes 1.35 or later, which jr2 needs. `jr2 up` puts in it the parts that an
 Instance needs, such as the [Orchestrator](../reference/glossary.md#orchestrator) and the
 [Custodian](../reference/glossary.md#custodian). A [Sandbox](../reference/glossary.md#sandbox) and the
-[Instance Harness](../reference/glossary.md#instance-harness) also need two parts for their network: Multus, and the
-three CNI plugins `bridge`, `static` and `tuning` on each node. The cluster that `kind create cluster` makes has
-neither. The first `jr2 up` installs them, with kubectl, and asks you first. It does the same on a cluster that is not
-kind. [Move from kind to a shared cluster](../guides/move-from-kind-to-a-shared-cluster.md) gives each part.
+[Instance Harness](../reference/glossary.md#instance-harness) also need two parts for their network: Multus, and a
+DaemonSet of jr2 that loads a rule table into each node and puts the three CNI plugins `bridge`, `static` and `tuning`
+there. The cluster that `kind create cluster` makes has neither. The first `jr2 up` installs them, with kubectl, and
+asks you first. It does the same on a cluster that is not kind.
+[Move from kind to a shared cluster](../guides/move-from-kind-to-a-shared-cluster.md) gives each part.
 [Converge](../concepts/converge.md) explains what `jr2 up` makes. The [CLI reference](../reference/cli.md) gives each
 command and its options.
 

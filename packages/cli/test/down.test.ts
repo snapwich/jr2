@@ -30,16 +30,22 @@ type Roots = {
 function mkKube(
   objects: Record<string, Partial<KubeObject>>,
   opts: { context?: string; roots?: Roots } = {},
-): KubeAdmin & { deleted: string[] } {
+): KubeAdmin & { deleted: string[]; applied: string[] } {
   const store = new Map(Object.entries(objects));
   const roots = opts.roots ?? {};
   let crdGone = false;
   const fake = {
     deleted: [] as string[],
+    applied: [] as string[],
     context: async () => opts.context ?? "kind-test",
     getJson: async <T = KubeObject>(o: { kind: string; name: string; namespace?: string }) =>
       store.get(`${o.namespace ?? ""}/${o.kind.toLowerCase()}/${o.name}`) as T | undefined,
-    apply: async () => assert.fail("down applies nothing"),
+    // The one apply of `down`: the removal form of the fence node's DaemonSet (`--all`).
+    apply: async (o: { manifest: string }) => {
+      const doc = JSON.parse(o.manifest) as { kind: string; metadata: { name: string } };
+      assert.equal(`${doc.kind}/${doc.metadata.name}`, "DaemonSet/jr2-fence-node", "down applies nothing else");
+      fake.applied.push(o.manifest);
+    },
     label: async () => assert.fail("down labels nothing"),
     deleteObject: async (o: { kind: string; name: string; namespace?: string }) =>
       void fake.deleted.push(`${o.namespace ?? ""}/${o.kind}/${o.name}`),
@@ -188,10 +194,13 @@ test("down deletes the instance's namespace; --all takes the operator too, BEFOR
   assert.deepEqual(sweep.listed, ["host", "node test"], "the stores are read only once both roots are gone");
 });
 
-test("--all removes what jr2 installed for the Fence: the plugins' DaemonSet and jr2's Multus; the plugin files stay; a plain down removes neither (ADR-0084)", async () => {
+test("--all removes what jr2 installed for the Fence: the rule table on each node, the fence node's DaemonSet and jr2's Multus; the plugin files stay; a plain down removes none (ADR-0084)", async () => {
   const installed = {
     ...ownNs,
-    "jr2-system/daemonset/jr2-cni-plugins": { metadata: { name: "jr2-cni-plugins" } },
+    "jr2-system/daemonset/jr2-fence-node": {
+      metadata: { name: "jr2-fence-node" },
+      spec: { template: { spec: { containers: [{ name: "idle", image: "jr2-operator:7" }] } } },
+    } as Partial<KubeObject>,
     "kube-system/daemonset/kube-multus-ds": {
       metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": "v4.3.2-thick-namespace-isolation-1" } },
     },
@@ -199,24 +208,33 @@ test("--all removes what jr2 installed for the Fence: the plugins' DaemonSet and
   const plain = mkKube(installed);
   assert.equal(await down([], (await mkWorld(plain, true)).io), 0);
   assert.deepEqual(plain.deleted, ["/Namespace/myinst"]);
+  assert.deepEqual(plain.applied, []);
 
   const all = mkKube(installed);
   const w = await mkWorld(all, true);
   assert.equal(await down(["--all"], w.io), 0);
   assert.match(
     w.confirms[0]!,
-    /delete namespace "myinst" AND the per-cluster operator, the DaemonSet of the Fence's CNI plugins, and a Multus that jr2 installed\)\?$/,
+    /delete namespace "myinst" AND the per-cluster operator, the Fence's rule table on each node and the DaemonSet jr2-fence-node that loads it, and a Multus that jr2 installed\)\?$/,
   );
+  // The table goes first: the removal form of the DaemonSet, with the image that it runs.
+  assert.equal(all.applied.length, 1);
+  const removal = JSON.parse(all.applied[0]!) as Record<string, any>;
+  assert.deepEqual(
+    removal.spec.template.spec.initContainers.map((c: { name: string; image: string }) => [c.name, c.image]),
+    [["rules", "jr2-operator:7"]],
+  );
+  assert.match(removal.spec.template.spec.initContainers[0].command[2], /delete table inet jr2_fence/);
   assert.deepEqual(all.deleted, [
     "/Namespace/myinst",
-    "jr2-system/daemonset/jr2-cni-plugins",
+    "jr2-system/daemonset/jr2-fence-node",
     "(multus manifest)",
     "(operator manifest)",
   ]);
   const err = w.err.join("");
   assert.match(
     err,
-    /uninstalling the DaemonSet jr2-system\/jr2-cni-plugins; the CNI plugins bridge, static, tuning stay in \/opt\/cni\/bin on each node\n/,
+    /removing the rule table "inet jr2_fence" from each node\n.*uninstalling the DaemonSet jr2-system\/jr2-fence-node; the CNI plugins bridge, static, tuning stay in \/opt\/cni\/bin on each node\n/s,
   );
   assert.match(err, /uninstalling Multus \(kube-system\), which jr2 installed\n/);
 

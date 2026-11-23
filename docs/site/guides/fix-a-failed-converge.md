@@ -218,13 +218,23 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
     (or the CNI configuration directory, not `/etc/cni/net.d`). jr2 puts the plugins into `/opt/cni/bin`. Keep such
     nodes out of the Sandbox nodes with [`sandbox.nodeSelector`](../reference/config.md#sandbox-nodeselector) or a
     taint, or use a cluster whose nodes use the default folders.
-  - `fence: the CNI plugins bridge, static, tuning cannot go onto a Sandbox node (ADR-0084):`, then one line for each
-    node: the node has no CNI configuration in `/etc/cni/net.d`, its `/opt/cni/bin` is empty, or the kubelet cannot
-    mount one of the two folders. The pod of the DaemonSet `jr2-system/jr2-cni-plugins` on the node found this. Its
-    container runtime uses other folders: keep the node out of the Sandbox nodes, as above. Multus is not applied.
-  - `fence: no Ready pod of the DaemonSet jr2-system/jr2-cni-plugins on the Sandbox node <node> in 300 s, …`. Read
-    `kubectl -n jr2-system describe pod -l app=jr2-cni-plugins`, for example for an image that the node cannot pull, or
-    a policy of the cluster that refuses a pod with a hostPath volume in `jr2-system`.
+  - `fence: the DaemonSet jr2-system/jr2-fence-node failed on a Sandbox node (ADR-0084):`, then one line for each node,
+    and what to do. The pod of the DaemonSet on the node found one of these:
+    - The node has no CNI configuration in `/etc/cni/net.d`, its `/opt/cni/bin` is empty, or the kubelet cannot mount
+      one of the two folders. Its container runtime uses other folders: keep the node out of the Sandbox nodes, as
+      above.
+    - `/opt/cni/bin/bridge is v<version>, older than v1.8.0`, or `prints no version`. jr2 never replaces a plugin file.
+      Replace the file with the stock plugin of v1.8.0 or later, or delete it so that jr2 writes v1.10.0. Then delete
+      the node's pod of `jr2-fence-node`, and run `jr2 up` again.
+    - `nft could not load the table inet jr2_fence: <reason>`. The node needs nftables with the inet family.
+
+    Multus is not applied.
+
+  - `fence: no Ready pod of the DaemonSet jr2-system/jr2-fence-node on the Sandbox node <node> in 300 s, …`. Read
+    `kubectl -n jr2-system describe pod -l app=jr2-fence-node`, for example for an image that the node cannot pull, or a
+    policy of the cluster that refuses a pod with a hostPath volume, the node's network or the capability `NET_ADMIN` in
+    `jr2-system`.
+
 - The cluster must keep pod-level resources. `jr2 up` makes the namespace, and then it stops:
   `refusing: <context> (Kubernetes <version>) drops pod-level resources — the PodLevelResources feature gate is off, and a Workspace's Size cannot hold (ADR-0060). Enable the gate on the API server and kubelets. The namespace was created; nothing else was applied.`
 - When `jr2 up` cannot confirm pod-level resources, it warns and continues:
@@ -366,15 +376,19 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   or found its prerequisites. While a node fails, `jr2 up` refuses to converge. The error starts with
   `error: fence: a Sandbox node fails the check of the Fence (ADR-0084):`, and each next line names a node, the part and
   what the check saw: `Multus`, `Multus or the attachment`,
-  `the bridge, its VLAN filtering, or the Custodian pod of this node`, `the node's firewall on the bridge` or
-  `the VLANs of the bridge`. When the probe pod on the Fence got no answer from the Custodian on the bridge, `jr2 up`
-  also replaces the Custodian pod of that node, so that the pod joins the bridge again. When the cluster has no Multus,
-  the error says `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`.
-  Run `jr2 up` again: it installs Multus when the cluster has none. The last line of the error names the likely causes:
-  a container runtime that reads its CNI plugins or configuration from other folders; a file `bridge`, `static` or
-  `tuning` in `/opt/cni/bin` that is not a recent stock CNI plugin (jr2 never replaces one); a primary CNI that removes
-  the configuration of Multus; or a node firewall that changes bridged VLAN frames. It also gives the page of the
-  prerequisites: [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#prerequisites-of-the-fence).
+  `the bridge, its VLAN filtering, or the Custodian pod of this node`, `the node's firewall on the bridge`,
+  `the rule table inet jr2_fence` or `the VLANs of the bridge`. When the probe pod on the Fence got no answer from the
+  Custodian on the bridge, `jr2 up` also replaces the Custodian pod of that node, so that the pod joins the bridge
+  again. When its dial to the address of the API Service got no answer, the node has no rule table: `jr2 up` replaces
+  the node's pod of `jr2-system/jr2-fence-node`, which loads the table again when it starts. Run `jr2 up` again. When
+  the cluster has no Multus, the error says
+  `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`. Run `jr2 up`
+  again: it installs Multus when the cluster has none. The last line of the error names the likely causes: a container
+  runtime that reads its CNI plugins or configuration from other folders; a file `bridge`, `static` or `tuning` in
+  `/opt/cni/bin` that is not a recent stock CNI plugin (jr2 never replaces one); a primary CNI that removes the
+  configuration of Multus; a node firewall that changes bridged VLAN frames; or a node with no rule table
+  `inet jr2_fence`. It also gives the page of the prerequisites:
+  [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#prerequisites-of-the-fence).
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See
   [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). Every rollout comes after the provider

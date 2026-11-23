@@ -79,10 +79,11 @@ jr2 up
 
 This `jr2 up` is the first that converges the [Instance Harness](../reference/glossary.md#instance-harness), which runs
 the Turns of `triager`. The Instance Harness is behind a [Fence](../reference/glossary.md#fence), as a Sandbox is. The
-Fence needs two parts on the cluster, which `kind create cluster` does not give: Multus, and the CNI plugins `bridge`,
-`static` and `tuning` on each node. So this `jr2 up` asks before it installs them. Type `y`. The lines that start with
-`fence:` are the install and then a check of the Fence on each node. Each next `jr2 up` finds the parts, asks nothing,
-and prints one `fence: prerequisites in place` line.
+Fence needs two parts on the cluster, which `kind create cluster` does not give: Multus, and a DaemonSet of jr2 on each
+node. The DaemonSet loads a rule table into the node, and puts the CNI plugins `bridge`, `static` and `tuning` there. It
+runs on the node's network with the capability `NET_ADMIN`. So this `jr2 up` asks before it installs them. Type `y`. The
+lines that start with `fence:` are the install and then a check of the Fence on each node. Each next `jr2 up` finds the
+parts, asks nothing, and prints one `fence: prerequisites in place` line.
 
 ::: tabs key:provider
 
@@ -101,10 +102,10 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
   triage.clarify gate: [answer]
 agents: triager (carried by 2 workflow machine(s))
 …
-first setup of the Fence on context kind-jr2: install the Fence's prerequisites: apply the DaemonSet jr2-system/jr2-cni-plugins, which writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never replaces a file, and the files stay after jr2 down --all); and apply Multus v4.3.2 (thick, namespaceIsolation, no global namespace) to kube-system, from the manifest that the CLI ships? [y/N] y
+first setup of the Fence on context kind-jr2: install the Fence's prerequisites: apply the DaemonSet jr2-system/jr2-fence-node to each node. It runs on the node's network with the capability NET_ADMIN (each other capability dropped), and at each start it loads the rule table "inet jr2_fence" into the node's nftables, which keeps the node's own network stack off the bridge jr2fence0; jr2 down --all removes the table. It also writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never replaces a file, and the files stay after jr2 down --all); and apply Multus v4.3.2 (thick, namespaceIsolation, no global namespace) to kube-system, from the manifest that the CLI ships? [y/N] y
 …
-fence: applying the DaemonSet jr2-system/jr2-cni-plugins (ghcr.io/snapwich/jr2-operator:<version>)
-fence: jr2-control-plane: CNI plugins ok wrote=bridge static tuning kept=
+fence: applying the DaemonSet jr2-system/jr2-fence-node (ghcr.io/snapwich/jr2-operator:<version>)
+fence: jr2-control-plane: rules=loaded wrote=bridge static tuning kept= bridge=v1.10.0
 fence: applying Multus v4.3.2 (thick, namespaceIsolation) to kube-system
 fence: Multus is ready on each node
 …
@@ -153,10 +154,10 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
   triage.clarify gate: [answer]
 agents: triager (carried by 2 workflow machine(s))
 …
-first setup of the Fence on context kind-jr2: install the Fence's prerequisites: apply the DaemonSet jr2-system/jr2-cni-plugins, which writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never replaces a file, and the files stay after jr2 down --all); and apply Multus v4.3.2 (thick, namespaceIsolation, no global namespace) to kube-system, from the manifest that the CLI ships? [y/N] y
+first setup of the Fence on context kind-jr2: install the Fence's prerequisites: apply the DaemonSet jr2-system/jr2-fence-node to each node. It runs on the node's network with the capability NET_ADMIN (each other capability dropped), and at each start it loads the rule table "inet jr2_fence" into the node's nftables, which keeps the node's own network stack off the bridge jr2fence0; jr2 down --all removes the table. It also writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin on each node that has no file of that name (it never replaces a file, and the files stay after jr2 down --all); and apply Multus v4.3.2 (thick, namespaceIsolation, no global namespace) to kube-system, from the manifest that the CLI ships? [y/N] y
 …
-fence: applying the DaemonSet jr2-system/jr2-cni-plugins (ghcr.io/snapwich/jr2-operator:<version>)
-fence: jr2-control-plane: CNI plugins ok wrote=bridge static tuning kept=
+fence: applying the DaemonSet jr2-system/jr2-fence-node (ghcr.io/snapwich/jr2-operator:<version>)
+fence: jr2-control-plane: rules=loaded wrote=bridge static tuning kept= bridge=v1.10.0
 fence: applying Multus v4.3.2 (thick, namespaceIsolation) to kube-system
 fence: Multus is ready on each node
 …

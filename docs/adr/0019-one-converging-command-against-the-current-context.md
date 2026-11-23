@@ -67,15 +67,19 @@ loudly narrated, safe to re-run:
 - **The Fence**: `up` installs the Custodian's uplink, the Custodian and its resolver
   ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). It also installs the Fence's two node
   prerequisites when the cluster lacks one, on any cluster, with kubectl: Multus, from the manifest that the CLI ships,
-  and a DaemonSet of jr2 that puts the stock CNI plugins `bridge`, `static` and `tuning` on each node that has no file
-  of that name. The first time it installs something, it says exactly what, and that it writes plugin files on the
-  nodes, under the first-contact confirmation (`--yes` answers it); a converge that finds both asks nothing. It refuses,
-  and applies nothing, where an install is not safe: a Multus that jr2 did not install with other settings, a Cilium
-  with `cni-exclusive: "true"`, or a node whose CNI folders are not the default ones. It still creates no cluster. Then
-  it probes the Fence: it refuses to converge while a Sandbox node fails, and names the node, the part and the likely
-  causes. It reads Multus from the API before it applies the Custodian, and probes the bridge after the Custodian is
-  Ready, with a one-shot pod on each Sandbox node that has no privilege; ADR-0084 states what it checks and what it
-  cannot see. `jr2 down --all` removes the DaemonSet and a Multus that jr2 installed; the plugin files stay.
+  and the DaemonSet `jr2-fence-node`, which runs on each node's network with the capability `NET_ADMIN`, loads the
+  Fence's rule table into the node at each start of its pod, and puts the stock CNI plugins `bridge`, `static` and
+  `tuning` on each node that has no file of that name. The first time it installs something, it says exactly what, that
+  the DaemonSet has the node's network and `NET_ADMIN`, that it loads a rule table into each node, and that it writes
+  plugin files on the nodes, under the first-contact confirmation (`--yes` answers it); a converge that finds both asks
+  nothing. It refuses, and applies nothing, where an install is not safe: a Multus that jr2 did not install with other
+  settings, a Cilium with `cni-exclusive: "true"`, or a node whose CNI folders are not the default ones; and after the
+  DaemonSet is applied, a node whose `bridge` plugin is older than v1.8.0. It still creates no cluster. Then it probes
+  the Fence: it refuses to converge while a Sandbox node fails, and names the node, the part and the likely causes. It
+  reads Multus from the API before it applies the Custodian, and probes the bridge and the rule table after the
+  Custodian is Ready, with a one-shot pod on each Sandbox node that has no privilege; ADR-0084 states what it checks and
+  what it cannot see. `jr2 down --all` removes the rule table from each node, the DaemonSet and a Multus that jr2
+  installed; the plugin files stay.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep

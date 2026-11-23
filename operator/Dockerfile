@@ -31,7 +31,7 @@ RUN set -eux; \
     tar -xzf "/tmp/${tgz}" -C /tmp "git-lfs-${GIT_LFS_VERSION}/git-lfs"; \
     install -m 0755 "/tmp/git-lfs-${GIT_LFS_VERSION}/git-lfs" /workspace/git-lfs
 
-# The stock CNI plugins bridge, static and tuning, for the DaemonSet jr2-cni-plugins (ADR-0084): it
+# The stock CNI plugins bridge, static and tuning, for the DaemonSet jr2-fence-node (ADR-0084): it
 # copies each one into a node's CNI bin directory when the node has no file of that name, so the pod
 # downloads nothing. The OFFICIAL release tarball, checked by sha256, and then each plugin checked by
 # its own sha256: both sums are in cni-plugins.sha256, beside this file. Fetched here, on the build
@@ -66,15 +66,16 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ma
 
 # The same image is the manager and the cache agent (`/manager repo-cache`,
 # ADR-0051), so it carries what the agent execs: git, git-lfs (ADR-0053), ssh,
-# and the CA bundle for https remotes. The manager keeps its non-root seat; the cache agent's
-# DaemonSet overrides it to root, because a node agent writes a hostPath the
-# kubelet creates root-owned.
+# and the CA bundle for https remotes. It also carries nft, with which the DaemonSet
+# jr2-fence-node loads the Fence's rule table into each node (ADR-0084). The manager keeps
+# its non-root seat; the cache agent's DaemonSet overrides it to root, because a node agent
+# writes a hostPath the kubelet creates root-owned.
 FROM alpine:3.21
-RUN apk add --no-cache git openssh-client ca-certificates
+RUN apk add --no-cache git openssh-client ca-certificates nftables
 WORKDIR /
 COPY --from=builder /workspace/manager /manager
 COPY --from=builder /workspace/git-lfs /usr/local/bin/git-lfs
-# The DaemonSet jr2-cni-plugins copies these into the node (ADR-0084); nothing here runs them.
+# The DaemonSet jr2-fence-node copies these into the node (ADR-0084); nothing here runs them.
 COPY --from=builder /workspace/cni-bin/ /opt/jr2/cni/bin/
 # `asyncpreemptoff` because in a multi-arch build this run can be the emulated one, and the emulator
 # mishandles Go's preemption signal (deploy/harness/Dockerfile); GODEBUG is the process's, not the binary's.

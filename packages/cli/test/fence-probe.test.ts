@@ -53,6 +53,7 @@ test("one one-shot pod on each node, pinned by nodeName, with no privilege, no t
       range: 2,
       ranges: fenceRangesOf(undefined),
       image: "jr2-orchestrator:x",
+      service: { address: "10.96.0.1", port: 443 },
       placement: { tolerations: [{ key: "k", operator: "Exists", effect: "NoSchedule" }] },
     }),
   ) as { items: Array<Record<string, any>> };
@@ -94,6 +95,9 @@ test("one one-shot pod on each node, pinned by nodeName, with no privilege, no t
   assert.equal(env(fence).JR2_PROBE_ADDRESS, "198.19.1.4");
   assert.equal(env(fence).JR2_PROBE_UPLINK_MAC, "02:00:c6:12:01:04");
   assert.deepEqual(env(fence).JR2_PROBE_NODE, { fieldRef: { fieldPath: "status.hostIP" } });
+  // The API Service's cluster address, which the node's NAT would change without the rule table.
+  assert.equal(env(fence).JR2_PROBE_SERVICE, "10.96.0.1");
+  assert.equal(env(fence).JR2_PROBE_SERVICE_PORT, "443");
 });
 
 // ---- the Fence probe's program ------------------------------------------------------------------------
@@ -102,7 +106,14 @@ type Run = { code?: number; message?: ProbeResult; log: string[] };
 
 /** Run the Fence probe in this process: real sockets on the loopback, a fake address list and ARP
  * table. */
-async function runFence(opts: { addresses?: string[]; dnsPort: number; nodePort: number; arp?: string }): Promise<Run> {
+async function runFence(opts: {
+  addresses?: string[];
+  dnsPort: number;
+  nodePort: number;
+  /** The port of the "API Service" on the loopback; a closed port (a reset, as the Custodian's) by default. */
+  servicePort?: number;
+  arp?: string;
+}): Promise<Run> {
   const dir = await scratch();
   const arpFile = join(dir, "arp");
   await writeFile(
@@ -125,6 +136,8 @@ async function runFence(opts: { addresses?: string[]; dnsPort: number; nodePort:
       JR2_PROBE_UPLINK: "127.0.0.1",
       JR2_PROBE_UPLINK_MAC: "02:00:c6:12:01:04",
       JR2_PROBE_VLAN: "260",
+      JR2_PROBE_SERVICE: "127.0.0.1",
+      JR2_PROBE_SERVICE_PORT: String(opts.servicePort ?? (await closedPort())),
       JR2_PROBE_NODE: "127.0.0.1",
       JR2_PROBE_NODE_PORT: String(opts.nodePort),
       JR2_PROBE_DNS_PORT: String(opts.dnsPort),
@@ -170,6 +183,20 @@ async function closedPort(): Promise<number> {
   return port;
 }
 
+/** A TCP server on the loopback that takes each connection and never answers. */
+async function silent(): Promise<{ port: number; close: () => void }> {
+  const held: net.Socket[] = [];
+  const server = net.createServer((s) => void held.push(s));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return {
+    port: (server.address() as net.AddressInfo).port,
+    close: () => {
+      for (const s of held) s.destroy();
+      server.close();
+    },
+  };
+}
+
 const arpWith = (mac: string) =>
   "IP address       HW type     Flags       HW address            Mask     Device\n" +
   `127.0.0.1        0x1         0x2         ${mac}     *        eth0\n`;
@@ -189,6 +216,37 @@ test("the Fence probe passes when the resolver answers and the node's address an
     }
   } finally {
     dns.close();
+  }
+});
+
+test("the Fence probe passes a dial to the API Service that the Custodian refuses (a reset, or a line of jr2's), and names the rule table when no answer comes", async () => {
+  const dns = await refusingResolver();
+  const custodian = await answering("jr2 custodian: refused: 10.96.0.1:443 is not on the Egress list\n");
+  const quiet = await silent();
+  const apiServer = await answering(
+    "HTTP/1.0 400 Bad Request\r\n\r\nClient sent an HTTP request to an HTTPS server.\n",
+  );
+  try {
+    const nodePort = await closedPort();
+    assert.equal((await runFence({ dnsPort: dns.port, nodePort, servicePort: custodian.port })).code, 0);
+    const [none, other] = await Promise.all([
+      runFence({ dnsPort: dns.port, nodePort, servicePort: quiet.port }),
+      runFence({ dnsPort: dns.port, nodePort, servicePort: apiServer.port }),
+    ]);
+    assert.equal(none.code, 1);
+    assert.equal(none.message?.part, "rules");
+    assert.match(
+      none.message!.why!,
+      /^a connection to the API Service's address 127\.0\.0\.1:\d+ got no answer in 3 s \(silent\), where the Custodian refuses it at once: the node changes a Sandbox's frames before the bridge carries them to the uplink \(the NAT of kube-proxy, with net\.bridge\.bridge-nf-call-iptables = 1\), so the rule table inet jr2_fence is not loaded on the node$/,
+    );
+    assert.equal(other.code, 1);
+    assert.equal(other.message?.part, "node");
+    assert.match(other.message!.why!, /got an answer that is not the Custodian's \("HTTP\/1\.0 400 Bad Request/);
+  } finally {
+    dns.close();
+    custodian.close();
+    quiet.close();
+    apiServer.close();
   }
 });
 
@@ -289,11 +347,18 @@ test("the refusal names each node and part, and the likely causes, with the page
     "The likely causes: the node's container runtime reads its CNI plugins or configuration from a folder other " +
       "than /opt/cni/bin and /etc/cni/net.d; a file bridge, static or tuning in /opt/cni/bin that is not a stock " +
       "CNI plugin that knows vlanTrunk and preserveDefaultVlan (jr2 never replaces one); a primary CNI that " +
-      "removes Multus's configuration; or a node firewall that changes bridged VLAN frames. See " +
+      "removes Multus's configuration; a node firewall that changes bridged VLAN frames; or a node with no rule " +
+      "table inet jr2_fence (jr2 up replaced the node's pod of jr2-system/jr2-fence-node, which loads it at its " +
+      "start). See " +
       `${FENCE_PREREQUISITES_URL}. Or keep the node out of the Sandbox nodes with sandbox.nodeSelector or a taint ` +
       "(ADR-0052). Then run `jr2 up` again.",
   );
   assert.doesNotMatch(fenceRefusal(gaps).message, /kind cluster|just |rule set|route/);
+  assert.equal(
+    gapOf("n3", ended(`jr2.fence-probe ${JSON.stringify({ probe: "fence", ok: false, part: "rules", why: "w" })}`))
+      ?.part,
+    "the rule table inet jr2_fence",
+  );
   assert.match(fenceRefusal([{ node: "x", part: "p", why: "w" }]).message, /^fence: a Sandbox node fails/);
 });
 
@@ -340,6 +405,7 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
     [probePodName("node-a")]: fence({ ok: false, part: "node", why: "the node answers on the bridge" }),
     [probePodName("node-b")]: fence({ ok: false, part: "bridge", why: "no answer from the uplink" }),
     [probePodName("node-c")]: fence({ ok: true }),
+    [probePodName("node-e")]: fence({ ok: false, part: "rules", why: "no answer from the API Service" }),
   };
   const calls: string[] = [];
   let polls = 0;
@@ -352,6 +418,13 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
           { metadata: { name: "cust-a" }, spec: { nodeName: "node-a" } },
           { metadata: { name: "cust-c" }, spec: { nodeName: "node-c" } },
           { metadata: { name: "cust-old", deletionTimestamp: "now" }, spec: { nodeName: "node-d" } },
+          { metadata: { name: "cust-e" }, spec: { nodeName: "node-e" } },
+        ] as T[];
+      }
+      if (opts.selector === "app=jr2-fence-node") {
+        return [
+          { metadata: { name: "fn-a" }, spec: { nodeName: "node-a" } },
+          { metadata: { name: "fn-e" }, spec: { nodeName: "node-e" } },
         ] as T[];
       }
       // One probe pod of an earlier converge is still there.
@@ -365,15 +438,19 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
       const items = (JSON.parse(opts.manifest) as { items: Array<{ metadata: { name: string } }> }).items;
       calls.push(`apply ${items.map((i) => i.metadata.name).join(",")}`);
     },
-    async getJson<T>(opts: { name: string }): Promise<T | undefined> {
+    async getJson<T>(opts: { kind: string; name: string; namespace?: string }): Promise<T | undefined> {
+      if (opts.kind === "service") {
+        calls.push(`get service ${opts.namespace}/${opts.name}`);
+        return { spec: { clusterIP: "10.96.0.1", ports: [{ name: "https", port: 443 }] } } as T;
+      }
       // Each pod runs on the first read, and has ended on the second.
       polls++;
-      if (polls <= 3) return { status: { phase: "Running", containerStatuses: [{ state: { running: {} } }] } } as T;
+      if (polls <= 4) return { status: { phase: "Running", containerStatuses: [{ state: { running: {} } }] } } as T;
       const ok = results[opts.name]!.includes('"ok":true');
       return ended(results[opts.name]!, ok ? 0 : 1) as T;
     },
-    async deleteObject(opts: { kind: string; name: string; wait?: boolean }) {
-      calls.push(`delete ${opts.kind} ${opts.name}${opts.wait ? " (wait)" : ""}`);
+    async deleteObject(opts: { kind: string; name: string; namespace?: string; wait?: boolean }) {
+      calls.push(`delete ${opts.kind} ${opts.namespace}/${opts.name}${opts.wait ? " (wait)" : ""}`);
     },
   };
   const lines: string[] = [];
@@ -393,18 +470,26 @@ test("each Custodian node gets a probe pod; their gaps come back; a node with no
       part: "the bridge, its VLAN filtering, or the Custodian pod of this node",
       why: "no answer from the uplink",
     },
+    { node: "node-e", part: "the rule table inet jr2_fence", why: "no answer from the API Service" },
   ]);
-  const names = ["node-a", "node-b", "node-c"].map(probePodName);
+  const names = ["node-a", "node-b", "node-c", "node-e"].map(probePodName);
   assert.deepEqual(calls, [
     "list pod app=jr2-custodian",
+    "get service default/kubernetes",
     "list pod app=jr2-fence-probe",
-    "delete pod jr2-fence-probe-old (wait)",
+    "delete pod ns/jr2-fence-probe-old (wait)",
     `apply ${names.join(",")}`,
     "list pod app=jr2-fence-probe",
-    "delete pod cust-b",
+    "delete pod ns/cust-b",
+    "list pod app=jr2-fence-node",
+    "delete pod jr2-system/fn-e",
   ]);
-  assert.match(lines[0]!, /probing the bridge on 3 Sandbox node\(s\): node-a, node-b, node-c/);
+  assert.match(lines[0]!, /probing the bridge on 4 Sandbox node\(s\): node-a, node-b, node-c, node-e/);
   assert.match(lines[1]!, /node-b: replacing the Custodian pod cust-b, whose trunk did not answer on the bridge/);
+  assert.equal(
+    lines[2],
+    "fence: node-e: replacing the pod jr2-system/fn-e, so that it loads the rule table inet jr2_fence again",
+  );
 });
 
 test("a probe pod that gets no network ends with the kubelet's reason", async () => {
@@ -417,7 +502,8 @@ test("a probe pod that gets no network ends with the kubelet's reason", async ()
       return [];
     },
     async apply() {},
-    async getJson<T>(): Promise<T | undefined> {
+    async getJson<T>(opts: { kind: string }): Promise<T | undefined> {
+      if (opts.kind === "service") return { spec: { clusterIP: "10.96.0.1", ports: [{ port: 443 }] } } as T;
       return {
         status: { phase: "Pending", containerStatuses: [{ state: { waiting: { reason: "ContainerCreating" } } }] },
       } as T;
