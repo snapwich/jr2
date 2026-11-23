@@ -1,11 +1,14 @@
 # Multus CNI v4.3.2, thick plugin: the upstream quickstart file
 # (https://github.com/k8snetworkplumbingwg/multus-cni/blob/v4.3.2/deployments/multus-daemonset-thick.yml),
-# vendored for the Fence (ADR-0084). Three changes from upstream, all made by jr2:
+# vendored for the Fence (ADR-0084). Four changes from upstream, all made by jr2:
+#   - the image of the init container and of the daemon is ghcr.io/k8snetworkplumbingwg/multus-cni:v4.3.2-thick
+#     (two places), not upstream's moving tag snapshot-thick, so the manifest installs the release that it names;
 #   - the daemon's memory request and limit are 300Mi, raised from the upstream value (prototype round r3);
 #   - "namespaceIsolation": true with no global namespace, so a pod can name a NetworkAttachmentDefinition of its
 #     own namespace only;
 #   - the DaemonSet has the annotation jr2.dev/multus, which names this file's version. Change the value when you
 #     change this file.
+# The file is also formatted by the repository's formatter (indentation and quotes), which changes no value.
 # `jr2 up` applies it, on any cluster, when the cluster has no Multus, or has the one that jr2 installed at another
 # version; it never changes a Multus with no such annotation (src/fence-install.ts). `jr2 down --all` deletes it.
 # Note:
