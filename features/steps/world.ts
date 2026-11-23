@@ -200,6 +200,10 @@ export class E2EWorld {
    * `import-<date>@<digest>` only containerd knows, and the bare `sha256:<id>`. The sweep has to
    * take all of them, so the assertion (and the teardown) works from this set, not from the tag. */
   plantedRefs?: Record<string, string[]>;
+  /** The refs of the instance's image map that each node held before the sweep. A node holds only
+   * the images that it ran or that `kind load` put there: the Custodian's pinned Envoy is pulled only
+   * on a Sandbox node, so a control-plane node of a cluster with workers has none. */
+  mapRefsBefore?: Record<string, string[]>;
   /** @kind: the kind nodes whose loopback the metadata scenario gave the metadata address
    * (ADR-0076), for the After hook to take it away. */
   metadataNodes?: string[];

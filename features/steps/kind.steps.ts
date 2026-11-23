@@ -2211,6 +2211,12 @@ Given(
       const before = new Map(
         await Promise.all(nodes.map(async (n): Promise<[string, Set<string>]> => [n, await nodeRefs(n)])),
       );
+      const mapRefs = await imageMapRefs(this);
+      this.mapRefsBefore = {};
+      for (const node of nodes) {
+        const held = new Set([...before.get(node)!].map(shortRef));
+        this.mapRefsBefore[node] = mapRefs.filter((r) => held.has(shortRef(r)));
+      }
       await exec("kind", ["load", "image-archive", archive, "--name", await kindClusterName()]);
       this.plantedImage = ref;
       // What the load ADDED, per node — the tag plus the names only containerd knows. This is the
@@ -2252,12 +2258,24 @@ Then("no node holds the unreachable image any more", async function (this: E2EWo
   }
 });
 
+// Each node keeps each image of the map that it held before the sweep. Not each image on each node:
+// a node holds only what `kind load` put there or what a pod of it pulled, and the Custodian's
+// pinned Envoy is pulled only on a Sandbox node (ADR-0084), so on a cluster with workers the
+// control-plane node never had it.
 Then("every node still holds the images this instance's map names", async function (this: E2EWorld): Promise<void> {
   const refs = await imageMapRefs(this);
+  const before = this.mapRefsBefore;
   assert.ok(refs.length > 0, "the image map names at least one image");
-  for (const node of await kindNodes()) {
+  assert.ok(before, "the refs each node held were read in the Given");
+  for (const ref of refs) {
+    assert.ok(
+      Object.values(before).some((held) => held.includes(ref)),
+      `no node held ${ref} before the sweep, so the check of it would prove nothing`,
+    );
+  }
+  for (const [node, kept] of Object.entries(before)) {
     const held = new Set([...(await nodeRefs(node))].map(shortRef));
-    for (const ref of refs) {
+    for (const ref of kept) {
       assert.ok(held.has(shortRef(ref)), `the sweep took ${ref} off node ${node}, which this instance still needs`);
     }
   }
