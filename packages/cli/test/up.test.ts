@@ -212,8 +212,21 @@ class FakeCluster implements KubeAdmin {
     this.deleted.push(key);
     return "deleted";
   }
+  /** How many times a node's pod of jr2-fence-node was deleted: the DaemonSet makes it again under a new
+   * name, as a pod that started after the delete. */
+  fenceNodeRestarts = new Map<string, number>();
   async deleteObject(opts: { kind: string; name: string; namespace?: string }): Promise<void> {
     this.deleted.push(`${opts.namespace ?? ""}/${opts.kind}/${opts.name}`);
+    const fenceNode =
+      opts.kind === "pod"
+        ? this.nodes.find((n) => opts.name.startsWith(`jr2-fence-node-${n.metadata.name}`))
+        : undefined;
+    if (fenceNode) {
+      this.fenceNodeRestarts.set(
+        fenceNode.metadata.name,
+        (this.fenceNodeRestarts.get(fenceNode.metadata.name) ?? 0) + 1,
+      );
+    }
     // A range claim goes from the store, so a later converge can claim it again.
     if (opts.kind === "lease") this.objects.delete(`${opts.namespace ?? ""}/lease/${opts.name}`);
   }
@@ -314,13 +327,15 @@ class FakeCluster implements KubeAdmin {
           this.pluginsResults[n.metadata.name] ?? "jr2.fence-node ok wrote= kept=bridge static tuning bridge=v1.10.0";
         const ok = message.includes(" ok ");
         return {
-          metadata: { name: `jr2-fence-node-${n.metadata.name}` },
+          metadata: {
+            name: `jr2-fence-node-${n.metadata.name}${this.fenceNodeRestarts.has(n.metadata.name) ? `-r${this.fenceNodeRestarts.get(n.metadata.name)}` : ""}`,
+          },
           spec: { nodeName: n.metadata.name },
           status: {
             conditions: [{ type: "Ready", status: ok ? "True" : "False" }],
             initContainerStatuses: [
-              { name: "install", state: { terminated: { exitCode: ok ? 0 : 1, message } } },
               { name: "rules", state: { terminated: { exitCode: 0, message: "jr2.fence-node ok rules=loaded" } } },
+              { name: "install", state: { terminated: { exitCode: ok ? 0 : 1, message } } },
             ],
           },
         };
@@ -1093,7 +1108,7 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
     err,
     /fence: applying the DaemonSet jr2-system\/jr2-fence-node \(ghcr\.io\/snapwich\/jr2-operator:[0-9.]+\)\n/,
   );
-  assert.match(err, /fence: kind-test-control-plane: wrote= kept=bridge static tuning bridge=v1\.10\.0 rules=loaded\n/);
+  assert.match(err, /fence: kind-test-control-plane: rules=loaded wrote= kept=bridge static tuning bridge=v1\.10\.0\n/);
   assert.match(err, /fence: applying Multus v4\.3\.2 \(thick, namespaceIsolation\) to kube-system\n/);
   const plugins = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-fence-node"'));
   const multus = w.kube.applied.findIndex((m) => m.includes("name: kube-multus-ds"));
@@ -1159,7 +1174,14 @@ test("jr2 up refuses, before the question and with nothing applied, a Multus of 
     spec: {
       template: {
         spec: {
-          containers: [{ name: "kube-multus" }],
+          containers: [
+            {
+              name: "kube-multus",
+              image: "ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot-thick",
+              command: ["/usr/src/multus-cni/bin/multus-daemon"],
+              volumeMounts: [{ name: "multus-daemon-config", mountPath: "/etc/cni/net.d/multus.d" }],
+            },
+          ],
           volumes: [{ name: "multus-daemon-config", configMap: { name: "multus-daemon-config" } }],
         },
       },

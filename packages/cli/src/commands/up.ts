@@ -443,7 +443,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   const allNodes =
     config.platforms === undefined || fenced ? await kube.listJson<NodeObject>({ kind: "node", ...ctx }) : [];
   const fenceNodes = sandboxNodes(allNodes, config.sandbox).nodes;
-  const fencePlan = fenced ? await planFenceInstall(kube, { nodes: fenceNodes, ...ctx }) : undefined;
+  let fencePlan = fenced ? await planFenceInstall(kube, { nodes: fenceNodes, ...ctx }) : undefined;
   for (const note of fencePlan?.notes ?? []) activity(io, note);
   // The first time a converge installs something on the cluster, it lists what, and asks in the
   // first-contact question when there is one: one question, one `--yes`.
@@ -750,7 +750,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // DaemonSet refuses stops the converge here, after these applies: they stay (ADR-0019).
   if (fencePlan !== undefined) {
     await ensureNamespace(kube, OPERATOR_NAMESPACE, ctx);
-    await installFence(kube, fencePlan, {
+    // The plan as the install found it: a Multus of another owner that only the install saw makes it
+    // `foreign`, and the probe then looks for that Multus's pods.
+    fencePlan = await installFence(kube, fencePlan, {
       image: operatorImage!,
       nodes: fenceNodes.map((n) => n.metadata.name),
       ...ctx,

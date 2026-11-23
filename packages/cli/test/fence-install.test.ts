@@ -4,7 +4,7 @@
 // fake `nft` and fake plugins.
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,15 +19,20 @@ import {
   fenceNodeDaemonSet,
   installFence,
   multusHostDirs,
+  eventPrint,
+  firstCniOf,
+  isMultusDaemonSet,
+  isMultusImage,
   multusManifest,
   MULTUS_VERSION,
-  flagValue,
   planAsks,
   planFenceInstall,
   PLUGINS_SCRIPT,
   RULES_REMOVE_SCRIPT,
   RULES_SCRIPT,
   selects,
+  thickConfigFlag,
+  thinFlags,
   uninstallFence,
   type DaemonSetObject,
   type FenceInstallPlan,
@@ -98,9 +103,15 @@ function cluster(objects: Obj[] = [], crds: string[] = [], refuse: string[] = []
       kube.rollouts.push(`${o.namespace}/${o.kind}/${o.name}`);
     },
     deleted: [] as string[],
+    /** What the DaemonSet's controller makes in place of a deleted pod: by default the same pod with a
+     * new name, as a pod that started after the delete. */
+    replacePod: (pod: any): any => ({ ...pod, metadata: { ...pod.metadata, name: `${pod.metadata.name}-new` } }),
     async deleteObject(o: { kind: string; name: string; namespace?: string }): Promise<void> {
       kube.deleted.push(`${o.namespace ?? ""}/${o.kind}/${o.name}`);
       store.delete(key(o.namespace, o.kind, o.name));
+      if (o.kind === "pod") {
+        kube.pods = kube.pods.map((p: any) => (p.metadata?.name === o.name ? kube.replacePod(p) : p));
+      }
     },
     async deleteManifest(o: { manifest: string }): Promise<void> {
       kube.deleted.push(o.manifest === "" ? "" : "manifest");
@@ -130,11 +141,18 @@ function thickMultus(config: Record<string, unknown>, over: { bin?: string; conf
         template: {
           spec: {
             initContainers: [
-              { name: "install-multus-binary", volumeMounts: [{ name: "cnibin", mountPath: "/host/opt/cni/bin" }] },
+              {
+                name: "install-multus-binary",
+                image: "ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot-thick",
+                command: ["/usr/src/multus-cni/bin/install_multus", "-d", "/host/opt/cni/bin", "-t", "thick"],
+                volumeMounts: [{ name: "cnibin", mountPath: "/host/opt/cni/bin" }],
+              },
             ],
             containers: [
               {
                 name: "kube-multus",
+                image: "ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot-thick",
+                command: ["/usr/src/multus-cni/bin/multus-daemon"],
                 volumeMounts: [
                   { name: "cni", mountPath: "/host/etc/cni/net.d" },
                   { name: "cnibin", mountPath: "/opt/cni/bin" },
@@ -145,7 +163,13 @@ function thickMultus(config: Record<string, unknown>, over: { bin?: string; conf
             volumes: [
               { name: "cni", hostPath: { path: over.conf ?? "/etc/cni/net.d" } },
               { name: "cnibin", hostPath: { path: over.bin ?? "/opt/cni/bin" } },
-              { name: "multus-daemon-config", configMap: { name: "multus-daemon-config" } },
+              {
+                name: "multus-daemon-config",
+                configMap: {
+                  name: "multus-daemon-config",
+                  items: [{ key: "daemon-config.json", path: "daemon-config.json" }],
+                },
+              },
             ],
           },
         },
@@ -196,17 +220,18 @@ test("a stock cluster: Multus and the fence node are installed, and the question
     "  - the namespace jr2-system.",
     "  - the DaemonSet jr2-system/jr2-fence-node, on each Linux node. Its pod runs as root on the node's network. " +
       "At each start, it:",
+    '      - loads the rule table "inet jr2_fence" into the node\'s nftables, with the capability NET_ADMIN alone;',
     "      - runs the node's /opt/cni/bin/bridge, if the node has one, to read its version;",
     "      - writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin where the node has no file of " +
-      "that name (it never replaces a file);",
-    '      - loads the rule table "inet jr2_fence" into the node\'s nftables, with the capability NET_ADMIN alone.',
+      "that name (it never replaces a file).",
     "  - Multus v4.3.2 (thick, namespaceIsolation, no global namespace), from the manifest that the CLI ships: a " +
       "cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system/kube-multus-ds. " +
       "Multus writes the first CNI configuration of each node, so the cluster makes each new pod through Multus.",
     "  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It asks " +
-      "before it changes Multus.",
+      "before it changes the Multus that jr2 installs.",
     "  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet and " +
-      "Multus. The plugin files and the kernel module 8021q stay on the nodes.",
+      "the Multus that jr2 installs. It keeps that Multus while the cluster has a NetworkAttachmentDefinition of " +
+      "another owner. The plugin files and the kernel module 8021q stay on the nodes.",
   ]);
   // A cluster that has jr2-system (the operator of another Instance): no line for the namespace.
   const system = await planFenceInstall(cluster([{ kind: "Namespace", metadata: { name: "jr2-system" } }]), {
@@ -233,63 +258,155 @@ test("a cluster that has jr2's Multus and the fence node: nothing to ask; anothe
   assert.doesNotMatch(describeInstall(older)!.join("\n"), /DaemonSet jr2-system\/jr2-fence-node, on each/);
 });
 
-test("a Multus that jr2 did not install, with namespaceIsolation and no global namespace, is accepted and left alone; its pods are found by its own selector", async () => {
+test("a Multus that jr2 did not install, with namespaceIsolation and no global namespace, is accepted and left alone; its pods are found by its own selector; the question does not say that jr2 removes or changes it", async () => {
   const kube = cluster(thickMultus({ namespaceIsolation: true, globalNamespaces: "" }));
   const plan = await planFenceInstall(kube, { nodes: [node("n1")] });
   assert.deepEqual([plan.multus, plan.node], ["foreign", "install"]);
   assert.deepEqual(plan.multusPods, [{ namespace: "kube-system", selector: "app=multus" }]);
-  assert.doesNotMatch(describeInstall(plan)!.join("\n"), /Multus v4|update of the Multus/);
+  const said = describeInstall(plan)!;
+  assert.doesNotMatch(said.join("\n"), /Multus v4|update of the Multus/);
+  assert.deepEqual(said.slice(-2), [
+    "  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It never " +
+      "changes the cluster's Multus, which jr2 did not install.",
+    "  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, and the DaemonSet. " +
+      "The plugin files and the kernel module 8021q stay on the nodes.",
+  ]);
 });
 
-test("refusal (a): a Multus of another owner is found by more than the label app=multus: RKE2's label, its name, or its image", async () => {
-  const rke2 = (over: { labels?: Record<string, string>; name?: string; image?: string; namespace?: string }): Obj => ({
+/** A DaemonSet with one container. */
+function daemonSet(
+  name: string,
+  container: { name?: string; image: string; command?: string[]; args?: string[]; volumeMounts?: unknown[] },
+  over: { namespace?: string; labels?: Record<string, string>; volumes?: unknown[] } = {},
+): Obj {
+  return {
     kind: "DaemonSet",
-    metadata: {
-      name: over.name ?? "rke2-multus",
-      namespace: over.namespace ?? "kube-system",
-      labels: over.labels ?? {},
-    },
+    metadata: { name, namespace: over.namespace ?? "kube-system", labels: over.labels ?? { app: name } },
     spec: {
-      selector: { matchLabels: { app: "rke2-multus" } },
-      template: {
-        spec: {
-          containers: [
-            {
-              name: "kube-rke2-multus",
-              image: over.image ?? "rancher/hardened-multus-cni:v4.1.0",
-              args: ["--multus-conf-file=auto"],
-            },
-          ],
-        },
-      },
+      selector: { matchLabels: over.labels ?? { app: name } },
+      template: { spec: { containers: [{ name: container.name ?? name, ...container }], volumes: over.volumes ?? [] } },
     },
-  });
+  };
+}
+
+/** RKE2's thin Multus: its own label and image, and `/thin_entrypoint`. */
+const rke2Multus = (args: string[]): Obj =>
+  daemonSet(
+    "rke2-multus",
+    {
+      name: "kube-rke2-multus",
+      image: "rancher/hardened-multus-cni:v4.1.4-build20250108",
+      command: ["/thin_entrypoint"],
+      args,
+    },
+    { labels: { app: "rke2-multus" } },
+  );
+/** RKE2's add-ons beside its Multus, and the upstream one: not a Multus. */
+const ADD_ONS: Obj[] = [
+  daemonSet("rke2-multus-dnc", {
+    image: "rancher/hardened-multus-dynamic-networks-controller:v0.3.6-build20250108",
+    command: ["/dynamic-networks-controller"],
+    args: ["-config", "/etc/dynamic-networks-controller/dynamic-networks-config.json"],
+  }),
+  daemonSet("rke2-multus-dhcp", {
+    image: "rancher/hardened-cni-plugins:v1.6.2-build20250110",
+    command: ["/dhcp", "daemon"],
+  }),
+  daemonSet("dynamic-networks-controller-ds", {
+    image: "ghcr.io/k8snetworkplumbingwg/multus-dynamic-networks-controller:latest-amd64",
+    command: ["/dynamic-networks-controller"],
+  }),
+];
+
+test("a Multus is a DaemonSet whose container runs the thick multus-daemon, the thin /thin_entrypoint or a multus-cni image; a name or a label does not count, so an add-on is not a Multus", async () => {
+  for (const ds of ADD_ONS) assert.equal(isMultusDaemonSet(ds as DaemonSetObject), false, ds.metadata.name);
+  assert.equal(
+    isMultusDaemonSet(
+      daemonSet("multus-helper", { image: "busybox:1.37" }, { labels: { app: "multus" } }) as DaemonSetObject,
+    ),
+    false,
+    "a name and a label of multus, with no Multus in it",
+  );
+  assert.equal(
+    isMultusDaemonSet(
+      daemonSet("x", { image: "registry.local/tools:1", command: ["/entrypoint.sh"] }) as DaemonSetObject,
+    ),
+    false,
+    "/entrypoint.sh of another image",
+  );
   for (const ds of [
-    rke2({ labels: { app: "rke2-multus" } }),
-    rke2({ name: "cni-a", image: "registry.local/multus-cni:v4" }),
-    rke2({ name: "kube-multus", image: "registry.local/x:1", namespace: "network" }),
+    thickMultus({ namespaceIsolation: true })[0]!,
+    rke2Multus([]),
+    daemonSet("cni-a", { image: "registry.local/x:1", command: ["/thin_entrypoint"] }),
+    daemonSet("cni-b", { image: "ghcr.io/k8snetworkplumbingwg/multus-cni:v3.9.3", command: ["/entrypoint.sh"] }),
+    daemonSet("cni-c", { image: "docker.io/nfvpe/multus:v3.4", command: ["/entrypoint.sh"] }),
+    daemonSet("cni-d", { image: "quay.io/vendor/multus-cni@sha256:abc", command: ["sh", "-c", "/thin_entrypoint"] }),
   ]) {
-    await assert.rejects(
-      planFenceInstall(cluster([ds]), { nodes: [] }),
-      /does not have namespaceIsolation in the arguments of the container/,
-      ds.metadata.name,
-    );
+    assert.equal(isMultusDaemonSet(ds as DaemonSetObject), true, ds.metadata.name);
   }
-  // Accepted: the pods are found by the DaemonSet's own selector, in its namespace.
-  const ok = rke2({ labels: { app: "rke2-multus" } });
-  (ok.spec as any).template.spec.containers[0].args = ["--multus-conf-file=auto", "--namespace-isolation"];
-  const plan = await planFenceInstall(cluster([ok]), { nodes: [] });
-  assert.equal(plan.multus, "foreign");
-  assert.deepEqual(plan.multusPods, [{ namespace: "kube-system", selector: "app=rke2-multus" }]);
+  assert.equal(isMultusImage("registry.local:5000/multus-cni:v4"), true, "a port of the registry is not a tag");
+  assert.equal(isMultusImage("ghcr.io/k8snetworkplumbingwg/multus-dynamic-networks-controller:v0.3.7"), false);
+
+  // An add-on beside jr2's own Multus: the plan stays jr2's, with jr2's pods only.
+  const ours = await planFenceInstall(cluster([jr2Multus(), ...ADD_ONS, nodeDs()]), { nodes: [node("n1")] });
+  assert.deepEqual([ours.multus, ours.multusPods], ["jr2", [{ namespace: "kube-system", selector: "app=multus" }]]);
+  // An add-on alone: no Multus, so jr2 installs its own.
+  assert.equal((await planFenceInstall(cluster(ADD_ONS), { nodes: [] })).multus, "install");
+  // An add-on beside RKE2's Multus, which has the isolation: the cluster's, with its pods only.
+  const rke2 = await planFenceInstall(
+    cluster([rke2Multus(["--multus-conf-file=auto", "--namespace-isolation=true"]), ...ADD_ONS]),
+    {
+      nodes: [],
+    },
+  );
+  assert.deepEqual(
+    [rke2.multus, rke2.multusPods],
+    ["foreign", [{ namespace: "kube-system", selector: "app=rke2-multus" }]],
+  );
+  // RKE2's Multus with no isolation refuses, and the fix names its arguments, never an add-on's flag.
+  await assert.rejects(
+    planFenceInstall(cluster([rke2Multus(["--multus-conf-file=auto"]), ...ADD_ONS]), { nodes: [] }),
+    (e: Error) => {
+      assert.match(
+        e.message,
+        /^fence: the cluster's Multus \(DaemonSet kube-system\/rke2-multus, which jr2 did not install\) does not have namespaceIsolation in the arguments of the container kube-rke2-multus of the DaemonSet kube-system\/rke2-multus,/,
+      );
+      assert.doesNotMatch(e.message, /dnc|dhcp|dynamic/);
+      return true;
+    },
+  );
+});
+
+test("refusal (a): a multus-cni image whose command jr2 does not know, or two Multus containers: jr2 cannot tell, and says what it saw", async () => {
+  const shell = daemonSet("kube-multus-ds", {
+    name: "kube-multus",
+    image: "quay.io/vendor/multus-cni:v4.1",
+    command: ["sh", "-c", "/thin_entrypoint --namespace-isolation=true"],
+  });
+  await assert.rejects(planFenceInstall(cluster([shell]), { nodes: [] }), (e: Error) => {
+    assert.match(
+      e.message,
+      /^fence: the cluster has a Multus that jr2 did not install \(DaemonSet kube-system\/kube-multus-ds\), and jr2 cannot tell its settings: its container kube-multus runs the image quay\.io\/vendor\/multus-cni:v4\.1 with the command "sh -c \/thin_entrypoint --namespace-isolation=true", which is not the thick multus-daemon, the thin \/thin_entrypoint or the v3 \/entrypoint\.sh\. /,
+    );
+    assert.match(e.message, /Run that Multus in one of those forms, with namespaceIsolation and no global namespace/);
+    assert.match(e.message, /Nothing was applied\.$/);
+    return true;
+  });
+  const noCommand = daemonSet("kube-multus-ds", { image: "ghcr.io/k8snetworkplumbingwg/multus-cni:v4.1" });
+  await assert.rejects(
+    planFenceInstall(cluster([noCommand]), { nodes: [] }),
+    /cannot tell its settings: .*\(the image's own entrypoint\)/,
+  );
 });
 
 test("refusal (d): the cluster has Multus's definition and jr2 finds no Multus DaemonSet; it waits for a concurrent apply first", async () => {
   const crd = ["network-attachment-definitions.k8s.cni.cncf.io"];
-  await assert.rejects(planFenceInstall(cluster([], crd), { nodes: [], settleMs: 0 }), (e: Error) => {
+  await assert.rejects(planFenceInstall(cluster([...ADD_ONS], crd), { nodes: [], settleMs: 0 }), (e: Error) => {
     assert.match(
       e.message,
-      /^fence: the cluster has the CustomResourceDefinition network-attachment-definitions\.k8s\.cni\.cncf\.io, which Multus uses, but jr2 found no Multus DaemonSet whose settings it can read\. jr2 looked in each namespace for a DaemonSet with "multus" in its name, in a label or in a container image\./,
+      /^fence: the cluster has the CustomResourceDefinition network-attachment-definitions\.k8s\.cni\.cncf\.io, which Multus uses, but jr2 found no Multus DaemonSet\. jr2 looked in each namespace for a DaemonSet whose container runs the thick multus-daemon, the thin \/thin_entrypoint, or a multus-cni image\./,
     );
+    assert.doesNotMatch(e.message, /read access|app=multus/, "advice that cannot be the cause");
     assert.match(e.message, /Nothing was applied\.$/);
     return true;
   });
@@ -305,17 +422,40 @@ test("refusal (d): the cluster has Multus's definition and jr2 finds no Multus D
   assert.equal(plan.multus, "jr2");
 });
 
-test("the flags of a thin Multus, as pflag reads them: a bare bool is true, a string takes = or the next word, the last one counts", () => {
-  assert.equal(flagValue(["--namespace-isolation"], "--namespace-isolation", "bool"), "true");
-  assert.equal(flagValue(["--namespace-isolation=false"], "--namespace-isolation", "bool"), "false");
-  assert.equal(flagValue(["--namespace-isolation", "false"], "--namespace-isolation", "bool"), "true");
-  assert.equal(flagValue(["--global-namespaces", "foo"], "--global-namespaces", "string"), "foo");
-  assert.equal(flagValue(["--global-namespaces=a,b"], "--global-namespaces", "string"), "a,b");
-  assert.equal(
-    flagValue(["/thin_entrypoint --global-namespaces x --global-namespaces=y"], "--global-namespaces", "string"),
-    "y",
+test("the flags of the thin /thin_entrypoint, as pflag reads them: a bare bool is true, a string takes = or the next word, -- ends the flags; an unknown flag that can take one of the three as its value cannot tell", () => {
+  const values = (words: string[]) => {
+    const r = thinFlags(words);
+    return "values" in r ? Object.fromEntries(r.values) : r;
+  };
+  assert.deepEqual(values(["--namespace-isolation"]), { "--namespace-isolation": ["true"] });
+  assert.deepEqual(values(["--namespace-isolation=False"]), { "--namespace-isolation": ["False"] });
+  assert.deepEqual(
+    values(["--namespace-isolation", "false"]),
+    { "--namespace-isolation": ["true"] },
+    "a bool takes no next word",
   );
-  assert.equal(flagValue(["--multus-conf-file=auto"], "--namespace-isolation", "bool"), undefined);
+  assert.deepEqual(values(["--global-namespaces", "a", "--global-namespaces=b"]), {
+    "--global-namespaces": ["a", "b"],
+  });
+  assert.deepEqual(values(["--multus-conf-file=auto", "--", "--namespace-isolation"]), {
+    "--multus-conf-file": ["auto"],
+  });
+  assert.deepEqual(values(["--cni-version=0.3.1", "--skip-tls-verify", "x", "--namespace-isolation=true"]), {
+    "--namespace-isolation": ["true"],
+  });
+  assert.match(
+    (thinFlags(["--multus-log-level", "--namespace-isolation=true"]) as { cannotTell: string }).cannotTell,
+    /the flag --multus-log-level can take the next word, --namespace-isolation=true, as its value/,
+  );
+  assert.match((thinFlags(["--global-namespaces"]) as { cannotTell: string }).cannotTell, /has no value/);
+  // multus-daemon's -config, as Go's flag parser reads it.
+  assert.deepEqual(thickConfigFlag([]), {});
+  assert.deepEqual(thickConfigFlag(["-config", "/a.json", "--config=/b.json"]), { config: "/b.json" });
+  assert.deepEqual(thickConfigFlag(["-v=5", "-config=/a.json", "extra", "-config=/c.json"]), { config: "/a.json" });
+  assert.match(
+    (thickConfigFlag(["-v", "5", "-config=/a.json"]) as { cannotTell: string }).cannotTell,
+    /-v can take the next word, 5/,
+  );
 });
 
 test("refusal (a): a Multus that jr2 did not install, with no namespaceIsolation or with a global namespace", async () => {
@@ -339,36 +479,197 @@ test("refusal (a): a Multus that jr2 did not install, with no namespaceIsolation
   );
 });
 
-test("refusal (a), thin form: the settings are the container's arguments, with no daemon ConfigMap", async () => {
-  const thin = (args: string[]): Obj => ({
-    kind: "DaemonSet",
-    metadata: { name: "kube-multus-ds", namespace: "kube-system", labels: { app: "multus" } },
-    spec: {
-      template: {
-        spec: { containers: [{ name: "kube-multus", command: ["/thin_entrypoint"], args }], volumes: [] },
+/**
+ * The upstream thin Multus (deployments/multus-daemonset.yml): `/thin_entrypoint` with `args`, and the
+ * ConfigMap multus-cni-config mounted at /tmp/multus-conf (key cni-conf.json as 70-multus.conf),
+ * which only a `--multus-conf-file` of that path reads.
+ */
+function thinMultus(
+  args: string[],
+  conf?: Record<string, unknown>,
+  image = "ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot",
+): Obj[] {
+  return [
+    daemonSet(
+      "kube-multus-ds",
+      {
+        name: "kube-multus",
+        image,
+        command: image.includes("v3") ? ["/entrypoint.sh"] : ["/thin_entrypoint"],
+        args,
+        volumeMounts: [
+          { name: "cni", mountPath: "/host/etc/cni/net.d" },
+          { name: "cnibin", mountPath: "/host/opt/cni/bin" },
+          { name: "multus-cfg", mountPath: "/tmp/multus-conf" },
+        ],
+      },
+      {
+        labels: { app: "multus" },
+        volumes: [
+          { name: "cni", hostPath: { path: "/etc/cni/net.d" } },
+          { name: "cnibin", hostPath: { path: "/opt/cni/bin" } },
+          {
+            name: "multus-cfg",
+            configMap: { name: "multus-cni-config", items: [{ key: "cni-conf.json", path: "70-multus.conf" }] },
+          },
+        ],
+      },
+    ),
+    {
+      kind: "ConfigMap",
+      metadata: { name: "multus-cni-config", namespace: "kube-system" },
+      data: {
+        "cni-conf.json": JSON.stringify({
+          cniVersion: "0.3.1",
+          name: "multus-cni-network",
+          type: "multus",
+          kubeconfig: "/etc/cni/net.d/multus.d/multus.kubeconfig",
+          delegates: [{ type: "kindnet" }],
+          ...conf,
+        }),
       },
     },
+  ];
+}
+const PATH_FLAG = "--multus-conf-file=/tmp/multus-conf/70-multus.conf";
+
+test("refusal (a), thin /thin_entrypoint: with --multus-conf-file=auto the settings are its flags, also when it mounts a ConfigMap that it does not read", async () => {
+  // The upstream quickstart: auto, and a ConfigMap that says namespaceIsolation. The node's file comes
+  // from the flags, so the flags decide, and the fix names them, not the ConfigMap.
+  const quickstart = thinMultus(
+    ["--multus-conf-file=auto", "--multus-autoconfig-dir=/host/etc/cni/net.d", "--cni-conf-dir=/host/etc/cni/net.d"],
+    { namespaceIsolation: true },
+  );
+  await assert.rejects(planFenceInstall(cluster(quickstart), { nodes: [] }), (e: Error) => {
+    assert.match(
+      e.message,
+      /does not have namespaceIsolation in the arguments of the container kube-multus of the DaemonSet kube-system\/kube-multus-ds.*Set --namespace-isolation=true in the arguments/s,
+    );
+    assert.doesNotMatch(e.message, /multus-cni-config/);
+    return true;
   });
+  // No --multus-conf-file is auto too.
   await assert.rejects(
-    planFenceInstall(cluster([thin(["--multus-conf-file=auto"])]), { nodes: [] }),
-    /does not have namespaceIsolation in the arguments of the container kube-multus of the DaemonSet kube-system\/kube-multus-ds.*Set --namespace-isolation=true in the arguments/s,
+    planFenceInstall(cluster(thinMultus([], { namespaceIsolation: true })), { nodes: [] }),
+    /in the arguments of the container/,
   );
   await assert.rejects(
-    planFenceInstall(cluster([thin(["--namespace-isolation=true", "--global-namespaces=team"])]), { nodes: [] }),
-    /has the global namespaces "team".*Remove --global-namespaces from the arguments/s,
+    planFenceInstall(cluster(thinMultus(["--namespace-isolation=true", "--global-namespaces=team"])), { nodes: [] }),
+    /has the global namespaces "team" in the arguments.*Remove --global-namespaces from the arguments/s,
   );
-  // The space form of a string flag is read too.
   await assert.rejects(
-    planFenceInstall(cluster([thin(["--namespace-isolation", "--global-namespaces", "team"])]), { nodes: [] }),
+    planFenceInstall(cluster(thinMultus(["--namespace-isolation", "--global-namespaces", "team"])), { nodes: [] }),
     /has the global namespaces "team"/,
   );
   await assert.rejects(
-    planFenceInstall(cluster([thin(["--namespace-isolation=false"])]), { nodes: [] }),
+    planFenceInstall(cluster(thinMultus(["--namespace-isolation=false"])), { nodes: [] }),
     /does not have namespaceIsolation/,
   );
-  for (const args of [["--namespace-isolation=true"], ["--namespace-isolation"]]) {
-    assert.equal((await planFenceInstall(cluster([thin(args)]), { nodes: [] })).multus, "foreign", args.join(" "));
+  // pflag's true values are accepted; a value that pflag does not read is a refusal that cannot tell.
+  for (const v of [
+    "--namespace-isolation",
+    "--namespace-isolation=true",
+    "--namespace-isolation=1",
+    "--namespace-isolation=True",
+  ]) {
+    assert.equal((await planFenceInstall(cluster(thinMultus([v])), { nodes: [] })).multus, "foreign", v);
   }
+  for (const v of ["yes", "tRuE", ""]) {
+    await assert.rejects(
+      planFenceInstall(cluster(thinMultus([`--namespace-isolation=${v}`])), { nodes: [] }),
+      new RegExp(
+        `cannot tell its settings: --namespace-isolation=${v} in the arguments .* is not a value that pflag reads as true or false`,
+      ),
+    );
+  }
+});
+
+test("refusal (a), thin /thin_entrypoint: with --multus-conf-file=<path> the settings are the ConfigMap key mounted at that path, not the flags", async () => {
+  assert.equal(
+    (await planFenceInstall(cluster(thinMultus([PATH_FLAG], { namespaceIsolation: true })), { nodes: [] })).multus,
+    "foreign",
+  );
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus([PATH_FLAG, "--namespace-isolation=true"])), { nodes: [] }),
+    /does not have namespaceIsolation in cni-conf\.json of the ConfigMap kube-system\/multus-cni-config.*Set "namespaceIsolation": true in cni-conf\.json of the ConfigMap kube-system\/multus-cni-config/s,
+  );
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus([PATH_FLAG], { namespaceIsolation: true, globalNamespaces: "a" })), {
+      nodes: [],
+    }),
+    /has the global namespaces "a" in cni-conf\.json.*Set "globalNamespaces": "" in cni-conf\.json/s,
+  );
+  // A path where no ConfigMap is mounted, a key that is not there, or a value of the wrong type: jr2 cannot tell.
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus(["--multus-conf-file=/etc/multus/00-multus.conf"])), { nodes: [] }),
+    /cannot tell its settings: the Multus configuration \(--multus-conf-file\) \/etc\/multus\/00-multus\.conf: no volume of the container kube-multus is mounted at/,
+  );
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus(["--multus-conf-file=/tmp/multus-conf/other.conf"])), { nodes: [] }),
+    /has no key at \/tmp\/multus-conf\/other\.conf/,
+  );
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus(["--multus-conf-file=/host/etc/cni/net.d/00-multus.conf"])), { nodes: [] }),
+    /is on the volume cni, which is not a ConfigMap/,
+  );
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus([PATH_FLAG], { namespaceIsolation: "true" })), { nodes: [] }),
+    /"namespaceIsolation" in cni-conf\.json of the ConfigMap kube-system\/multus-cni-config is not true or false/,
+  );
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus([PATH_FLAG], { type: "flannel", namespaceIsolation: true })), { nodes: [] }),
+    /whose type is not "multus"/,
+  );
+});
+
+test("refusal (a), v3 /entrypoint.sh: isolation is on only for the exact text --namespace-isolation=true; --multus-conf-file has the same meaning", async () => {
+  const V3 = "ghcr.io/k8snetworkplumbingwg/multus-cni:v3.9.3";
+  assert.equal(
+    (await planFenceInstall(cluster(thinMultus(["--namespace-isolation=true"], {}, V3)), { nodes: [] })).multus,
+    "foreign",
+  );
+  for (const v of ["--namespace-isolation", "--namespace-isolation=True", "--namespace-isolation=1"]) {
+    await assert.rejects(planFenceInstall(cluster(thinMultus([v], {}, V3)), { nodes: [] }), (e: Error) => {
+      assert.match(
+        e.message,
+        /does not have namespaceIsolation in the arguments of the container kube-multus.*Set --namespace-isolation=true in the arguments .* \(that exact text: the script \/entrypoint\.sh compares the value with "true"\)/s,
+        v,
+      );
+      return true;
+    });
+  }
+  // The script reads only --flag=value: a value in the next word is not read.
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus(["--namespace-isolation=true", "--global-namespaces=a,b"], {}, V3)), {
+      nodes: [],
+    }),
+    /has the global namespaces "a,b"/,
+  );
+  assert.equal(
+    (
+      await planFenceInstall(cluster(thinMultus(["--namespace-isolation=true", "--global-namespaces", "a"], {}, V3)), {
+        nodes: [],
+      })
+    ).multus,
+    "foreign",
+  );
+  assert.equal(
+    (
+      await planFenceInstall(cluster(thinMultus(["--namespace-isolation=true", "--global-namespaces= "], {}, V3)), {
+        nodes: [],
+      })
+    ).multus,
+    "foreign",
+    "the script removes each space",
+  );
+  assert.equal(
+    (await planFenceInstall(cluster(thinMultus([PATH_FLAG], { namespaceIsolation: true }, V3)), { nodes: [] })).multus,
+    "foreign",
+  );
+  await assert.rejects(
+    planFenceInstall(cluster(thinMultus([PATH_FLAG, "--namespace-isolation=true"], {}, V3)), { nodes: [] }),
+    /does not have namespaceIsolation in cni-conf\.json of the ConfigMap kube-system\/multus-cni-config/,
+  );
 });
 
 test("refusal (a): a ConfigMap of the settings that the API refuses to read, or that does not exist, refuses, and says which", async () => {
@@ -541,10 +842,10 @@ test("the fence node's DaemonSet: the operator image on the node's network, NET_
   ]);
   assert.deepEqual(
     spec.initContainers.map((c: { name: string }) => c.name),
-    ["install", "rules"],
-    "the checks that can refuse a node first: a node that they refuse gets no table",
+    ["rules", "install"],
+    "the table first, so that each node gets it, also a node that the checks of install then refuse",
   );
-  const [install, rules] = spec.initContainers;
+  const [rules, install] = spec.initContainers;
   assert.deepEqual(rules.securityContext, { ...RESTRICTED, capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] } });
   assert.deepEqual(rules.command, ["sh", "-c", RULES_SCRIPT]);
   assert.equal(rules.volumeMounts, undefined, "the rules container mounts nothing of the node");
@@ -631,53 +932,124 @@ if [ "$1" = list ]; then printf 'table inet jr2_fence {\\n${chains}\\n}\\n'; fi
   return { dir, path: `${join(dir, "bin")}:${process.env.PATH}` };
 }
 
+// ---- the scripts, under the host's sh and under busybox ------------------------------------------------
+
+/** The base of the operator image, whose busybox runs the scripts in the pod. */
+const BUSYBOX_IMAGE = "alpine:3.21";
+const DOCKER = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 15_000 }).status === 0;
+type Shell = "sh" | "busybox";
+/** The shell of the script test that runs now (the tests of a file run one at a time). */
+let shell: Shell = "sh";
+let busybox: string | undefined;
+after(async () => {
+  if (busybox !== undefined) await exec("docker", ["rm", "-f", busybox]).catch(() => {});
+});
+
+/** One container of the operator image's base, with the temp folder at the same path, as this user. */
+async function busyboxContainer(): Promise<string> {
+  if (busybox !== undefined) return busybox;
+  const { stdout } = await exec("docker", [
+    "run",
+    "-d",
+    "--rm",
+    "--user",
+    `${process.getuid!()}:${process.getgid!()}`,
+    "-v",
+    `${tmpdir()}:${tmpdir()}`,
+    BUSYBOX_IMAGE,
+    "sleep",
+    "3600",
+  ]);
+  busybox = stdout.trim();
+  return busybox;
+}
+
+/**
+ * A test of a script, run twice: under the host's sh, and under busybox in the operator image's base
+ * (alpine:3.21), as the pod runs it. With no docker, the busybox run is skipped and says why.
+ */
+function scriptTest(name: string, fn: () => Promise<void>): void {
+  test(`${name} [host sh]`, async () => {
+    shell = "sh";
+    await fn();
+  });
+  test(
+    `${name} [busybox, ${BUSYBOX_IMAGE}]`,
+    { skip: DOCKER ? false : `docker is absent, so this script does not run under busybox (${BUSYBOX_IMAGE}) here` },
+    async () => {
+      shell = "busybox";
+      try {
+        await fn();
+      } finally {
+        shell = "sh";
+      }
+    },
+  );
+}
+
 async function runWith(
   script: string,
   dir: string,
   env: Record<string, string> = {},
 ): Promise<{ code: number; message: string }> {
   const text = script.replaceAll("/dev/termination-log", `${dir}/message`);
-  const code = await exec("sh", ["-c", text], { env: { ...process.env, ...env } }).then(
+  const run =
+    shell === "sh"
+      ? exec("sh", ["-c", text], { env: { ...process.env, ...env } })
+      : exec("docker", [
+          "exec",
+          ...Object.entries({ PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", ...env }).flatMap(
+            ([k, v]) => ["-e", `${k}=${v}`],
+          ),
+          await busyboxContainer(),
+          "sh",
+          "-c",
+          text,
+        ]);
+  const code = await run.then(
     () => 0,
     (e: { code?: number }) => e.code ?? 1,
   );
   return { code, message: await readFile(join(dir, "message"), "utf8").catch(() => "") };
 }
 
-test("the rules script loads the table in one transaction that replaces it, each time the same, and fails with nft's reason", async () => {
-  const nft = await fakeNft();
-  const first = await runWith(RULES_SCRIPT, nft.dir, { PATH: nft.path });
-  assert.deepEqual(first, { code: 0, message: "jr2.fence-node ok rules=loaded\n" });
-  const second = await runWith(RULES_SCRIPT, nft.dir, { PATH: nft.path });
-  assert.equal(second.code, 0);
-  const load0 = await readFile(join(nft.dir, "load-0"), "utf8");
-  // One `nft -f` input, so one transaction: it makes the table (a no-op when the node has it), deletes
-  // it, and makes it again with each chain. No window with no rule, and no rule twice.
-  const lines = load0.split("\n");
-  assert.deepEqual(lines.slice(0, 2), ["table inet jr2_fence", "delete table inet jr2_fence"]);
-  assert.equal(lines[2], "table inet jr2_fence {");
-  for (const hook of [
-    "prerouting priority -350",
-    "input priority -200",
-    "forward priority -200",
-    "output priority -200",
-  ]) {
-    assert.ok(load0.includes(`type filter hook ${hook}; policy accept;`), hook);
-  }
-  assert.equal(await readFile(join(nft.dir, "load-1"), "utf8"), load0, "each load is the same");
+scriptTest(
+  "the rules script loads the table in one transaction that replaces it, each time the same, and fails with nft's reason",
+  async () => {
+    const nft = await fakeNft();
+    const first = await runWith(RULES_SCRIPT, nft.dir, { PATH: nft.path });
+    assert.deepEqual(first, { code: 0, message: "jr2.fence-node ok rules=loaded\n" });
+    const second = await runWith(RULES_SCRIPT, nft.dir, { PATH: nft.path });
+    assert.equal(second.code, 0);
+    const load0 = await readFile(join(nft.dir, "load-0"), "utf8");
+    // One `nft -f` input, so one transaction: it makes the table (a no-op when the node has it), deletes
+    // it, and makes it again with each chain. No window with no rule, and no rule twice.
+    const lines = load0.split("\n");
+    assert.deepEqual(lines.slice(0, 2), ["table inet jr2_fence", "delete table inet jr2_fence"]);
+    assert.equal(lines[2], "table inet jr2_fence {");
+    for (const hook of [
+      "prerouting priority -350",
+      "input priority -200",
+      "forward priority -200",
+      "output priority -200",
+    ]) {
+      assert.ok(load0.includes(`type filter hook ${hook}; policy accept;`), hook);
+    }
+    assert.equal(await readFile(join(nft.dir, "load-1"), "utf8"), load0, "each load is the same");
 
-  const refused = await fakeNft({ fail: "Error: Could not process rule: Operation not permitted" });
-  const no = await runWith(RULES_SCRIPT, refused.dir, { PATH: refused.path });
-  assert.equal(no.code, 1);
-  assert.equal(
-    no.message,
-    "jr2.fence-node fail rules nft could not load the table inet jr2_fence: Error: Could not process rule: Operation not permitted \n",
-  );
-  const short = await fakeNft({ chains: 3 });
-  const three = await runWith(RULES_SCRIPT, short.dir, { PATH: short.path });
-  assert.equal(three.code, 1);
-  assert.match(three.message, /fail rules the table inet jr2_fence has 3 chains after the load, not 4/);
-});
+    const refused = await fakeNft({ fail: "Error: Could not process rule: Operation not permitted" });
+    const no = await runWith(RULES_SCRIPT, refused.dir, { PATH: refused.path });
+    assert.equal(no.code, 1);
+    assert.equal(
+      no.message,
+      "jr2.fence-node fail rules nft could not load the table inet jr2_fence: Error: Could not process rule: Operation not permitted \n",
+    );
+    const short = await fakeNft({ chains: 3 });
+    const three = await runWith(RULES_SCRIPT, short.dir, { PATH: short.path });
+    assert.equal(three.code, 1);
+    assert.match(three.message, /fail rules the table inet jr2_fence has 3 chains after the load, not 4/);
+  },
+);
 
 /**
  * A fake `ip` beside the fake `nft`, as busybox's prints `ip -o link show`: the node's links are the
@@ -712,60 +1084,69 @@ const port = (n: number, name: string) =>
 /** A link of another bridge, whose name starts as the Fence's: not the Fence's bridge, not its port. */
 const OTHER = "9: jr2fence0x: <BROADCAST> mtu 1500 qdisc noop state DOWN\\    link/ether 00:00:00:00:00:09";
 
-test("the removal script removes the table whether the node has it or not, then the bridge jr2fence0 when it has no port", async () => {
-  const nft = await fakeNft();
-  await fakeIp(nft.dir, [LO, BR, OTHER]);
-  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, nft.dir, { PATH: nft.path }), {
-    code: 0,
-    message: "jr2.fence-node ok rules=removed bridge=removed\n",
-  });
-  assert.equal(await readFile(join(nft.dir, "load-0"), "utf8"), "table inet jr2_fence\ndelete table inet jr2_fence\n");
-  assert.deepEqual((await readFile(join(nft.dir, "ip-calls"), "utf8")).trim().split("\n"), [
-    "-o link show",
-    "link delete jr2fence0",
-  ]);
-  assert.equal(await readFile(join(nft.dir, "links"), "utf8"), `${LO}\n${OTHER}\n`, "only the Fence's bridge goes");
+scriptTest(
+  "the removal script removes the table whether the node has it or not, then the bridge jr2fence0 when it has no port",
+  async () => {
+    const nft = await fakeNft();
+    await fakeIp(nft.dir, [LO, BR, OTHER]);
+    assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, nft.dir, { PATH: nft.path }), {
+      code: 0,
+      message: "jr2.fence-node ok rules=removed bridge=removed\n",
+    });
+    assert.equal(
+      await readFile(join(nft.dir, "load-0"), "utf8"),
+      "table inet jr2_fence\ndelete table inet jr2_fence\n",
+    );
+    assert.deepEqual((await readFile(join(nft.dir, "ip-calls"), "utf8")).trim().split("\n"), [
+      "-o link show",
+      "link delete jr2fence0",
+    ]);
+    assert.equal(await readFile(join(nft.dir, "links"), "utf8"), `${LO}\n${OTHER}\n`, "only the Fence's bridge goes");
 
-  // A second run, or a node where no pod joined the Fence: no bridge is a success, and nothing is deleted.
-  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, nft.dir, { PATH: nft.path }), {
-    code: 0,
-    message: "jr2.fence-node ok rules=removed bridge=absent\n",
-  });
-  assert.doesNotMatch((await readFile(join(nft.dir, "ip-calls"), "utf8")).split("\n").slice(2).join("\n"), /delete/);
-});
+    // A second run, or a node where no pod joined the Fence: no bridge is a success, and nothing is deleted.
+    assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, nft.dir, { PATH: nft.path }), {
+      code: 0,
+      message: "jr2.fence-node ok rules=removed bridge=absent\n",
+    });
+    assert.doesNotMatch((await readFile(join(nft.dir, "ip-calls"), "utf8")).split("\n").slice(2).join("\n"), /delete/);
+  },
+);
 
-test("the removal script keeps a bridge that has a port and names the ports; an error of ip keeps it too and says why; only the table fails the pod", async () => {
-  const busy = await fakeNft();
-  await fakeIp(busy.dir, [LO, BR, port(8, "veth1a2b"), port(9, "vethc3d4")]);
-  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, busy.dir, { PATH: busy.path }), {
-    code: 0,
-    message: "jr2.fence-node ok rules=removed bridge=kept ports=veth1a2b,vethc3d4\n",
-  });
-  assert.doesNotMatch(await readFile(join(busy.dir, "ip-calls"), "utf8"), /delete/, "a bridge with a port stays");
+scriptTest(
+  "the removal script keeps a bridge that has a port and names the ports; an error of ip keeps it too and says why; only the table fails the pod",
+  async () => {
+    const busy = await fakeNft();
+    await fakeIp(busy.dir, [LO, BR, port(8, "veth1a2b"), port(9, "vethc3d4")]);
+    assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, busy.dir, { PATH: busy.path }), {
+      code: 0,
+      message: "jr2.fence-node ok rules=removed bridge=kept ports=veth1a2b,vethc3d4\n",
+    });
+    assert.doesNotMatch(await readFile(join(busy.dir, "ip-calls"), "utf8"), /delete/, "a bridge with a port stays");
 
-  const refused = await fakeNft();
-  await fakeIp(refused.dir, [LO, BR], { fail: "ip: RTNETLINK answers: Operation not permitted" });
-  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, refused.dir, { PATH: refused.path }), {
-    code: 0,
-    message: "jr2.fence-node ok rules=removed bridge=kept error=ip: RTNETLINK answers: Operation not permitted \n",
-  });
+    const refused = await fakeNft();
+    await fakeIp(refused.dir, [LO, BR], { fail: "ip: RTNETLINK answers: Operation not permitted" });
+    assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, refused.dir, { PATH: refused.path }), {
+      code: 0,
+      message: "jr2.fence-node ok rules=removed bridge=kept error=ip: RTNETLINK answers: Operation not permitted \n",
+    });
 
-  const unread = await fakeNft();
-  await fakeIp(unread.dir, [LO, BR], { list: "ip: can't open netlink socket" });
-  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, unread.dir, { PATH: unread.path }), {
-    code: 0,
-    message:
-      "jr2.fence-node ok rules=removed bridge=kept error=ip could not list the node's links: ip: can't open netlink socket \n",
-  });
+    const unread = await fakeNft();
+    await fakeIp(unread.dir, [LO, BR], { list: "ip: can't open netlink socket" });
+    assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, unread.dir, { PATH: unread.path }), {
+      code: 0,
+      message:
+        "jr2.fence-node ok rules=removed bridge=kept error=ip could not list the node's links: ip: can't open netlink socket \n",
+    });
 
-  // The table fails the pod, before the bridge is touched.
-  const noTable = await fakeNft({ fail: "Error: Operation not permitted" });
-  await fakeIp(noTable.dir, [LO, BR]);
-  const failed = await runWith(RULES_REMOVE_SCRIPT, noTable.dir, { PATH: noTable.path });
-  assert.equal(failed.code, 1);
-  assert.match(failed.message, /^jr2\.fence-node fail rules nft could not remove the table inet jr2_fence: /);
-  assert.equal(await readFile(join(noTable.dir, "ip-calls"), "utf8").catch(() => ""), "");
-});
+    // The table fails the pod, before the bridge is touched.
+    const noTable = await fakeNft({ fail: "Error: Operation not permitted" });
+    await fakeIp(noTable.dir, [LO, BR]);
+    const failed = await runWith(RULES_REMOVE_SCRIPT, noTable.dir, { PATH: noTable.path });
+    assert.equal(failed.code, 1);
+    assert.match(failed.message, /^jr2\.fence-node fail rules nft could not remove the table inet jr2_fence: /);
+    assert.equal(await readFile(join(noTable.dir, "ip-calls"), "utf8").catch(() => ""), "");
+  },
+);
 
 test("the operator image has busybox's ip, which deletes a link with NET_ADMIN alone: no iproute2 is added", async () => {
   const dockerfile = await readFile(join(import.meta.dirname, "../../../operator/Dockerfile"), "utf8");
@@ -806,53 +1187,63 @@ async function nodeDirs(opts: {
   return dir;
 }
 
-test("the plugins' script writes each missing plugin, executable, keeps each file of that name, and says which, the bridge's version and the node's first CNI configuration", async () => {
-  const dir = await nodeDirs({
-    conf: ["10-kindnet.conflist", "99-other.conf"],
-    bin: { loopback: "x", static: "theirs" },
-  });
-  const run = await runScript(dir);
-  assert.equal(run.code, 0);
-  assert.equal(
-    run.message.trim(),
-    "jr2.fence-node ok wrote=bridge tuning kept=static bridge=v1.10.0 cni=10-kindnet.conflist type=ptp",
-  );
-  const bin = join(dir, "host/opt/cni/bin");
-  assert.deepEqual((await readdir(bin)).sort(), ["bridge", "loopback", "static", "tuning"], "no temporary file stays");
-  assert.equal(await readFile(join(bin, "static"), "utf8"), "theirs", "a file of that name is never replaced");
-  assert.equal(await readFile(join(bin, "bridge"), "utf8"), plugin("bridge"));
-  // A second run (a pod again on the node) keeps each.
-  assert.equal(
-    (await runScript(dir)).message.trim(),
-    "jr2.fence-node ok wrote= kept=bridge static tuning bridge=v1.10.0 cni=10-kindnet.conflist type=ptp",
-  );
-  // A Multus's configuration first: its type is in the line, for `jr2 up` to read.
-  const multus = await nodeDirs({
-    conf: { "00-multus.conf": JSON.stringify({ type: "multus-shim" }), "10-kindnet.conflist": conf("ptp") },
-    bin: { loopback: "x" },
-  });
-  assert.match((await runScript(multus)).message, / cni=00-multus\.conf type=multus-shim\n$/);
-});
+scriptTest(
+  "the plugins' script writes each missing plugin, executable, keeps each file of that name, and says which, the bridge's version and the node's first CNI configuration",
+  async () => {
+    const dir = await nodeDirs({
+      conf: ["10-kindnet.conflist", "99-other.conf"],
+      bin: { loopback: "x", static: "theirs" },
+    });
+    const run = await runScript(dir);
+    assert.equal(run.code, 0);
+    assert.equal(
+      run.message.trim(),
+      "jr2.fence-node ok wrote=bridge tuning kept=static bridge=v1.10.0 cni=10-kindnet.conflist type=ptp",
+    );
+    const bin = join(dir, "host/opt/cni/bin");
+    assert.deepEqual(
+      (await readdir(bin)).sort(),
+      ["bridge", "loopback", "static", "tuning"],
+      "no temporary file stays",
+    );
+    assert.equal(await readFile(join(bin, "static"), "utf8"), "theirs", "a file of that name is never replaced");
+    assert.equal(await readFile(join(bin, "bridge"), "utf8"), plugin("bridge"));
+    // A second run (a pod again on the node) keeps each.
+    assert.equal(
+      (await runScript(dir)).message.trim(),
+      "jr2.fence-node ok wrote= kept=bridge static tuning bridge=v1.10.0 cni=10-kindnet.conflist type=ptp",
+    );
+    // A Multus's configuration first: its type is in the line, for `jr2 up` to read.
+    const multus = await nodeDirs({
+      conf: { "00-multus.conf": JSON.stringify({ type: "multus-shim" }), "10-kindnet.conflist": conf("ptp") },
+      bin: { loopback: "x" },
+    });
+    assert.match((await runScript(multus)).message, / cni=00-multus\.conf type=multus-shim\n$/);
+  },
+);
 
-test("the plugins' script never replaces a file that appears after its check: ln, not a move, and the file of the node is kept", async () => {
-  const dir = await nodeDirs({ conf: ["10-kindnet.conflist"], bin: { loopback: "x" } });
-  const bin = join(dir, "host/opt/cni/bin");
-  // A `cp` that, as it copies static, lets another tool put a file of that name in place.
-  const tools = join(dir, "tools");
-  await mkdir(tools);
-  await writeFile(
-    join(tools, "cp"),
-    `#!/bin/sh\ncase "$2" in *.static.jr2-new) printf theirs > ${bin}/static ;; esac\nexec /bin/cp "$@"\n`,
-    { mode: 0o755 },
-  );
-  const run = await runScript(dir, { PATH: `${tools}:${process.env.PATH}` });
-  assert.equal(run.code, 0, run.message);
-  assert.match(run.message, /ok wrote=bridge tuning kept=static /);
-  assert.equal(await readFile(join(bin, "static"), "utf8"), "theirs");
-  assert.deepEqual((await readdir(bin)).sort(), ["bridge", "loopback", "static", "tuning"]);
-});
+scriptTest(
+  "the plugins' script never replaces a file that appears after its check: ln, not a move, and the file of the node is kept",
+  async () => {
+    const dir = await nodeDirs({ conf: ["10-kindnet.conflist"], bin: { loopback: "x" } });
+    const bin = join(dir, "host/opt/cni/bin");
+    // A `cp` that, as it copies static, lets another tool put a file of that name in place.
+    const tools = join(dir, "tools");
+    await mkdir(tools);
+    await writeFile(
+      join(tools, "cp"),
+      `#!/bin/sh\ncase "$2" in *.static.jr2-new) printf theirs > ${bin}/static ;; esac\nexec /bin/cp "$@"\n`,
+      { mode: 0o755 },
+    );
+    const run = await runScript(dir, { PATH: `${tools}:${process.env.PATH}` });
+    assert.equal(run.code, 0, run.message);
+    assert.match(run.message, /ok wrote=bridge tuning kept=static /);
+    assert.equal(await readFile(join(bin, "static"), "utf8"), "theirs");
+    assert.deepEqual((await readdir(bin)).sort(), ["bridge", "loopback", "static", "tuning"]);
+  },
+);
 
-test("the plugins' script says why a write fails", async () => {
+scriptTest("the plugins' script says why a write fails", async () => {
   const dir = await nodeDirs({ conf: ["10-kindnet.conflist"], bin: { loopback: "x" } });
   await rm(join(dir, "src/tuning"));
   const run = await runScript(dir);
@@ -864,59 +1255,175 @@ test("the plugins' script says why a write fails", async () => {
   assert.deepEqual((await readdir(join(dir, "host/opt/cni/bin"))).sort(), ["bridge", "loopback", "static"]);
 });
 
-test(`the plugins' script refuses a bridge of the node older than v${BRIDGE_MIN_VERSION}, or one whose version it cannot read, keeps it, and writes nothing then`, async () => {
-  for (const [version, ok] of [
-    ["v1.8.0", true],
-    ["v1.9.1", true],
-    ["v2.0.0", true],
-    ["v1.7.1", false],
-    ["v1.3.0", false],
-    ["v0.9.1", false],
-  ] as const) {
-    const dir = await nodeDirs({ conf: ["10-kindnet.conflist"], bin: { bridge: plugin("bridge", version) } });
-    const run = await runScript(dir);
-    assert.equal(run.code, ok ? 0 : 1, version);
+scriptTest(
+  `the plugins' script refuses a bridge of the node older than v${BRIDGE_MIN_VERSION}, or one whose version it cannot read, keeps it, and writes nothing then`,
+  async () => {
+    for (const [version, ok] of [
+      ["v1.8.0", true],
+      ["v1.9.1", true],
+      ["v2.0.0", true],
+      ["v1.7.1", false],
+      ["v1.3.0", false],
+      ["v0.9.1", false],
+    ] as const) {
+      const dir = await nodeDirs({ conf: ["10-kindnet.conflist"], bin: { bridge: plugin("bridge", version) } });
+      const run = await runScript(dir);
+      assert.equal(run.code, ok ? 0 : 1, version);
+      assert.equal(
+        run.message.trim(),
+        ok
+          ? `jr2.fence-node ok wrote=static tuning kept=bridge bridge=${version} cni=10-kindnet.conflist type=ptp`
+          : `jr2.fence-node fail bridge /opt/cni/bin/bridge is ${version}, older than v${BRIDGE_MIN_VERSION}`,
+      );
+      assert.equal(await readFile(join(dir, "host/opt/cni/bin/bridge"), "utf8"), plugin("bridge", version));
+      if (!ok)
+        assert.deepEqual(await readdir(join(dir, "host/opt/cni/bin")), ["bridge"], "a refused node gets no plugin");
+    }
+    const unknown = await nodeDirs({
+      conf: ["10-kindnet.conflist"],
+      bin: { bridge: '#!/bin/sh\necho "CNI bridge plugin version unknown" >&2\n' },
+    });
+    const run = await runScript(unknown);
+    assert.equal(run.code, 1);
     assert.equal(
       run.message.trim(),
-      ok
-        ? `jr2.fence-node ok wrote=static tuning kept=bridge bridge=${version} cni=10-kindnet.conflist type=ptp`
-        : `jr2.fence-node fail bridge /opt/cni/bin/bridge is ${version}, older than v${BRIDGE_MIN_VERSION}`,
+      "jr2.fence-node fail bridge /opt/cni/bin/bridge prints no version (it printed: CNI bridge plugin version unknown)",
     );
-    assert.equal(await readFile(join(dir, "host/opt/cni/bin/bridge"), "utf8"), plugin("bridge", version));
-    if (!ok)
-      assert.deepEqual(await readdir(join(dir, "host/opt/cni/bin")), ["bridge"], "a refused node gets no plugin");
-  }
-  const unknown = await nodeDirs({
-    conf: ["10-kindnet.conflist"],
-    bin: { bridge: '#!/bin/sh\necho "CNI bridge plugin version unknown" >&2\n' },
-  });
-  const run = await runScript(unknown);
-  assert.equal(run.code, 1);
-  assert.equal(
-    run.message.trim(),
-    "jr2.fence-node fail bridge /opt/cni/bin/bridge prints no version (it printed: CNI bridge plugin version unknown)",
-  );
-});
+  },
+);
 
-test("the plugins' script waits for the node's CNI configuration (a new node), and fails, and says why, on a node whose CNI folders are not the default ones", async () => {
-  const noConf = await runScript(await nodeDirs({ conf: [], bin: { loopback: "x" } }));
-  assert.equal(noConf.code, 1);
-  assert.match(
-    noConf.message,
-    /^jr2\.fence-node fail folder no CNI configuration in \/etc\/cni\/net\.d on the node after 0 s/,
-  );
-  const noBin = await runScript(await nodeDirs({ conf: ["05-cilium.conflist"] }));
-  assert.equal(noBin.code, 1);
-  assert.match(noBin.message, /^jr2\.fence-node fail folder \/opt\/cni\/bin on the node is empty after 0 s/);
-  // The primary CNI writes its configuration while the script waits: no refusal.
-  const late = await nodeDirs({ conf: [], bin: { loopback: "x" } });
-  const running = runScript(late, { JR2_CNI_WAIT: "20" });
-  await new Promise((r) => setTimeout(r, 500));
-  await writeFile(join(late, "host/etc/cni/net.d/10-calico.conflist"), conf("calico"));
-  const run = await running;
-  assert.equal(run.code, 0, run.message);
-  assert.match(run.message, / cni=10-calico\.conflist type=calico\n$/);
-});
+scriptTest(
+  "the plugins' script waits for the node's CNI configuration (a new node), and fails, and says why, on a node whose CNI folders are not the default ones",
+  async () => {
+    const noConf = await runScript(await nodeDirs({ conf: [], bin: { loopback: "x" } }));
+    assert.equal(noConf.code, 1);
+    assert.match(
+      noConf.message,
+      /^jr2\.fence-node fail folder no CNI configuration in \/etc\/cni\/net\.d on the node after 0 s/,
+    );
+    const noBin = await runScript(await nodeDirs({ conf: ["05-cilium.conflist"] }));
+    assert.equal(noBin.code, 1);
+    assert.match(noBin.message, /^jr2\.fence-node fail folder \/opt\/cni\/bin on the node is empty after 0 s/);
+    // The primary CNI writes its configuration while the script waits: no refusal.
+    const late = await nodeDirs({ conf: [], bin: { loopback: "x" } });
+    const running = runScript(late, { JR2_CNI_WAIT: "20" });
+    await new Promise((r) => setTimeout(r, 500));
+    await writeFile(join(late, "host/etc/cni/net.d/10-calico.conflist"), conf("calico"));
+    const run = await running;
+    assert.equal(run.code, 0, run.message);
+    assert.match(run.message, / cni=10-calico\.conflist type=calico\n$/);
+  },
+);
+
+scriptTest(
+  "the rules script writes a result line with its cause when the table has no chain after the load, or nft cannot list it",
+  async () => {
+    const none = await fakeNft({ chains: 0 });
+    const zero = await runWith(RULES_SCRIPT, none.dir, { PATH: none.path });
+    assert.deepEqual(zero, {
+      code: 1,
+      message: "jr2.fence-node fail rules the table inet jr2_fence has 0 chains after the load, not 4\n",
+    });
+    const unlisted = await fakeNft();
+    await writeFile(
+      join(unlisted.dir, "bin/nft"),
+      `#!/bin/sh\nif [ "$1" = "-f" ]; then cat > /dev/null; exit 0; fi\necho "Error: No such file or directory" >&2; exit 1\n`,
+    );
+    const list = await runWith(RULES_SCRIPT, unlisted.dir, { PATH: unlisted.path });
+    assert.equal(list.code, 1);
+    assert.equal(
+      list.message,
+      "jr2.fence-node fail rules nft could not list the table inet jr2_fence after the load: Error: No such file or directory \n",
+    );
+  },
+);
+
+scriptTest(
+  "the plugins' script takes a link as a plugin that the node has: it never replaces one, runs a link to a file beside it, and refuses a link that it cannot run, with the link and its target",
+  async () => {
+    // A link to a file in another folder of the node: the pod sees only /opt/cni/bin, so it cannot run it.
+    const outside = await nodeDirs({ conf: ["10-kindnet.conflist"], bin: { loopback: "x" } });
+    const bin = join(outside, "host/opt/cni/bin");
+    await exec("ln", ["-s", "/usr/libexec/cni/bridge", join(bin, "bridge")]);
+    const run = await runScript(outside);
+    assert.equal(run.code, 1);
+    assert.equal(
+      run.message.trim(),
+      "jr2.fence-node fail link /opt/cni/bin/bridge is a link to /usr/libexec/cni/bridge, which this pod cannot run (it " +
+        "sees only /opt/cni/bin of the node), so jr2 cannot read the version of that bridge plugin",
+    );
+    assert.equal(
+      (await exec("readlink", [join(bin, "bridge")])).stdout.trim(),
+      "/usr/libexec/cni/bridge",
+      "the link stays",
+    );
+    assert.deepEqual((await readdir(bin)).sort(), ["bridge", "loopback"], "a refused node gets no plugin");
+
+    // A link to a file beside it is run, and kept. A link of static that leads nowhere is kept too.
+    const beside = await nodeDirs({
+      conf: ["10-kindnet.conflist"],
+      bin: { "bridge-1.9.1": plugin("bridge", "v1.9.1") },
+    });
+    const bin2 = join(beside, "host/opt/cni/bin");
+    await exec("ln", ["-s", "bridge-1.9.1", join(bin2, "bridge")]);
+    await exec("ln", ["-s", "/usr/libexec/cni/static", join(bin2, "static")]);
+    const ok = await runScript(beside);
+    assert.equal(ok.code, 0, ok.message);
+    assert.equal(
+      ok.message.trim(),
+      "jr2.fence-node ok wrote=tuning kept=bridge static bridge=v1.9.1 cni=10-kindnet.conflist type=ptp",
+    );
+    assert.equal((await exec("readlink", [join(bin2, "static")])).stdout.trim(), "/usr/libexec/cni/static");
+    // A link to a link: jr2 does not follow it.
+    const chain = await nodeDirs({ conf: ["10-kindnet.conflist"], bin: { "bridge-real": plugin("bridge", "v1.9.1") } });
+    const bin3 = join(chain, "host/opt/cni/bin");
+    await exec("ln", ["-s", "bridge-real", join(bin3, "bridge-mid")]);
+    await exec("ln", ["-s", "bridge-mid", join(bin3, "bridge")]);
+    assert.match(
+      (await runScript(chain)).message,
+      /^jr2\.fence-node fail link \/opt\/cni\/bin\/bridge is a link to bridge-mid,/,
+    );
+  },
+);
+
+scriptTest(
+  "the plugins' script reports the isolation of a first CNI configuration of the thin Multus (type multus) from the file, and cannot tell when the file is not plain",
+  async () => {
+    const thin = (extra: string) =>
+      `{"cniVersion":"0.3.1","name":"multus-cni-network","type":"multus",${extra}"kubeconfig":"/etc/cni/net.d/multus.d/multus.kubeconfig","delegates":[{"type":"ptp"}]}`;
+    for (const [extra, want] of [
+      ['"namespaceIsolation":true,', "isolation=true globals="],
+      ['"namespaceIsolation": true, "globalNamespaces": "",', "isolation=true globals="],
+      ['"namespaceIsolation":true,"globalNamespaces":"a, b",', "isolation=true globals=a,b"],
+      ["", "isolation=false globals="],
+      ['"namespaceIsolation":false,', "isolation=false globals="],
+      ['"namespaceIsolation":"true",', "isolation=unknown globals="],
+      ['"namespaceIsolation":true,"namespaceIsolation":false,', "isolation=unknown globals="],
+      ['"namespaceIsolation":\n true,', "isolation=unknown globals="],
+      ['"namespaceIsolation":true,"globalNamespaces":["a"],', "isolation=true globals=?"],
+    ] as const) {
+      const dir = await nodeDirs({
+        conf: { "00-multus.conf": thin(extra), "10-kindnet.conflist": conf("ptp") },
+        bin: { loopback: "x" },
+      });
+      const run = await runScript(dir);
+      assert.equal(run.code, 0, run.message);
+      assert.ok(run.message.endsWith(` cni=00-multus.conf type=multus ${want}\n`), `${extra} -> ${run.message}`);
+      assert.deepEqual(firstCniOf(run.message.replace("jr2.fence-node ok ", "")), {
+        file: "00-multus.conf",
+        type: "multus",
+        isolation: want.split(" ")[0]!.slice("isolation=".length),
+        globals: want.split(" ")[1]!.slice("globals=".length),
+      });
+    }
+    // The thick form's file holds no settings: only its type is reported.
+    const thick = await nodeDirs({
+      conf: { "00-multus.conf": '{"cniVersion":"0.3.1","name":"multus-cni-network","type":"multus-shim"}' },
+      bin: { loopback: "x" },
+    });
+    assert.match((await runScript(thick)).message, / cni=00-multus\.conf type=multus-shim\n$/);
+  },
+);
 
 const INSTALLED = "jr2.fence-node ok wrote=bridge static tuning kept= bridge=v1.10.0 cni=10-kindnet.conflist type=ptp";
 
@@ -1015,8 +1522,21 @@ test("the wait: each Sandbox node's Ready pod, and its lines; a failed folder, w
   let t = 0;
   await assert.rejects(
     awaitFenceNodes(mount, { nodes: ["a"], pollMs: 1, now: () => (t += 10_000) }),
-    /\n {2}a: the kubelet cannot mount a CNI folder: hostPath type check failed: \/opt\/cni\/bin is not a directory\n/,
+    /\n {2}a: the kubelet cannot mount a CNI folder of the node after 180 s: hostPath type check failed: \/opt\/cni\/bin is not a directory\n/,
   );
+  // A new node: the folder is not there yet, and the kubelet mounts it when the primary CNI makes it.
+  // Within the wait of 180 s, the mount's event does not refuse.
+  const late = cluster();
+  late.pods = [{ metadata: { name: "p-a" }, spec: { nodeName: "a" }, status: { phase: "Pending" } }];
+  late.events = mount.events;
+  let polls = 0;
+  const list = late.listJson.bind(late);
+  late.listJson = (async (o: { kind: string }) => {
+    if (o.kind === "pod" && ++polls === 15) late.pods = [readyPod("a")];
+    return list(o as never);
+  }) as typeof late.listJson;
+  t = 0;
+  assert.equal((await awaitFenceNodes(late, { nodes: ["a"], pollMs: 1, now: () => (t += 2_000) })).size, 1);
 
   const none = cluster();
   t = 0;
@@ -1061,11 +1581,47 @@ test("the wait after an apply counts only a pod of the new template: a Ready pod
   kube.pods = [readyPod("a", INSTALLED, "1")];
   let t = 0;
   await assert.rejects(
-    awaitFenceNodes(kube, { nodes: ["a"], generation: "2", pollMs: 1, now: () => (t += 60_000) }),
+    awaitFenceNodes(kube, { nodes: ["a"], generation: async () => "2", pollMs: 1, now: () => (t += 60_000) }),
     /no Ready pod of the DaemonSet/,
   );
   kube.pods = [readyPod("a", INSTALLED, "1"), readyPod("a", INSTALLED, "2")];
-  assert.equal((await awaitFenceNodes(kube, { nodes: ["a"], generation: "2" })).size, 1);
+  assert.equal((await awaitFenceNodes(kube, { nodes: ["a"], generation: async () => "2" })).size, 1);
+  // A pod that started before this converge (the install replaced it) does not count.
+  assert.equal(
+    await awaitFenceNodes(kube, {
+      nodes: ["a"],
+      generation: async () => "2",
+      ignore: new Set(["p-a"]),
+      pollMs: 1,
+      now: () => (t += 60_000),
+    }).catch((e: Error) => e.message.split("\n")[0]),
+    "fence: no Ready pod of the DaemonSet jr2-system/jr2-fence-node on the Sandbox node a in 300 s, so jr2 cannot see the rule table and the CNI plugins there (ADR-0084). See `kubectl -n jr2-system describe pod -l app=jr2-fence-node`.",
+  );
+});
+
+test("the wait reads the template generation at each poll, and accepts that generation or a later one: a converge whose template a later converge (a newer Kit) replaced does not wait out its 300 s", async () => {
+  const kube = cluster();
+  kube.pods = [readyPod("a", INSTALLED, "5")];
+  let generation = "4";
+  const reads: string[] = [];
+  const got = await awaitFenceNodes(kube, {
+    nodes: ["a"],
+    generation: async () => {
+      reads.push(generation);
+      return generation;
+    },
+  });
+  assert.equal(got.size, 1, "a pod of a later generation counts");
+  // The generation is read again at each poll: once the later template is in force, a Ready pod of
+  // the earlier one does not count.
+  kube.pods = [readyPod("a", INSTALLED, "4")];
+  generation = "5";
+  let t = 0;
+  await assert.rejects(
+    awaitFenceNodes(kube, { nodes: ["a"], generation: async () => generation, pollMs: 1, now: () => (t += 60_000) }),
+    /no Ready pod/,
+  );
+  assert.ok(reads.length >= 1);
 });
 
 // ---- the install ----------------------------------------------------------------------------------------
@@ -1168,7 +1724,11 @@ test("the install refuses, before Multus, a node whose first CNI configuration i
         "fence: a Sandbox node has a Multus CNI configuration first in its CNI folder, but jr2 found no Multus DaemonSet in the API (ADR-0084):",
       );
       assert.equal(lines[1], "  n2: /etc/cni/net.d/00-multus.conf (type multus-shim)");
-      assert.match(lines[2]!, /^jr2 looked in each namespace for a DaemonSet with "multus"/);
+      assert.match(
+        lines[2]!,
+        /^jr2 looked in each namespace for a DaemonSet whose container runs the thick multus-daemon/,
+      );
+      assert.doesNotMatch(e.message, /read access|app=multus/, "advice that cannot be the cause");
       assert.match(lines[3]!, /^jr2 applied the namespace jr2-system and the DaemonSet jr2-fence-node\. They stay/);
       return true;
     },
@@ -1190,6 +1750,175 @@ test("the install refuses, before Multus, a node whose first CNI configuration i
     nodes: ["n1", "n2"],
     log: () => {},
   });
+});
+
+/** A Ready pod's install line with a thin Multus's file first. */
+const thinLine = (isolation: string, globals = "") =>
+  INSTALLED.replace(
+    "cni=10-kindnet.conflist type=ptp",
+    `cni=00-multus.conf type=multus isolation=${isolation} globals=${globals}`,
+  );
+
+test("the install, for a Multus of another owner, replaces each pod of jr2-fence-node that started before this converge, and reads each node's file from the new pods only", async () => {
+  const kube = cluster([...thinMultus(["--namespace-isolation=true"]), nodeDs()]);
+  // The pod of an earlier converge says that the file had the isolation; the file has none now.
+  kube.pods = [readyPod("n1", thinLine("true"))];
+  kube.replacePod = (pod) => ({
+    ...readyPod("n1", thinLine("false")),
+    metadata: { ...pod.metadata, name: "p-n1-new" },
+  });
+  const plan = await planFenceInstall(kube, { nodes: [node("n1")] });
+  assert.equal(plan.multus, "foreign");
+  await assert.rejects(
+    installFence(kube, plan, { image: "jr2-operator:1", nodes: ["n1"], log: () => {}, pollMs: 1 }),
+    (e: Error) => {
+      const lines = e.message.split("\n");
+      assert.equal(
+        lines[0],
+        "fence: the Multus configuration that a Sandbox node uses does not have the isolation of the attachments (ADR-0084), whatever the API shows:",
+      );
+      assert.equal(lines[1], "  n1: /etc/cni/net.d/00-multus.conf has no namespaceIsolation");
+      assert.match(
+        lines[2]!,
+        /Restart the pods of the cluster's Multus \(kubectl -n kube-system delete pod -l app=multus\), so that/,
+      );
+      assert.match(e.message, /This converge applied no Multus\./);
+      return true;
+    },
+  );
+  assert.deepEqual(kube.deleted, ["jr2-system/pod/p-n1"], "the pod of the earlier converge was replaced");
+  assert.equal(kube.applied.length, 1, "the DaemonSet, and no Multus");
+
+  // A global namespace, or a file that jr2 cannot read: refused too. The isolation: accepted.
+  for (const [line, want] of [
+    [thinLine("true", "kube-system"), /00-multus\.conf has the global namespaces "kube-system"/],
+    [thinLine("unknown"), /00-multus\.conf: jr2 cannot tell its namespaceIsolation or its globalNamespaces/],
+    [thinLine("true", "?"), /jr2 cannot tell its namespaceIsolation or its globalNamespaces/],
+  ] as const) {
+    const k = cluster([...thinMultus(["--namespace-isolation=true"])]);
+    k.pods = [readyPod("n1", line)];
+    await assert.rejects(
+      installFence(k, planOf({ multus: "foreign", node: "install" }), { image: "i:1", nodes: ["n1"], log: () => {} }),
+      want,
+    );
+  }
+  const good = cluster([...thinMultus(["--namespace-isolation=true"]), nodeDs()]);
+  good.pods = [readyPod("n1", thinLine("true"))];
+  const done = await installFence(good, planOf({ multus: "foreign", node: "present" }), {
+    image: "jr2-operator:1",
+    nodes: ["n1"],
+    log: () => {},
+  });
+  assert.equal(done.multus, "foreign");
+  assert.deepEqual(good.deleted, ["jr2-system/pod/p-n1"]);
+
+  // jr2's own Multus: no pod is replaced, and an earlier line is read as it is.
+  const ours = cluster([jr2Multus(), nodeDs()]);
+  ours.pods = [readyPod("n1")];
+  await installFence(ours, planOf({ multus: "jr2", node: "present" }), {
+    image: "jr2-operator:1",
+    nodes: ["n1"],
+    log: () => {},
+  });
+  assert.deepEqual(ours.deleted, []);
+});
+
+test("the install checks a Multus that only its second read finds, as the first read checks one: a refusal names what stays; one with the isolation is the cluster's, and jr2 installs no Multus", async () => {
+  // Between the question and the install, a thin Multus with no isolation came; the node shows its file.
+  const kube = cluster();
+  kube.pods = [readyPod("n1", thinLine("false"))];
+  const plan = planOf({ multus: "install", node: "install" });
+  kube.store.set("kube-system/daemonset/kube-multus-ds", thinMultus(["--multus-conf-file=auto"])[0]!);
+  await assert.rejects(
+    installFence(kube, plan, { image: "jr2-operator:1", nodes: ["n1"], log: () => {} }),
+    (e: Error) => {
+      assert.match(
+        e.message,
+        /^fence: the cluster's Multus \(DaemonSet kube-system\/kube-multus-ds, which jr2 did not install\) does not have namespaceIsolation in the arguments of the container kube-multus/,
+      );
+      assert.match(e.message, /\njr2 applied the namespace jr2-system and the DaemonSet jr2-fence-node\. They stay/);
+      assert.doesNotMatch(e.message, /Nothing was applied/);
+      return true;
+    },
+  );
+  assert.equal(kube.applied.length, 1, "no Multus");
+
+  // With the isolation in the API and on the node: the cluster's Multus, and no second one.
+  const ok = cluster([thinMultus(["--namespace-isolation=true"])[0]!]);
+  ok.pods = [readyPod("n1", thinLine("true"))];
+  const lines: string[] = [];
+  const done = await installFence(ok, planOf({ multus: "install", node: "install" }), {
+    image: "jr2-operator:1",
+    nodes: ["n1"],
+    log: (l) => lines.push(l),
+  });
+  assert.deepEqual([done.multus, done.multusPods], ["foreign", [{ namespace: "kube-system", selector: "app=multus" }]]);
+  assert.equal(ok.applied.length, 1, "no Multus of jr2");
+  assert.ok(
+    lines.includes(
+      "fence: the cluster has a Multus that jr2 did not install, with namespaceIsolation and no global namespace; jr2 installs no Multus beside it",
+    ),
+  );
+
+  // With the isolation in the API, and none in the node's file: refused.
+  const stale = cluster([thinMultus(["--namespace-isolation=true"])[0]!]);
+  stale.pods = [readyPod("n1", thinLine("false"))];
+  await assert.rejects(
+    installFence(stale, planOf({ multus: "install", node: "install" }), { image: "i:1", nodes: ["n1"], log: () => {} }),
+    /n1: \/etc\/cni\/net\.d\/00-multus\.conf has no namespaceIsolation/,
+  );
+});
+
+test("a FailedCreate event of the DaemonSet from before this converge's apply does not refuse: only a new one, or one that came again, does", async () => {
+  const old = {
+    metadata: { name: "jr2-fence-node.1" },
+    reason: "FailedCreate",
+    message: 'Error creating: pods "jr2-fence-node-x" is forbidden: violates PodSecurity "baseline:latest"',
+    count: 4,
+    lastTimestamp: "2026-11-20T10:00:00Z",
+  };
+  const kube = cluster();
+  kube.events = [old];
+  let t = 0;
+  // The user fixed Pod Security: the old event stays in the API, and the pod comes.
+  let polls = 0;
+  const list = kube.listJson.bind(kube);
+  kube.listJson = (async (o: { kind: string }) => {
+    if (o.kind === "pod" && ++polls === 30) kube.pods = [readyPod("n1")];
+    return list(o as never);
+  }) as typeof kube.listJson;
+  await installFence(kube, planOf({ multus: "jr2", node: "install" }), {
+    image: "jr2-operator:1",
+    nodes: ["n1"],
+    log: () => {},
+    pollMs: 1,
+    now: () => (t += 1_000),
+  });
+  // The same event again (its count went up): this converge's own refusal.
+  const again = cluster();
+  again.events = [old];
+  const list2 = again.listJson.bind(again);
+  let applied = false;
+  again.apply = (async (o: { manifest: string }) => {
+    applied = true;
+    again.applied.push(o.manifest);
+  }) as typeof again.apply;
+  again.listJson = (async (o: { kind: string }) => {
+    if (o.kind === "event" && applied) return [{ ...old, count: 5, lastTimestamp: "2026-11-23T10:00:00Z" }];
+    return list2(o as never);
+  }) as typeof again.listJson;
+  t = 0;
+  await assert.rejects(
+    installFence(again, planOf({ multus: "jr2", node: "install" }), {
+      image: "jr2-operator:1",
+      nodes: ["n1"],
+      log: () => {},
+      pollMs: 1,
+      now: () => (t += 10_000),
+    }),
+    /\n {2}n1: no pod: Error creating: pods "jr2-fence-node-x" is forbidden/,
+  );
+  assert.notEqual(eventPrint(old), eventPrint({ ...old, count: 5 }));
 });
 
 // ---- jr2 down --all -------------------------------------------------------------------------------------

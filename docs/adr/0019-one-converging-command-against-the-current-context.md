@@ -73,20 +73,21 @@ loudly narrated, safe to re-run:
   part (the namespace `jr2-system`; the DaemonSet and what its pod does on a node; Multus and its cluster-wide and
   privileged objects), and asks under the first-contact confirmation (`--yes` answers it); a converge that finds both
   asks nothing. A later converge of a newer Kit changes the DaemonSet with no question, as it does the operator, and
-  asks before it changes Multus. Where an install is not safe, it refuses. Before it applies anything, for what it reads
-  in the API: a Multus that jr2 did not install with other settings or with settings that it cannot read, Multus's
-  definition with no Multus that jr2 can find, a Cilium with `cni-exclusive: "true"`, or a Multus that mounts CNI
-  folders that are not the default ones. After it applies the namespace `jr2-system` and the DaemonSet, and before
-  Multus, for what the DaemonSet's pod finds on a node: CNI folders that are not the default ones, a `bridge` plugin
-  older than v1.8.0 or that prints no version, a folder that it cannot write, a Multus configuration that the API does
-  not show, a rule table that does not load, or no pod. Those refusals keep what was applied, and say so. It still
-  creates no cluster. Then it probes the Fence: it refuses to converge while a Sandbox node fails, and names the node,
-  the part and the likely causes. It reads Multus from the API before it applies the Custodian, and probes the bridge
-  and the rule table after the Custodian is Ready, with a one-shot pod on each Sandbox node that has no privilege; a
-  node with no rule table is a refusal too. ADR-0084 states what it checks and what it cannot see. `jr2 down --all`
-  removes the rule table and the bridge `jr2fence0` from each node, the DaemonSet and a Multus that jr2 installed, with
-  its definition, unless the cluster has a NetworkAttachmentDefinition of another owner; the plugin files and the kernel
-  module `8021q` stay.
+  asks before it changes the Multus that it installed. Where an install is not safe, it refuses. Before it applies
+  anything, for what it reads in the API: a Multus that jr2 did not install with other settings or with settings that it
+  cannot read, Multus's definition with no Multus that jr2 can find, a Cilium with `cni-exclusive: "true"`, or a Multus
+  that mounts CNI folders that are not the default ones. After it applies the namespace `jr2-system` and the DaemonSet,
+  and before Multus, for what the DaemonSet's pod finds on a node: CNI folders that are not the default ones, a `bridge`
+  plugin older than v1.8.0, that prints no version or that is a link that the pod cannot run, a folder that it cannot
+  write, a Multus configuration that the API does not show, a Multus configuration of the thin form with no isolation, a
+  rule table that does not load, or no pod. Those refusals keep what was applied, and say so. It still creates no
+  cluster. Then it probes the Fence: it refuses to converge while a Sandbox node fails, and names the node, the part and
+  the likely causes. It reads Multus from the API before it applies the Custodian, and probes the bridge and the rule
+  table after the Custodian is Ready, with a one-shot pod on each Sandbox node that has no privilege; a node with no
+  rule table is a refusal too. ADR-0084 states what it checks and what it cannot see. `jr2 down --all` removes the rule
+  table and the bridge `jr2fence0` from each node, the DaemonSet and a Multus that jr2 installed, with its definition,
+  unless the cluster has a NetworkAttachmentDefinition of another owner; the plugin files and the kernel module `8021q`
+  stay.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep

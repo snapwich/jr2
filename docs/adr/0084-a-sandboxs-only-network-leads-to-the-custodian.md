@@ -177,53 +177,86 @@ and that holds when Workspace code is root in the Sandbox.
   `bridge` file to read its version, writes into `/opt/cni/bin`, and loads the rule table with the capability
   `NET_ADMIN`; and Multus, whose manifest has a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged
   DaemonSet in `kube-system` that writes the first CNI configuration of each node, so that the cluster makes each new
-  pod through Multus. It also says that a later converge of a newer Kit changes the DaemonSet with no question, that it
-  asks before it changes Multus, and what `jr2 down --all` removes. A converge that finds both asks nothing and writes
-  one line.
+  pod through Multus. It also says that a later converge of a newer Kit changes the DaemonSet with no question, and what
+  `jr2 down --all` removes. When jr2 installs Multus, it says that jr2 asks before it changes that Multus, and that
+  `jr2 down --all` removes it, but keeps it while the cluster has a NetworkAttachmentDefinition of another owner. When
+  the cluster has a Multus of another owner, it says that jr2 never changes that Multus. A converge that finds both asks
+  nothing and writes one line.
   - **Multus:** when the cluster has none, `jr2 up` applies the thick Multus v4.3.2 manifest that the CLI package ships,
     with `namespaceIsolation` and no global namespace. Its DaemonSet has the annotation `jr2.dev/multus`, which names
     the manifest's version, so that jr2 knows that it installed it; jr2 updates only a Multus that has it, and asks
-    first. A Multus that jr2 did not install, with the right settings, is accepted and never changed. jr2 finds a Multus
-    in each namespace, by "multus" in the name, a label or a container image of a DaemonSet, so it finds one that does
-    not have the label `app=multus` (RKE2's has `app: rke2-multus`).
+    first. A Multus that jr2 did not install is accepted only when jr2 knows its form and reads, in the place that this
+    form uses, `namespaceIsolation` and no global namespace; jr2 never changes it. jr2 finds a Multus in each namespace
+    by the command of a DaemonSet's container: the thick `multus-daemon`, the thin `/thin_entrypoint`, or a multus-cni
+    image (the last part of the image's repository is `multus-cni`, ends in `-multus-cni`, or is `multus`). A name or a
+    label does not count, so RKE2's Multus (`app: rke2-multus`) is found, and an add-on beside a Multus, such as RKE2's
+    `rke2-multus-dnc` and `rke2-multus-dhcp` or the upstream `multus-dynamic-networks-controller`, is not a Multus. jr2
+    reads the settings of each form from one place:
+    - the thick `multus-daemon`: its configuration file (its flag `-config`, by default
+      `/etc/cni/net.d/multus.d/daemon-config.json`), which must be a key of a ConfigMap that the container mounts there;
+    - the thin `/thin_entrypoint`: its flag `--multus-conf-file`, as its parser (pflag) reads it. For `auto`, the
+      default, the settings are its flags `--namespace-isolation` (true only for a value that pflag reads as true) and
+      `--global-namespaces`. For a path, they are in the Multus configuration that is the ConfigMap key mounted at that
+      path. A ConfigMap that the container mounts but does not read does not count;
+    - the v3 `/entrypoint.sh` of a multus-cni image: the same, but the script reads only `--flag=value`, and the
+      isolation is on only for the exact text `--namespace-isolation=true`.
+
+    Anything else is a refusal that says that jr2 cannot tell, and names what jr2 saw: a multus-cni image with another
+    command, a flag that can take one of those flags as its value, a value that the parser does not read, a file that is
+    not a ConfigMap key, or a value of the wrong type.
+
   - **The DaemonSet `jr2-fence-node`:** `jr2 up` applies `jr2-system/jr2-fence-node`, which runs the operator image. Its
     pod is on the node's network, because the rule table belongs to the node's network namespace, and it runs as root,
     with no privilege escalation, no other host namespace, no token and a read-only root. Two init containers run at
-    each start of the pod, so after a restart of the node too. The checks that can refuse a node come first, so that a
-    node that they refuse gets no table. The first, with no capability, waits up to 180 s for a CNI configuration in
-    `/etc/cni/net.d` and a file in `/opt/cni/bin`, because on a new node the primary CNI writes them after this pod can
-    start. When the node has a `bridge`, it reads its version before it writes anything: it runs the file with no
-    `CNI_COMMAND`, and a stock plugin prints `CNI bridge plugin v<version>` and stops. A version older than v1.8.0, or
-    none, fails the pod. v1.8.0 is the first release that takes the trunk's `vlan` and `vlanTrunk` together (v1.3.0 to
-    v1.7.1 refuse them). And an older plugin ignores a key that it does not know: before v1.3.0 it ignores
-    `preserveDefaultVlan` and `vlanTrunk`, keeps VLAN 1 on each port and puts the trunks of the Instances on a shared
-    VLAN, and before v1.7.0 it does not isolate a slot's port. A node that has a newer `bridge` keeps its own (v1.9.1
-    made the same VLAN state). Then it copies each plugin of the pinned v1.10.0 release, which the operator image holds,
-    checked by sha256 at its build, into `/opt/cni/bin` when the node has no file of that name, and never replaces one:
-    it copies under a temporary name and links it to the plugin's name, and the link refuses a file of that name that
-    came after the check. A copy that fails, for example into a read-only folder, says why. It writes the name and the
-    type of the node's first CNI configuration. The second, with the capability `NET_ADMIN` alone, loads the rule table
-    with `nft` in one transaction that makes the table when the node has none, deletes it, and makes it again: a second
-    load replaces the table, never adds a rule to it, and leaves no moment with no rule. Then the pod idles as a user
-    that is not root, with no capability, so a node that joins later gets the plugins and the table too. A node that
-    joins later with a `bridge` older than v1.8.0 gets neither: its pod fails, no Custodian pod of an Instance serves
-    the node, and the next `jr2 up` refuses with the node. The pod mounts the node's `/opt/cni/bin` and, read-only,
-    `/etc/cni/net.d`, and nothing else of the node. It runs on each Linux node, as Multus does, because any node can be
-    a Sandbox node of some Instance. `jr2 up` applies it after the operator image is delivered and before Multus and the
-    Custodian, and waits until a pod of the template that it applied is Ready on each Sandbox node. It applies it again
-    at each converge whose Kit is not older than the DaemonSet's, as it does the operator: an apply that changes nothing
-    restarts no pod, and a later converge of a newer Kit changes it with no question.
+    each start of the pod, so after a restart of the node too. The rule table comes first, so that each node gets it,
+    also a node that the checks then refuse. The first container, with the capability `NET_ADMIN` alone, loads the rule
+    table with `nft` in one transaction that makes the table when the node has none, deletes it, and makes it again: a
+    second load replaces the table, never adds a rule to it, and leaves no moment with no rule. The second, with no
+    capability, waits up to 180 s for a CNI configuration in `/etc/cni/net.d` and a file in `/opt/cni/bin`, because on a
+    new node the primary CNI writes them after this pod can start. When the node has a `bridge`, it reads its version
+    before it writes anything: it runs the file with no `CNI_COMMAND`, and a stock plugin prints
+    `CNI bridge plugin v<version>` and stops. A version older than v1.8.0, or none, fails the pod. v1.8.0 is the first
+    release that takes the trunk's `vlan` and `vlanTrunk` together (v1.3.0 to v1.7.1 refuse them). And an older plugin
+    ignores a key that it does not know: before v1.3.0 it ignores `preserveDefaultVlan` and `vlanTrunk`, keeps VLAN 1 on
+    each port and puts the trunks of the Instances on a shared VLAN, and before v1.7.0 it does not isolate a slot's
+    port. A node that has a newer `bridge` keeps its own (v1.9.1 made the same VLAN state). The pod sees only the node's
+    `/opt/cni/bin`, so a `bridge` that is a link to a file in another folder fails the pod too: jr2 cannot run it, so it
+    cannot read its version. Then it copies each plugin of the pinned v1.10.0 release, which the operator image holds,
+    checked by sha256 at its build, into `/opt/cni/bin` when the node has no file or link of that name, and never
+    replaces one: it copies under a temporary name and links it to the plugin's name, and the link refuses a file of
+    that name that came after the check. A copy that fails, for example into a read-only folder, says why. It writes the
+    name and the type of the node's first CNI configuration and, when that is a Multus configuration of the thin form
+    (`type: "multus"`), its `namespaceIsolation` and its `globalNamespaces`, or that it cannot read them. Then the pod
+    idles as a user that is not root, with no capability, so a node that joins later gets the plugins and the table too.
+    The pod mounts the node's `/opt/cni/bin` and, read-only, `/etc/cni/net.d`, and nothing else of the node. The kubelet
+    mounts a folder that the node does not have yet when it appears, so the wait of 180 s covers a new node with no
+    folder too. It runs on each Linux node, as Multus does, because any node can be a Sandbox node of some Instance.
+    `jr2 up` applies it after the operator image is delivered and before Multus and the Custodian, and waits until a pod
+    of the template in force, or of a later one, is Ready on each Sandbox node. It applies it again at each converge
+    whose Kit is not older than the DaemonSet's, as it does the operator: an apply that changes nothing restarts no pod,
+    and a later converge of a newer Kit changes it with no question. When `jr2 up` needs each node's first CNI
+    configuration as it is now (it is to install Multus, or the cluster has a Multus of another owner), it replaces each
+    pod of the DaemonSet that started before this converge, and reads only the lines of the pods that started after,
+    because the line of an earlier pod can be old.
+  - **A node that joins later is not checked until the next `jr2 up`.** Nothing keeps a Custodian pod or a Sandbox off a
+    node whose pod of `jr2-fence-node` failed. On a node that joins later with a `bridge` from v1.3.0 to v1.7.1, the
+    trunk's attachment fails, so no Custodian pod runs there, and a Sandbox there reaches nothing. On a node that joins
+    later with a `bridge` older than v1.3.0, the attachments do not fail: a Sandbox can start there, and each slot's
+    port keeps VLAN 1, so Workspace code that is root in a Sandbox there can exchange frames with the other pods on that
+    node's bridge, until the next `jr2 up` refuses the node. The rule table, which loads first, still keeps it off the
+    node's own network stack.
+
 - **`jr2 up` does not install when it cannot do so safely: it refuses, and names the setting for the cluster's owner to
   change.** These refusals come before it applies anything:
-  - A Multus that jr2 did not install and that has no `namespaceIsolation` or has a global namespace. `jr2 up` reads the
-    settings from the JSON of the ConfigMap that the Multus DaemonSet mounts (the thick form's `multus-daemon-config`),
-    or from its container's command line, as Go's flag parser reads it (the thin form). A ConfigMap that is missing, or
-    that the API refuses to read, refuses too, and the refusal says which. jr2 never changes a Multus that it did not
-    install.
+  - A Multus that jr2 did not install and that has no `namespaceIsolation` or has a global namespace, in the place that
+    its form uses (above). The refusal names that place and what to set there: a key of the ConfigMap, or a flag of the
+    container. A form or a place that jr2 does not know refuses, and says that jr2 cannot tell. A ConfigMap that is
+    missing, or that the API refuses to read, refuses too, and the refusal says which. jr2 never changes a Multus that
+    it did not install.
   - Multus's CustomResourceDefinition, `network-attachment-definitions.k8s.cni.cncf.io`, with no Multus DaemonSet that
-    jr2 can find. A Multus that jr2 cannot see can be on the cluster, and a second Multus beside it can lose the
-    isolation. jr2 waits 10 s first, because another converge can be between the definition and the DaemonSet of the
-    same apply.
+    jr2 can find. A Multus of a form that jr2 does not know can be on the cluster, and a second Multus beside it can
+    lose the isolation. jr2 waits 10 s first, because another converge can be between the definition and the DaemonSet
+    of the same apply.
   - A primary CNI that removes each other CNI configuration on a node: Cilium with `cni-exclusive: "true"` in the
     ConfigMap `cilium-config` of the namespace of the Cilium DaemonSet, or in a `CiliumNodeConfig` that selects a
     Sandbox node. A read of those objects that the API refuses cannot tell: `jr2 up` writes that it cannot tell and goes
@@ -235,14 +268,20 @@ and that holds when Workspace code is root in the Sandbox.
   the rule table on each node where it loaded, and the refusal says so. `jr2 down --all` removes the DaemonSet and the
   table.
   - A Sandbox node whose pod finds no CNI configuration in `/etc/cni/net.d` or an empty `/opt/cni/bin` after its wait,
-    or whose folder the kubelet cannot mount: its container runtime reads its CNI plugins or configuration from another
-    folder.
-  - A Sandbox node whose `bridge` plugin is older than v1.8.0 or prints no version, whose `/opt/cni/bin` the pod cannot
-    write, or where the rule table does not load.
+    or whose folder the kubelet cannot mount in that time (the refusal names the kubelet's reason): its container
+    runtime reads its CNI plugins or configuration from another folder.
+  - A Sandbox node whose `bridge` plugin is older than v1.8.0, prints no version, or is a link that the pod cannot run,
+    whose `/opt/cni/bin` the pod cannot write, or where the rule table does not load.
   - A Sandbox node whose first CNI configuration is a Multus's, when jr2 found no Multus DaemonSet and is to install its
-    own: a Multus that jr2 cannot see in the API is on the node.
+    own: a Multus that jr2 cannot see in the API is on the node. When the API shows a Multus now that the read before
+    the question did not see, it gets the same check of its settings as one that the read saw, and when it has the
+    isolation, jr2 installs no Multus beside it.
+  - A Sandbox node whose first CNI configuration is a Multus configuration of the thin form with no
+    `namespaceIsolation`, with a global namespace, or with settings that jr2 cannot read, when the cluster has a Multus
+    of another owner: the node uses that file, whatever the API says.
   - A Sandbox node with no pod, because the cluster refused to create it (Pod Security admission or a webhook): the
-    refusal names the DaemonSet's `FailedCreate` event. And a Sandbox node with no Ready pod in 300 s.
+    refusal names the DaemonSet's `FailedCreate` event, and only an event that came after the apply of this converge.
+    And a Sandbox node with no Ready pod in 300 s.
 
 - **`jr2 up` probes the Fence on each Sandbox node, and refuses to converge while a node fails.** It names the node, the
   part and the likely causes. Before it applies the Custodian, it reads the API: Multus's CustomResourceDefinition must
@@ -306,11 +345,19 @@ and that holds when Workspace code is root in the Sandbox.
   [ADR-0019](0019-one-converging-command-against-the-current-context.md) says of setup.
 - **The pod of `jr2-fence-node` downloads the release tarball of the plugins.** Rejected: a node with no egress to
   GitHub could not get the plugins, and the image already carries what the pod runs, checked by sha256 at its build.
-- **The rule table before the checks of a node.** Rejected: a node that the checks refuse then got a table that no
-  Sandbox uses, and the order gave no gain, because a refused node gets no Sandbox.
+- **The checks of a node before the rule table.** Rejected: a node that the checks refused then got no table, and
+  nothing keeps a Sandbox off a node that joins later and that the checks refuse, so the second barrier was missing
+  where the VLAN state is weakest.
 - **A Multus found by the label `app=multus` alone.** Rejected: a Multus of another owner with another label (RKE2's
   `app: rke2-multus`) was not seen, so jr2 installed a second Multus beside it, and the second can replace the first's
   configuration and lose its isolation.
+- **A Multus found by "multus" in the name, a label or an image of a DaemonSet.** Rejected: an add-on (RKE2's
+  `rke2-multus-dnc`, with the image `hardened-multus-dynamic-networks-controller`) was taken for a Multus, so jr2
+  refused with a fix that the add-on cannot take, or read the plan as a Multus of another owner beside jr2's own.
+- **The settings of a thin Multus from each ConfigMap that it mounts, and from its flags only when none holds them.**
+  Rejected: the upstream thin manifest mounts a ConfigMap of a Multus configuration and runs `--multus-conf-file=auto`,
+  which ignores it. jr2 told the user to change the ConfigMap, then accepted it, and the node's file still had no
+  isolation.
 - **A question at each converge that changes the DaemonSet `jr2-fence-node`.** Rejected: the DaemonSet is the Kit's, as
   the operator is, and a newer Kit changes the operator with no question too. The first question says so. Multus is not
   the Kit's code, so a change of its manifest asks.

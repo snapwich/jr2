@@ -106,16 +106,16 @@ agents: triager (carried by 2 workflow machine(s))
 fence: this converge installs the Fence's prerequisites (ADR-0084):
   - the namespace jr2-system.
   - the DaemonSet jr2-system/jr2-fence-node, on each Linux node. Its pod runs as root on the node's network. At each start, it:
+      - loads the rule table "inet jr2_fence" into the node's nftables, with the capability NET_ADMIN alone;
       - runs the node's /opt/cni/bin/bridge, if the node has one, to read its version;
-      - writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin where the node has no file of that name (it never replaces a file);
-      - loads the rule table "inet jr2_fence" into the node's nftables, with the capability NET_ADMIN alone.
+      - writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin where the node has no file of that name (it never replaces a file).
   - Multus v4.3.2 (thick, namespaceIsolation, no global namespace), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system/kube-multus-ds. Multus writes the first CNI configuration of each node, so the cluster makes each new pod through Multus.
-  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It asks before it changes Multus.
-  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet and Multus. The plugin files and the kernel module 8021q stay on the nodes.
+  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It asks before it changes the Multus that jr2 installs.
+  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet and the Multus that jr2 installs. It keeps that Multus while the cluster has a NetworkAttachmentDefinition of another owner. The plugin files and the kernel module 8021q stay on the nodes.
 first setup of the Fence on context kind-jr2: install the Fence's prerequisites in the list above? [y/N] y
 …
 fence: applying the DaemonSet jr2-system/jr2-fence-node (ghcr.io/snapwich/jr2-operator:<version>)
-fence: jr2-control-plane: wrote=bridge static tuning kept= bridge=v1.10.0 cni=10-kindnet.conflist type=ptp rules=loaded
+fence: jr2-control-plane: rules=loaded wrote=bridge static tuning kept= bridge=v1.10.0 cni=10-kindnet.conflist type=ptp
 fence: applying Multus v4.3.2 (thick, namespaceIsolation) to kube-system
 fence: Multus is ready on each node
 …
@@ -167,16 +167,16 @@ agents: triager (carried by 2 workflow machine(s))
 fence: this converge installs the Fence's prerequisites (ADR-0084):
   - the namespace jr2-system.
   - the DaemonSet jr2-system/jr2-fence-node, on each Linux node. Its pod runs as root on the node's network. At each start, it:
+      - loads the rule table "inet jr2_fence" into the node's nftables, with the capability NET_ADMIN alone;
       - runs the node's /opt/cni/bin/bridge, if the node has one, to read its version;
-      - writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin where the node has no file of that name (it never replaces a file);
-      - loads the rule table "inet jr2_fence" into the node's nftables, with the capability NET_ADMIN alone.
+      - writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin where the node has no file of that name (it never replaces a file).
   - Multus v4.3.2 (thick, namespaceIsolation, no global namespace), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system/kube-multus-ds. Multus writes the first CNI configuration of each node, so the cluster makes each new pod through Multus.
-  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It asks before it changes Multus.
-  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet and Multus. The plugin files and the kernel module 8021q stay on the nodes.
+  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It asks before it changes the Multus that jr2 installs.
+  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet and the Multus that jr2 installs. It keeps that Multus while the cluster has a NetworkAttachmentDefinition of another owner. The plugin files and the kernel module 8021q stay on the nodes.
 first setup of the Fence on context kind-jr2: install the Fence's prerequisites in the list above? [y/N] y
 …
 fence: applying the DaemonSet jr2-system/jr2-fence-node (ghcr.io/snapwich/jr2-operator:<version>)
-fence: jr2-control-plane: wrote=bridge static tuning kept= bridge=v1.10.0 cni=10-kindnet.conflist type=ptp rules=loaded
+fence: jr2-control-plane: rules=loaded wrote=bridge static tuning kept= bridge=v1.10.0 cni=10-kindnet.conflist type=ptp
 fence: applying Multus v4.3.2 (thick, namespaceIsolation) to kube-system
 fence: Multus is ready on each node
 …
