@@ -4,13 +4,15 @@
 #   - the image of the init container and of the daemon is ghcr.io/k8snetworkplumbingwg/multus-cni:v4.3.2-thick
 #     (two places), not upstream's moving tag snapshot-thick, so the manifest installs the release that it names;
 #   - the daemon's memory request and limit are 300Mi, raised from the upstream value (prototype round r3);
-#   - "namespaceIsolation": true with no global namespace, so a pod can name a NetworkAttachmentDefinition of its
-#     own namespace only;
-#   - the DaemonSet has the annotation jr2.dev/multus, which names this file's version. Change the value when you
-#     change this file.
+#   - "namespaceIsolation": true with no global namespace. It is a second barrier only, for the annotation
+#     k8s.v1.cni.cncf.io/networks: Multus does not check it for v1.multus-cni.io/default-network, and never for the
+#     namespace "default". The guard of the Fence is jr2's admission policies (src/fence-guard.ts);
+#   - the DaemonSet and the CustomResourceDefinition have the annotation jr2.dev/multus, which names this file's
+#     version. Change the value (both places) when you change this file.
 # The file is also formatted by the repository's formatter (indentation and quotes), which changes no value.
 # `jr2 up` applies it, on any cluster, when the cluster has no Multus, or has the one that jr2 installed at another
-# version; it never changes a Multus with no such annotation (src/fence-install.ts). `jr2 down --all` deletes it.
+# version; a definition with no such annotation is a Multus of another owner, which jr2 never changes
+# (src/fence-install.ts). `jr2 down --all` deletes it.
 # Note:
 #   This deployment file is designed for 'quickstart' of multus, easy installation to test it,
 #   hence this deployment yaml does not care about following things intentionally.
@@ -24,6 +26,8 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   name: network-attachment-definitions.k8s.cni.cncf.io
+  annotations:
+    jr2.dev/multus: v4.3.2-thick-2
 spec:
   group: k8s.cni.cncf.io
   scope: Namespaced
@@ -155,7 +159,7 @@ metadata:
   name: kube-multus-ds
   namespace: kube-system
   annotations:
-    jr2.dev/multus: v4.3.2-thick-namespace-isolation-1
+    jr2.dev/multus: v4.3.2-thick-2
   labels:
     tier: node
     app: multus

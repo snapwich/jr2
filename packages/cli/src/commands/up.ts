@@ -211,6 +211,7 @@ import {
 } from "../deploy.ts";
 import { claimRange, ensureNamespace, makeSlotLive, type LiveKube } from "../fence.ts";
 import { checkFenceApi, fenceRefusal, probeFenceNodes } from "../fence-probe.ts";
+import { applyFenceGuard } from "../fence-guard.ts";
 import { describeInstall, installFence, planFenceInstall } from "../fence-install.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { planCallerTokens } from "../caller-tokens.ts";
@@ -432,18 +433,17 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- the Fence's prerequisites (ADR-0084, ADR-0019): read now, installed after the question ----
   // An Instance with a Harness pod (a Sandbox, or the Instance Harness) is on the Fence. Its
-  // prerequisites are Multus, and the DaemonSet jr2-fence-node, which puts the CNI plugins bridge,
-  // static and tuning on each node and loads the rule table there. `jr2 up` installs each one that
-  // the cluster lacks, with kubectl, on any cluster. The read refuses, before anything is applied, a
-  // cluster where an install is not safe: a Multus of another owner with other settings or with
-  // settings that jr2 cannot read, a definition of Multus with no Multus that jr2 can see, or a
-  // Cilium that removes each other CNI configuration. The Sandbox nodes come from the same read of
-  // the nodes as the platforms below.
+  // prerequisites are jr2's two admission policies, which keep a pod of another namespace off the
+  // Instance's attachments; Multus; and the DaemonSet jr2-fence-node, which puts the CNI plugins
+  // bridge, static and tuning on each node and loads the rule table there. `jr2 up` installs each one
+  // that the cluster lacks, with kubectl, on any cluster, and uses a Multus of another owner as it
+  // is. The read refuses, before anything is applied, a Cilium that removes each other CNI
+  // configuration. The Sandbox nodes come from the same read of the nodes as the platforms below.
   const fenced = carried.composesSandbox || carried.instanceHarness !== undefined;
   const allNodes =
     config.platforms === undefined || fenced ? await kube.listJson<NodeObject>({ kind: "node", ...ctx }) : [];
   const fenceNodes = sandboxNodes(allNodes, config.sandbox).nodes;
-  let fencePlan = fenced ? await planFenceInstall(kube, { nodes: fenceNodes, ...ctx }) : undefined;
+  const fencePlan = fenced ? await planFenceInstall(kube, { nodes: fenceNodes, ...ctx }) : undefined;
   for (const note of fencePlan?.notes ?? []) activity(io, note);
   // The first time a converge installs something on the cluster, it lists what, and asks in the
   // first-contact question when there is one: one question, one `--yes`.
@@ -474,6 +474,10 @@ export async function up(args: string[], io: Io): Promise<number> {
     }),
     ...ctx,
   });
+  // The admission policies of the Fence (ADR-0084), before the first pod of the Instance and before
+  // any attachment of the Fence. Each converge applies them, so a newer Kit applies its version; one
+  // that the cluster refuses stops the converge here.
+  if (fencePlan !== undefined) await applyFenceGuard(kube, { ...ctx, log: (line) => activity(io, line) });
 
   // --- pod-level resources (ADR-0060): the whole Size is one pod-level ceiling (KEP-2837) ------
   // A server with the PodLevelResources gate off drops `spec.resources` silently, and every
@@ -750,9 +754,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // DaemonSet refuses stops the converge here, after these applies: they stay (ADR-0019).
   if (fencePlan !== undefined) {
     await ensureNamespace(kube, OPERATOR_NAMESPACE, ctx);
-    // The plan as the install found it: a Multus of another owner that only the install saw makes it
-    // `foreign`, and the probe then looks for that Multus's pods.
-    fencePlan = await installFence(kube, fencePlan, {
+    await installFence(kube, fencePlan, {
       image: operatorImage!,
       nodes: fenceNodes.map((n) => n.metadata.name),
       ...ctx,
@@ -1027,10 +1029,12 @@ export async function up(args: string[], io: Io): Promise<number> {
   let fenceRange: number | undefined;
   if (fenced) {
     // The prerequisites that `jr2 up` installed or found above, as the API shows them now: without
-    // them the Custodian's attachments cannot be applied and its pods do not start.
+    // them the Custodian's attachments cannot be applied and its pods do not start. And the guard: the
+    // server-side dry runs that jr2's admission policies must deny, before the first attachment.
     await checkFenceApi(kube, {
       nodes: fenceNodes.map((n) => n.metadata.name),
-      multusPods: fencePlan?.multusPods ?? [],
+      multus: fencePlan!.multus,
+      namespace,
       ...ctx,
     });
   }

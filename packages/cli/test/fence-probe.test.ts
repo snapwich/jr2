@@ -385,28 +385,36 @@ test("the refusal names each node and part, and the likely causes, with the page
   assert.match(fenceRefusal([{ node: "x", part: "p", why: "w" }]).message, /^fence: a Sandbox node fails/);
 });
 
-test("from the API: no attachment definition, or a Sandbox node with no Ready pod of the Multus that the read found, refuses", async () => {
+test("from the API: no attachment definition, or a Sandbox node with no Ready pod of jr2's Multus, refuses; a Multus of another owner is not read; then the guard's dry runs", async () => {
   const ready = (node: string, status = "True") => ({
     spec: { nodeName: node },
     status: { conditions: [{ type: "Ready", status }] },
   });
   assert.deepEqual(nodesWithoutMultus(["a", "b", "c"], [ready("a"), ready("b", "False"), ready("x")]), ["b", "c"]);
 
-  // The pods of the Multus that the read before the question found: here, a Multus of the cluster.
-  const multusPods = [{ namespace: "kube-system", selector: "app=rke2-multus" }];
-  const kube = (crds: unknown[], pods: unknown[]) =>
-    ({
-      async listJson(opts: { kind: string; selector?: string; namespace?: string; fieldSelector?: string }) {
-        if (opts.kind === "customresourcedefinition") {
-          assert.equal(opts.fieldSelector, "metadata.name=network-attachment-definitions.k8s.cni.cncf.io");
-          return crds;
-        }
-        assert.deepEqual([opts.namespace, opts.selector], ["kube-system", "app=rke2-multus"]);
-        return pods;
-      },
-    }) as unknown as ProbeKube;
+  const denied = (policy: string) =>
+    new Error(
+      `Error from server (Forbidden): ValidatingAdmissionPolicy '${policy}' with binding '${policy}' denied request: no`,
+    );
+  const calls: string[] = [];
+  const kube = (crds: unknown[], pods: unknown[]) => ({
+    async listJson(opts: { kind: string; selector?: string; namespace?: string; fieldSelector?: string }) {
+      calls.push(`list ${opts.kind}`);
+      if (opts.kind === "customresourcedefinition") {
+        assert.equal(opts.fieldSelector, "metadata.name=network-attachment-definitions.k8s.cni.cncf.io");
+        return crds as never[];
+      }
+      assert.deepEqual([opts.namespace, opts.selector], ["kube-system", "app=multus"]);
+      return pods as never[];
+    },
+    async dryRunCreate({ manifest }: { manifest: string }): Promise<never> {
+      const o = JSON.parse(manifest) as { kind: string };
+      calls.push(`dry-run ${o.kind}`);
+      throw denied(o.kind === "Pod" ? "jr2-fence-guard-pods" : "jr2-fence-guard-attachments");
+    },
+  });
   await assert.rejects(
-    checkFenceApi(kube([], []), { nodes: ["a"], multusPods }),
+    checkFenceApi(kube([], []), { nodes: ["a"], multus: "jr2", namespace: "inst" }),
     (e: Error) =>
       e.message.includes(
         "no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io, so Multus is not installed",
@@ -415,10 +423,27 @@ test("from the API: no attachment definition, or a Sandbox node with no Ready po
       !/kind cluster|just /.test(e.message),
   );
   await assert.rejects(
-    checkFenceApi(kube([{}], [ready("a")]), { nodes: ["a", "b"], multusPods }),
-    /fence: a Sandbox node fails .*\n {2}b: Multus — no Ready Multus pod \(kube-system: app=rke2-multus\) on the node/,
+    checkFenceApi(kube([{}], [ready("a")]), { nodes: ["a", "b"], multus: "install", namespace: "inst" }),
+    /fence: a Sandbox node fails .*\n {2}b: Multus — no Ready pod of jr2's Multus \(kube-system: app=multus\) on the node/,
   );
-  await checkFenceApi(kube([{}], [ready("a"), ready("b")]), { nodes: ["a", "b"], multusPods });
+  calls.length = 0;
+  await checkFenceApi(kube([{}], [ready("a"), ready("b")]), { nodes: ["a", "b"], multus: "jr2", namespace: "inst" });
+  assert.deepEqual(calls, [
+    "list customresourcedefinition",
+    "list pod",
+    "dry-run Pod",
+    "dry-run Pod",
+    "dry-run NetworkAttachmentDefinition",
+  ]);
+  // A Multus of another owner: jr2 does not look for its pods; the probe pod's address judges it.
+  calls.length = 0;
+  await checkFenceApi(kube([{}], []), { nodes: ["a", "b"], multus: "foreign", namespace: "inst" });
+  assert.deepEqual(calls, [
+    "list customresourcedefinition",
+    "dry-run Pod",
+    "dry-run Pod",
+    "dry-run NetworkAttachmentDefinition",
+  ]);
 });
 
 // ---- the probe of the nodes, through a fake API -----------------------------------------------------------

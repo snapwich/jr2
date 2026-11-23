@@ -831,6 +831,51 @@ Feature: a workspace() run drives a real Sandbox on kind
       When a plain pod on the cluster's network dials each port of a Custodian pod
       Then only the Custodian's health port answered it, and no slot listener, resolver, inbound or control port did
 
+  Rule: only an Instance's own pods name its attachments of the Fence
+    ADR-0084. Multus gives a pod each attachment that its annotations name, of any namespace, and
+    its namespaceIsolation guards neither v1.multus-cni.io/default-network nor the namespace
+    default. So jr2's two admission policies are the guard, with any Multus: a pod whose annotation
+    holds the reserved prefix jr2-fence-, or a JSON escape, must be in an Instance's namespace and
+    name each network as <its namespace>/<name>[@<interface>]; and an attachment on the bridge
+    jr2fence0 must be in an Instance's namespace, with the reserved prefix. `own` is the scenario's
+    Instance namespace and `peer` another Instance's. Each check is a server-side dry run, which
+    makes nothing; an update is a dry-run patch of a pod that is there.
+
+    Scenario: the policies admit the Instance's own forms, and deny each other way to name an attachment of the Fence
+      Given the kind instance is serving
+      And a namespace that carries the label of an Instance and holds no Instance
+      Then the API server answers each server-side dry run of a pod as the table says
+        | namespace   | request | annotation      | value                                                | answer |
+        | own         | create  | default-network | {own}/jr2-fence-3                                    | admit  |
+        | own         | create  | networks        | {own}/jr2-fence-uplink@net1                          | admit  |
+        | own         | create  | networks        | {own}/jr2-fence-1,{own}/jr2-fence-2@net2             | admit  |
+        | own         | create  | default-network | jr2-fence-3                                          | deny   |
+        | own         | create  | networks        | jr2-fence-3                                          | deny   |
+        | own         | create  | networks        | [{"name":"jr2-fence-3","namespace":"{own}"}]         | deny   |
+        | own         | create  | networks        | {own}/jr2-fence-1, {own}/jr2-fence-2                 | deny   |
+        | own         | create  | default-network | {peer}/jr2-fence-3                                   | deny   |
+        | own         | create  | networks        | {own}/jr2-fence-1,{peer}/jr2-fence-1                 | deny   |
+        | peer        | create  | default-network | {own}/jr2-fence-3                                    | deny   |
+        | peer        | create  | networks        | {own}/jr2-fence-uplink@net1                          | deny   |
+        | default     | create  | default-network | {own}/jr2-fence-3                                    | deny   |
+        | default     | create  | networks        | {own}/jr2-fence-3                                    | deny   |
+        | default     | create  | default-network | [{"name":"jr2-fence-3","namespace":"{own}"}]         | deny   |
+        | default     | create  | networks        | [{"name":"jr2\\u002dfence-3","namespace":"{own}"}] | deny   |
+        | kube-system | create  | default-network | jr2-fence-3                                          | deny   |
+        | default     | create  | networks        | default/macvlan                                      | admit  |
+        | own         | update  | default-network | {own}/jr2-fence-3                                    | admit  |
+        | own         | update  | default-network | {peer}/jr2-fence-3                                   | deny   |
+        | kube-system | update  | default-network | {own}/jr2-fence-3                                    | deny   |
+        | kube-system | status  | networks        | {own}/jr2-fence-3                                    | deny   |
+      And the API server answers each server-side dry run of a NetworkAttachmentDefinition as the table says
+        | namespace   | name            | config                            | answer |
+        | own         | jr2-fence-check | bridge jr2fence0                  | admit  |
+        | own         | check           | bridge jr2fence0                  | deny   |
+        | default     | jr2-fence-check | bridge jr2fence0                  | deny   |
+        | kube-system | check           | macvlan on jr2fence0              | deny   |
+        | default     | check           | bridge jr2fence0 through an escape | deny   |
+        | default     | check           | bridge br0                        | admit  |
+
   Rule: an Agent's turn ends when the state that asked for it stops waiting
     ADR-0024. Leaving an Agent invoke means "I am no longer interested in this answer", so the
     submission behind it is ended — at the Harness, which is the only place that end is observable

@@ -101,7 +101,12 @@ class FakeCluster implements KubeAdmin {
       },
     });
     this.set("jr2-system", "daemonset", "jr2-fence-node", {
-      metadata: { name: "jr2-fence-node", labels: { app: "jr2-fence-node", "jr2.dev/version": KIT_VERSION } },
+      metadata: {
+        name: "jr2-fence-node",
+        uid: "fence-node-uid",
+        labels: { app: "jr2-fence-node", "jr2.dev/version": KIT_VERSION },
+        annotations: { "deprecated.daemonset.template.generation": "1" },
+      } as KubeObject["metadata"],
     });
     this.set("default", "service", "kubernetes", {
       spec: { clusterIP: "10.96.0.1", ports: [{ name: "https", port: 443 }] },
@@ -131,6 +136,24 @@ class FakeCluster implements KubeAdmin {
     this.applied.push(opts.manifest);
     // The shipped Multus manifest makes Multus's CustomResourceDefinition.
     if (opts.manifest.includes("name: network-attachment-definitions.k8s.cni.cncf.io")) this.attachmentCrd = true;
+    // jr2's admission policies of the Fence (ADR-0084).
+    if (opts.manifest.includes('"name":"jr2-fence-guard-pods"')) this.guard = true;
+    // The DaemonSet jr2-fence-node: kept, with the uid and the generation of the one there, as the API does.
+    if (
+      opts.manifest.startsWith("{") &&
+      opts.manifest.includes('"kind":"DaemonSet","metadata":{"name":"jr2-fence-node"')
+    ) {
+      const ds = JSON.parse(opts.manifest) as KubeObject;
+      const was = this.objects.get("jr2-system/daemonset/jr2-fence-node");
+      this.set("jr2-system", "daemonset", "jr2-fence-node", {
+        ...ds,
+        metadata: {
+          ...ds.metadata,
+          uid: (was?.metadata as { uid?: string } | undefined)?.uid ?? "fence-node-uid",
+          annotations: { "deprecated.daemonset.template.generation": "1" },
+        } as KubeObject["metadata"],
+      });
+    }
     this.runFenceProbes(opts.manifest);
     // A check pod's List is applied server-side too (ADR-0019); this records the named objects.
     const doc = opts.serverSide
@@ -165,8 +188,13 @@ class FakeCluster implements KubeAdmin {
       } as Partial<KubeObject>);
     }
   }
-  /** Whether the cluster has Multus's CustomResourceDefinition (ADR-0084). */
+  /** Whether the cluster has Multus's CustomResourceDefinition (ADR-0084), and whether it carries
+   * jr2's annotation (jr2's own Multus made it). */
   attachmentCrd = true;
+  attachmentCrdJr2 = true;
+  /** Whether the cluster has jr2's admission policies and their bindings (ADR-0084); when it has
+   * them, the guard's server-side dry runs are denied by them. */
+  guard = true;
   /** The nodes with no Ready Multus pod; each other node has one. */
   nodesWithoutMultus = new Set<string>();
   /** What the install init container of the fence node's pod says on each node (ADR-0084): unset, it passed. */
@@ -306,9 +334,26 @@ class FakeCluster implements KubeAdmin {
     if (opts.kind === "node") return this.nodes as T[];
     if (opts.kind === "customresourcedefinition") {
       const name = "network-attachment-definitions.k8s.cni.cncf.io";
+      const annotations = this.attachmentCrdJr2 ? { "jr2.dev/multus": MULTUS_VERSION } : {};
       return (
-        this.attachmentCrd && opts.fieldSelector === `metadata.name=${name}` ? [{ metadata: { name } }] : []
+        this.attachmentCrd && opts.fieldSelector === `metadata.name=${name}`
+          ? [{ metadata: { name, annotations } }]
+          : []
       ) as T[];
+    }
+    if (opts.kind === "validatingadmissionpolicy" || opts.kind === "validatingadmissionpolicybinding") {
+      return (
+        this.guard
+          ? ["jr2-fence-guard-pods", "jr2-fence-guard-attachments"].map((name) => ({
+              metadata: { name, labels: { "jr2.dev/version": KIT_VERSION } },
+            }))
+          : []
+      ) as T[];
+    }
+    // One DaemonSet by name (the read of jr2-fence-node, which tells NotFound from a failure).
+    if (opts.kind === "daemonset" && opts.fieldSelector?.startsWith("metadata.name=") && opts.namespace) {
+      const found = this.objects.get(`${opts.namespace}/daemonset/${opts.fieldSelector.slice(14)}`);
+      return (found ? [found] : []) as T[];
     }
     // The DaemonSets by label (ADR-0084's read of Multus): what `set` and the applies put there.
     // With no selector: each DaemonSet of the cluster (the read of each Multus, of Cilium and of jr2-fence-node).
@@ -329,6 +374,8 @@ class FakeCluster implements KubeAdmin {
         return {
           metadata: {
             name: `jr2-fence-node-${n.metadata.name}${this.fenceNodeRestarts.has(n.metadata.name) ? `-r${this.fenceNodeRestarts.get(n.metadata.name)}` : ""}`,
+            labels: { "pod-template-generation": "1" },
+            ownerReferences: [{ uid: "fence-node-uid" }],
           },
           spec: { nodeName: n.metadata.name },
           status: {
@@ -447,8 +494,23 @@ class FakeCluster implements KubeAdmin {
   dryRunFails = false;
   async dryRunCreate(opts: { manifest: string }): Promise<{ spec?: { resources?: unknown } }> {
     this.dryRuns.push(opts.manifest);
-    if (this.dryRunFails) throw new Error('pods "jr2-probe" is forbidden: cannot create');
     const pod = JSON.parse(opts.manifest);
+    // The guard's dry runs (ADR-0084): jr2's policies deny them while the cluster has them.
+    const policy =
+      pod.kind === "NetworkAttachmentDefinition"
+        ? "jr2-fence-guard-attachments"
+        : pod.metadata?.name === "jr2-fence-guard-check"
+          ? "jr2-fence-guard-pods"
+          : undefined;
+    if (policy !== undefined) {
+      if (this.guard) {
+        throw new Error(
+          `Error from server (Forbidden): ValidatingAdmissionPolicy '${policy}' with binding '${policy}' denied request: no`,
+        );
+      }
+      return pod;
+    }
+    if (this.dryRunFails) throw new Error('pods "jr2-probe" is forbidden: cannot create');
     if (this.podResourcesDropped) delete pod.spec.resources;
     return pod;
   }
@@ -1073,6 +1135,7 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
     w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
     w.kube.objects.delete("jr2-system/daemonset/jr2-fence-node");
     w.kube.attachmentCrd = false;
+    w.kube.guard = false;
     return w;
   };
 
@@ -1094,8 +1157,13 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
   );
   assert.match(
     said,
-    /\n {2}- Multus v4\.3\.2 \(thick, namespaceIsolation, no global namespace\), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system\/kube-multus-ds\./,
+    /\n {2}- the ValidatingAdmissionPolicies jr2-fence-guard-pods and jr2-fence-guard-attachments, each with a ValidatingAdmissionPolicyBinding of the same name: cluster-wide objects\./,
   );
+  assert.match(
+    said,
+    /\n {2}- Multus v4\.3\.2 \(thick\), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system\/kube-multus-ds\./,
+  );
+  assert.doesNotMatch(said, /namespaceIsolation|global namespace/);
   assert.ok(said.indexOf("this converge installs") < said.indexOf("aborted"));
   assert.deepEqual(declined.kube.applied, []);
 
@@ -1109,11 +1177,25 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
     /fence: applying the DaemonSet jr2-system\/jr2-fence-node \(ghcr\.io\/snapwich\/jr2-operator:[0-9.]+\)\n/,
   );
   assert.match(err, /fence: kind-test-control-plane: rules=loaded wrote= kept=bridge static tuning bridge=v1\.10\.0\n/);
-  assert.match(err, /fence: applying Multus v4\.3\.2 \(thick, namespaceIsolation\) to kube-system\n/);
+  assert.match(err, /fence: applying Multus v4\.3\.2 \(thick\) to kube-system\n/);
+  assert.match(
+    err,
+    /fence: applying the admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments, each with its binding\n/,
+  );
+  const namespace = w.kube.applied.findIndex((m) => m.includes('"kind":"Namespace","metadata":{"name":"myinst"'));
+  const guard = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-fence-guard-pods"'));
   const plugins = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-fence-node"'));
   const multus = w.kube.applied.findIndex((m) => m.includes("name: kube-multus-ds"));
   const custodian = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-custodian"'));
-  assert.ok(plugins >= 0 && multus > plugins && custodian > multus, "fence node, then Multus, then the Custodian");
+  assert.ok(
+    namespace >= 0 && guard === namespace + 1 && plugins > guard && multus > plugins && custodian > multus,
+    "the namespace, the policies at once, the fence node, Multus, then the Custodian",
+  );
+  // The guard's dry runs, each denied, before the Custodian's attachments.
+  const guardRuns = w.kube.dryRuns.filter(
+    (m) => m.includes("jr2-fence-guard-check") || m.includes("NetworkAttachmentDefinition"),
+  );
+  assert.equal(guardRuns.length, 3);
   assert.ok(w.kube.rollouts.includes("kube-system/daemonset/kube-multus-ds"));
   // The DaemonSet runs the operator image of this converge, and its namespace was made first.
   const ds = JSON.parse(w.kube.applied[plugins]!) as {
@@ -1127,10 +1209,6 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
   w.kube.set("kube-system", "daemonset", "kube-multus-ds", {
     metadata: { name: "kube-multus-ds", labels: { app: "multus" }, annotations: { "jr2.dev/multus": MULTUS_VERSION } },
   });
-  w.kube.set("jr2-system", "daemonset", "jr2-fence-node", {
-    metadata: { name: "jr2-fence-node", labels: { app: "jr2-fence-node", "jr2.dev/version": KIT_VERSION } },
-    spec: { template: { spec: { containers: [{ image: ds.spec.template.spec.containers[0].image }] } } },
-  } as Partial<KubeObject>);
   w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
   w.err.length = 0;
   w.kube.applied.length = 0;
@@ -1138,9 +1216,10 @@ test("jr2 up installs the Fence's prerequisites that the cluster lacks, before t
   assert.equal(w.confirms.length, 0, "no question: the namespace is home and nothing is installed");
   assert.match(
     w.err.join(""),
-    /fence: prerequisites in place — jr2's Multus, and the rule table and the CNI plugins on 1 Sandbox node\n/,
+    /fence: prerequisites in place — jr2's Multus, the admission policies, and the rule table and the CNI plugins on 1 Sandbox node\n/,
   );
   assert.equal(w.kube.applied.filter((m) => m.includes('"name":"jr2-fence-node"')).length, 1);
+  assert.equal(w.kube.applied.filter((m) => m.includes('"name":"jr2-fence-guard-pods"')).length, 1, "applied again");
   assert.ok(!w.kube.applied.some((m) => m.includes("kube-multus-ds")));
 
   // Home already, but the cluster has no DaemonSet of the fence node: the Fence alone is asked about.
@@ -1166,36 +1245,23 @@ test("an Instance with no Harness pod reads and installs nothing of the Fence, a
   assert.deepEqual(w.kube.fenceProbes, [], "no Harness pod: nothing on the Fence to probe");
 });
 
-test("jr2 up refuses, before the question and with nothing applied, a Multus of another owner without namespaceIsolation (ADR-0084)", async () => {
+test("jr2 up uses a Multus of another owner as it is: it reads none of its settings, applies no Multus, and its own policies are the guard (ADR-0084)", async () => {
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   const w = mkWorld(root, { confirm: false });
+  // The upstream thick Multus with no isolation: its DaemonSet and its definition, neither of jr2's.
   w.kube.set("kube-system", "daemonset", "kube-multus-ds", {
     metadata: { name: "kube-multus-ds", labels: { app: "multus" } },
-    spec: {
-      template: {
-        spec: {
-          containers: [
-            {
-              name: "kube-multus",
-              image: "ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot-thick",
-              command: ["/usr/src/multus-cni/bin/multus-daemon"],
-              volumeMounts: [{ name: "multus-daemon-config", mountPath: "/etc/cni/net.d/multus.d" }],
-            },
-          ],
-          volumes: [{ name: "multus-daemon-config", configMap: { name: "multus-daemon-config" } }],
-        },
-      },
-    },
   } as Partial<KubeObject>);
   w.kube.set("kube-system", "configmap", "multus-daemon-config", {
-    data: { "daemon-config.json": JSON.stringify({ cniConfigDir: "/host/etc/cni/net.d", namespaceIsolation: false }) },
+    data: { "daemon-config.json": JSON.stringify({ cniConfigDir: "/host/etc/cni/net.d" }) },
   } as Partial<KubeObject>);
-  await assert.rejects(
-    () => up(["--yes"], w.io),
-    /fence: the cluster's Multus \(DaemonSet kube-system\/kube-multus-ds, which jr2 did not install\) does not have namespaceIsolation .* Nothing was applied\.$/s,
-  );
-  assert.deepEqual(w.kube.applied, []);
-  assert.deepEqual(w.confirms, []);
+  w.kube.attachmentCrdJr2 = false;
+  assert.equal(await up(["--yes"], w.io), 0);
+  const err = w.err.join("");
+  assert.match(err, /fence: prerequisites in place — the cluster's Multus, the admission policies, and the rule table/);
+  assert.ok(!w.kube.applied.some((m) => m.includes("name: kube-multus-ds")), "jr2 applies no Multus");
+  assert.doesNotMatch(err, /namespaceIsolation/);
+  assert.equal(w.kube.dryRuns.filter((m) => m.includes("jr2-fence-guard-check")).length, 2);
 });
 
 test("operator: never downgraded — a newer deployed operator is left, with a warning", async () => {
@@ -4050,13 +4116,20 @@ test("provider preflight: before the first check, only the namespace, the Priori
       : `${doc.kind}/${doc.metadata!.name}`;
   });
   const o = pod.metadata.name as string;
-  assert.deepEqual(kinds.slice(0, 3), ["Namespace/myinst", "PriorityClass/jr2-control", "PriorityClass/jr2-sandbox"]);
+  // The namespace and, at once, the admission policies of the Fence (applied at each converge).
+  assert.deepEqual(kinds.slice(0, 4), [
+    "Namespace/myinst",
+    "List ValidatingAdmissionPolicy/jr2-fence-guard-pods,ValidatingAdmissionPolicyBinding/jr2-fence-guard-pods," +
+      "ValidatingAdmissionPolicy/jr2-fence-guard-attachments,ValidatingAdmissionPolicyBinding/jr2-fence-guard-attachments",
+    "PriorityClass/jr2-control",
+    "PriorityClass/jr2-sandbox",
+  ]);
   // The DaemonSet of the fence node (applied at each converge), the
   // Custodian (its attachments, its DaemonSet and the rest), then the probe of each Sandbox node.
-  assert.equal(kinds[3], "DaemonSet/jr2-fence-node");
-  assert.match(kinds[4]!, /^List NetworkAttachmentDefinition\/jr2-fence-0,.*,DaemonSet\/jr2-custodian$/);
-  assert.match(kinds[5]!, /^List Pod\/jr2-fence-probe-[0-9a-f]+$/);
-  assert.deepEqual(kinds.slice(6), [
+  assert.equal(kinds[4], "DaemonSet/jr2-fence-node");
+  assert.match(kinds[5]!, /^List NetworkAttachmentDefinition\/jr2-fence-0,.*,DaemonSet\/jr2-custodian$/);
+  assert.match(kinds[6]!, /^List Pod\/jr2-fence-probe-[0-9a-f]+$/);
+  assert.deepEqual(kinds.slice(7), [
     `List Secret/jr2-custodian-slot-1,ConfigMap/${o}-trust,Secret/${o}-standins`,
     `List ConfigMap/${o},Secret/${o}-env,Pod/${o}`,
   ]);
@@ -6432,7 +6505,11 @@ test("jr2 up reads the Sandbox Effector's image for what each push form owes, an
     () => up(["--yes"], bare.io),
     /over ssh needs ssh, and its Sandbox Effector's image .* holds none/,
   );
-  assert.ok(!bare.kube.applied.some((m) => m.includes(`"kind":"List"`)), "nothing applied");
+  // Nothing of the Instance: the Fence's admission policies, a cluster prerequisite, come with the namespace.
+  assert.ok(
+    !bare.kube.applied.some((m) => m.includes(`"kind":"List"`) && !m.includes("jr2-fence-guard-pods")),
+    "nothing applied",
+  );
   // ssh, but no passwd entry for uid 1000 (the image declares no USER): adduser is the fix.
   const nobody = mkWorld(await sshPushing(), {
     imageFiles: (_image, paths) => ({ present: [...paths], passwd: "root:x:0:0::/root:/bin/sh\n" }),
@@ -6492,7 +6569,10 @@ test("jr2 up reads the Sandbox Effector's image for what each push form owes, an
     () => up(["--yes"], stock.io),
     /over ssh needs ssh, and its Sandbox Effector runs in the stock Harness image .*, which holds git alone/,
   );
-  assert.ok(!stock.kube.applied.some((m) => m.includes(`"kind":"List"`)), "nothing applied");
+  assert.ok(
+    !stock.kube.applied.some((m) => m.includes(`"kind":"List"`) && !m.includes("jr2-fence-guard-pods")),
+    "nothing applied",
+  );
   // A token over https owes nothing beyond git: the image is not read.
   const https = mkWorld(
     await withImage(
@@ -7154,9 +7234,8 @@ test("an Instance with a Harness pod claims a VLAN range and converges the Custo
     type: "RollingUpdate",
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 },
   });
-  assert.deepEqual(JSON.parse(ds.spec.template.metadata.annotations["k8s.v1.cni.cncf.io/networks"]), [
-    { name: "jr2-fence-uplink", interface: "net1" },
-  ]);
+  // The text form with the pod's own namespace: the only form that jr2's admission policy admits.
+  assert.equal(ds.spec.template.metadata.annotations["k8s.v1.cni.cncf.io/networks"], "myinst/jr2-fence-uplink@net1");
   assert.equal(pod.hostNetwork, undefined, "no jr2 pod has the node's network");
   assert.equal(pod.automountServiceAccountToken, false);
   assert.equal(pod.priorityClassName, "jr2-control");
@@ -7438,7 +7517,7 @@ test("without Multus's attachment definition, or with a Sandbox node that has no
   gap.kube.nodesWithoutMultus.add("n2");
   await assert.rejects(
     () => up(["--yes"], gap.io),
-    /\n {2}n2: Multus — no Ready Multus pod \(kube-system: app=multus\) on the node/,
+    /\n {2}n2: Multus — no Ready pod of jr2's Multus \(kube-system: app=multus\) on the node/,
   );
   assert.equal(custodianList(gap), undefined);
 });

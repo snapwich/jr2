@@ -1124,9 +1124,9 @@ export function custodianObjects(opts: {
           metadata: {
             labels: { ...labels, ...app },
             annotations: {
-              "k8s.v1.cni.cncf.io/networks": JSON.stringify([
-                { name: FENCE_TRUNK_ATTACHMENT, interface: FENCE_TRUNK_INTERFACE },
-              ]),
+              // The text form, with the namespace: jr2's admission policy admits an attachment of
+              // the Fence only in this form, and only of the pod's own namespace (ADR-0084).
+              "k8s.v1.cni.cncf.io/networks": `${opts.namespace}/${FENCE_TRUNK_ATTACHMENT}@${FENCE_TRUNK_INTERFACE}`,
               [ANNOTATION_CUSTODIAN_CONFIG_DIGEST]: digest.digest("hex"),
             },
           },

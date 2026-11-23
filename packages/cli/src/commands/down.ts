@@ -3,8 +3,8 @@
 // (deleting a namespace takes the runs, the store PVC, the Instance Harness's conversations PVC
 // (ADR-0031), and every live Sandbox with it). `--all` also uninstalls the
 // per-cluster operator, and what `jr2 up` installed for the Fence (ADR-0084): the rule table and the
-// bridge on each node (the DaemonSet jr2-fence-node removes them, then goes) and a Multus that carries jr2's
-// annotation, with its CustomResourceDefinition, unless the cluster has a NetworkAttachmentDefinition
+// bridge on each node (the DaemonSet jr2-fence-node removes them, then goes), the admission policies with
+// their bindings, and a Multus that carries jr2's annotation, with its CustomResourceDefinition, unless the cluster has a NetworkAttachmentDefinition
 // of another owner (then both stay, with a warning) — only sane when this was the cluster's
 // last instance. That is the caller's judgment, except for an Instance that holds a VLAN range of
 // the Fence: its claim is in `jr2-system`, so `--all` refuses while another namespace that is still
@@ -82,9 +82,10 @@ export async function down(args: string[], io: Io): Promise<number> {
 
   const scope = values.all
     ? " AND the per-cluster operator, the Fence's rule table and its bridge jr2fence0 on each node, the DaemonSet " +
-      "jr2-fence-node that loads the table, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each " +
-      "NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another " +
-      "owner, jr2 keeps its Multus and says so"
+      "jr2-fence-node that loads the table, the Fence's admission policies jr2-fence-guard-pods and " +
+      "jr2-fence-guard-attachments with their bindings, and a Multus that jr2 installed with its " +
+      "CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has " +
+      "a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so"
     : "";
   const ok =
     values.yes === true ||

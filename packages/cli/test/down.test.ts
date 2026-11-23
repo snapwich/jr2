@@ -200,11 +200,18 @@ test("down deletes the instance's namespace; --all takes the operator too, BEFOR
   const sweep = mkSweep();
   const w2 = await mkWorld(kube2, true, sweep);
   assert.equal(await down(["--all"], w2.io), 0);
-  assert.deepEqual(kube2.deleted, ["/Namespace/myinst", "(operator manifest)"]);
+  assert.deepEqual(kube2.deleted, [
+    "/Namespace/myinst",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-pods",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-attachments",
+    "/validatingadmissionpolicy/jr2-fence-guard-pods",
+    "/validatingadmissionpolicy/jr2-fence-guard-attachments",
+    "(operator manifest)",
+  ]);
   assert.deepEqual(sweep.listed, ["host", "node test"], "the stores are read only once both roots are gone");
 });
 
-test("--all removes what jr2 installed for the Fence: the rule table and the bridge on each node, the fence node's DaemonSet and jr2's Multus; the plugin files stay; a plain down removes none (ADR-0084)", async () => {
+test("--all removes what jr2 installed for the Fence: the rule table and the bridge on each node, the fence node's DaemonSet, the admission policies and jr2's Multus; the plugin files stay; a plain down removes none (ADR-0084)", async () => {
   const installed = {
     ...ownNs,
     "jr2-system/daemonset/jr2-fence-node": {
@@ -212,7 +219,7 @@ test("--all removes what jr2 installed for the Fence: the rule table and the bri
       spec: { template: { spec: { containers: [{ name: "idle", image: "jr2-operator:7" }] } } },
     } as Partial<KubeObject>,
     "kube-system/daemonset/kube-multus-ds": {
-      metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": "v4.3.2-thick-namespace-isolation-1" } },
+      metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": "v4.3.2-thick-2" } },
     },
   };
   const plain = mkKube(installed);
@@ -225,7 +232,7 @@ test("--all removes what jr2 installed for the Fence: the rule table and the bri
   assert.equal(await down(["--all"], w.io), 0);
   assert.match(
     w.confirms[0]!,
-    /delete namespace "myinst" AND the per-cluster operator, the Fence's rule table and its bridge jr2fence0 on each node, the DaemonSet jr2-fence-node that loads the table, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so\)\?$/,
+    /delete namespace "myinst" AND the per-cluster operator, the Fence's rule table and its bridge jr2fence0 on each node, the DaemonSet jr2-fence-node that loads the table, the Fence's admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments with their bindings, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so\)\?$/,
   );
   // The table goes first: the removal form of the DaemonSet, with the image that it runs.
   assert.equal(all.applied.length, 1);
@@ -239,6 +246,10 @@ test("--all removes what jr2 installed for the Fence: the rule table and the bri
   assert.deepEqual(all.deleted, [
     "/Namespace/myinst",
     "jr2-system/daemonset/jr2-fence-node",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-pods",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-attachments",
+    "/validatingadmissionpolicy/jr2-fence-guard-pods",
+    "/validatingadmissionpolicy/jr2-fence-guard-attachments",
     "(multus manifest)",
     "(operator manifest)",
   ]);
@@ -271,7 +282,14 @@ test("--all removes what jr2 installed for the Fence: the rule table and the bri
     "kube-system/daemonset/kube-multus-ds": { metadata: { name: "kube-multus-ds" } },
   });
   assert.equal(await down(["--all"], (await mkWorld(foreign, true)).io), 0);
-  assert.deepEqual(foreign.deleted, ["/Namespace/myinst", "(operator manifest)"]);
+  assert.deepEqual(foreign.deleted, [
+    "/Namespace/myinst",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-pods",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-attachments",
+    "/validatingadmissionpolicy/jr2-fence-guard-pods",
+    "/validatingadmissionpolicy/jr2-fence-guard-attachments",
+    "(operator manifest)",
+  ]);
 });
 
 test("down gives back the Instance's VLAN range of the Fence, after its namespace is gone, and no other (ADR-0084)", async () => {

@@ -1,10 +1,13 @@
 // `jr2 up` probes the Fence on each Sandbox node (ADR-0084, ADR-0019), after it installed or found
-// the prerequisites (`fence-install.ts`): Multus, and the DaemonSet jr2-fence-node, which puts the
-// CNI plugins bridge, static and tuning on each node and loads the rule table there. It refuses to
-// converge while a Sandbox node fails, and it names the node, the part and the likely causes.
+// the prerequisites (`fence-install.ts`, `fence-guard.ts`): the admission policies, Multus, and the
+// DaemonSet jr2-fence-node, which puts the CNI plugins bridge, static and tuning on each node and
+// loads the rule table there. It refuses to converge while a Sandbox node fails, and it names the
+// node, the part and the likely causes.
 //
 // From the API, before the Custodian is applied: the CustomResourceDefinition of the attachments
-// exists, and a Ready Multus pod runs on each Sandbox node. After the Custodian's pods are Ready, on
+// exists; when jr2 installed Multus, a Ready pod of it runs on each Sandbox node; and the server-side
+// dry runs of the guard are denied by jr2's policies. A Multus of another owner is judged by what it
+// does: the probe pod's address. After the Custodian's pods are Ready, on
 // each node where one runs, a one-shot pod that `nodeName` pins there, on slot 2 of the Instance's
 // range (the same slot on each node: the bridges are separate, and nothing dials it). Its own address
 // must be the slot's address (else Multus did not give it the attachment). A DNS query to the
@@ -41,9 +44,13 @@ import {
   CNI_CONF_DIR,
   FENCE_NODE_DAEMONSET,
   FENCE_PREREQUISITES_URL,
+  MULTUS_NAMESPACE,
+  MULTUS_SELECTOR,
   RULES_TABLE,
 } from "./fence-install.ts";
 import { OPERATOR_NAMESPACE } from "./deploy.ts";
+import { checkFenceGuard } from "./fence-guard.ts";
+import type { FenceInstallPlan } from "./fence-install.ts";
 import type { KubeAdmin } from "./kube.ts";
 
 /** The slot of the Fence probe in each range (ADR-0084: slot 0 the Instance Harness, slot 1 the check
@@ -126,7 +133,9 @@ export async function fenceProbeMain(sys: ProbeSys): Promise<void> {
       part: "attachment",
       why:
         `the probe pod's address is ${mine.join(", ") || "none"}, not the slot's address ${want}: ` +
-        "Multus did not give the pod the slot's attachment as its default network",
+        "Multus did not give the pod the slot's attachment as its default network. Look at the Multus pod of " +
+        "this node (it must be Ready) and at the node's first CNI configuration in /etc/cni/net.d (it must be " +
+        "Multus's)",
     });
   }
 
@@ -460,8 +469,8 @@ export function gapOf(node: string, pod: ProbePod | undefined): FenceGap | undef
 
 /**
  * The refusal (ADR-0084, ADR-0019): each node, its part, why, what `jr2 up` replaced for it, and the
- * likely causes. `jr2 up` installed or found Multus and the DaemonSet jr2-fence-node before the
- * check, so a node that fails it differs from what jr2 can see from the API.
+ * likely causes. `jr2 up` installed or found the admission policies, Multus and the DaemonSet
+ * jr2-fence-node before the check, so a node that fails it differs from what jr2 can see from the API.
  */
 export function fenceRefusal(gaps: readonly FenceGap[]): Error {
   const nodes = new Set(gaps.map((g) => g.node)).size;
@@ -504,19 +513,20 @@ export function nodesWithoutMultus(nodes: readonly string[], pods: readonly Mult
 }
 
 /**
- * The API's part of the probe: the attachments' CustomResourceDefinition exists, and each Sandbox
- * node has a Ready Multus pod. Read before the Custodian is applied: without the definition its
- * attachments cannot be applied, and without Multus on a node its pod there never starts. The pods
- * are those of each Multus DaemonSet that the read before the question found (`multusPods`: jr2's
- * when it installed it, or the cluster's own, by its own labels). A read that fails throws: a check
- * that passes when it could not look is no check.
+ * The API's part of the probe, before the Custodian is applied: the attachments'
+ * CustomResourceDefinition exists; when jr2 installed Multus, each Sandbox node has a Ready pod of
+ * it (a Multus of another owner is judged by the probe pod's address, after the Custodian); and the
+ * server-side dry runs of the guard are each denied by jr2's admission policy (`checkFenceGuard`).
+ * A read that fails throws: a check that passes when it could not look is no check.
  */
 export async function checkFenceApi(
-  kube: Pick<KubeAdmin, "listJson">,
+  kube: Pick<KubeAdmin, "listJson" | "dryRunCreate">,
   opts: {
     nodes: readonly string[];
-    multusPods: ReadonlyArray<{ namespace: string; selector: string }>;
+    multus: FenceInstallPlan["multus"];
+    namespace: string;
     context?: string;
+    guardSettleMs?: number;
   },
 ): Promise<void> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
@@ -532,28 +542,31 @@ export async function checkFenceApi(
         "run `jr2 up` again, and it installs Multus when the cluster has none.",
     );
   }
-  const pods: MultusPod[] = [];
-  for (const where of opts.multusPods) {
-    pods.push(
-      ...(await kube.listJson<MultusPod>({
-        kind: "pod",
-        selector: where.selector,
-        namespace: where.namespace,
-        ...ctx,
-      })),
-    );
+  if (opts.multus !== "foreign") {
+    const pods = await kube.listJson<MultusPod>({
+      kind: "pod",
+      selector: MULTUS_SELECTOR,
+      namespace: MULTUS_NAMESPACE,
+      ...ctx,
+    });
+    const missing = nodesWithoutMultus(opts.nodes, pods);
+    if (missing.length > 0) {
+      throw fenceRefusal(
+        missing.map((node) => ({
+          node,
+          part: "Multus",
+          why:
+            `no Ready pod of jr2's Multus (${MULTUS_NAMESPACE}: ${MULTUS_SELECTOR}) on the node, so no pod there ` +
+            "gets the Fence as its network",
+        })),
+      );
+    }
   }
-  const missing = nodesWithoutMultus(opts.nodes, pods);
-  if (missing.length > 0) {
-    const selectors = opts.multusPods.map((w) => `${w.namespace}: ${w.selector}`).join("; ") || "none";
-    throw fenceRefusal(
-      missing.map((node) => ({
-        node,
-        part: "Multus",
-        why: `no Ready Multus pod (${selectors}) on the node, so no pod there gets the Fence as its network`,
-      })),
-    );
-  }
+  await checkFenceGuard(kube, {
+    namespace: opts.namespace,
+    ...ctx,
+    ...(opts.guardSettleMs !== undefined ? { settleMs: opts.guardSettleMs } : {}),
+  });
 }
 
 // ---- after the Custodian is Ready: the probe pod on each of its nodes -----------------------------

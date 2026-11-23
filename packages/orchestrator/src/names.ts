@@ -171,13 +171,17 @@ export const CUSTODIAN_DIAL_KEY = "token";
  * of the headless Service whose EndpointSlices name each pod and its node, and of its
  * ServiceAccount, Role, ConfigMap and NetworkPolicy. */
 export const CUSTODIAN_SERVICE = "jr2-custodian";
+/** The start of the name of each attachment of the Fence (ADR-0084). It is reserved: jr2's admission
+ * policies refuse a pod that names an attachment with it outside its Instance's namespace, and an
+ * attachment on the bridge of the Fence whose name does not start with it. */
+export const FENCE_ATTACHMENT_PREFIX = "jr2-fence-";
 /** The attachment of slot i (ADR-0084): a NetworkAttachmentDefinition in the Instance's namespace
  * that puts a pod on the slot's VLAN with the slot's address. A Harness pod's only network. */
 export function fenceSlotAttachment(slot: number): string {
-  return `jr2-fence-${slot}`;
+  return `${FENCE_ATTACHMENT_PREFIX}${slot}`;
 }
 /** The attachment of the Custodian pod's trunk (ADR-0084): each VLAN of the Instance's range. */
-export const FENCE_TRUNK_ATTACHMENT = "jr2-fence-uplink";
+export const FENCE_TRUNK_ATTACHMENT = `${FENCE_ATTACHMENT_PREFIX}uplink`;
 /** The claim of VLAN range k on the cluster (ADR-0084): a Kubernetes Lease object in `jr2-system`
  * whose holder is the namespace of the Instance that uses the range. */
 export function fenceRangeClaim(range: number): string {

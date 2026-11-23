@@ -1,10 +1,15 @@
 // The node prerequisites of the Fence (ADR-0084, ADR-0019), which `jr2 up` installs on any cluster
 // with kubectl alone, after it asks:
 //
-//   Multus     the second network of a pod, with `namespaceIsolation` and no global namespace, so a
-//              pod can name an attachment of its own namespace only. When the cluster has no Multus,
-//              `jr2 up` applies the thick manifest that the CLI ships (`manifests/fence/`). Its
-//              DaemonSet has the annotation `jr2.dev/multus`, so jr2 knows that it installed it.
+//   Multus     the second network of a pod. When the cluster has none, `jr2 up` applies the thick
+//              manifest that the CLI ships (`manifests/fence/`). Its DaemonSet and its
+//              CustomResourceDefinition have the annotation `jr2.dev/multus`, so jr2 knows that it
+//              installed them. A cluster whose CustomResourceDefinition of the attachments has no
+//              such annotation has a Multus of another owner: jr2 uses it and never changes it.
+//              Whether a Multus works on a node is shown by behaviour: the probe's pod on the
+//              Fence gets its slot's address (`fence-probe.ts`). jr2 does not read a Multus's
+//              settings: its own admission policies (`fence-guard.ts`) keep a pod of another
+//              namespace off an Instance's attachments, with any Multus.
 //   DaemonSet  `jr2-system/jr2-fence-node`, which runs the operator image on each node,
 //              on the node's network, in two init containers:
 //              rules    with NET_ADMIN alone, first, so that each node gets it, also a node that
@@ -16,9 +21,7 @@
 //                       `bridge` older than v1.8.0 (or a link to a `bridge` that it cannot run), and
 //                       copies the pinned v1.10.0 plugins bridge, static and tuning into the node's
 //                       /opt/cni/bin when the node has no file of that name. It never replaces a
-//                       file. It reports the node's first CNI configuration (and, for a Multus
-//                       configuration of the thin form, its isolation settings), so that `jr2 up`
-//                       sees a Multus that the API does not show, and what the node really uses.
+//                       file. It names the node's first CNI configuration and its type.
 //              Then the pod idles as a user that is not root, so a node that joins later gets both.
 //
 // The VLAN state that the bridge plugin makes from jr2's attachment objects (`fence.ts`) keeps a
@@ -29,27 +32,13 @@
 // it, and kube-proxy's NAT changes a dial to a Service address. The table's `notrack` stops that, and
 // its other chains drop each packet between the bridge and the node's own stack.
 //
-// A Multus is a DaemonSet whose container runs the thick `multus-daemon`, the thin `/thin_entrypoint`
-// or the v3 `/entrypoint.sh` of a multus-cni image, or that runs a multus-cni image at all (then jr2
-// cannot tell its form, and refuses). An add-on (a dynamic-networks controller, a DHCP daemon) is
-// not a Multus, whatever its name. jr2 reads each form's settings from the place that the form uses
-// (`multusSettings`), and accepts only what it positively reads.
-//
-// `jr2 up` does not install when it cannot do so safely. Before it applies anything, it refuses when:
-//   (a) a Multus that jr2 did not install has other settings (no `namespaceIsolation`, or a global
-//       namespace), or jr2 cannot tell them. jr2 never changes a Multus that it did not install;
-//   (b) Cilium has `cni-exclusive: "true"` for a Sandbox node, because then it removes each other
-//       CNI configuration of the node;
-//   (c) a Multus that jr2 did not install mounts a CNI directory other than /opt/cni/bin or
-//       /etc/cni/net.d;
-//   (d) the cluster has Multus's CustomResourceDefinition, and jr2 finds no Multus DaemonSet.
-// After it applied the namespace jr2-system and the DaemonSet, and before it applies Multus, a
-// Sandbox node refuses when its pod of jr2-fence-node finds no CNI configuration or plugins in the
-// default folders, a `bridge` older than v1.8.0, with no version or behind a link that it cannot
-// run, a folder that it cannot write, a first CNI configuration of a Multus that the API does not
-// show (when jr2 is to install its own), a first CNI configuration of a thin Multus with no
-// isolation or with a global namespace, or a rule table that does not load. Those parts stay;
-// `jr2 down --all` removes them.
+// `jr2 up` does not install when it cannot do so safely. Before it applies anything, it refuses when
+// Cilium has `cni-exclusive: "true"` for a Sandbox node, because then it removes each other CNI
+// configuration of the node. After it applied the namespace jr2-system and the DaemonSet, and before
+// it applies Multus, a Sandbox node refuses when its pod of jr2-fence-node finds no CNI
+// configuration or plugins in the default folders, a `bridge` older than v1.8.0, with no version or
+// behind a link that it cannot run, a folder that it cannot write, or a rule table that does not
+// load. Those parts stay; `jr2 down --all` removes them.
 //
 // In two steps: `planFenceInstall` reads and changes nothing (before the first-time question), and
 // `installFence` applies (after the operator image exists, before the Custodian needs the Fence).
@@ -60,6 +49,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compareVersions, KIT_VERSION, LABEL_VERSION, OPERATOR_NAMESPACE } from "./deploy.ts";
 import { FENCE_BRIDGE } from "./fence.ts";
+import { GUARD_NAMES, planFenceGuard, removeFenceGuard } from "./fence-guard.ts";
 import { isMissingResourceType, type KubeAdmin, type KubeObject } from "./kube.ts";
 
 /** The folder of the shipped Multus manifest. */
@@ -120,10 +110,11 @@ export const FENCE_NODE_DAEMONSET = "jr2-fence-node";
 export const FENCE_NODE_PREFIX = "jr2.fence-node ";
 export const MULTUS_DAEMONSET = "kube-multus-ds";
 export const MULTUS_NAMESPACE = "kube-system";
-/** The annotation of the Multus DaemonSet that jr2 installed: the version of the shipped manifest. */
+/** The annotation of the Multus DaemonSet and CustomResourceDefinition that jr2 installed: the
+ * version of the shipped manifest. */
 export const MULTUS_ANNOTATION = "jr2.dev/multus";
 /** Its value in the shipped manifest. Change both when the manifest changes. */
-export const MULTUS_VERSION = "v4.3.2-thick-namespace-isolation-1";
+export const MULTUS_VERSION = "v4.3.2-thick-2";
 /** The label of the pods of the Multus that jr2 installs, as the shipped manifest sets it. */
 export const MULTUS_SELECTOR = "app=multus";
 /** The CustomResourceDefinition of the attachments: Multus's. */
@@ -141,9 +132,6 @@ const FENCE_NODE_WAIT_MS = 300_000;
 /** How long the `install` container waits for the node's CNI configuration and plugins: on a new
  * node, the primary CNI writes them after this pod can start. Inside `FENCE_NODE_WAIT_MS`. */
 const CNI_WAIT_S = 180;
-/** How long the read waits for a Multus DaemonSet when the cluster has Multus's definition and no
- * DaemonSet: another converge can be in the middle of the apply of the same manifest. */
-const MULTUS_SETTLE_MS = 10_000;
 /** How long a pod may wait for a volume before the kubelet's reason counts. */
 const MOUNT_GRACE_MS = 20_000;
 const POLL_MS = 2_000;
@@ -153,21 +141,24 @@ type Kube = Pick<KubeAdmin, "getJson" | "listJson">;
 
 /** What `jr2 up` will do, read before it asks. */
 export type FenceInstallPlan = {
-  /** `install`: no Multus. `upgrade`: jr2's, of another version. `jr2`: jr2's, current. `foreign`: accepted. */
+  /** `install`: no Multus, or jr2's that an earlier apply left without its DaemonSet. `upgrade`:
+   * jr2's, of another version. `jr2`: jr2's, current. `foreign`: a Multus of another owner, which
+   * jr2 uses and never changes. */
   multus: "install" | "upgrade" | "jr2" | "foreign";
   /** `install`: no DaemonSet. `present`: the DaemonSet is there (the converge updates it with no question). */
   node: "install" | "present";
+  /** `install`: a policy or a binding of jr2's admission guard is missing. `present`: all four are
+   * there (the converge updates them with no question). */
+  guard: "install" | "present";
   /** `create`: the cluster has no namespace jr2-system, and the install makes it. */
   system: "create" | "present";
-  /** Where the pods of each Multus are: the namespace and the label selector of its DaemonSet. */
-  multusPods: Array<{ namespace: string; selector: string }>;
   /** Lines for the person: a check that jr2 could not make, and why. */
   notes: string[];
 };
 
 /** The plan asks: it installs something on the cluster that the cluster does not have. */
 export const planAsks = (plan: FenceInstallPlan): boolean =>
-  plan.multus === "install" || plan.multus === "upgrade" || plan.node === "install";
+  plan.multus === "install" || plan.multus === "upgrade" || plan.node === "install" || plan.guard === "install";
 
 /** What Multus's install puts on the cluster, as the question says it. */
 const MULTUS_PARTS =
@@ -193,12 +184,18 @@ export function describeInstall(plan: FenceInstallPlan): string[] | undefined {
         "no file of that name (it never replaces a file).",
     );
   }
+  if (plan.guard === "install") {
+    said.push(
+      `  - the ValidatingAdmissionPolicies ${GUARD_NAMES.join(" and ")}, each with a ValidatingAdmissionPolicyBinding ` +
+        "of the same name: cluster-wide objects. They refuse a pod that names an attachment of the Fence (the " +
+        "prefix jr2-fence-) from outside its Instance's namespace, through v1.multus-cni.io/default-network or " +
+        `k8s.v1.cni.cncf.io/networks, and a NetworkAttachmentDefinition on the bridge ${BRIDGE} outside an ` +
+        "Instance's namespace.",
+    );
+  }
   const ownMultus = plan.multus !== "foreign";
   if (plan.multus === "install") {
-    said.push(
-      "  - Multus v4.3.2 (thick, namespaceIsolation, no global namespace), from the manifest that the CLI ships: " +
-        `${MULTUS_PARTS}.`,
-    );
+    said.push(`  - Multus v4.3.2 (thick), from the manifest that the CLI ships: ${MULTUS_PARTS}.`);
   }
   if (plan.multus === "upgrade") {
     said.push(
@@ -207,17 +204,18 @@ export function describeInstall(plan: FenceInstallPlan): string[] | undefined {
     );
   }
   said.push(
-    `  A later jr2 up of a newer Kit changes the DaemonSet ${FENCE_NODE_DAEMONSET} to its version, and does not ` +
-      "ask. " +
+    `  A later jr2 up of a newer Kit changes the DaemonSet ${FENCE_NODE_DAEMONSET} and the policies to its ` +
+      "version, and does not ask. " +
       (ownMultus
         ? "It asks before it changes the Multus that jr2 installs."
         : "It never changes the cluster's Multus, which jr2 did not install."),
     ownMultus
-      ? `  jr2 down --all removes the rule table, the bridge ${BRIDGE} that the bridge plugin makes, the DaemonSet ` +
-          "and the Multus that jr2 installs. It keeps that Multus while the cluster has a " +
-          "NetworkAttachmentDefinition of another owner. The plugin files and the kernel module 8021q stay on the nodes."
-      : `  jr2 down --all removes the rule table, the bridge ${BRIDGE} that the bridge plugin makes, and the ` +
-          "DaemonSet. The plugin files and the kernel module 8021q stay on the nodes.",
+      ? `  jr2 down --all removes the rule table, the bridge ${BRIDGE} that the bridge plugin makes, the DaemonSet, ` +
+          "the policies with their bindings, and the Multus that jr2 installs. It keeps that Multus while the " +
+          "cluster has a NetworkAttachmentDefinition of another owner. The plugin files and the kernel module 8021q " +
+          "stay on the nodes."
+      : `  jr2 down --all removes the rule table, the bridge ${BRIDGE} that the bridge plugin makes, the DaemonSet, ` +
+          "and the policies with their bindings. The plugin files and the kernel module 8021q stay on the nodes.",
   );
   return said;
 }
@@ -233,25 +231,14 @@ export async function multusManifest(files = FILES): Promise<string> {
 
 // ---- the read: what the cluster has, and the refusals ---------------------------------------------
 
-type Volume = {
-  name?: string;
-  hostPath?: { path?: string };
-  configMap?: { name?: string; items?: Array<{ key?: string; path?: string }> };
-};
-type Container = {
-  name?: string;
-  image?: string;
-  command?: string[];
-  args?: string[];
-  volumeMounts?: Array<{ name?: string; mountPath?: string; subPath?: string }>;
-};
+type Container = { name?: string; image?: string };
 export type DaemonSetObject = KubeObject & {
   metadata: { namespace?: string };
   spec?: {
     selector?: { matchLabels?: Record<string, string> };
     template?: {
       metadata?: { labels?: Record<string, string> };
-      spec?: { containers?: Container[]; initContainers?: Container[]; volumes?: Volume[] };
+      spec?: { containers?: Container[]; initContainers?: Container[] };
     };
   };
 };
@@ -409,498 +396,51 @@ export async function checkCilium(
   return notes;
 }
 
-/**
- * The form of a Multus, by the command of its container: the thick `multus-daemon`, the thin
- * `/thin_entrypoint` (v4), or the script `/entrypoint.sh` of a multus-cni image (v3). Each reads its
- * settings from another place (`multusSettings`).
- */
-export type MultusForm = "thick" | "thin" | "v3";
-
-/** The settings of a Multus that jr2 did not install: where they are, and what they say. */
-export type MultusSettings = {
-  form: MultusForm;
-  namespaceIsolation: boolean;
-  globalNamespaces: string;
-  /** Where the settings are, in words that say where to change them. */
-  source: string;
-  /** What to set there for namespaceIsolation. */
-  setIsolation: string;
-  /** What to set there for no global namespace. */
-  setGlobal: string;
-};
-
-/** The settings of a Multus that jr2 cannot read: a ConfigMap that is missing or that the API refuses
- * (`unread`), or a form or a place that jr2 does not know (`cannotTell`, with what jr2 saw). */
-export type MultusUnread = { unread: string; why: "missing" | "forbidden"; reason?: string } | { cannotTell: string };
-
-/** The repository of an image: its name with no tag and no digest. */
-function repositoryOf(image: string): string {
-  const name = image.split("@")[0]!;
-  const colon = name.lastIndexOf(":");
-  return colon > name.lastIndexOf("/") ? name.slice(0, colon) : name;
-}
+type CrdObject = { metadata: { name: string; annotations?: Record<string, string> } };
 
 /**
- * A Multus CNI image: the last part of its repository is `multus-cni`, ends in `-multus-cni` (RKE2's
- * `hardened-multus-cni`), or is `multus` (v3's `nfvpe/multus`). An add-on's image
- * (`multus-dynamic-networks-controller`, `hardened-multus-dynamic-networks-controller`) is not.
- */
-export function isMultusImage(image: string): boolean {
-  return /^(multus|(.+-)?multus-cni)$/.test(repositoryOf(image).split("/").pop() ?? "");
-}
-
-const basename = (path: string): string => path.split("/").pop() ?? path;
-
-/** The form of one container, by its command; `image` for a multus-cni image whose command jr2 does
- * not know; undefined for a container that is not a Multus. */
-function containerForm(c: Container): MultusForm | "image" | undefined {
-  const exe = c.command?.[0];
-  if (exe !== undefined) {
-    if (basename(exe) === "multus-daemon") return "thick";
-    if (basename(exe) === "thin_entrypoint") return "thin";
-    if (exe === "/entrypoint.sh" && isMultusImage(c.image ?? "")) return "v3";
-  }
-  return isMultusImage(c.image ?? "") ? "image" : undefined;
-}
-
-/**
- * A Multus DaemonSet, of jr2 or of another owner: jr2's annotation, or a container that runs the
- * thick `multus-daemon`, the thin `/thin_entrypoint`, or a multus-cni image (the v3
- * `/entrypoint.sh`, or a command that jr2 does not know). A name or a label does not count, so an
- * add-on (RKE2's `rke2-multus-dnc` or `rke2-multus-dhcp`, the upstream
- * `multus-dynamic-networks-controller`) is not a Multus.
- */
-export function isMultusDaemonSet(ds: DaemonSetObject): boolean {
-  if (ds.metadata.annotations?.[MULTUS_ANNOTATION] !== undefined) return true;
-  return (ds.spec?.template?.spec?.containers ?? []).some((c) => containerForm(c) !== undefined);
-}
-
-/** A container's command line, as words: the command and then the arguments. */
-const commandOf = (c: Container): string[] => [...(c.command ?? []), ...(c.args ?? [])];
-const shown = (c: Container): string => commandOf(c).join(" ") || "(the image's own entrypoint)";
-
-/** The Multus container of a DaemonSet and its form, or what jr2 cannot tell. */
-function multusContainer(ds: DaemonSetObject): { form: MultusForm; container: Container } | { cannotTell: string } {
-  const found = (ds.spec?.template?.spec?.containers ?? [])
-    .map((container) => ({ container, form: containerForm(container) }))
-    .filter((x) => x.form !== undefined);
-  if (found.length !== 1) {
-    return {
-      cannotTell: `it has ${found.length} containers of Multus (${found.map((x) => x.container.name).join(", ")})`,
-    };
-  }
-  const [{ container, form }] = found as [{ container: Container; form: MultusForm | "image" }];
-  if (form === "image") {
-    return {
-      cannotTell:
-        `its container ${container.name ?? "?"} runs the image ${container.image ?? "?"} with the command ` +
-        `"${shown(container)}", which is not the thick multus-daemon, the thin /thin_entrypoint or the v3 /entrypoint.sh`,
-    };
-  }
-  return { form, container };
-}
-
-/** pflag's true and false values (Go's strconv.ParseBool). */
-const PFLAG_TRUE = new Set(["1", "t", "T", "TRUE", "true", "True"]);
-const PFLAG_FALSE = new Set(["0", "f", "F", "FALSE", "false", "False"]);
-
-/**
- * The flags of the thin `/thin_entrypoint`, as its parser (pflag) reads the words after the
- * command: each value of `--namespace-isolation` (bool: bare is `true`, a value only after `=`),
- * `--global-namespaces` and `--multus-conf-file` (string: `=value` or the next word), in order. The
- * words after `--` are not flags. A flag that jr2 does not know, with no `=`, can take the next word
- * as its value; when that next word is one of the three flags, jr2 cannot tell.
- */
-export function thinFlags(words: readonly string[]): { values: Map<string, string[]> } | { cannotTell: string } {
-  const bools = new Set(["--namespace-isolation"]);
-  const strings = new Set(["--global-namespaces", "--multus-conf-file"]);
-  const ours = (w: string | undefined) =>
-    w !== undefined && [...bools, ...strings].some((f) => w === f || w.startsWith(`${f}=`));
-  const values = new Map<string, string[]>();
-  const add = (flag: string, value: string) => values.set(flag, [...(values.get(flag) ?? []), value]);
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]!;
-    if (w === "--") break;
-    if (!w.startsWith("-")) continue;
-    const eq = w.indexOf("=");
-    const flag = eq >= 0 ? w.slice(0, eq) : w;
-    if (bools.has(flag)) add(flag, eq >= 0 ? w.slice(eq + 1) : "true");
-    else if (strings.has(flag)) {
-      if (eq >= 0) add(flag, w.slice(eq + 1));
-      else if (i + 1 < words.length) add(flag, words[++i]!);
-      else return { cannotTell: `the flag ${w} is the last word and has no value` };
-    } else if (eq < 0 && ours(words[i + 1])) {
-      return { cannotTell: `the flag ${w} can take the next word, ${words[i + 1]}, as its value` };
-    }
-  }
-  return { values };
-}
-
-/**
- * The flag `-config` of the thick `multus-daemon`, as Go's flag parser reads the words after the
- * command: `-config` or `--config`, with `=value` or the next word; the last one counts; the first
- * word that is not a flag, or `--`, ends the flags. A flag that jr2 does not know, with no `=` and a
- * next word, can take that word as its value: then jr2 cannot tell.
- */
-export function thickConfigFlag(words: readonly string[]): { config?: string } | { cannotTell: string } {
-  let config: string | undefined;
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]!;
-    if (w === "--" || !w.startsWith("-") || w === "-") break;
-    const body = w.replace(/^--?/, "");
-    const eq = body.indexOf("=");
-    const name = eq >= 0 ? body.slice(0, eq) : body;
-    if (name === "config") {
-      if (eq >= 0) config = body.slice(eq + 1);
-      else if (i + 1 < words.length) config = words[++i]!;
-      else return { cannotTell: `the flag ${w} is the last word and has no value` };
-    } else if (eq < 0 && i + 1 < words.length) {
-      return { cannotTell: `the flag ${w} can take the next word, ${words[i + 1]}, as its value` };
-    }
-  }
-  return config !== undefined ? { config } : {};
-}
-
-/** The path of the thick daemon's configuration when it has no `-config`. */
-export const MULTUS_DAEMON_CONFIG = "/etc/cni/net.d/multus.d/daemon-config.json";
-
-/**
- * The ConfigMap and its key that a container sees at a file path: the volume mount whose folder holds
- * the path (the longest), a ConfigMap volume, and its key at that place (by `items`, or by name).
- * Any other volume, or no volume (a file of the image), and jr2 cannot tell.
- */
-export function mountedConfigMapKey(
-  ds: DaemonSetObject,
-  container: Container,
-  path: string,
-): { configMap: string; key: string } | { cannotTell: string } {
-  const under = (m: { mountPath?: string }) => {
-    const at = (m.mountPath ?? "").replace(/\/+$/, "");
-    return at !== "" && (path === at || path.startsWith(`${at}/`));
-  };
-  const mount = (container.volumeMounts ?? [])
-    .filter(under)
-    .sort((a, b) => (b.mountPath ?? "").length - (a.mountPath ?? "").length)[0];
-  if (mount === undefined) {
-    return { cannotTell: `no volume of the container ${container.name ?? "?"} is mounted at ${path}` };
-  }
-  const volume = ds.spec?.template?.spec?.volumes?.find((v) => v.name === mount.name);
-  const name = volume?.configMap?.name;
-  if (name === undefined) {
-    return { cannotTell: `${path} is on the volume ${mount.name ?? "?"}, which is not a ConfigMap` };
-  }
-  const rest = path.slice((mount.mountPath ?? "").replace(/\/+$/, "").length).replace(/^\/+/, "");
-  const inVolume = [mount.subPath ?? "", rest].filter((p) => p !== "").join("/");
-  const items = volume!.configMap!.items;
-  const key = items !== undefined ? items.find((it) => it.path === inVolume)?.key : inVolume;
-  if (key === undefined || key === "" || key.includes("/")) {
-    return { cannotTell: `the ConfigMap volume ${mount.name ?? "?"} (${name}) has no key at ${path}` };
-  }
-  return { configMap: name, key };
-}
-
-/**
- * The settings of a Multus DaemonSet that jr2 did not install, read from the place that its form
- * uses:
+ * Read what the cluster has, and refuse a Cilium with `cni-exclusive: "true"`. Changes nothing. Each
+ * read throws when it fails: a part that reads as absent when the API could not be read would be
+ * installed over a part that is there.
  *
- * - thick (`multus-daemon`): the daemon's configuration file (`-config`, by default
- *   `MULTUS_DAEMON_CONFIG`), which is a key of a ConfigMap that the container mounts there.
- * - thin (`/thin_entrypoint`): `--multus-conf-file`, as pflag reads it. For `auto` (the default),
- *   the settings are the flags `--namespace-isolation` and `--global-namespaces`, as pflag reads
- *   them. For a path, they are in the Multus configuration that is the ConfigMap key mounted at that
- *   path.
- * - v3 (`/entrypoint.sh`): the same, but the script reads only `--flag=value`, and isolation is on
- *   only for the exact text `--namespace-isolation=true`.
- *
- * A key that is not set has Multus's default: no isolation, no global namespace. Anything that jr2
- * does not recognise is `cannotTell`, with what it saw: it never accepts on a generous parse.
+ * Multus: a DaemonSet with jr2's annotation is jr2's (`jr2`, or `upgrade` for another version).
+ * Else the CustomResourceDefinition of the attachments says it: none is `install`; one with jr2's
+ * annotation is jr2's Multus that an earlier apply left without its DaemonSet, so `install` again;
+ * one with no such annotation belongs to a Multus of another owner (`foreign`), which jr2 uses and
+ * never changes. Whether that Multus works on a node, the probe shows (`fence-probe.ts`).
  */
-export async function multusSettings(
-  kube: Pick<KubeAdmin, "listJson">,
-  ds: DaemonSetObject,
-  context?: string,
-): Promise<MultusSettings | MultusUnread> {
-  const ns = ds.metadata.namespace ?? MULTUS_NAMESPACE;
-  const which = multusContainer(ds);
-  if ("cannotTell" in which) return which;
-  const { form, container } = which;
-  const after = commandOf(container).slice(container.command?.length ? 1 : 0);
-  const inArgs = `the arguments of the container ${container.name ?? "?"} of the DaemonSet ${ns}/${ds.metadata.name}`;
-
-  /** The settings in a JSON file that is a ConfigMap key: the daemon's configuration, or a Multus
-   * CNI configuration (`type: "multus"`). */
-  const fromFile = async (path: string, what: string): Promise<MultusSettings | MultusUnread> => {
-    const at = mountedConfigMapKey(ds, container, path);
-    if ("cannotTell" in at) return { cannotTell: `the ${what} ${path}: ${at.cannotTell}` };
-    const cm = await readConfigMap(kube, {
-      namespace: ns,
-      name: at.configMap,
-      ...(context !== undefined ? { context } : {}),
-    });
-    if (cm === "missing") return { unread: `${ns}/${at.configMap}`, why: "missing" };
-    if ("forbidden" in cm) return { unread: `${ns}/${at.configMap}`, why: "forbidden", reason: cm.forbidden };
-    const where = `${at.key} of the ConfigMap ${ns}/${at.configMap}`;
-    const text = cm.data?.[at.key];
-    if (text === undefined) return { cannotTell: `the ${what} ${path} is ${where}, which does not exist` };
-    let json: unknown;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      return { cannotTell: `the ${what} ${path} is ${where}, which is not JSON` };
-    }
-    if (typeof json !== "object" || json === null || Array.isArray(json)) {
-      return { cannotTell: `the ${what} ${path} is ${where}, which is not a JSON object` };
-    }
-    const o = json as Record<string, unknown>;
-    if (form !== "thick" && o.type !== "multus") {
-      return { cannotTell: `the ${what} ${path} is ${where}, whose type is not "multus"` };
-    }
-    if (o.namespaceIsolation !== undefined && typeof o.namespaceIsolation !== "boolean") {
-      return { cannotTell: `"namespaceIsolation" in ${where} is not true or false` };
-    }
-    if (o.globalNamespaces !== undefined && typeof o.globalNamespaces !== "string") {
-      return { cannotTell: `"globalNamespaces" in ${where} is not a string` };
-    }
-    return {
-      form,
-      namespaceIsolation: o.namespaceIsolation === true,
-      globalNamespaces: ((o.globalNamespaces as string | undefined) ?? "").trim(),
-      source: where,
-      setIsolation: `set "namespaceIsolation": true in ${where}`,
-      setGlobal: `set "globalNamespaces": "" in ${where}`,
-    };
-  };
-
-  if (form === "thick") {
-    const flag = thickConfigFlag(after);
-    if ("cannotTell" in flag) return { cannotTell: `in ${inArgs}, ${flag.cannotTell}` };
-    return fromFile(flag.config ?? MULTUS_DAEMON_CONFIG, "configuration file of multus-daemon");
-  }
-  if (form === "thin") {
-    const flags = thinFlags(after);
-    if ("cannotTell" in flags) return { cannotTell: `in ${inArgs}, ${flags.cannotTell}` };
-    const last = (flag: string) => flags.values.get(flag)?.at(-1);
-    const conf = last("--multus-conf-file") ?? "auto";
-    if (conf !== "auto") {
-      if (!conf.startsWith("/")) return { cannotTell: `--multus-conf-file=${conf} in ${inArgs} is not auto or a path` };
-      return fromFile(conf, "Multus configuration (--multus-conf-file)");
-    }
-    const isolation = last("--namespace-isolation");
-    if (isolation !== undefined && !PFLAG_TRUE.has(isolation) && !PFLAG_FALSE.has(isolation)) {
-      return {
-        cannotTell: `--namespace-isolation=${isolation} in ${inArgs} is not a value that pflag reads as true or false`,
-      };
-    }
-    return {
-      form,
-      namespaceIsolation: isolation !== undefined && PFLAG_TRUE.has(isolation),
-      globalNamespaces: (last("--global-namespaces") ?? "").trim(),
-      source: inArgs,
-      setIsolation: `set --namespace-isolation=true in ${inArgs}`,
-      setGlobal: `remove --global-namespaces from ${inArgs}`,
-    };
-  }
-  // v3: the script reads each word `--flag=value` alone, and the last one counts.
-  const last = (flag: string) =>
-    after
-      .filter((w) => w.startsWith(`${flag}=`))
-      .map((w) => w.slice(flag.length + 1))
-      .at(-1);
-  const conf = last("--multus-conf-file") ?? "auto";
-  if (conf !== "auto") {
-    if (!conf.startsWith("/")) return { cannotTell: `--multus-conf-file=${conf} in ${inArgs} is not auto or a path` };
-    return fromFile(conf, "Multus configuration (--multus-conf-file)");
-  }
-  return {
-    form,
-    namespaceIsolation: last("--namespace-isolation") === "true",
-    // The script removes each space of the value.
-    globalNamespaces: (last("--global-namespaces") ?? "").replaceAll(" ", ""),
-    source: inArgs,
-    setIsolation:
-      `set --namespace-isolation=true in ${inArgs} (that exact text: the script /entrypoint.sh compares the ` +
-      'value with "true")',
-    setGlobal: `remove --global-namespaces from ${inArgs}`,
-  };
-}
-
-/** The node folders that a Multus DaemonSet mounts for the CNI bin and configuration directories. */
-export function multusHostDirs(ds: DaemonSetObject): { bin?: string; conf?: string } {
-  const spec = ds.spec?.template?.spec ?? {};
-  const hostPathOf = (volume?: string) => spec.volumes?.find((v) => v.name === volume)?.hostPath?.path;
-  const out: { bin?: string; conf?: string } = {};
-  for (const c of [...(spec.initContainers ?? []), ...(spec.containers ?? [])]) {
-    for (const m of c.volumeMounts ?? []) {
-      const path = m.mountPath ?? "";
-      const host = hostPathOf(m.name);
-      if (host === undefined) continue;
-      if (out.bin === undefined && /\/cni\/bin\/?$/.test(path)) out.bin = host.replace(/\/$/, "");
-      if (out.conf === undefined && /\/net\.d\/?$/.test(path)) out.conf = host.replace(/\/$/, "");
-    }
-  }
-  return out;
-}
-
-/** The label selector of a DaemonSet's pods, as `kubectl -l` takes it. */
-export function podSelectorOf(ds: DaemonSetObject): string {
-  const labels = ds.spec?.selector?.matchLabels ?? ds.spec?.template?.metadata?.labels ?? {};
-  return Object.entries(labels)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(",");
-}
-
-/** What jr2 reads for each form, as a refusal says it. */
-const MULTUS_FORMS =
-  "jr2 reads the settings of the thick multus-daemon from its configuration file, of the thin " +
-  "/thin_entrypoint from its flags (--multus-conf-file=auto) or from the file that --multus-conf-file names, " +
-  "and of the v3 /entrypoint.sh of a multus-cni image in the same way; a file must be a key of a ConfigMap " +
-  "that the container mounts.";
-
-/** Refusals (a) and (c) for one Multus DaemonSet that jr2 did not install. `refuse` makes the error:
- * before anything is applied, or after the DaemonSet jr2-fence-node. Returns the settings. */
-async function checkForeignMultus(
-  kube: Kube,
-  ds: DaemonSetObject,
-  refuse: (text: string) => Error,
-  context?: string,
-): Promise<MultusSettings> {
-  const name = `${ds.metadata.namespace ?? ""}/${ds.metadata.name}`;
-  const settings = await multusSettings(kube, ds, context);
-  if ("cannotTell" in settings) {
-    throw refuse(
-      `the cluster has a Multus that jr2 did not install (DaemonSet ${name}), and jr2 cannot tell its settings: ` +
-        `${settings.cannotTell}. ${MULTUS_FORMS} jr2 never changes a Multus that it did not install, and it does ` +
-        "not accept one whose isolation it cannot see (namespaceIsolation, ADR-0084). Run that Multus in one of " +
-        "those forms, with namespaceIsolation and no global namespace, then run `jr2 up` again.",
-    );
-  }
-  if ("unread" in settings) {
-    throw refuse(
-      settings.why === "forbidden"
-        ? `the cluster has a Multus that jr2 did not install (DaemonSet ${name}), and the API refused the read ` +
-            `of the ConfigMap ${settings.unread} that holds its settings (${settings.reason}), so jr2 cannot see ` +
-            "that a pod can name an attachment of its own namespace only (namespaceIsolation, ADR-0084). Give the " +
-            "user of this context read access to that ConfigMap, then run `jr2 up` again."
-        : `the cluster has a Multus that jr2 did not install (DaemonSet ${name}), and the ConfigMap ` +
-            `${settings.unread} that its pods mount, and that holds its settings, does not exist, so jr2 cannot ` +
-            "see that a pod can name an attachment of its own namespace only (namespaceIsolation, ADR-0084). " +
-            "Make the cluster's Multus whole (its ConfigMap, or its DaemonSet without that volume), then run " +
-            "`jr2 up` again.",
-    );
-  }
-  const fix = (what: string) =>
-    `jr2 never changes a Multus that it did not install. ${what}, restart the DaemonSet ` +
-    `(kubectl -n ${ds.metadata.namespace} rollout restart daemonset/${ds.metadata.name}), then run \`jr2 up\` again.`;
-  const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-  if (!settings.namespaceIsolation) {
-    throw refuse(
-      `the cluster's Multus (DaemonSet ${name}, which jr2 did not install) does not have namespaceIsolation in ` +
-        `${settings.source}, so a pod of another namespace can name an attachment of the Instance and join its ` +
-        `VLANs (ADR-0084). ${fix(capital(settings.setIsolation))}`,
-    );
-  }
-  if (settings.globalNamespaces !== "") {
-    throw refuse(
-      `the cluster's Multus (DaemonSet ${name}, which jr2 did not install) has the global namespaces ` +
-        `"${settings.globalNamespaces}" in ${settings.source}, so a pod of each namespace can name an attachment ` +
-        `of those namespaces (ADR-0084). ${fix(capital(settings.setGlobal))}`,
-    );
-  }
-  const dirs = multusHostDirs(ds);
-  for (const [dir, want, what] of [
-    [dirs.bin, CNI_BIN_DIR, "CNI bin directory"],
-    [dirs.conf, CNI_CONF_DIR, "CNI configuration directory"],
-  ] as const) {
-    if (dir !== undefined && dir !== want) {
-      throw refuse(
-        `the cluster's Multus (DaemonSet ${name}) mounts the node's ${what} from ${dir}, not ${want}. jr2 puts ` +
-          `the CNI plugins ${PLUGINS.join(", ")} into ${CNI_BIN_DIR}, and its Fence needs nodes whose container ` +
-          `runtime reads ${CNI_BIN_DIR} and ${CNI_CONF_DIR} (ADR-0084). Keep such nodes out of the Sandbox nodes ` +
-          "with sandbox.nodeSelector or a taint (ADR-0052), or use a cluster whose nodes use those directories.",
-      );
-    }
-  }
-  return settings;
-}
-
-/** The words of refusal (d), and of the node's refusal for a Multus that the API does not show. */
-const MULTUS_SEARCH =
-  "jr2 looked in each namespace for a DaemonSet whose container runs the thick multus-daemon, the thin " +
-  "/thin_entrypoint, or a multus-cni image.";
-
-/** What the cluster's Multus DaemonSets give the plan: jr2's, another owner's (each checked), or none. */
-async function readMultus(
-  kube: Kube,
-  daemonSets: readonly DaemonSetObject[],
-  refuse: (text: string) => Error,
-  context?: string,
-): Promise<Pick<FenceInstallPlan, "multus" | "multusPods">> {
-  const multuses = daemonSets.filter(isMultusDaemonSet);
-  const ours = multuses.filter((d) => d.metadata.annotations?.[MULTUS_ANNOTATION] !== undefined);
-  const foreign = multuses.filter((d) => d.metadata.annotations?.[MULTUS_ANNOTATION] === undefined);
-  for (const ds of foreign) await checkForeignMultus(kube, ds, refuse, context);
-  const multus: FenceInstallPlan["multus"] =
-    foreign.length > 0
-      ? "foreign"
-      : ours.length === 0
-        ? "install"
-        : ours.every((d) => d.metadata.annotations?.[MULTUS_ANNOTATION] === MULTUS_VERSION)
-          ? "jr2"
-          : "upgrade";
-  const multusPods =
-    multus === "install"
-      ? [{ namespace: MULTUS_NAMESPACE, selector: MULTUS_SELECTOR }]
-      : multuses.map((d) => ({
-          namespace: d.metadata.namespace ?? MULTUS_NAMESPACE,
-          selector: podSelectorOf(d) || MULTUS_SELECTOR,
-        }));
-  return { multus, multusPods };
-}
-
-/** Read what the cluster has, and refuse (a), (b), (c) or (d). Changes nothing. */
 export async function planFenceInstall(
   kube: Kube,
-  opts: { nodes: readonly NodeLike[]; context?: string; settleMs?: number; pollMs?: number },
+  opts: { nodes: readonly NodeLike[]; context?: string },
 ): Promise<FenceInstallPlan> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
-  const listDaemonSets = () => kube.listJson<DaemonSetObject>({ kind: "daemonset", allNamespaces: true, ...ctx });
-  let daemonSets = await listDaemonSets();
+  const daemonSets = await kube.listJson<DaemonSetObject>({ kind: "daemonset", allNamespaces: true, ...ctx });
   const notes = await checkCilium(kube, { nodes: opts.nodes, daemonSets, ...ctx });
-  if (!daemonSets.some(isMultusDaemonSet)) {
-    const crd = await kube.listJson({
+  const ours = daemonSets.filter((d) => d.metadata.annotations?.[MULTUS_ANNOTATION] !== undefined);
+  let multus: FenceInstallPlan["multus"];
+  if (ours.length > 0) {
+    multus = ours.every((d) => d.metadata.annotations?.[MULTUS_ANNOTATION] === MULTUS_VERSION) ? "jr2" : "upgrade";
+  } else {
+    const [crd] = await kube.listJson<CrdObject>({
       kind: "customresourcedefinition",
       fieldSelector: `metadata.name=${ATTACHMENT_CRD}`,
       ...ctx,
     });
-    if (crd.length > 0) {
-      // Another converge can be between the definition and the DaemonSet of the same apply.
-      const settle = opts.settleMs ?? MULTUS_SETTLE_MS;
-      for (let waited = 0; !daemonSets.some(isMultusDaemonSet) && waited < settle; waited += opts.pollMs ?? POLL_MS) {
-        await sleep(opts.pollMs ?? POLL_MS);
-        daemonSets = await listDaemonSets();
-      }
-      if (!daemonSets.some(isMultusDaemonSet)) {
-        throw refused(
-          `the cluster has the CustomResourceDefinition ${ATTACHMENT_CRD}, which Multus uses, but jr2 found no ` +
-            `Multus DaemonSet. ${MULTUS_SEARCH} A second Multus beside the cluster's own can lose the isolation of ` +
-            "the attachments (ADR-0084). If the cluster has a Multus in another form, jr2 cannot use it: run it in " +
-            "one of those forms. If the definition stays from a Multus that is gone and no " +
-            `NetworkAttachmentDefinition uses it, delete it (kubectl delete crd ${ATTACHMENT_CRD}). Then run ` +
-            "`jr2 up` again.",
-        );
-      }
-    }
+    multus = crd === undefined || crd.metadata.annotations?.[MULTUS_ANNOTATION] !== undefined ? "install" : "foreign";
   }
-  const { multus, multusPods } = await readMultus(kube, daemonSets, refused, opts.context);
-  const node = daemonSets.find(
+  const node = daemonSets.some(
     (d) => d.metadata.name === FENCE_NODE_DAEMONSET && d.metadata.namespace === OPERATOR_NAMESPACE,
   );
-  const system = await kube.getJson({ kind: "namespace", name: OPERATOR_NAMESPACE, ...ctx });
+  const system = await kube.listJson({
+    kind: "namespace",
+    fieldSelector: `metadata.name=${OPERATOR_NAMESPACE}`,
+    ...ctx,
+  });
   return {
     multus,
-    node: node === undefined ? "install" : "present",
-    system: system === undefined ? "create" : "present",
-    multusPods,
+    node: node ? "present" : "install",
+    guard: await planFenceGuard(kube, ctx),
+    system: system.length === 0 ? "create" : "present",
     notes,
   };
 }
@@ -996,12 +536,7 @@ export function bridgeRemovalOf(line: string): { bridge: "removed" | "absent" | 
  *    (that file is kept). So the runtime never runs half a file, and a link is never replaced. A
  *    copy that fails says why.
  * 4. It reads the version of the `bridge` that it wrote, and names the node's first CNI
- *    configuration and its type, so that `jr2 up` sees a Multus that is on the node but not in the
- *    API. For a Multus configuration of the thin form (`type: "multus"`), which holds the settings
- *    that the node uses, it also writes `isolation=` (`true`, `false` or `unknown`) and `globals=`
- *    (the global namespaces with no space, or `?` when it cannot read them). It reads only what is
- *    plain: a key that is in the file more than once, or whose value is not plain JSON on its line,
- *    is `unknown` or `?`.
+ *    configuration and the first `type` in it, for the person who reads the line.
  */
 export const PLUGINS_SCRIPT = `set -eu
 BIN=/host${CNI_BIN_DIR} CONF=/host${CNI_CONF_DIR} SRC=/opt/jr2/cni/bin WAIT=\${JR2_CNI_WAIT:-${CNI_WAIT_S}}
@@ -1072,30 +607,8 @@ for p in ${PLUGINS.join(" ")}; do
 done
 if [ -z "$version" ]; then check_bridge; fi
 first=$(confs | head -n 1)
-file="$CONF/$first"
-if grep -q '"type"[[:space:]]*:[[:space:]]*"multus"' "$file" 2>/dev/null; then type=multus
-elif grep -q '"type"[[:space:]]*:[[:space:]]*"multus-shim"' "$file" 2>/dev/null; then type=multus-shim
-else type=$(grep -o '"type"[[:space:]]*:[[:space:]]*"[^"]*"' "$file" 2>/dev/null | head -n 1 | sed 's/.*"\\([^"]*\\)"$/\\1/') || true
-fi
-extra=""
-if [ "$type" = multus ]; then
-  keys=$(( $(grep -o '"namespaceIsolation"' "$file" | wc -l) ))
-  values=$(grep -o '"namespaceIsolation"[[:space:]]*:[[:space:]]*[a-z]*' "$file" | sed 's/.*:[[:space:]]*//' | tr '\\n' ' ')
-  case "$keys/$values" in
-    0/) isolation=false ;;
-    "1/true ") isolation=true ;;
-    "1/false ") isolation=false ;;
-    *) isolation=unknown ;;
-  esac
-  keys=$(( $(grep -o '"globalNamespaces"' "$file" | wc -l) ))
-  values=$(grep -o '"globalNamespaces"[[:space:]]*:[[:space:]]*"[^"\\]*"' "$file" || true)
-  if [ "$keys" = 0 ]; then globals=""
-  elif [ "$keys" = 1 ] && [ -n "$values" ]; then globals=$(echo "$values" | sed 's/^.*:[[:space:]]*"//; s/"$//' | tr -d ' \\t')
-  else globals="?"
-  fi
-  extra=" isolation=$isolation globals=$globals"
-fi
-say "ok wrote=\${wrote# } kept=\${kept# } bridge=v$version cni=$first type=\${type:-unknown}$extra"
+type=$(grep -o '"type"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONF/$first" 2>/dev/null | head -n 1 | sed 's/.*"\\([^"]*\\)"$/\\1/') || true
+say "ok wrote=\${wrote# } kept=\${kept# } bridge=v$version cni=$first type=\${type:-unknown}"
 `;
 
 /** The user of the idle container: no root, as the Custodian's. */
@@ -1196,14 +709,19 @@ export function fenceNodeDaemonSet(image: string, opts: { remove?: boolean } = {
 
 type Terminated = { exitCode?: number; message?: string };
 type FenceNodePod = {
-  metadata?: { name?: string; deletionTimestamp?: string; labels?: Record<string, string> };
+  metadata?: {
+    name?: string;
+    deletionTimestamp?: string;
+    labels?: Record<string, string>;
+    ownerReferences?: Array<{ uid?: string }>;
+  };
   spec?: { nodeName?: string };
   status?: {
     phase?: string;
     conditions?: Array<{ type?: string; status?: string }>;
     initContainerStatuses?: Array<{
       name?: string;
-      state?: { terminated?: Terminated; waiting?: { reason?: string; message?: string } };
+      state?: { running?: object; terminated?: Terminated; waiting?: { reason?: string; message?: string } };
       lastState?: { terminated?: Terminated };
     }>;
   };
@@ -1212,6 +730,55 @@ type FenceNodePod = {
 /** The DaemonSet's template generation (its annotation), which each of its pods carries as a label. */
 const TEMPLATE_GENERATION_ANNOTATION = "deprecated.daemonset.template.generation";
 const TEMPLATE_GENERATION_LABEL = "pod-template-generation";
+
+/** Which pods are of the DaemonSet as it is now: its uid (a DaemonSet made again has another, and its
+ * generation starts again at 1) and its template generation. */
+export type FenceNodeOwner = { uid: string; generation: number };
+
+/**
+ * Read the DaemonSet jr2-fence-node: its uid and its template generation, `undefined` when it is
+ * NotFound. A read that fails throws: a wait that takes a failed read for "any pod counts" would
+ * accept a Ready pod of another template.
+ */
+export async function readFenceNode(
+  kube: Pick<KubeAdmin, "listJson">,
+  ctx: { context?: string } = {},
+): Promise<(DaemonSetObject & { metadata: { uid?: string } }) | undefined> {
+  const [ds] = await kube.listJson<DaemonSetObject & { metadata: { uid?: string } }>({
+    kind: "daemonset",
+    fieldSelector: `metadata.name=${FENCE_NODE_DAEMONSET}`,
+    namespace: OPERATOR_NAMESPACE,
+    ...ctx,
+  });
+  return ds;
+}
+
+/** The owner of a DaemonSet that was read, or a throw when it has no uid or no generation. */
+function ownerOf(ds: (DaemonSetObject & { metadata: { uid?: string } }) | undefined): FenceNodeOwner {
+  const uid = ds?.metadata.uid;
+  const generation = Number(ds?.metadata.annotations?.[TEMPLATE_GENERATION_ANNOTATION]);
+  if (ds === undefined) {
+    throw new Error(`fence: the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} is gone after its apply`);
+  }
+  if (uid === undefined || !Number.isInteger(generation)) {
+    throw new Error(
+      `fence: the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} has no uid or no template generation ` +
+        `(${TEMPLATE_GENERATION_ANNOTATION}), so jr2 cannot tell its pods from older ones`,
+    );
+  }
+  return { uid, generation };
+}
+
+/** A pod of this owner, of its template or a later one. */
+const ofOwner = (p: FenceNodePod, owner: FenceNodeOwner): boolean =>
+  (p.metadata?.ownerReferences ?? []).some((o) => o.uid === owner.uid) &&
+  Number(p.metadata?.labels?.[TEMPLATE_GENERATION_LABEL]) >= owner.generation;
+
+/** An init container of the pod has started: the kubelet mounted its volumes. */
+const initStarted = (p: FenceNodePod): boolean =>
+  (p.status?.initContainerStatuses ?? []).some(
+    (s) => s.state?.running !== undefined || s.state?.terminated !== undefined || s.lastState?.terminated !== undefined,
+  );
 
 /** The result line of each init container of a pod of jr2-fence-node that has ended, in their order. */
 export function fenceNodeResultsOf(pod: FenceNodePod): string[] {
@@ -1312,10 +879,6 @@ const KEPT = [
     "Multus. `jr2 down --all` removes the DaemonSet and the table.",
 ];
 
-/** A refusal after the apply of the DaemonSet: the text, what stays, and where to read more. */
-const refusedAfterApply = (text: string): Error =>
-  new Error([`fence: ${text}`, ...KEPT, `See ${FENCE_PREREQUISITES_URL}.`].join("\n"));
-
 /** A failed result line as a node failure. */
 function failureOf(node: string, result: string): NodeFailure {
   const rest = result.slice("fail ".length);
@@ -1360,20 +923,21 @@ const DAEMONSET_EVENTS = `involvedObject.kind=DaemonSet,involvedObject.name=${FE
  * A pod whose init container failed, whose folder the kubelet could not mount in `CNI_WAIT_S`, or
  * that the cluster did not create, refuses.
  *
- * - `generation` reads the DaemonSet's template generation at each poll: only a pod of that
- *   generation or a later one counts, so a Ready pod of an earlier template does not, and a converge
- *   whose template a later converge replaced accepts the pods of the later one.
- * - `ignore` names pods that started before this converge (the install replaces them when it needs
- *   a node's file as it is now): none of them counts.
+ * - `owner` reads the DaemonSet at each poll: only a pod that it owns (by its uid), of its template
+ *   generation or a later one, counts. So a Ready pod of an earlier template, or of a DaemonSet that
+ *   was made again (its generation starts again at 1), does not, and a converge whose template a
+ *   later converge replaced accepts the pods of the later one. A read that fails throws.
  * - `seenEvents` holds the prints of the DaemonSet's events before the apply: such an event is
  *   older than this converge, and does not refuse.
+ * - A `FailedMount` event of a pod counts only while no init container of that pod has started,
+ *   and only after `CNI_WAIT_S`: once one has started, the kubelet mounted the folders, and the
+ *   event is old.
  */
 export async function awaitFenceNodes(
   kube: Pick<KubeAdmin, "listJson">,
   opts: {
     nodes: readonly string[];
-    generation?: () => Promise<string | undefined>;
-    ignore?: ReadonlySet<string>;
+    owner?: () => Promise<FenceNodeOwner>;
     seenEvents?: ReadonlySet<string>;
     context?: string;
     pollMs?: number;
@@ -1388,16 +952,14 @@ export async function awaitFenceNodes(
       .listJson<EventObject>({ kind: "event", fieldSelector, namespace: OPERATOR_NAMESPACE, ...ctx })
       .catch(() => [] as EventObject[]);
   for (;;) {
-    const generation = Number((await opts.generation?.()) ?? Number.NaN);
+    const owner = await opts.owner?.();
     const pods = await kube.listJson<FenceNodePod>({
       kind: "pod",
       selector: `app=${FENCE_NODE_DAEMONSET}`,
       namespace: OPERATOR_NAMESPACE,
       ...ctx,
     });
-    const current = (p: FenceNodePod) =>
-      !(opts.ignore?.has(p.metadata?.name ?? "") ?? false) &&
-      (Number.isNaN(generation) || Number(p.metadata?.labels?.[TEMPLATE_GENERATION_LABEL]) >= generation);
+    const current = (p: FenceNodePod) => owner === undefined || ofOwner(p, owner);
     const results = new Map<string, string>();
     const failed: NodeFailure[] = [];
     const waiting: string[] = [];
@@ -1427,7 +989,7 @@ export async function awaitFenceNodes(
       // node, the primary CNI makes the folder after this pod can start, and the kubelet mounts it
       // then: it counts after the wait of `install` for the CNI folders.
       if (now() - started >= CNI_WAIT_S * 1000) {
-        for (const p of mine) {
+        for (const p of mine.filter((q) => !initStarted(q))) {
           const mount = (await events(`involvedObject.name=${p.metadata?.name}`))
             .filter((e) => e.reason === "FailedMount")
             .pop();
@@ -1474,85 +1036,27 @@ export async function awaitFenceNodes(
   }
 }
 
-/**
- * The first CNI configuration that a node's pod of jr2-fence-node read (`cni=`), its type (`type=`),
- * and, for a Multus configuration of the thin form, its isolation (`isolation=`: `true`, `false` or
- * `unknown`) and its global namespaces (`globals=`: empty, the names, or `?`).
- */
-export function firstCniOf(
-  line: string,
-): { file: string; type: string; isolation?: string; globals?: string } | undefined {
+/** The first CNI configuration that a node's pod of jr2-fence-node read (`cni=`), and its type (`type=`). */
+export function firstCniOf(line: string): { file: string; type: string } | undefined {
   const file = /(?:^| )cni=(\S+)/.exec(line)?.[1];
   const type = /(?:^| )type=(\S+)/.exec(line)?.[1];
-  const isolation = /(?:^| )isolation=(\S+)/.exec(line)?.[1];
-  const globals = /(?:^| )globals=(\S*)/.exec(line)?.[1];
   if (file === undefined) return undefined;
-  return {
-    file,
-    type: type ?? "unknown",
-    ...(isolation !== undefined ? { isolation } : {}),
-    ...(globals !== undefined ? { globals } : {}),
-  };
+  return { file, type: type ?? "unknown" };
 }
 
 // ---- the install -----------------------------------------------------------------------------------
 
 /**
- * The second check of a Multus of another owner, on the node: a first CNI configuration of type
- * `multus` (the thin form writes its settings there, and the node uses that file) must have
- * namespaceIsolation and no global namespace, whatever the API said. A node file that jr2 cannot read
- * refuses too.
- */
-function checkNodeMultusFiles(results: ReadonlyMap<string, string>, multusPods: FenceInstallPlan["multusPods"]): void {
-  const bad: string[] = [];
-  for (const [node, line] of results) {
-    const first = firstCniOf(line);
-    if (first?.type !== "multus") continue;
-    const file = `${CNI_CONF_DIR}/${first.file}`;
-    if (first.isolation === "unknown" || first.isolation === undefined || first.globals === "?") {
-      bad.push(`  ${node}: ${file}: jr2 cannot tell its namespaceIsolation or its globalNamespaces`);
-    } else if (first.isolation !== "true") {
-      bad.push(`  ${node}: ${file} has no namespaceIsolation`);
-    } else if ((first.globals ?? "") !== "") {
-      bad.push(`  ${node}: ${file} has the global namespaces "${first.globals}"`);
-    }
-  }
-  if (bad.length === 0) return;
-  const restart = multusPods.map((w) => `kubectl -n ${w.namespace} delete pod -l ${w.selector}`).join("; ");
-  throw new Error(
-    [
-      `fence: the Multus configuration that a Sandbox node uses does not have the isolation of the attachments ` +
-        "(ADR-0084), whatever the API shows:",
-      ...bad,
-      "A Multus of the thin form writes this file from its settings when its pod starts, and the node reads the " +
-        `file, not the API. Restart the pods of the cluster's Multus (${restart}), so that they write the file ` +
-        "again from the settings that jr2 read. When the file stays, " +
-        "another Multus writes it on that node, or it stays from a Multus that is gone: delete it on the node.",
-      ...KEPT,
-      `See ${FENCE_PREREQUISITES_URL}. Then run \`jr2 up\` again.`,
-    ].join("\n"),
-  );
-}
-
-/**
  * Install what the plan says, after the question. The DaemonSet first, so that a node that it
- * refuses (its CNI folders, its `bridge`, a Multus on the node that the API does not show, a thin
- * Multus whose node file has no isolation) refuses before Multus changes the cluster's CNI
- * configuration; then Multus. The DaemonSet is applied at each converge whose Kit is not older than
- * the one it runs, as the operator is: an apply that changes nothing rolls nothing, and one that
- * changes the image or the template (a newer Kit, or the removal form that an interrupted
- * `jr2 down --all` left) rolls each pod, which loads the table again.
- *
- * When jr2 needs each node's first CNI configuration as it is now (the plan installs Multus, or the
- * cluster has a Multus of another owner), it replaces each pod of the DaemonSet that started before
- * this converge, and reads only the lines of the pods that started after: a line of an earlier pod
- * can be old. A Multus that the read before the question did not see, and that a node shows, gets
- * the same check as one that it saw. Returns the plan as the install found it: a Multus of another
- * owner that the install found makes it `foreign`, and jr2 then installs no Multus. One quiet line
- * when the plan installed nothing.
+ * refuses (its CNI folders, its `bridge`) refuses before Multus changes the cluster's CNI
+ * configuration; then jr2's Multus, when the plan has it. The DaemonSet is applied at each converge
+ * whose Kit is not older than the one it runs, as the operator is: an apply that changes nothing
+ * rolls nothing, and one that changes the image or the template (a newer Kit, or the removal form
+ * that an interrupted `jr2 down --all` left) rolls each pod, which loads the table again. Each
+ * read that it decides on throws when it fails. One quiet line when the plan installed nothing.
  */
 export async function installFence(
-  kube: Pick<KubeAdmin, "getJson" | "listJson" | "apply" | "waitRollout" | "deleteObject">,
+  kube: Pick<KubeAdmin, "listJson" | "apply" | "waitRollout">,
   plan: FenceInstallPlan,
   opts: {
     image: string;
@@ -1562,29 +1066,11 @@ export async function installFence(
     pollMs?: number;
     now?: () => number;
   },
-): Promise<FenceInstallPlan> {
+): Promise<void> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
-  const read = () =>
-    kube.getJson<DaemonSetObject>({
-      kind: "daemonset",
-      name: FENCE_NODE_DAEMONSET,
-      namespace: OPERATOR_NAMESPACE,
-      ...ctx,
-    });
-  const listPods = () =>
-    kube.listJson<FenceNodePod>({
-      kind: "pod",
-      selector: `app=${FENCE_NODE_DAEMONSET}`,
-      namespace: OPERATOR_NAMESPACE,
-      ...ctx,
-    });
-  const existing = await read();
-  const deployed = existing?.metadata.labels?.[LABEL_VERSION];
+  const deployed = (await readFenceNode(kube, ctx))?.metadata.labels?.[LABEL_VERSION];
   const newer = deployed !== undefined && compareVersions(deployed, KIT_VERSION) > 0;
-  // Before the apply: the pods that run now, and the DaemonSet's events, so that the wait reads only
-  // what this converge made.
-  const fresh = plan.multus === "install" || plan.multus === "foreign";
-  const before = existing !== undefined ? await listPods() : [];
+  // Before the apply: the DaemonSet's events, so that the wait reads only what this converge made.
   const seenEvents = new Set(
     (
       await kube
@@ -1603,65 +1089,18 @@ export async function installFence(
     }
     await kube.apply({ manifest: JSON.stringify(fenceNodeDaemonSet(opts.image)), ...ctx });
   }
-  const ignore = new Set<string>();
-  if (fresh) {
-    for (const pod of before) {
-      const name = pod.metadata?.name;
-      if (name === undefined) continue;
-      ignore.add(name);
-      if (pod.metadata?.deletionTimestamp === undefined) {
-        await kube.deleteObject({ kind: "pod", name, namespace: OPERATOR_NAMESPACE, wait: false, ...ctx });
-      }
-    }
-  }
-  // The template generation at each poll: a Ready pod of an earlier template does not count.
+  // The DaemonSet as it is at each poll: a Ready pod of an earlier template does not count.
   const results = await awaitFenceNodes(kube, {
     ...opts,
-    generation: async () => (await read())?.metadata.annotations?.[TEMPLATE_GENERATION_ANNOTATION],
-    ignore,
+    owner: async () => ownerOf(await readFenceNode(kube, ctx)),
     seenEvents,
   });
   if (plan.node === "install") {
     for (const [node, line] of results) opts.log(`fence: ${node}: ${line}`);
   }
-  let found: Pick<FenceInstallPlan, "multus" | "multusPods"> = { multus: plan.multus, multusPods: plan.multusPods };
-  if (plan.multus === "install") {
-    // A node whose first CNI configuration is a Multus's: a Multus that the read before the question
-    // did not see. When the API shows it now, it gets the same check; when not, jr2 cannot see it,
-    // and a second Multus would replace its file.
-    const multusFirst = [...results]
-      .map(([node, line]) => ({ node, first: firstCniOf(line) }))
-      .filter((n) => n.first !== undefined && /multus/i.test(n.first.type));
-    if (multusFirst.length > 0) {
-      const daemonSets = await kube.listJson<DaemonSetObject>({ kind: "daemonset", allNamespaces: true, ...ctx });
-      if (!daemonSets.some(isMultusDaemonSet)) {
-        throw new Error(
-          [
-            `fence: ${multusFirst.length === 1 ? "a Sandbox node has" : `${multusFirst.length} Sandbox nodes have`} ` +
-              "a Multus CNI configuration first in its CNI folder, but jr2 found no Multus DaemonSet in the API " +
-              "(ADR-0084):",
-            ...multusFirst.map((n) => `  ${n.node}: ${CNI_CONF_DIR}/${n.first!.file} (type ${n.first!.type})`),
-            `${MULTUS_SEARCH} A second Multus would replace the configuration of that Multus, and the isolation ` +
-              "of the attachments can be lost. If the cluster has a Multus in another form, jr2 cannot use it: run " +
-              "it as one of those. If the file stays from a Multus that is gone, delete it on the node.",
-            ...KEPT,
-            `See ${FENCE_PREREQUISITES_URL}. Then run \`jr2 up\` again.`,
-          ].join("\n"),
-        );
-      }
-      found = await readMultus(kube, daemonSets, refusedAfterApply, opts.context);
-      if (found.multus === "foreign") {
-        opts.log(
-          "fence: the cluster has a Multus that jr2 did not install, with namespaceIsolation and no global " +
-            "namespace; jr2 installs no Multus beside it",
-        );
-      } else found = { multus: plan.multus, multusPods: plan.multusPods };
-    }
-  }
-  if (found.multus === "foreign") checkNodeMultusFiles(results, found.multusPods);
-  if (found.multus === "install" || found.multus === "upgrade") {
+  if (plan.multus === "install" || plan.multus === "upgrade") {
     const text = await multusManifest();
-    opts.log(`fence: applying Multus v4.3.2 (thick, namespaceIsolation) to ${MULTUS_NAMESPACE}`);
+    opts.log(`fence: applying Multus v4.3.2 (thick) to ${MULTUS_NAMESPACE}`);
     await kube.apply({ manifest: text, ...ctx });
     await kube.waitRollout({
       kind: "daemonset",
@@ -1674,11 +1113,11 @@ export async function installFence(
   }
   if (!planAsks(plan)) {
     opts.log(
-      `fence: prerequisites in place — ${found.multus === "foreign" ? "the cluster's" : "jr2's"} Multus, and the ` +
-        `rule table and the CNI plugins on ${results.size} Sandbox node${results.size === 1 ? "" : "s"}`,
+      `fence: prerequisites in place — ${plan.multus === "foreign" ? "the cluster's" : "jr2's"} Multus, the ` +
+        `admission policies, and the rule table and the CNI plugins on ${results.size} Sandbox ` +
+        `node${results.size === 1 ? "" : "s"}`,
     );
   }
-  return { ...plan, ...found };
 }
 
 // ---- jr2 down --all --------------------------------------------------------------------------------
@@ -1698,15 +1137,9 @@ async function warnKeptBridges(
 ): Promise<void> {
   const ctx = opts.context !== undefined ? { context: opts.context } : {};
   let pods: FenceNodePod[];
-  let generation: string | undefined;
+  let owner: FenceNodeOwner;
   try {
-    const ds = await kube.getJson<DaemonSetObject>({
-      kind: "daemonset",
-      name: FENCE_NODE_DAEMONSET,
-      namespace: OPERATOR_NAMESPACE,
-      ...ctx,
-    });
-    generation = ds?.metadata.annotations?.[TEMPLATE_GENERATION_ANNOTATION];
+    owner = ownerOf(await readFenceNode(kube, ctx));
     pods = await kube.listJson<FenceNodePod>({
       kind: "pod",
       selector: `app=${FENCE_NODE_DAEMONSET}`,
@@ -1721,7 +1154,8 @@ async function warnKeptBridges(
     return;
   }
   for (const pod of pods) {
-    if (generation !== undefined && pod.metadata?.labels?.[TEMPLATE_GENERATION_LABEL] !== generation) continue;
+    // The removal form's pods only: of this DaemonSet, of its template.
+    if (!ofOwner(pod, owner)) continue;
     const node = pod.spec?.nodeName ?? pod.metadata?.name ?? "?";
     const removal = bridgeRemovalOf(fenceNodeResultsOf(pod).join(" "));
     if (removal?.bridge !== "kept") continue;
@@ -1739,7 +1173,8 @@ async function warnKeptBridges(
 
 /**
  * Remove what jr2 installed for the Fence on the cluster: the rule table and the bridge on each node,
- * the fence node's DaemonSet, and the Multus that carries jr2's annotation. A Multus that jr2 did not
+ * the fence node's DaemonSet, the admission policies with their bindings, and the Multus that
+ * carries jr2's annotation. A Multus that jr2 did not
  * install stays. The plugin files stay on the nodes: jr2 cannot tell them from files that another
  * tool put there. The kernel module `8021q` stays loaded: another user of the node can need it.
  *
@@ -1811,6 +1246,9 @@ export async function uninstallFence(
     );
     await kube.deleteObject({ kind: "daemonset", name: FENCE_NODE_DAEMONSET, namespace: OPERATOR_NAMESPACE, ...ctx });
   }
+  // The Instance's namespace is gone, and `jr2 down --all` refuses while another Instance holds a
+  // range, so no attachment of the Fence is left for the policies to guard.
+  await removeFenceGuard(kube, { ...ctx, log: opts.log });
   let multus: DaemonSetObject | undefined;
   try {
     [multus] = await kube.listJson<DaemonSetObject>({
