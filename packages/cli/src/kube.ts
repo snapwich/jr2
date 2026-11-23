@@ -418,6 +418,21 @@ export type RolloutRequest = {
 
 /** The argv of one rollout wait — pure, so the kind → `kubectl rollout status <kind>/<name>` mapping
  * is checkable without a cluster. */
+/**
+ * An apply, and once more when it failed with AlreadyExists. Two converges on one cluster at the same
+ * moment can each read that a cluster-wide object (a CRD, a PriorityClass, the DaemonSet
+ * jr2-fence-node, Multus) does not exist, and each create it: the second create fails, although the
+ * object is now there. The second apply finds it and updates it. Any other failure is thrown as it is.
+ */
+export async function onceMoreIfCreated<T>(apply: () => Promise<T>): Promise<T> {
+  try {
+    return await apply();
+  } catch (err) {
+    if (!/\bAlreadyExists\b|already exists/.test((err as Error).message)) throw err;
+    return await apply();
+  }
+}
+
 export function rolloutStatusArgs({
   kind = "deployment",
   name,
@@ -515,7 +530,9 @@ export const kubectlAdmin: KubeAdmin = {
   async apply({ manifest, context, serverSide, warn = (line) => process.stderr.write(`${line}\n`) }) {
     const { secrets, identities, rest } = splitSecrets(manifest);
     if (secrets !== undefined) {
-      await execStdin(["kubectl", ...ctxArgs(context), "apply", ...SERVER_SIDE, "-f", "-"], secrets);
+      await onceMoreIfCreated(() =>
+        execStdin(["kubectl", ...ctxArgs(context), "apply", ...SERVER_SIDE, "-f", "-"], secrets),
+      );
       // The fallback for a migration that failed. Removing an annotation that is not there is no
       // fault, so this changes nothing once it is gone.
       try {
@@ -534,7 +551,9 @@ export const kubectlAdmin: KubeAdmin = {
       }
     }
     if (rest !== undefined) {
-      await execStdin(["kubectl", ...ctxArgs(context), "apply", ...(serverSide ? SERVER_SIDE : []), "-f", "-"], rest);
+      await onceMoreIfCreated(() =>
+        execStdin(["kubectl", ...ctxArgs(context), "apply", ...(serverSide ? SERVER_SIDE : []), "-f", "-"], rest),
+      );
     }
   },
 

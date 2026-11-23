@@ -13,6 +13,7 @@ import {
   kubectlAdmin,
   kubectlKube,
   LAST_APPLIED,
+  onceMoreIfCreated,
   splitSecrets,
   REACH_BUDGET_MS,
   rolloutFailure,
@@ -24,6 +25,46 @@ import {
   waitPodEnd,
   type PodEndPorts,
 } from "../src/kube.ts";
+
+// --- two converges at once --------------------------------------------------------------------
+
+test("an apply that fails with AlreadyExists is made once more; any other failure is thrown at once", async () => {
+  // Two first converges each create a cluster-wide object (the operator's CRDs): the second create
+  // fails, and the second apply then updates the object that is there.
+  let calls = 0;
+  const raced = await onceMoreIfCreated(async () => {
+    calls++;
+    if (calls === 1) {
+      throw new Error(
+        'Command failed: kubectl apply -f -\nError from server (AlreadyExists): error when creating "STDIN": ' +
+          'customresourcedefinitions.apiextensions.k8s.io "repos.core.jr2.dev" already exists',
+      );
+    }
+    return "applied";
+  });
+  assert.deepEqual([raced, calls], ["applied", 2]);
+
+  let other = 0;
+  await assert.rejects(
+    onceMoreIfCreated(async () => {
+      other++;
+      throw new Error("Error from server (Forbidden): customresourcedefinitions is forbidden");
+    }),
+    /Forbidden/,
+  );
+  assert.equal(other, 1);
+
+  // A second AlreadyExists is the caller's: no loop.
+  let twice = 0;
+  await assert.rejects(
+    onceMoreIfCreated(async () => {
+      twice++;
+      throw new Error("Error from server (AlreadyExists): x");
+    }),
+    /AlreadyExists/,
+  );
+  assert.equal(twice, 2);
+});
 
 // --- the rollout wait's diagnosis (ADR-0046) ---------------------------------------------------
 // Same philosophy one layer up: `kubectl rollout status` says "timed out waiting for the condition"
