@@ -65,29 +65,30 @@ loudly narrated, safe to re-run:
   stdin ([ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)) — declining bails. A personal key never enters
   a cluster silently: only by that explicit, warned choice.
 - **The Fence**: `up` installs the Custodian's uplink, the Custodian and its resolver
-  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). It also installs the Fence's two node
-  prerequisites when the cluster lacks one, on any cluster, with kubectl: Multus, from the manifest that the CLI ships,
-  and the DaemonSet `jr2-fence-node`, which runs as root on each node's network, puts the stock CNI plugins `bridge`,
-  `static` and `tuning` on each node that has no file of that name, and loads the Fence's rule table into the node with
-  the capability `NET_ADMIN` at each start of its pod. The first time it installs something, it writes a list of each
-  part (the namespace `jr2-system`; the DaemonSet and what its pod does on a node; Multus and its cluster-wide and
-  privileged objects), and asks under the first-contact confirmation (`--yes` answers it); a converge that finds both
-  asks nothing. A later converge of a newer Kit changes the DaemonSet with no question, as it does the operator, and
-  asks before it changes the Multus that it installed. Where an install is not safe, it refuses. Before it applies
-  anything, for what it reads in the API: a Multus that jr2 did not install with other settings or with settings that it
-  cannot read, Multus's definition with no Multus that jr2 can find, a Cilium with `cni-exclusive: "true"`, or a Multus
-  that mounts CNI folders that are not the default ones. After it applies the namespace `jr2-system` and the DaemonSet,
-  and before Multus, for what the DaemonSet's pod finds on a node: CNI folders that are not the default ones, a `bridge`
-  plugin older than v1.8.0, that prints no version or that is a link that the pod cannot run, a folder that it cannot
-  write, a Multus configuration that the API does not show, a Multus configuration of the thin form with no isolation, a
-  rule table that does not load, or no pod. Those refusals keep what was applied, and say so. It still creates no
-  cluster. Then it probes the Fence: it refuses to converge while a Sandbox node fails, and names the node, the part and
-  the likely causes. It reads Multus from the API before it applies the Custodian, and probes the bridge and the rule
-  table after the Custodian is Ready, with a one-shot pod on each Sandbox node that has no privilege; a node with no
-  rule table is a refusal too. ADR-0084 states what it checks and what it cannot see. `jr2 down --all` removes the rule
-  table and the bridge `jr2fence0` from each node, the DaemonSet and a Multus that jr2 installed, with its definition,
-  unless the cluster has a NetworkAttachmentDefinition of another owner; the plugin files and the kernel module `8021q`
-  stay.
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). It also installs the Fence's three cluster
+  prerequisites when the cluster lacks one, on any cluster, with kubectl: jr2's two admission policies with their
+  bindings, which keep a pod of another namespace off the Instance's attachments; Multus, from the manifest that the CLI
+  ships, when the cluster has no Multus (a Multus of another owner is used as it is, and never changed); and the
+  DaemonSet `jr2-fence-node`, which runs as root on each node's network, puts the stock CNI plugins `bridge`, `static`
+  and `tuning` on each node that has no file of that name, and loads the Fence's rule table into the node with the
+  capability `NET_ADMIN` at each start of its pod. The first time it installs something, it writes a list of each part
+  (the namespace `jr2-system`; the DaemonSet and what its pod does on a node; the policies and what they refuse; Multus
+  and its cluster-wide and privileged objects), and asks under the first-contact confirmation (`--yes` answers it); a
+  converge that finds each part asks nothing. A later converge of a newer Kit changes the DaemonSet and the policies
+  with no question, as it does the operator, and asks before it changes the Multus that it installed. Where an install
+  is not safe, it refuses. Before it applies anything, for what it reads in the API: a Cilium with
+  `cni-exclusive: "true"`, or a read that fails. Right after the Instance's namespace: policies that the cluster
+  refuses. After it applies the namespace `jr2-system` and the DaemonSet, and before Multus, for what the DaemonSet's
+  pod finds on a node: CNI folders that are not the default ones, a `bridge` plugin older than v1.8.0, that prints no
+  version or that is a link that the pod cannot run, a folder that it cannot write, a rule table that does not load, or
+  no pod. Those refusals keep what was applied, and say so. It still creates no cluster. Then it probes the Fence: it
+  refuses to converge while a Sandbox node fails, and names the node, the part and the likely causes. Before it applies
+  the Custodian, it reads Multus from the API and checks the policies with server-side dry runs, which must be denied;
+  after the Custodian is Ready, it probes the attachment, the bridge and the rule table with a one-shot pod on each
+  Sandbox node that has no privilege; a node with no rule table is a refusal too. ADR-0084 states what it checks and
+  what it cannot see. `jr2 down --all` removes the rule table and the bridge `jr2fence0` from each node, the DaemonSet,
+  the policies with their bindings, and a Multus that jr2 installed, with its definition, unless the cluster has a
+  NetworkAttachmentDefinition of another owner; the plugin files and the kernel module `8021q` stay.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep
@@ -200,10 +201,11 @@ loudly narrated, safe to re-run:
     busy. A second call that runs out does not change the verdict of the first.
   - **The order.** The checks run before `up` writes an object that the Instance or the operator reads. Only these come
     before them, because the check pod needs them: the namespace and its label, the PriorityClasses, the images that
-    `up` builds and delivers, the Fence's prerequisites (the namespace `jr2-system`, the DaemonSet `jr2-fence-node` and
-    Multus, ADR-0084), and the Custodian, its uplink and its resolver, which the check pod's calls cross. The operator
-    (its CRDs, RBAC and Deployment, its label and its rollout), a deploy key and the wait for its registration
-    (ADR-0047), the trust bundles, the held objects and the instance List come after every check passes.
+    `up` builds and delivers, the Fence's prerequisites (the namespace `jr2-system`, the admission policies, the
+    DaemonSet `jr2-fence-node` and Multus, ADR-0084), and the Custodian, its uplink and its resolver, which the check
+    pod's calls cross. The operator (its CRDs, RBAC and Deployment, its label and its rollout), a deploy key and the
+    wait for its registration (ADR-0047), the trust bundles, the held objects and the instance List come after every
+    check passes.
   - **When a check fails.** The converge stops. `up` applied only the items above and the check pod with its own
     objects, and it deleted the check pod and its objects. It also deleted the leftovers of earlier runs (below). The
     Fence's prerequisites stay, as when the DaemonSet refuses a node (above). The operator, the Orchestrator, its

@@ -774,9 +774,10 @@ The user must decide these items. Until then, obey the rule for each item.
   `scripts/publish.sh` refuses a release, while a page has this comment. Thus do the manual check before `just release`,
   in these steps:
   1. Make the kind cluster `jr2` as page 1 tells the reader (`kind create cluster --name jr2`), with no other step: the
-     first `jr2 up` of an Instance with a Harness pod installs the prerequisites of the Fence (Multus, and the DaemonSet
-     that puts the CNI plugins on each node and loads the rule table), as it does for the reader. Then run
-     `just dist-up`. Use the `jr2` that it installs, because the reader uses the installed CLI, not a checkout.
+     first `jr2 up` of an Instance with a Harness pod installs the prerequisites of the Fence (jr2's admission policies,
+     Multus, and the DaemonSet that puts the CNI plugins on each node and loads the rule table), as it does for the
+     reader. Then run `just dist-up`. Use the `jr2` that it installs, because the reader uses the installed CLI, not a
+     checkout.
   2. Make the Instance as the pages tell the reader: `jr2 init my-instance`, with the model of the Local tab. When a
      page needs a fork, use a public GitHub repo that has the `main` and the release tags of jr2, and show it as
      `<you>/jr2`. When a page needs a remote MCP server, serve the fake of `features/steps/fake-mcp.ts` on the host with
@@ -789,15 +790,15 @@ The user must decide these items. Until then, obey the rule for each item.
 
 ### The tools and the cluster
 
-| Fact                | Value                                                                                                                                                                                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                                                                                                                                                                                         |
-| The kernel (page 1) | Linux 6.2 or later with Landlock: the kernel of the computer, or of Docker's VM.                                                                                                                                                                       |
-| The Fence on kind   | The first `jr2 up` of an Instance with a Harness pod (page 4) installs Multus, and the DaemonSet that puts the CNI plugins `bridge`, `static` and `tuning` on each node and loads the rule table, after a question. The tutorial has no step for them. |
-| The jr2 CLI         | `npm i -g @jr2/cli`                                                                                                                                                                                                                                    |
-| The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                                                                                                                                                                                   |
-| The package manager | npm.                                                                                                                                                                                                                                                   |
-| The Sandbox Image   | The `images/default/Dockerfile` that `jr2 init` writes. The tutorial does not change it.                                                                                                                                                               |
+| Fact                | Value                                                                                                                                                                                                                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                                                                                                                                                                                                                   |
+| The kernel (page 1) | Linux 6.2 or later with Landlock: the kernel of the computer, or of Docker's VM.                                                                                                                                                                                                 |
+| The Fence on kind   | The first `jr2 up` of an Instance with a Harness pod (page 4) installs jr2's admission policies, Multus, and the DaemonSet that puts the CNI plugins `bridge`, `static` and `tuning` on each node and loads the rule table, after a question. The tutorial has no step for them. |
+| The jr2 CLI         | `npm i -g @jr2/cli`                                                                                                                                                                                                                                                              |
+| The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                                                                                                                                                                                                             |
+| The package manager | npm.                                                                                                                                                                                                                                                                             |
+| The Sandbox Image   | The `images/default/Dockerfile` that `jr2 init` writes. The tutorial does not change it.                                                                                                                                                                                         |
 
 `jr2 up` converges into the current kubectl context. `kind create cluster` makes `kind-jr2` the current context.
 

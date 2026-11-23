@@ -45,26 +45,27 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   tagged `@kind` and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is the
   product's own path (ADR-0019): one shared kind cluster with no image in it and nothing on its nodes, then **`jr2 up`
   per scenario into a fresh namespace** — which since ADR-0038 builds and loads every image it deploys, so no image is
-  pre-loaded by hand, and which installs the Fence's prerequisites, Multus and the DaemonSet that loads the rule table
-  and puts the CNI plugins on each node ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), so no
-  recipe prepares the nodes. Namespace-as-identity makes the scenario the isolation unit here too, so nothing is
-  instance-bound to the cluster. **The host address behind the provider's name is discovered, not assumed.** The
-  scripted provider runs host-side. A Harness pod reaches it through the Custodian, by a name or by an exact address
-  with a port that the Egress list permits ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), and the
-  Custodian dials it. So the tier needs the one address that routes from the cluster back to this process — and it is
-  not the same on every machine. On Linux the daemon IS the host, so the kind bridge's gateway is the answer. Under a
-  VM-backed daemon (colima, Docker Desktop) that gateway is the VM: measured on colima, `172.18.0.1` reaches nothing
-  while `host.docker.internal`, `host.lima.internal` and `192.168.5.2` all answer — and on Linux those names mean
-  nothing. So the candidates are ordered by platform and the winner is VERIFIED, by `curl`ing the provider that is
-  already listening from inside a kind node (a pod's egress routes through it), for the price of one `docker exec`
-  memoized per worker process. Taking the bridge network's first IPAM entry is what broke: docker lists the IPv6 subnet
-  first on some hosts and it carries no gateway at all, so the tier now reads every entry that HAS one, IPv4 first.
-  Failing to find any address is one error naming every candidate tried, not an assertion in each scenario's `Before`
-  hook. Measured: **22/22 on macOS/colima, ~3m20 warm at degree 4** against the ~1m35 Linux figure below — the VM is
-  slower, not different. **The tier runs parallel, and three properties are what make that safe.** Scenario isolation
-  (own namespace, own scripted model port); no shared mutable image name between concurrent converges of one checkout —
-  a Sandbox Image builds straight to its content tag, with no intermediate, because the Harness arrives by volume at pod
-  time ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) — while
+  pre-loaded by hand, and which installs the Fence's prerequisites, jr2's admission policies, Multus and the DaemonSet
+  that loads the rule table and puts the CNI plugins on each node
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), so no recipe prepares the nodes.
+  Namespace-as-identity makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster.
+  **The host address behind the provider's name is discovered, not assumed.** The scripted provider runs host-side. A
+  Harness pod reaches it through the Custodian, by a name or by an exact address with a port that the Egress list
+  permits ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), and the Custodian dials it. So the tier
+  needs the one address that routes from the cluster back to this process — and it is not the same on every machine. On
+  Linux the daemon IS the host, so the kind bridge's gateway is the answer. Under a VM-backed daemon (colima, Docker
+  Desktop) that gateway is the VM: measured on colima, `172.18.0.1` reaches nothing while `host.docker.internal`,
+  `host.lima.internal` and `192.168.5.2` all answer — and on Linux those names mean nothing. So the candidates are
+  ordered by platform and the winner is VERIFIED, by `curl`ing the provider that is already listening from inside a kind
+  node (a pod's egress routes through it), for the price of one `docker exec` memoized per worker process. Taking the
+  bridge network's first IPAM entry is what broke: docker lists the IPv6 subnet first on some hosts and it carries no
+  gateway at all, so the tier now reads every entry that HAS one, IPv4 first. Failing to find any address is one error
+  naming every candidate tried, not an assertion in each scenario's `Before` hook. Measured: **22/22 on macOS/colima,
+  ~3m20 warm at degree 4** against the ~1m35 Linux figure below — the VM is slower, not different. **The tier runs
+  parallel, and three properties are what make that safe.** Scenario isolation (own namespace, own scripted model port);
+  no shared mutable image name between concurrent converges of one checkout — a Sandbox Image builds straight to its
+  content tag, with no intermediate, because the Harness arrives by volume at pod time
+  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) — while
   [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) makes a warm scenario's converge build nothing
   (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the seats that dial a path before
   anything else ever has — [ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md) has the
