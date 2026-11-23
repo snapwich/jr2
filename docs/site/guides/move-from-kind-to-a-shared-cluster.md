@@ -73,47 +73,83 @@ parts on the cluster, and nothing else on a node:
   the thick form v4.3.2 to `kube-system`, from the file `manifests/fence/multus-v4.3.2.yaml` of the `@jr2/cli` package.
   Its DaemonSet has the annotation `jr2.dev/multus`. When the cluster has a Multus that jr2 did not install, `jr2 up`
   reads its settings and never changes it. With other settings, `jr2 up` refuses and names the setting to change.
-- The DaemonSet `jr2-system/jr2-fence-node` on each node. `jr2 up` applies it. At each start, its pod does these steps:
-  - It loads the rule table `inet jr2_fence` into the node, in one transaction that replaces the table. The table
-    matches the bridge `jr2fence0` alone. A packet from the bridge skips the connection tracking of the node, so the NAT
-    of kube-proxy does not change a dial of a Sandbox to a Service address. No packet goes between the bridge and the
-    network stack of the node, or between the bridge and another interface.
-  - It copies each stock CNI plugin `bridge`, `static` and `tuning` of v1.10.0 from the operator image into
-    `/opt/cni/bin`, when the node has no file of that name. It never replaces a file: a node that has the plugins keeps
-    them.
-  - It reads the version of the node's `bridge`, and fails when it is older than v1.8.0. An older plugin does not do
-    what the attachments of jr2 say.
+- The DaemonSet `jr2-system/jr2-fence-node` on each Linux node. `jr2 up` applies it. At each start, its pod does these
+  steps:
+  1. It waits up to 180 s for a CNI configuration in `/etc/cni/net.d` and a file in `/opt/cni/bin`, because on a new
+     node the primary CNI writes them after this pod can start.
+  2. When the node has a `bridge`, it runs the file to read its version, and fails when it is older than v1.8.0 or
+     prints no version. An older plugin does not do what the attachments of jr2 say.
+  3. It copies each stock CNI plugin `bridge`, `static` and `tuning` of v1.10.0 from the operator image into
+     `/opt/cni/bin`, when the node has no file of that name. It never replaces a file: a node that has the plugins keeps
+     them. It writes the name of the first CNI configuration of the node, and its type.
+  4. It loads the rule table `inet jr2_fence` into the node, in one transaction that replaces the table. The table
+     matches the bridge `jr2fence0` alone. A packet from the bridge skips the connection tracking of the node, so the
+     NAT of kube-proxy does not change a dial of a Sandbox to a Service address. No packet goes between the bridge and
+     the network stack of the node, or between the bridge and another interface.
 
-  Then it idles, so a node that joins later gets the table and the plugins too. The pod runs as root on the network of
-  the node, with no privilege escalation, no other host namespace and no token. The step that loads the table has the
-  capability `NET_ADMIN`, and each other step has no capability. It mounts `/opt/cni/bin` and, read-only,
-  `/etc/cni/net.d` of the node. A policy of the cluster must permit such a pod in `jr2-system`.
+  Then it idles as a user that is not root, so a node that joins later gets the plugins and the table too. A node that
+  joins later with a `bridge` older than v1.8.0 gets neither: its pod fails, no Custodian pod of an Instance serves the
+  node, and the next `jr2 up` refuses with the node. The pod runs as root on the network of the node, with no privilege
+  escalation, no other host namespace and no token. The step that loads the table has the capability `NET_ADMIN`, and
+  each other step has no capability. It mounts `/opt/cni/bin` and, read-only, `/etc/cni/net.d` of the node. A policy of
+  the cluster must permit such a pod in `jr2-system`.
 
-The first time that `jr2 up` installs one of them, it says exactly what it will apply, and asks (`--yes` answers it).
-Then a converge that finds both asks nothing. `jr2 down --all` removes the rule table from each node, then the
-DaemonSet, and the Multus that jr2 installed. The plugin files stay on the nodes.
+The first time that `jr2 up` installs one of them, it writes a list of each part that it will apply, and asks (`--yes`
+answers it). The list says that the DaemonSet runs as root on the network of the node, runs the `bridge` of the node,
+writes into `/opt/cni/bin` and loads the rule table with `NET_ADMIN`. For Multus, it says that the manifest has a
+cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet that writes the first CNI
+configuration of each node, so that the cluster makes each new pod through Multus. Then a converge that finds both asks
+nothing. A later `jr2 up` of a newer Kit changes the DaemonSet to its version, and does not ask. It asks before it
+changes Multus.
 
-`jr2 up` does not install when that is not safe. It refuses, applies nothing, and names what to change:
+`jr2 down --all` removes the rule table from each node, then the DaemonSet, and the Multus that jr2 installed, with its
+CustomResourceDefinition. That definition goes with each NetworkAttachmentDefinition of the cluster. So when the cluster
+has a NetworkAttachmentDefinition that is not jr2's, `jr2 down --all` keeps jr2's Multus and the definition, names them,
+and gives the commands that remove them. The plugin files stay on the nodes.
 
-- a Multus that jr2 did not install, with no `namespaceIsolation` or with a global namespace;
-- Cilium with `cni-exclusive: "true"`, in `kube-system/cilium-config` or in a `CiliumNodeConfig` of a Sandbox node.
-  Cilium then removes the configuration of Multus. Set it to `"false"`;
-- a node whose container runtime reads its CNI plugins or configuration from a folder other than `/opt/cni/bin` and
-  `/etc/cni/net.d`, where `jr2 up` can see it. Keep such a node out of the Sandbox nodes (see
-  [Choose the Sandbox nodes](#choose-the-sandbox-nodes));
-- a Sandbox node whose `bridge` plugin is older than v1.8.0. Replace the file with a stock plugin of v1.8.0 or later.
+`jr2 up` does not install when that is not safe. Before it applies anything, it refuses, and names what to change, for:
+
+- a Multus that jr2 did not install, with no `namespaceIsolation`, with a global namespace, or with settings that jr2
+  cannot read. jr2 finds a Multus by "multus" in the name, a label or a container image of a DaemonSet, in each
+  namespace;
+- the CustomResourceDefinition of Multus (`network-attachment-definitions.k8s.cni.cncf.io`) with no Multus DaemonSet
+  that jr2 can find. Give your kubectl user read access to the DaemonSet of your Multus, or label it `app=multus`;
+- Cilium with `cni-exclusive: "true"`, in the ConfigMap `cilium-config` of the namespace of the Cilium DaemonSet, or in
+  a `CiliumNodeConfig` of a Sandbox node. Cilium then removes the configuration of Multus. Set it to `"false"`. When jr2
+  cannot read those objects, it says that it cannot tell, and goes on;
+- a Multus that jr2 did not install that mounts a CNI folder other than `/opt/cni/bin` and `/etc/cni/net.d`. Keep such
+  nodes out of the Sandbox nodes (see [Choose the Sandbox nodes](#choose-the-sandbox-nodes)).
+
+After it applies the namespace `jr2-system` and the DaemonSet, and before it applies Multus, `jr2 up` refuses a Sandbox
+node where the pod of `jr2-fence-node`:
+
+- finds no CNI configuration in `/etc/cni/net.d`, or no file in `/opt/cni/bin`, in 180 s. The container runtime of the
+  node reads another folder. Keep the node out of the Sandbox nodes;
+- finds a `bridge` that is older than v1.8.0 or prints no version. Replace the file with a stock plugin of v1.8.0 or
+  later, or delete it, so that jr2 writes v1.10.0;
+- cannot write into `/opt/cni/bin`, for example on a node where the folder is read-only;
+- finds a first CNI configuration of Multus when jr2 found no Multus DaemonSet and is about to install its own;
+- cannot load the rule table: the node needs nftables with the inet family;
+- has no pod, because a policy of the cluster refused it;
+- is not ready in 300 s.
+
+These refusals come after the apply, so the namespace `jr2-system` and the DaemonSet stay, with the plugins that it
+wrote and the rule table on each node where it loaded. The checks of a node run before the step that loads the table, so
+a node that they refuse gets no table. `jr2 down --all` removes the DaemonSet and the table.
 
 The bridge plugin makes the bridge `jr2fence0` and its VLANs from the attachments of each Instance. Each port of a
 Sandbox is in its own VLAN only, the uplink of the Custodian is in the VLANs of its Instance only, and the side of the
-node is in VLAN 1 only, which no pod uses. That VLAN state and the rule table are the boundary. After a restart of the
-node, the plugin makes the bridge again when the pods of the node start again, and the pod of `jr2-fence-node` loads the
-table again: there is nothing to do.
+node is in VLAN 1 only, which no pod uses. That VLAN state keeps a Sandbox off the node and off other pods, also with no
+rule table. The rule table keeps the NAT of the node from changing the frames of a Sandbox, so that each dial reaches
+the Custodian, and it is a second barrier. After a restart of the node, the plugin makes the bridge again when the pods
+of the node start again, and the pod of `jr2-fence-node` loads the table again: there is nothing to do.
 
 After the Custodian is ready, `jr2 up` runs a short pod on the Fence of each Sandbox node. It refuses to converge while
-a node fails, and it names the node, the part and the likely causes. The check dials the address of the API Service: a
-node with no rule table changes that dial, and the check fails. The check has no privilege on the node, so it sees what
-the VLANs and the table do, not the VLANs and the table. A managed cluster that permits no second CNI plugin cannot have
-the Fence.
+a node fails, and it names the node, the part and the likely causes. The check dials the address of the API Service: on
+a node with no rule table, the NAT of the node changes that dial, the dial gets no answer, and the check fails. Then
+`jr2 up` replaces the pod of `jr2-fence-node` on that node, which loads the table again. The check has no privilege on
+the node, so it sees what the VLANs and the table do, not the VLANs and the table. A managed cluster that permits no
+second CNI plugin cannot have the Fence.
 
 ### An optional route
 
@@ -333,7 +369,8 @@ These things also change in a shared cluster:
 - `jr2 up` refuses a namespace that a different Instance owns:
   `refusing: namespace "<namespace>" on <context> belongs to another instance ("<instance>")`. Give a different
   namespace with `-n`, or a different context.
-- `jr2 up` refuses, and applies nothing, a cluster where it cannot install a prerequisite of the Fence safely. See
+- `jr2 up` refuses a cluster where it cannot install a prerequisite of the Fence safely. Some of these refusals come
+  before it applies anything, and some after it applies the DaemonSet `jr2-fence-node`. See
   [Prerequisites of the Fence](#prerequisites-of-the-fence) and [Fix a failed converge](fix-a-failed-converge.md#rules).
 - A first converge into a namespace needs an answer. With no terminal and no `--yes`, `jr2 up` stops:
   `first contact: deploy instance "<name>" to context <context> (<what>)? — not a tty; pass --yes to proceed non-interactively`

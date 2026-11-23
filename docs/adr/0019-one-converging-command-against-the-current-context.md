@@ -67,19 +67,25 @@ loudly narrated, safe to re-run:
 - **The Fence**: `up` installs the Custodian's uplink, the Custodian and its resolver
   ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). It also installs the Fence's two node
   prerequisites when the cluster lacks one, on any cluster, with kubectl: Multus, from the manifest that the CLI ships,
-  and the DaemonSet `jr2-fence-node`, which runs on each node's network with the capability `NET_ADMIN`, loads the
-  Fence's rule table into the node at each start of its pod, and puts the stock CNI plugins `bridge`, `static` and
-  `tuning` on each node that has no file of that name. The first time it installs something, it says exactly what, that
-  the DaemonSet has the node's network and `NET_ADMIN`, that it loads a rule table into each node, and that it writes
-  plugin files on the nodes, under the first-contact confirmation (`--yes` answers it); a converge that finds both asks
-  nothing. It refuses, and applies nothing, where an install is not safe: a Multus that jr2 did not install with other
-  settings, a Cilium with `cni-exclusive: "true"`, or a node whose CNI folders are not the default ones; and after the
-  DaemonSet is applied, a node whose `bridge` plugin is older than v1.8.0. It still creates no cluster. Then it probes
-  the Fence: it refuses to converge while a Sandbox node fails, and names the node, the part and the likely causes. It
-  reads Multus from the API before it applies the Custodian, and probes the bridge and the rule table after the
-  Custodian is Ready, with a one-shot pod on each Sandbox node that has no privilege; ADR-0084 states what it checks and
-  what it cannot see. `jr2 down --all` removes the rule table from each node, the DaemonSet and a Multus that jr2
-  installed; the plugin files stay.
+  and the DaemonSet `jr2-fence-node`, which runs as root on each node's network, puts the stock CNI plugins `bridge`,
+  `static` and `tuning` on each node that has no file of that name, and loads the Fence's rule table into the node with
+  the capability `NET_ADMIN` at each start of its pod. The first time it installs something, it writes a list of each
+  part (the namespace `jr2-system`; the DaemonSet and what its pod does on a node; Multus and its cluster-wide and
+  privileged objects), and asks under the first-contact confirmation (`--yes` answers it); a converge that finds both
+  asks nothing. A later converge of a newer Kit changes the DaemonSet with no question, as it does the operator, and
+  asks before it changes Multus. Where an install is not safe, it refuses. Before it applies anything, for what it reads
+  in the API: a Multus that jr2 did not install with other settings or with settings that it cannot read, Multus's
+  definition with no Multus that jr2 can find, a Cilium with `cni-exclusive: "true"`, or a Multus that mounts CNI
+  folders that are not the default ones. After it applies the namespace `jr2-system` and the DaemonSet, and before
+  Multus, for what the DaemonSet's pod finds on a node: CNI folders that are not the default ones, a `bridge` plugin
+  older than v1.8.0 or that prints no version, a folder that it cannot write, a Multus configuration that the API does
+  not show, a rule table that does not load, or no pod. Those refusals keep what was applied, and say so. It still
+  creates no cluster. Then it probes the Fence: it refuses to converge while a Sandbox node fails, and names the node,
+  the part and the likely causes. It reads Multus from the API before it applies the Custodian, and probes the bridge
+  and the rule table after the Custodian is Ready, with a one-shot pod on each Sandbox node that has no privilege; a
+  node with no rule table is a refusal too. ADR-0084 states what it checks and what it cannot see. `jr2 down --all`
+  removes the rule table from each node, the DaemonSet and a Multus that jr2 installed, with its definition, unless the
+  cluster has a NetworkAttachmentDefinition of another owner; the plugin files stay.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep
@@ -192,13 +198,15 @@ loudly narrated, safe to re-run:
     busy. A second call that runs out does not change the verdict of the first.
   - **The order.** The checks run before `up` writes an object that the Instance or the operator reads. Only these come
     before them, because the check pod needs them: the namespace and its label, the PriorityClasses, the images that
-    `up` builds and delivers, and the Custodian, its uplink and its resolver, which the check pod's calls cross. The
-    operator (its CRDs, RBAC and Deployment, its label and its rollout), a deploy key and the wait for its registration
+    `up` builds and delivers, the Fence's prerequisites (the namespace `jr2-system`, the DaemonSet `jr2-fence-node` and
+    Multus, ADR-0084), and the Custodian, its uplink and its resolver, which the check pod's calls cross. The operator
+    (its CRDs, RBAC and Deployment, its label and its rollout), a deploy key and the wait for its registration
     (ADR-0047), the trust bundles, the held objects and the instance List come after every check passes.
   - **When a check fails.** The converge stops. `up` applied only the items above and the check pod with its own
     objects, and it deleted the check pod and its objects. It also deleted the leftovers of earlier runs (below). The
-    operator, the Orchestrator, its Assembly and every pod of the Instance continue to run as before. Nothing else is
-    deleted, and no Assembly is published.
+    Fence's prerequisites stay, as when the DaemonSet refuses a node (above). The operator, the Orchestrator, its
+    Assembly and every pod of the Instance continue to run as before. Nothing else is deleted, and no Assembly is
+    published.
   - **The pod.** `up` reports every failure of the check pod in one error. When the cluster refuses the check pod (a
     quota, a Pod Security level, a webhook), the check of each of its models fails. In a new namespace, `up` waits up to
     10 s for the `default` ServiceAccount before it calls a refusal a refusal. The check container writes a start line

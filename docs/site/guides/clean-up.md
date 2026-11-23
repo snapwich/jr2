@@ -123,12 +123,12 @@ jr2 down --all
 <!-- output: not run -->
 
 ```text
-remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator, the Fence's rule table on each node and the DaemonSet jr2-fence-node that loads it, and a Multus that jr2 installed)? [y/N] y
+remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator, the Fence's rule table on each node and the DaemonSet jr2-fence-node that loads it, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so)? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
 gave back VLAN range 2 of the Fence
 removing the rule table "inet jr2_fence" from each node
 uninstalling the DaemonSet jr2-system/jr2-fence-node; the CNI plugins bridge, static, tuning stay in /opt/cni/bin on each node
-uninstalling Multus (kube-system), which jr2 installed
+uninstalling Multus (kube-system), which jr2 installed, and its CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io
 uninstalling the operator (jr2-system)
 swept 3 image(s) (532.7 MB)
 …
@@ -138,6 +138,12 @@ removed
 The range of VLANs and the image counts and sizes depend on your cluster. Your values can be different. A Multus that
 jr2 did not install stays, and so do the files of the CNI plugins in `/opt/cni/bin` on each node: jr2 cannot tell them
 from files that a different tool put there. A plain `jr2 down` removes none of the rule table, the DaemonSet and Multus.
+
+The CustomResourceDefinition of Multus goes with jr2's Multus, and each NetworkAttachmentDefinition of the cluster goes
+with it. So when the cluster has a NetworkAttachmentDefinition that is not jr2's, `jr2 down --all` keeps jr2's Multus
+and its CustomResourceDefinition. It writes a warning that names those NetworkAttachmentDefinitions and gives the
+commands that remove Multus when nothing uses them. When jr2 cannot read the DaemonSet `jr2-fence-node`, it writes a
+warning and the command that removes the rule table on a node.
 
 ::: danger
 

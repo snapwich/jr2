@@ -42,9 +42,9 @@ kind-down:
 # --- the Fence on kind (ADR-0084; requires docker + kind) ---
 #
 # A kind cluster with three nodes, so that a test can put two Sandboxes of one Instance on two nodes.
-# It is a stock cluster: the Fence's prerequisites (Multus and the CNI plugins bridge, static and
-# tuning) are not this recipe's, because `jr2 up` installs each one that the cluster lacks
-# (packages/cli/src/fence-install.ts). The command names the cluster's own kubeconfig file, never the
+# It is a stock cluster: the Fence's prerequisites (Multus, and the DaemonSet jr2-fence-node that
+# puts the CNI plugins bridge, static and tuning on each node and loads the rule table) are not this
+# recipe's, because `jr2 up` installs each one that the cluster lacks (packages/cli/src/fence-install.ts). The command names the cluster's own kubeconfig file, never the
 # shell's current context.
 
 # create the three-node kind cluster for the Fence (a second run changes nothing)
@@ -96,8 +96,8 @@ custodian-test:
 # (ADR-0059) — a kind node pulls from its registry itself, so the cluster needs network to docker.io
 # (or a `kitRegistry` mirror). Pre-loading a `:local` tag here would be exactly the
 # invisible-stale-image bug that deletes. Nothing is added to the cluster either: the first `jr2 up`
-# of the tier installs the Fence's prerequisites, Multus and the CNI plugins, as it does on any
-# cluster (ADR-0084), and a later one finds them. An existing cluster of this name is kept. Nothing is instance-bound to the cluster (ADR-0019): each @kind
+# of the tier installs the Fence's prerequisites, Multus and the DaemonSet jr2-fence-node (the CNI
+# plugins and the rule table), as it does on any cluster (ADR-0084), and a later one finds them. An existing cluster of this name is kept. Nothing is instance-bound to the cluster (ADR-0019): each @kind
 # scenario `jr2 up`s into a fresh namespace, operator included.
 e2e-kind-up:
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml --name {{ cluster }}

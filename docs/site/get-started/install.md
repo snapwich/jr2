@@ -124,8 +124,9 @@ Instance needs, such as the [Orchestrator](../reference/glossary.md#orchestrator
 [Custodian](../reference/glossary.md#custodian). A [Sandbox](../reference/glossary.md#sandbox) and the
 [Instance Harness](../reference/glossary.md#instance-harness) also need two parts for their network: Multus, and a
 DaemonSet of jr2 that loads a rule table into each node and puts the three CNI plugins `bridge`, `static` and `tuning`
-there. The cluster that `kind create cluster` makes has neither. The first `jr2 up` installs them, with kubectl, and
-asks you first. It does the same on a cluster that is not kind.
+there. The cluster that `kind create cluster` makes has neither. The first `jr2 up` of an Instance with a Sandbox or the
+Instance Harness installs them, with kubectl, and asks you first. In this tutorial, that is the `jr2 up` of
+[A model decides](a-model-decides.md). It does the same on a cluster that is not kind.
 [Move from kind to a shared cluster](../guides/move-from-kind-to-a-shared-cluster.md) gives each part.
 [Converge](../concepts/converge.md) explains what `jr2 up` makes. The [CLI reference](../reference/cli.md) gives each
 command and its options.

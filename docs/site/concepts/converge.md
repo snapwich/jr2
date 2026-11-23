@@ -77,25 +77,30 @@ the cluster, see [Architecture](architecture.md).
 6. It checks that the namespace is this Instance's. Before it uses a namespace for the first time, it asks you.
 7. When a Machine has a Sandbox or a Menu-only Agent, it reads the two prerequisites of the
    [Fence](../reference/glossary.md#fence) from the cluster: Multus, and the DaemonSet `jr2-system/jr2-fence-node`,
-   which loads the Fence's rule table into each node and puts the stock CNI plugins `bridge`, `static` and `tuning`
-   there. When one is missing, it says what it will install, in the question of step 6. It refuses, and applies nothing,
-   when it cannot install safely: a Multus that jr2 did not install with other settings, Cilium with
-   `cni-exclusive: "true"`, or nodes whose CNI folders are not the default ones. This is the same on each cluster, kind
-   or not.
+   which puts the stock CNI plugins `bridge`, `static` and `tuning` on each node and loads the Fence's rule table there.
+   When one is missing, it writes a list of each part that it will install, and asks in the question of step 6. Before
+   it applies anything, it refuses when it cannot install safely: a Multus that jr2 did not install with other settings
+   or with settings that it cannot read, the definition of Multus with no Multus DaemonSet that it can find, Cilium with
+   `cni-exclusive: "true"`, or a Multus that mounts CNI folders that are not the default ones. This is the same on each
+   cluster, kind or not.
 8. It checks that the cluster keeps pod-level resources.
 9. It finds the platforms of the nodes, and it decides the address of each image.
-10. It builds the Sandbox Images.
-11. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
-12. When a Machine has a Sandbox or a Menu-only Agent, it installs what step 7 found missing, with kubectl. First the
-    DaemonSet `jr2-system/jr2-fence-node`. Its pod runs on the node's network with the capability `NET_ADMIN`. At each
-    start, it loads the rule table `inet jr2_fence` into the node, copies each plugin onto a node that has no file of
-    that name, and checks that the node's `bridge` plugin is v1.8.0 or later. `jr2 up` waits for it on each Sandbox
-    node. Then Multus. When both were there, it prints one line. Then it reads Multus from the cluster, and applies the
-    Custodian, its uplink on each Sandbox node and its resolver. When the Custodian is ready, a short pod on each
-    Sandbox node checks the Fence: the pod gets the address of its slot, the Custodian answers it and refuses its dial
-    to the address of the API Service at once, and the node does not answer it. The pod has no privilege, so it sees
-    what the bridge does, not its VLANs. While a Sandbox node fails, the converge fails, and the error names the node,
-    the part and the likely causes.
+10. When a Machine has a Sandbox or a Menu-only Agent, it installs what step 7 found missing, with kubectl. First the
+    namespace `jr2-system` and the DaemonSet `jr2-system/jr2-fence-node`. Its pod runs as root on the node's network. At
+    each start, it checks that the node's CNI folders are the default ones and that the node's `bridge` plugin is v1.8.0
+    or later, copies each plugin onto a node that has no file of that name, and then loads the rule table
+    `inet jr2_fence` into the node, with the capability `NET_ADMIN`. `jr2 up` waits for it on each Sandbox node. A node
+    that the pod refuses stops the converge here: the namespace `jr2-system` and the DaemonSet stay, with the plugins
+    that it wrote and the table on each node where it loaded, and `jr2 down --all` removes them. Then Multus. When both
+    were there, it prints one line.
+11. It builds the Sandbox Images.
+12. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
+    Then it reads Multus from the cluster, and applies the Custodian, its uplink on each Sandbox node and its resolver.
+    When the Custodian is ready, a short pod on each Sandbox node checks the Fence: the pod gets the address of its
+    slot, the Custodian answers it and refuses its dial to the address of the API Service at once, and only the
+    Custodian answers its dial to the kubelet's port on the node. The pod has no privilege, so it sees what the bridge
+    and the table do, not its VLANs. While a Sandbox node fails, the converge fails, and the error names the node, the
+    part and the likely causes.
 13. It checks each model that an Agent uses: one pod on a Sandbox node, behind the Fence as each Harness pod is, asks
     the provider through the Custodian for one tool call for each model. Until each check passes, `jr2 up` writes
     nothing else that the Instance or the operator reads. The pod has up to 5 minutes to start, and each model has up to
@@ -247,9 +252,11 @@ would remove, and removes nothing.
 - `jr2 up` refuses a namespace that belongs to a different Instance. It asks you before it uses a namespace for the
   first time. `--yes` gives the answer for CI.
 - When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` installs each prerequisite of the Fence that the cluster
-  does not have, on any cluster. It asks you before it installs for the first time. It refuses, and applies nothing,
-  when it cannot install safely. It never changes a Multus that it did not install, and never replaces a plugin file on
-  a node.
+  does not have, on any cluster. It lists each part and asks you before it installs for the first time. A later converge
+  of a newer Kit changes the DaemonSet `jr2-fence-node` with no question, and asks before it changes Multus. It refuses
+  when it cannot install safely: before it applies anything, for what it reads in the API; after it applies the
+  DaemonSet, for what the pod finds on a node. It never changes a Multus that it did not install, and never replaces a
+  plugin file on a node.
 - `jr2 up` refuses a cluster that is not kind when `registry` is not set and it must build an image. When no registered
   Machine makes a [Sandbox](../reference/glossary.md#sandbox), `jr2 up` builds no image and needs no `registry`.
 - Each verb that reads the Instance, other than `jr2 version`, refuses when the Instance and the CLI do not use the same

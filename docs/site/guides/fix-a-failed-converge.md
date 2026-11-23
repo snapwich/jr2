@@ -192,15 +192,15 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
 - Before `jr2 up` uses a namespace for the first time, it asks:
   `first contact: deploy instance "<instance>" to context <context> (create namespace "<namespace>")? [y/N]`. For a
   namespace that exists but holds no Instance, it asks to `adopt existing namespace "<namespace>"`. When a Machine has a
-  Sandbox or a Menu-only Agent and the cluster lacks a prerequisite of the Fence, the question also says what `jr2 up`
-  will install, after a `;`: `install the Fence's prerequisites: <what it will apply>`. When the namespace is the
-  Instance's already, the question starts with `first setup of the Fence on context <context>:`. When you do not type
-  `y`, it prints `aborted — nothing was changed`. When no terminal is attached, it prints
+  Sandbox or a Menu-only Agent and the cluster lacks a prerequisite of the Fence, `jr2 up` first writes a list of each
+  part that it will apply, under the line `fence: this converge installs the Fence's prerequisites (ADR-0084):`, and the
+  question adds `; install the Fence's prerequisites in the list above`. When the namespace is the Instance's already,
+  the question starts with `first setup of the Fence on context <context>:`. When you do not type `y`, it prints
+  `aborted — nothing was changed`. When no terminal is attached, it prints
   `<question> — not a tty; pass --yes to proceed non-interactively` first. In CI, add `--yes`.
 - When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` installs the prerequisites of the Fence that the cluster
-  lacks (see [Converge](../concepts/converge.md#what-jr2-up-does)). It does not install when that is not safe. Then it
-  stops before it applies anything, and the error names what the owner of the cluster must change. Each one ends with
-  `Nothing was applied.`:
+  lacks (see [Converge](../concepts/converge.md#what-jr2-up-does)). It does not install when that is not safe. The
+  refusals of the read come before `jr2 up` applies anything, and each one ends with `Nothing was applied.`:
   - `fence: the cluster's Multus (DaemonSet <namespace>/<name>, which jr2 did not install) does not have namespaceIsolation in <where>, …`.
     Without it, a pod of another namespace can join the VLANs of the Instance. `jr2 up` never changes a Multus that it
     did not install. The error names where to set it: `"namespaceIsolation": true` in the JSON of a ConfigMap (the thick
@@ -208,28 +208,43 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
     form). Set it, restart the Multus DaemonSet, and run `jr2 up` again.
   - `fence: the cluster's Multus (…) has the global namespaces "<namespaces>" in <where>, …`. Set
     `"globalNamespaces": ""`, or remove `--global-namespaces`, in the place that the error names.
-  - `fence: … jr2 cannot read the ConfigMap <namespace>/<name> that holds its settings, …`. Give the user of your
-    kubectl context read access to that ConfigMap.
-  - `fence: Cilium has cni-exclusive: "true" in the ConfigMap kube-system/cilium-config, …`. With it, Cilium removes the
+  - `fence: … the API refused the read of the ConfigMap <namespace>/<name> that holds its settings …`. Give the user of
+    your kubectl context read access to that ConfigMap. When the error says that the ConfigMap `does not exist`, the
+    Multus of the cluster is not whole: repair it.
+  - `fence: the cluster has the CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io, which Multus uses, but jr2 found no Multus DaemonSet whose settings it can read. …`.
+    jr2 looks in each namespace for a DaemonSet with "multus" in its name, in a label or in a container image. Give your
+    kubectl user read access to the DaemonSet of your Multus, or label it `app=multus`. When the definition stays from a
+    Multus that is gone, and no NetworkAttachmentDefinition uses it, delete it.
+  - `fence: Cilium has cni-exclusive: "true" in the ConfigMap <namespace>/cilium-config, …`. With it, Cilium removes the
     configuration of Multus on each node. Set `cni-exclusive: "false"` (with Helm: `--set cni.exclusive=false`), restart
     the Cilium agents, and run `jr2 up` again. When a `CiliumNodeConfig` sets it for a Sandbox node, the error names
-    that object: set `"cni-exclusive": "false"` in its `spec.defaults`.
+    that object: set `"cni-exclusive": "false"` in its `spec.defaults`. When jr2 cannot read these objects, it writes
+    `fence: jr2 cannot read … so it cannot tell whether Cilium has cni-exclusive: "true" …` and goes on.
   - `fence: the cluster's Multus (DaemonSet <namespace>/<name>) mounts the node's CNI bin directory from <folder>, not /opt/cni/bin. …`
     (or the CNI configuration directory, not `/etc/cni/net.d`). jr2 puts the plugins into `/opt/cni/bin`. Keep such
     nodes out of the Sandbox nodes with [`sandbox.nodeSelector`](../reference/config.md#sandbox-nodeselector) or a
     taint, or use a cluster whose nodes use the default folders.
+- The refusals below come after `jr2 up` applied the namespace `jr2-system` and the DaemonSet `jr2-fence-node`, and
+  before it applies Multus. The namespace and the DaemonSet stay, with the plugins that the DaemonSet wrote and the rule
+  table on each node where it loaded. The checks of a node run before the step that loads the table, so a node that they
+  refuse gets no table. `jr2 down --all` removes the DaemonSet and the table. Each error says so:
   - `fence: the DaemonSet jr2-system/jr2-fence-node failed on a Sandbox node (ADR-0084):`, then one line for each node,
     and what to do. The pod of the DaemonSet on the node found one of these:
-    - The node has no CNI configuration in `/etc/cni/net.d`, its `/opt/cni/bin` is empty, or the kubelet cannot mount
-      one of the two folders. Its container runtime uses other folders: keep the node out of the Sandbox nodes, as
-      above.
+    - The node has no CNI configuration in `/etc/cni/net.d`, or its `/opt/cni/bin` is empty, after 180 s, or the kubelet
+      cannot mount one of the two folders. Its container runtime uses other folders: keep the node out of the Sandbox
+      nodes, as above.
     - `/opt/cni/bin/bridge is v<version>, older than v1.8.0`, or `prints no version`. jr2 never replaces a plugin file.
       Replace the file with the stock plugin of v1.8.0 or later, or delete it so that jr2 writes v1.10.0. Then delete
       the node's pod of `jr2-fence-node`, and run `jr2 up` again.
+    - `cannot write <plugin> into /opt/cni/bin on the node: <reason>`, for example a read-only folder. Put the stock
+      plugins there with the tools of the node, or keep the node out of the Sandbox nodes.
     - `nft could not load the table inet jr2_fence: <reason>`. The node needs nftables with the inet family.
-
-    Multus is not applied.
-
+    - `no pod: <reason>`. The cluster refused the pod, for example Pod Security admission. Permit the node's network,
+      root, `NET_ADMIN` and the two hostPath volumes in `jr2-system`.
+  - `fence: a Sandbox node has a Multus CNI configuration first in its CNI folder, but jr2 found no Multus DaemonSet in the API (ADR-0084):`,
+    then the node and the file. Another Multus is on the node, and jr2 does not install a second one. Give your kubectl
+    user read access to the DaemonSet of that Multus, or label it `app=multus`. When the file stays from a Multus that
+    is gone, delete it on the node.
   - `fence: no Ready pod of the DaemonSet jr2-system/jr2-fence-node on the Sandbox node <node> in 300 s, …`. Read
     `kubectl -n jr2-system describe pod -l app=jr2-fence-node`, for example for an image that the node cannot pull, or a
     policy of the cluster that refuses a pod with a hostPath volume, the node's network or the capability `NET_ADMIN` in
@@ -377,11 +392,13 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `error: fence: a Sandbox node fails the check of the Fence (ADR-0084):`, and each next line names a node, the part and
   what the check saw: `Multus`, `Multus or the attachment`,
   `the bridge, its VLAN filtering, or the Custodian pod of this node`, `the node's firewall on the bridge`,
-  `the rule table inet jr2_fence` or `the VLANs of the bridge`. When the probe pod on the Fence got no answer from the
-  Custodian on the bridge, `jr2 up` also replaces the Custodian pod of that node, so that the pod joins the bridge
-  again. When its dial to the address of the API Service got no answer, the node has no rule table: `jr2 up` replaces
-  the node's pod of `jr2-system/jr2-fence-node`, which loads the table again when it starts. Run `jr2 up` again. When
-  the cluster has no Multus, the error says
+  `the rule table inet jr2_fence`, `the dial to a Service address` or `the VLANs of the bridge`. When the probe pod on
+  the Fence got no answer from the Custodian on the bridge, `jr2 up` also replaces the Custodian pod of that node, so
+  that the pod joins the bridge again. When the SYN of its dial to the address of the API Service got no answer, the
+  node has no rule table: `jr2 up` replaces the node's pod of `jr2-system/jr2-fence-node`, which loads the table again
+  when it starts. The line of the node says each pod that `jr2 up` replaced. Run `jr2 up` again. When a peer that is not
+  the Custodian took that dial and said nothing, the part is `the dial to a Service address`, and `jr2 up` replaces no
+  pod. When the cluster has no Multus, the error says
   `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`. Run `jr2 up`
   again: it installs Multus when the cluster has none. The last line of the error names the likely causes: a container
   runtime that reads its CNI plugins or configuration from other folders; a file `bridge`, `static` or `tuning` in
