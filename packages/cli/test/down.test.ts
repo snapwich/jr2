@@ -204,7 +204,7 @@ test("down deletes the instance's namespace; --all takes the operator too, BEFOR
   assert.deepEqual(sweep.listed, ["host", "node test"], "the stores are read only once both roots are gone");
 });
 
-test("--all removes what jr2 installed for the Fence: the rule table on each node, the fence node's DaemonSet and jr2's Multus; the plugin files stay; a plain down removes none (ADR-0084)", async () => {
+test("--all removes what jr2 installed for the Fence: the rule table and the bridge on each node, the fence node's DaemonSet and jr2's Multus; the plugin files stay; a plain down removes none (ADR-0084)", async () => {
   const installed = {
     ...ownNs,
     "jr2-system/daemonset/jr2-fence-node": {
@@ -225,7 +225,7 @@ test("--all removes what jr2 installed for the Fence: the rule table on each nod
   assert.equal(await down(["--all"], w.io), 0);
   assert.match(
     w.confirms[0]!,
-    /delete namespace "myinst" AND the per-cluster operator, the Fence's rule table on each node and the DaemonSet jr2-fence-node that loads it, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so\)\?$/,
+    /delete namespace "myinst" AND the per-cluster operator, the Fence's rule table and its bridge jr2fence0 on each node, the DaemonSet jr2-fence-node that loads the table, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so\)\?$/,
   );
   // The table goes first: the removal form of the DaemonSet, with the image that it runs.
   assert.equal(all.applied.length, 1);
@@ -235,6 +235,7 @@ test("--all removes what jr2 installed for the Fence: the rule table on each nod
     [["rules", "jr2-operator:7"]],
   );
   assert.match(removal.spec.template.spec.initContainers[0].command[2], /delete table inet jr2_fence/);
+  assert.match(removal.spec.template.spec.initContainers[0].command[2], /ip link delete jr2fence0/);
   assert.deepEqual(all.deleted, [
     "/Namespace/myinst",
     "jr2-system/daemonset/jr2-fence-node",
@@ -244,7 +245,7 @@ test("--all removes what jr2 installed for the Fence: the rule table on each nod
   const err = w.err.join("");
   assert.match(
     err,
-    /removing the rule table "inet jr2_fence" from each node\n.*uninstalling the DaemonSet jr2-system\/jr2-fence-node; the CNI plugins bridge, static, tuning stay in \/opt\/cni\/bin on each node\n/s,
+    /removing the rule table "inet jr2_fence" and the bridge jr2fence0 from each node\n.*uninstalling the DaemonSet jr2-system\/jr2-fence-node; the CNI plugins bridge, static, tuning stay in \/opt\/cni\/bin on each node\n/s,
   );
   assert.match(
     err,

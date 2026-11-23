@@ -102,10 +102,11 @@ configuration of each node, so that the cluster makes each new pod through Multu
 nothing. A later `jr2 up` of a newer Kit changes the DaemonSet to its version, and does not ask. It asks before it
 changes Multus.
 
-`jr2 down --all` removes the rule table from each node, then the DaemonSet, and the Multus that jr2 installed, with its
-CustomResourceDefinition. That definition goes with each NetworkAttachmentDefinition of the cluster. So when the cluster
-has a NetworkAttachmentDefinition that is not jr2's, `jr2 down --all` keeps jr2's Multus and the definition, names them,
-and gives the commands that remove them. The plugin files stay on the nodes.
+`jr2 down --all` removes the rule table and the bridge `jr2fence0` from each node, then the DaemonSet, and the Multus
+that jr2 installed, with its CustomResourceDefinition. That definition goes with each NetworkAttachmentDefinition of the
+cluster. So when the cluster has a NetworkAttachmentDefinition that is not jr2's, `jr2 down --all` keeps jr2's Multus
+and the definition, names them, and gives the commands that remove them. The plugin files and the kernel module `8021q`
+stay on the nodes. A bridge that a pod is still on stays too, and `jr2 down --all` names its node.
 
 `jr2 up` does not install when that is not safe. Before it applies anything, it refuses, and names what to change, for:
 

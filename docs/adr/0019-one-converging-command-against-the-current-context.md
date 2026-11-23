@@ -84,8 +84,9 @@ loudly narrated, safe to re-run:
   the part and the likely causes. It reads Multus from the API before it applies the Custodian, and probes the bridge
   and the rule table after the Custodian is Ready, with a one-shot pod on each Sandbox node that has no privilege; a
   node with no rule table is a refusal too. ADR-0084 states what it checks and what it cannot see. `jr2 down --all`
-  removes the rule table from each node, the DaemonSet and a Multus that jr2 installed, with its definition, unless the
-  cluster has a NetworkAttachmentDefinition of another owner; the plugin files stay.
+  removes the rule table and the bridge `jr2fence0` from each node, the DaemonSet and a Multus that jr2 installed, with
+  its definition, unless the cluster has a NetworkAttachmentDefinition of another owner; the plugin files and the kernel
+  module `8021q` stay.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep

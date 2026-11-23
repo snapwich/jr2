@@ -205,7 +205,8 @@ test("a stock cluster: Multus and the fence node are installed, and the question
       "Multus writes the first CNI configuration of each node, so the cluster makes each new pod through Multus.",
     "  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It asks " +
       "before it changes Multus.",
-    "  jr2 down --all removes the rule table, the DaemonSet and Multus. The plugin files stay on the nodes.",
+    "  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet and " +
+      "Multus. The plugin files and the kernel module 8021q stay on the nodes.",
   ]);
   // A cluster that has jr2-system (the operator of another Instance): no line for the namespace.
   const system = await planFenceInstall(cluster([{ kind: "Namespace", metadata: { name: "jr2-system" } }]), {
@@ -678,13 +679,97 @@ test("the rules script loads the table in one transaction that replaces it, each
   assert.match(three.message, /fail rules the table inet jr2_fence has 3 chains after the load, not 4/);
 });
 
-test("the removal script removes the table whether the node has it or not", async () => {
+/**
+ * A fake `ip` beside the fake `nft`, as busybox's prints `ip -o link show`: the node's links are the
+ * lines of the file `links`. `ip link delete <name>` removes that link's line (or fails as `fail`
+ * says), and `ip link show <name>` fails when the link is gone. Each call is written to `ip-calls`.
+ */
+async function fakeIp(dir: string, links: string[], opts: { fail?: string; list?: string } = {}): Promise<void> {
+  await writeFile(join(dir, "links"), links.map((l) => `${l}\n`).join(""));
+  await writeFile(
+    join(dir, "bin/ip"),
+    `#!/bin/sh
+echo "$*" >> ${dir}/ip-calls
+if [ "$1" = -o ]; then
+  ${opts.list ? `echo "${opts.list}" >&2; exit 1` : `cat ${dir}/links; exit 0`}
+fi
+if [ "$1 $2" = "link delete" ]; then
+  ${opts.fail ? `echo "${opts.fail}" >&2; exit 1` : `grep -v "^[0-9]*: $3[:@]" ${dir}/links > ${dir}/links.new || true; mv ${dir}/links.new ${dir}/links; exit 0`}
+fi
+if [ "$1 $2" = "link show" ]; then grep -q "^[0-9]*: $3[:@]" ${dir}/links; exit $?; fi
+exit 2
+`,
+  );
+  await chmod(join(dir, "bin/ip"), 0o755);
+}
+
+const LO =
+  "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN qlen 1000\\    link/loopback 00:00:00:00:00:00";
+const BR =
+  "7: jr2fence0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN qlen 1000\\    link/ether 9e:2b:7a:05:44:05";
+const port = (n: number, name: string) =>
+  `${n}: ${name}@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master jr2fence0 state UP \\    link/ether 4a:1c:00:00:00:0${n}`;
+/** A link of another bridge, whose name starts as the Fence's: not the Fence's bridge, not its port. */
+const OTHER = "9: jr2fence0x: <BROADCAST> mtu 1500 qdisc noop state DOWN\\    link/ether 00:00:00:00:00:09";
+
+test("the removal script removes the table whether the node has it or not, then the bridge jr2fence0 when it has no port", async () => {
   const nft = await fakeNft();
+  await fakeIp(nft.dir, [LO, BR, OTHER]);
   assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, nft.dir, { PATH: nft.path }), {
     code: 0,
-    message: "jr2.fence-node ok rules=removed\n",
+    message: "jr2.fence-node ok rules=removed bridge=removed\n",
   });
   assert.equal(await readFile(join(nft.dir, "load-0"), "utf8"), "table inet jr2_fence\ndelete table inet jr2_fence\n");
+  assert.deepEqual((await readFile(join(nft.dir, "ip-calls"), "utf8")).trim().split("\n"), [
+    "-o link show",
+    "link delete jr2fence0",
+  ]);
+  assert.equal(await readFile(join(nft.dir, "links"), "utf8"), `${LO}\n${OTHER}\n`, "only the Fence's bridge goes");
+
+  // A second run, or a node where no pod joined the Fence: no bridge is a success, and nothing is deleted.
+  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, nft.dir, { PATH: nft.path }), {
+    code: 0,
+    message: "jr2.fence-node ok rules=removed bridge=absent\n",
+  });
+  assert.doesNotMatch((await readFile(join(nft.dir, "ip-calls"), "utf8")).split("\n").slice(2).join("\n"), /delete/);
+});
+
+test("the removal script keeps a bridge that has a port and names the ports; an error of ip keeps it too and says why; only the table fails the pod", async () => {
+  const busy = await fakeNft();
+  await fakeIp(busy.dir, [LO, BR, port(8, "veth1a2b"), port(9, "vethc3d4")]);
+  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, busy.dir, { PATH: busy.path }), {
+    code: 0,
+    message: "jr2.fence-node ok rules=removed bridge=kept ports=veth1a2b,vethc3d4\n",
+  });
+  assert.doesNotMatch(await readFile(join(busy.dir, "ip-calls"), "utf8"), /delete/, "a bridge with a port stays");
+
+  const refused = await fakeNft();
+  await fakeIp(refused.dir, [LO, BR], { fail: "ip: RTNETLINK answers: Operation not permitted" });
+  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, refused.dir, { PATH: refused.path }), {
+    code: 0,
+    message: "jr2.fence-node ok rules=removed bridge=kept error=ip: RTNETLINK answers: Operation not permitted \n",
+  });
+
+  const unread = await fakeNft();
+  await fakeIp(unread.dir, [LO, BR], { list: "ip: can't open netlink socket" });
+  assert.deepEqual(await runWith(RULES_REMOVE_SCRIPT, unread.dir, { PATH: unread.path }), {
+    code: 0,
+    message:
+      "jr2.fence-node ok rules=removed bridge=kept error=ip could not list the node's links: ip: can't open netlink socket \n",
+  });
+
+  // The table fails the pod, before the bridge is touched.
+  const noTable = await fakeNft({ fail: "Error: Operation not permitted" });
+  await fakeIp(noTable.dir, [LO, BR]);
+  const failed = await runWith(RULES_REMOVE_SCRIPT, noTable.dir, { PATH: noTable.path });
+  assert.equal(failed.code, 1);
+  assert.match(failed.message, /^jr2\.fence-node fail rules nft could not remove the table inet jr2_fence: /);
+  assert.equal(await readFile(join(noTable.dir, "ip-calls"), "utf8").catch(() => ""), "");
+});
+
+test("the operator image has busybox's ip, which deletes a link with NET_ADMIN alone: no iproute2 is added", async () => {
+  const dockerfile = await readFile(join(import.meta.dirname, "../../../operator/Dockerfile"), "utf8");
+  assert.match(dockerfile, /^FROM alpine:\S+$/m, "alpine's busybox has the applet ip");
 });
 
 /** A plugin that prints what a stock plugin prints with no CNI_COMMAND. */
@@ -1117,7 +1202,7 @@ test("the removal: the removal form with the running image, its rollout, then th
   assert.deepEqual(kube.rollouts, ["jr2-system/daemonset/jr2-fence-node"]);
   assert.deepEqual(kube.deleted, ["jr2-system/daemonset/jr2-fence-node", "manifest"]);
   assert.deepEqual(lines, [
-    'removing the rule table "inet jr2_fence" from each node',
+    'removing the rule table "inet jr2_fence" and the bridge jr2fence0 from each node',
     "uninstalling the DaemonSet jr2-system/jr2-fence-node; the CNI plugins bridge, static, tuning stay in /opt/cni/bin on each node",
     "uninstalling Multus (kube-system), which jr2 installed, and its CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io",
   ]);
@@ -1131,15 +1216,58 @@ test("the removal: the removal form with the running image, its rollout, then th
   await uninstallFence(slow, { log: (l) => warned.push(l) });
   assert.equal(
     warned[1],
-    'warning: the rule table "inet jr2_fence" was not removed from each node in 120 s (error: timed out waiting ' +
-      "for the condition); on a node that keeps it, run `nft delete table inet jr2_fence` as root",
+    'warning: the rule table "inet jr2_fence" and the bridge jr2fence0 were not removed from each node in 120 s ' +
+      "(error: timed out waiting for the condition); on a node that keeps them, run `nft delete table inet " +
+      "jr2_fence` as root, and `ip link delete jr2fence0` when the bridge has no port",
   );
+  assert.equal(warned.length, 3, "no read of the pods after a rollout that did not end");
   assert.deepEqual(slow.deleted, ["jr2-system/daemonset/jr2-fence-node"], "a Multus of another owner stays");
 
   // No DaemonSet: nothing to remove.
   const empty = cluster();
   await uninstallFence(empty, { log: () => {} });
   assert.deepEqual([empty.applied, empty.deleted], [[], []]);
+});
+
+test("the removal warns with the node when a node kept its bridge: its ports, or the error of ip; a pod of an earlier template, a removed or absent bridge, say nothing", async () => {
+  const ds = { ...nodeDs(KIT_VERSION, "jr2-operator:7") };
+  ds.metadata = { ...ds.metadata, annotations: { "deprecated.daemonset.template.generation": "4" } };
+  const kube = cluster([ds]);
+  const pod = (node: string, line: string, generation = "4") => ({
+    metadata: { name: `jr2-fence-node-${node}`, labels: { "pod-template-generation": generation } },
+    spec: { nodeName: node },
+    status: {
+      initContainerStatuses: [
+        { name: "rules", state: { terminated: { exitCode: 0, message: `jr2.fence-node ${line}\n` } } },
+      ],
+    },
+  });
+  kube.pods = [
+    pod("n1", "ok rules=removed bridge=removed"),
+    pod("n2", "ok rules=removed bridge=absent"),
+    pod("n3", "ok rules=removed bridge=kept ports=veth1a2b,vethc3d4"),
+    pod("n4", "ok rules=removed bridge=kept error=ip: RTNETLINK answers: Operation not permitted"),
+    pod("n5", "ok rules=removed bridge=kept ports=vethold", "3"),
+  ];
+  const lines: string[] = [];
+  await uninstallFence(kube, { log: (l) => lines.push(l) });
+  assert.deepEqual(lines.slice(1, 3), [
+    "warning: the node n3 keeps the bridge jr2fence0, because it has the ports veth1a2b, vethc3d4: a pod is still " +
+      "on the Fence there. When that pod is gone, run `ip link delete jr2fence0` as root on the node",
+    "warning: the node n4 keeps the bridge jr2fence0 (ip: RTNETLINK answers: Operation not permitted); run " +
+      "`ip link delete jr2fence0` as root on the node when the bridge has no port",
+  ]);
+  assert.match(lines[3]!, /^uninstalling the DaemonSet jr2-system\/jr2-fence-node/, "the DaemonSet still goes");
+  assert.deepEqual(kube.deleted, ["jr2-system/daemonset/jr2-fence-node"]);
+
+  // A read of the pods that fails warns; it never skips the check in silence.
+  const blind = cluster([nodeDs()], [], ["pod"]);
+  const said: string[] = [];
+  await uninstallFence(blind, { log: (l) => said.push(l) });
+  assert.match(
+    said[1]!,
+    /^warning: jr2 cannot read the pods of jr2-system\/jr2-fence-node \(Error from server \(Forbidden\).*\), so it cannot tell whether each node removed the bridge jr2fence0; on a node that keeps it, run `nft delete table inet jr2_fence` as root, and `ip link delete jr2fence0` when the bridge has no port$/,
+  );
 });
 
 test("the removal keeps jr2's Multus and its definition while the cluster has a NetworkAttachmentDefinition, or when it cannot list them, and says how to remove them", async () => {
@@ -1172,7 +1300,7 @@ test("the removal warns when it cannot read the DaemonSet: the table is not remo
   await uninstallFence(kube, { log: (l) => lines.push(l) });
   assert.match(
     lines[0]!,
-    /^warning: jr2 cannot read the DaemonSet jr2-system\/jr2-fence-node \(Error from server \(Forbidden\).*\), so it did not remove the rule table "inet jr2_fence" from the nodes\. On each node that keeps it, run `nft delete table inet jr2_fence` as root/,
+    /^warning: jr2 cannot read the DaemonSet jr2-system\/jr2-fence-node \(Error from server \(Forbidden\).*\), so it did not remove the rule table "inet jr2_fence" and the bridge jr2fence0 from the nodes\. On each node that keeps them, run `nft delete table inet jr2_fence` as root, and `ip link delete jr2fence0` when the bridge has no port/,
   );
   assert.deepEqual(kube.applied, []);
 });

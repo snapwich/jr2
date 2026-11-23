@@ -111,7 +111,7 @@ fence: this converge installs the Fence's prerequisites (ADR-0084):
       - loads the rule table "inet jr2_fence" into the node's nftables, with the capability NET_ADMIN alone.
   - Multus v4.3.2 (thick, namespaceIsolation, no global namespace), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system/kube-multus-ds. Multus writes the first CNI configuration of each node, so the cluster makes each new pod through Multus.
   A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It asks before it changes Multus.
-  jr2 down --all removes the rule table, the DaemonSet and Multus. The plugin files stay on the nodes.
+  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet and Multus. The plugin files and the kernel module 8021q stay on the nodes.
 first setup of the Fence on context kind-jr2: install the Fence's prerequisites in the list above? [y/N] y
 …
 fence: applying the DaemonSet jr2-system/jr2-fence-node (ghcr.io/snapwich/jr2-operator:<version>)
@@ -172,7 +172,7 @@ fence: this converge installs the Fence's prerequisites (ADR-0084):
       - loads the rule table "inet jr2_fence" into the node's nftables, with the capability NET_ADMIN alone.
   - Multus v4.3.2 (thick, namespaceIsolation, no global namespace), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system/kube-multus-ds. Multus writes the first CNI configuration of each node, so the cluster makes each new pod through Multus.
   A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node to its version, and does not ask. It asks before it changes Multus.
-  jr2 down --all removes the rule table, the DaemonSet and Multus. The plugin files stay on the nodes.
+  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet and Multus. The plugin files and the kernel module 8021q stay on the nodes.
 first setup of the Fence on context kind-jr2: install the Fence's prerequisites in the list above? [y/N] y
 …
 fence: applying the DaemonSet jr2-system/jr2-fence-node (ghcr.io/snapwich/jr2-operator:<version>)

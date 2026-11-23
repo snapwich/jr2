@@ -197,7 +197,8 @@ export function describeInstall(plan: FenceInstallPlan): string[] | undefined {
   said.push(
     `  A later jr2 up of a newer Kit changes the DaemonSet ${FENCE_NODE_DAEMONSET} to its version, and does not ` +
       "ask. It asks before it changes Multus.",
-    "  jr2 down --all removes the rule table, the DaemonSet and Multus. The plugin files stay on the nodes.",
+    `  jr2 down --all removes the rule table, the bridge ${BRIDGE} that the bridge plugin makes, the DaemonSet ` +
+      "and Multus. The plugin files and the kernel module 8021q stay on the nodes.",
   );
   return said;
 }
@@ -657,15 +658,48 @@ fi
 say "ok rules=loaded"
 `;
 
-/** The script of the removal (`jr2 down --all`): the table goes, whether the node has it or not. */
+/**
+ * The script of the removal (`jr2 down --all`). The table goes, whether the node has it or not. Then
+ * the bridge goes, which the bridge plugin made at the node's first attachment and which nothing
+ * else removes. `ip` (busybox's, in the operator image) deletes it with `NET_ADMIN` alone, and only
+ * when it has no port: a port is a pod of some Instance that is still on the Fence, so the bridge
+ * then stays, and the result line names the ports. The result line's `bridge=` is `removed`,
+ * `absent` (a node where no pod joined the Fence), `kept ports=<a,b>`, or `kept error=<reason>`.
+ * Only the table can fail the pod: a bridge that stays does not stop the removal of the DaemonSet.
+ * The kernel module `8021q` stays loaded: another user of the node can need it.
+ */
 export const RULES_REMOVE_SCRIPT = `set -eu
 ${SAY}
+oneline() { echo "$1" | tr '\\n' ' ' | cut -c1-200; }
 if ! out=$(printf '%s\\n' 'table ${RULES_TABLE}' 'delete table ${RULES_TABLE}' | nft -f - 2>&1); then
   say "fail rules nft could not remove the table ${RULES_TABLE}: $(echo "$out" | tr '\\n' ' ' | cut -c1-300)"
   exit 1
 fi
-say "ok rules=removed"
+if ! links=$(ip -o link show 2>&1); then
+  bridge="kept error=ip could not list the node's links: $(oneline "$links")"
+elif ! echo "$links" | grep -q '^[0-9]*: ${BRIDGE}[:@]'; then
+  bridge=absent
+else
+  ports=$(echo "$links" | grep ' master ${BRIDGE} ' | awk '{ print $2 }' | sed 's/[:@].*//' | tr '\\n' ',' | sed 's/,$//')
+  if [ -n "$ports" ]; then
+    bridge="kept ports=$ports"
+  elif out=$(ip link delete ${BRIDGE} 2>&1); then
+    bridge=removed
+  elif ! ip link show ${BRIDGE} >/dev/null 2>&1; then
+    bridge=absent
+  else
+    bridge="kept error=$(oneline "$out")"
+  fi
+fi
+say "ok rules=removed bridge=$bridge"
 `;
+
+/** What the removal form did with a node's bridge, read from its result line. */
+export function bridgeRemovalOf(line: string): { bridge: "removed" | "absent" | "kept"; detail?: string } | undefined {
+  const m = /(?:^| )bridge=(removed|absent|kept)(?: (.*))?$/.exec(line);
+  if (!m) return undefined;
+  return { bridge: m[1] as "removed" | "absent" | "kept", ...(m[2] !== undefined ? { detail: m[2].trim() } : {}) };
+}
 
 /**
  * The script of the `install` init container, which runs before `rules`, so that a node that it
@@ -751,7 +785,8 @@ const IDLE_USER = 65532;
 
 /**
  * The DaemonSet jr2-fence-node, from the operator image. `remove` is its form for
- * `jr2 down --all`: its one init container removes the rule table, and it writes no plugin.
+ * `jr2 down --all`: its one init container removes the rule table and the bridge, and it writes no
+ * plugin.
  */
 export function fenceNodeDaemonSet(image: string, opts: { remove?: boolean } = {}): Json {
   const labels = { app: FENCE_NODE_DAEMONSET, "app.kubernetes.io/managed-by": "jr2" };
@@ -767,7 +802,7 @@ export function fenceNodeDaemonSet(image: string, opts: { remove?: boolean } = {
     command: ["sh", "-c", opts.remove ? RULES_REMOVE_SCRIPT : RULES_SCRIPT],
     terminationMessagePolicy: "FallbackToLogsOnError",
     resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { memory: "64Mi" } },
-    // NET_ADMIN alone, for nft in the node's network namespace.
+    // NET_ADMIN alone, for nft (and, in the removal form, `ip link delete`) in the node's network namespace.
     securityContext: { ...restricted, capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] } },
   };
   const install = {
@@ -1164,17 +1199,69 @@ export async function installFence(
 
 /** How long the removal form of the DaemonSet may take on each node. */
 const REMOVE_WAIT_S = 120;
+/** How a person removes the table and the bridge on a node, as root. */
+const BY_HAND = `run \`nft delete table ${RULES_TABLE}\` as root, and \`ip link delete ${BRIDGE}\` when the bridge has no port`;
 
 /**
- * Remove what jr2 installed for the Fence on the cluster: the rule table on each node, the fence
- * node's DaemonSet, and the Multus that carries jr2's annotation. A Multus that jr2 did not install
- * stays. The plugin files stay on the nodes: jr2 cannot tell them from files that another tool put
- * there.
+ * After the removal form's rollout: a warning for each node whose pod kept the bridge (a port on it,
+ * so a pod is still on the Fence there, or an error of `ip`). A read that fails warns too.
+ */
+async function warnKeptBridges(
+  kube: Pick<KubeAdmin, "getJson" | "listJson">,
+  opts: { context?: string; log: (line: string) => void },
+): Promise<void> {
+  const ctx = opts.context !== undefined ? { context: opts.context } : {};
+  let pods: FenceNodePod[];
+  let generation: string | undefined;
+  try {
+    const ds = await kube.getJson<DaemonSetObject>({
+      kind: "daemonset",
+      name: FENCE_NODE_DAEMONSET,
+      namespace: OPERATOR_NAMESPACE,
+      ...ctx,
+    });
+    generation = ds?.metadata.annotations?.[TEMPLATE_GENERATION_ANNOTATION];
+    pods = await kube.listJson<FenceNodePod>({
+      kind: "pod",
+      selector: `app=${FENCE_NODE_DAEMONSET}`,
+      namespace: OPERATOR_NAMESPACE,
+      ...ctx,
+    });
+  } catch (err) {
+    opts.log(
+      `warning: jr2 cannot read the pods of ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} (${firstLine(err)}), so ` +
+        `it cannot tell whether each node removed the bridge ${BRIDGE}; on a node that keeps it, ${BY_HAND}`,
+    );
+    return;
+  }
+  for (const pod of pods) {
+    if (generation !== undefined && pod.metadata?.labels?.[TEMPLATE_GENERATION_LABEL] !== generation) continue;
+    const node = pod.spec?.nodeName ?? pod.metadata?.name ?? "?";
+    const removal = bridgeRemovalOf(fenceNodeResultsOf(pod).join(" "));
+    if (removal?.bridge !== "kept") continue;
+    const ports = removal.detail?.startsWith("ports=") ? removal.detail.slice("ports=".length) : undefined;
+    opts.log(
+      ports !== undefined
+        ? `warning: the node ${node} keeps the bridge ${BRIDGE}, because it has the ports ${ports.split(",").join(", ")}: ` +
+            `a pod is still on the Fence there. When that pod is gone, run \`ip link delete ${BRIDGE}\` as root on ` +
+            "the node"
+        : `warning: the node ${node} keeps the bridge ${BRIDGE} (${(removal.detail ?? "").replace(/^error=/, "")}); ` +
+            `run \`ip link delete ${BRIDGE}\` as root on the node when the bridge has no port`,
+    );
+  }
+}
+
+/**
+ * Remove what jr2 installed for the Fence on the cluster: the rule table and the bridge on each node,
+ * the fence node's DaemonSet, and the Multus that carries jr2's annotation. A Multus that jr2 did not
+ * install stays. The plugin files stay on the nodes: jr2 cannot tell them from files that another
+ * tool put there. The kernel module `8021q` stays loaded: another user of the node can need it.
  *
- * The table goes by the DaemonSet itself: its removal form, applied with the image that it runs,
- * removes the table in each pod's init container, and the DaemonSet goes when each pod is Ready.
+ * The table and the bridge go by the DaemonSet itself: its removal form, applied with the image that
+ * it runs, removes them in each pod's init container, and the DaemonSet goes when each pod is Ready.
  * No pod of jr2 is then left on a node with a capability. A node where no pod became Ready in time
- * (a node that is down) keeps its table: the warning names the command that removes it.
+ * (a node that is down) keeps both: the warning names the commands that remove them. A bridge with a
+ * port stays, and a warning names its node and ports.
  *
  * jr2's Multus goes with the objects of its manifest, its CustomResourceDefinition too, which deletes
  * each NetworkAttachmentDefinition of the cluster. So when the cluster has a NetworkAttachmentDefinition
@@ -1198,16 +1285,17 @@ export async function uninstallFence(
   } catch (err) {
     opts.log(
       `warning: jr2 cannot read the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} (${firstLine(err)}), ` +
-        `so it did not remove the rule table "${RULES_TABLE}" from the nodes. On each node that keeps it, run ` +
-        `\`nft delete table ${RULES_TABLE}\` as root; then delete the DaemonSet ` +
+        `so it did not remove the rule table "${RULES_TABLE}" and the bridge ${BRIDGE} from the nodes. On each ` +
+        `node that keeps them, ${BY_HAND}; then delete the DaemonSet ` +
         `(kubectl -n ${OPERATOR_NAMESPACE} delete daemonset ${FENCE_NODE_DAEMONSET})`,
     );
   }
   if (existing) {
     const image = existing.spec?.template?.spec?.containers?.[0]?.image;
     if (image !== undefined) {
-      opts.log(`removing the rule table "${RULES_TABLE}" from each node`);
+      opts.log(`removing the rule table "${RULES_TABLE}" and the bridge ${BRIDGE} from each node`);
       await kube.apply({ manifest: JSON.stringify(fenceNodeDaemonSet(image, { remove: true })), ...ctx });
+      let done = false;
       try {
         await kube.waitRollout({
           kind: "daemonset",
@@ -1216,17 +1304,19 @@ export async function uninstallFence(
           timeoutSeconds: REMOVE_WAIT_S,
           ...ctx,
         });
+        done = true;
       } catch (err) {
         opts.log(
-          `warning: the rule table "${RULES_TABLE}" was not removed from each node in ${REMOVE_WAIT_S} s ` +
-            `(${firstLine(err)}); on a node that keeps it, run \`nft delete table ${RULES_TABLE}\` as root`,
+          `warning: the rule table "${RULES_TABLE}" and the bridge ${BRIDGE} were not removed from each node in ` +
+            `${REMOVE_WAIT_S} s (${firstLine(err)}); on a node that keeps them, ${BY_HAND}`,
         );
       }
+      if (done) await warnKeptBridges(kube, { ...ctx, log: opts.log });
     } else {
       opts.log(
         `warning: the DaemonSet ${OPERATOR_NAMESPACE}/${FENCE_NODE_DAEMONSET} names no image, so jr2 did not ` +
-          `remove the rule table "${RULES_TABLE}" from the nodes; on each node that keeps it, run ` +
-          `\`nft delete table ${RULES_TABLE}\` as root`,
+          `remove the rule table "${RULES_TABLE}" and the bridge ${BRIDGE} from the nodes; on each node that ` +
+          `keeps them, ${BY_HAND}`,
       );
     }
     opts.log(
