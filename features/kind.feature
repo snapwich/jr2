@@ -838,8 +838,12 @@ Feature: a workspace() run drives a real Sandbox on kind
     holds the reserved prefix jr2-fence-, or a JSON escape, must be in an Instance's namespace and
     name each network as <its namespace>/<name>[@<interface>]; and an attachment on the bridge
     jr2fence0 must be in an Instance's namespace, with the reserved prefix. `own` is the scenario's
-    Instance namespace and `peer` another Instance's. Each check is a server-side dry run, which
-    makes nothing; an update is a dry-run patch of a pod that is there.
+    Instance namespace and `peer` another Instance's. A Binding's annotations are merged into its
+    pod, so the pods' policy judges a Binding too. Each check is a server-side dry run, which makes
+    nothing: an update is a dry-run patch of a pod that is there (`change`: of the pod that has the
+    annotation already), and `binding` and `bindings` are dry-run Bindings of a pod that no node
+    can take. The rule in TypeScript that `jr2 up` audits the cluster with must give each row's
+    answer too.
 
     Scenario: the policies admit the Instance's own forms, and deny each other way to name an attachment of the Fence
       Given the kind instance is serving
@@ -867,6 +871,14 @@ Feature: a workspace() run drives a real Sandbox on kind
         | own         | update  | default-network | {peer}/jr2-fence-3                                   | deny   |
         | kube-system | update  | default-network | {own}/jr2-fence-3                                    | deny   |
         | kube-system | status  | networks        | {own}/jr2-fence-3                                    | deny   |
+        | own         | change  | networks        | {peer}/jr2-fence-uplink@net1                         | deny   |
+        | default     | binding  | default-network | {own}/jr2-fence-3                                   | deny   |
+        | default     | binding  | networks        | {own}/jr2-fence-3                                   | deny   |
+        | default     | bindings | default-network | {own}/jr2-fence-3                                   | deny   |
+        | own         | bindings | networks        | {peer}/jr2-fence-3                                  | deny   |
+        | own         | binding  | default-network | {own}/jr2-fence-3                                   | admit  |
+        | default     | binding  | none            |                                                     | admit  |
+        | default     | bindings | none            |                                                     | admit  |
       And the API server answers each server-side dry run of a NetworkAttachmentDefinition as the table says
         | namespace   | name            | config                            | answer |
         | own         | jr2-fence-check | bridge jr2fence0                  | admit  |

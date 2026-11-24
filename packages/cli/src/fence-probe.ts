@@ -49,7 +49,7 @@ import {
   RULES_TABLE,
 } from "./fence-install.ts";
 import { OPERATOR_NAMESPACE } from "./deploy.ts";
-import { checkFenceGuard } from "./fence-guard.ts";
+import { auditFenceGuard, checkFenceGuard } from "./fence-guard.ts";
 import type { FenceInstallPlan } from "./fence-install.ts";
 import type { KubeAdmin } from "./kube.ts";
 
@@ -567,6 +567,9 @@ export async function checkFenceApi(
     ...ctx,
     ...(opts.guardSettleMs !== undefined ? { settleMs: opts.guardSettleMs } : {}),
   });
+  // The policies are in force now, so they judge each object made after this: the audit judges each
+  // object that is there, which they never judged.
+  await auditFenceGuard(kube, ctx);
 }
 
 // ---- after the Custodian is Ready: the probe pod on each of its nodes -----------------------------

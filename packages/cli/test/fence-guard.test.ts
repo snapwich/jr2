@@ -8,12 +8,16 @@ import { KIT_VERSION } from "../src/deploy.ts";
 import {
   applyFenceGuard,
   ATTACHMENT_GUARD,
+  attachmentGuardRefusal,
+  auditFenceGuard,
+  auditFenceGuardObjects,
   checkFenceGuard,
   fenceGuardObjects,
   GUARD_ATTACHMENTS,
   GUARD_PODS,
   planFenceGuard,
   POD_GUARD,
+  podGuardRefusal,
   removeFenceGuard,
 } from "../src/fence-guard.ts";
 
@@ -25,7 +29,7 @@ type Obj = {
 
 const objects = () => (fenceGuardObjects() as { items: Obj[] }).items;
 
-test("the two policies and their bindings: Fail, Deny, each namespace, and the pods' rule on CREATE and on UPDATE also through pods/status", () => {
+test("the two policies and their bindings: Fail, Deny, each namespace, and the pods' rule on CREATE and on UPDATE also through pods/status, and on CREATE of a Binding", () => {
   const items = objects();
   assert.deepEqual(
     items.map((o) => `${o.kind}/${o.metadata.name}`),
@@ -50,6 +54,8 @@ test("the two policies and their bindings: Fail, Deny, each namespace, and the p
   assert.deepEqual(pods.spec.matchConstraints, {
     resourceRules: [
       { apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE", "UPDATE"], resources: ["pods", "pods/status"] },
+      // A Binding's annotations are merged into its pod.
+      { apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE"], resources: ["pods/binding", "bindings"] },
     ],
   });
   assert.deepEqual(nads.spec.matchConstraints, {
@@ -269,5 +275,150 @@ test("the removal: the bindings, then the policies; a delete that fails warns", 
   assert.match(
     warned[1]!,
     /^warning: jr2 could not delete the validatingadmissionpolicybinding jr2-fence-guard-pods \(Error from server \(Forbidden\): cannot delete\)/,
+  );
+});
+
+// ---- the rules in TypeScript, for the audit -------------------------------------------------------------
+// One table for the pods' rule and one for the attachments' rule. The @kind scenario judges each row of
+// its matrix with the API server (the CEL) and with these functions, so the two cannot drift apart.
+
+const own = { name: "inst", labels: { "jr2.dev/instance": "default" } };
+const peer = { name: "inst-b", labels: { "jr2.dev/instance": "b" } };
+const plain = { name: "other" };
+const DN = "v1.multus-cni.io/default-network";
+const NW = "k8s.v1.cni.cncf.io/networks";
+
+test("the pods' rule in TypeScript admits and refuses as the CEL does", () => {
+  const cases: Array<[typeof own | typeof plain, Record<string, string> | undefined, "admit" | string]> = [
+    [own, { [DN]: "inst/jr2-fence-3" }, "admit"],
+    [own, { [NW]: "inst/jr2-fence-uplink@net1" }, "admit"],
+    [own, { [NW]: "inst/jr2-fence-1,inst/x@net2" }, "admit"],
+    [own, undefined, "admit"],
+    [own, { other: "inst-b/jr2-fence-3" }, "admit"],
+    [own, { [NW]: "other/macvlan" }, "admit"],
+    [plain, { [NW]: "other/macvlan" }, "admit"],
+    [plain, { [DN]: "kube-system/calico" }, "admit"],
+    [plain, { [NW]: '[{"name":"macvlan"}]' }, "admit"],
+    [own, { [DN]: "jr2-fence-3" }, `own ${DN}`],
+    [own, { [NW]: "jr2-fence-3" }, `own ${NW}`],
+    [own, { [DN]: "inst-b/jr2-fence-3" }, `own ${DN}`],
+    [own, { [NW]: "inst/jr2-fence-1,inst-b/jr2-fence-1" }, `own ${NW}`],
+    [own, { [NW]: '[{"name":"jr2-fence-3","namespace":"inst"}]' }, `own ${NW}`],
+    [own, { [NW]: "inst/jr2-fence-1, inst/jr2-fence-2" }, `own ${NW}`],
+    [own, { [NW]: " inst/jr2-fence-1" }, `own ${NW}`],
+    [own, { [NW]: "inst/jr2-fence-1\n" }, `own ${NW}`],
+    [own, { [DN]: "inst/x", [NW]: "inst-b/jr2-fence-1" }, `own ${NW}`],
+    [peer, { [DN]: "inst/jr2-fence-3" }, `own ${DN}`],
+    [plain, { [DN]: "inst/jr2-fence-3" }, `instance ${DN}`],
+    [plain, { [NW]: "inst/jr2-fence-3@net1" }, `instance ${NW}`],
+    [plain, { [NW]: '[{"name":"jr2\\u002dfence-3","namespace":"inst"}]' }, `instance ${NW}`],
+    [plain, { [NW]: "other/jr2-fence-3" }, `instance ${NW}`],
+    [plain, { [NW]: "other/x\\u0041" }, `instance ${NW}`],
+  ];
+  const wrong: string[] = [];
+  for (const [ns, annotations, want] of cases) {
+    const r = podGuardRefusal(annotations, ns);
+    const got = r === undefined ? "admit" : `${r.why.startsWith("the namespace") ? "instance" : "own"} ${r.annotation}`;
+    if (got !== want) wrong.push(`${ns.name} ${JSON.stringify(annotations)}: ${got}, not ${want}`);
+  }
+  assert.deepEqual(wrong, []);
+  assert.deepEqual(podGuardRefusal({ [DN]: "inst/jr2-fence-3" }, plain), {
+    annotation: DN,
+    why: "the namespace other is not the namespace of a jr2 Instance (it has no label jr2.dev/instance)",
+  });
+});
+
+test("the attachments' rule in TypeScript admits and refuses as the CEL does", () => {
+  const bridge = (name: string) => JSON.stringify({ cniVersion: "1.0.0", name: "c", type: "bridge", bridge: name });
+  const cases: Array<[typeof own | typeof plain, string, string | undefined, "admit" | "deny"]> = [
+    [own, "jr2-fence-check", bridge("jr2fence0"), "admit"],
+    [own, "jr2-fence-check", bridge("br0"), "admit"],
+    [own, "check", bridge("br0"), "admit"],
+    [plain, "check", bridge("br0"), "admit"],
+    [plain, "check", undefined, "admit"],
+    [own, "check", bridge("jr2fence0"), "deny"],
+    [plain, "jr2-fence-check", bridge("jr2fence0"), "deny"],
+    [plain, "check", JSON.stringify({ type: "macvlan", master: "jr2fence0" }), "deny"],
+    [plain, "check", '{"type":"bridge","bridge":"jr2\\u0066ence0"}', "deny"],
+    [own, "check", '{"type":"bridge","bridge":"jr2\\u0066ence0"}', "deny"],
+  ];
+  const wrong: string[] = [];
+  for (const [ns, name, config, want] of cases) {
+    const got = attachmentGuardRefusal(name, config, ns) === undefined ? "admit" : "deny";
+    if (got !== want) wrong.push(`${ns.name}/${name} ${config}: ${got}, not ${want}`);
+  }
+  assert.deepEqual(wrong, []);
+});
+
+test("the audit names each pod and each attachment that the policies refuse now, also a pod that has ended", () => {
+  const pod = (namespace: string, name: string, annotations?: Record<string, string>, phase?: string) => ({
+    metadata: { name, namespace, ...(annotations !== undefined ? { annotations } : {}) },
+    ...(phase !== undefined ? { status: { phase } } : {}),
+  });
+  const lines = auditFenceGuardObjects(
+    [own, peer, plain],
+    [
+      pod("inst", "harness", { [DN]: "inst/jr2-fence-0" }, "Running"),
+      pod("other", "plain", { [NW]: "other/macvlan" }, "Running"),
+      pod("other", "waits", { [DN]: "inst/jr2-fence-0" }, "Pending"),
+      pod("other", "done", { [NW]: "inst/jr2-fence-uplink@net1" }, "Succeeded"),
+      pod("inst-b", "cross", { [DN]: "inst/jr2-fence-0" }),
+      // A namespace that the list did not have is judged with no label.
+      pod("new", "late", { [DN]: "inst/jr2-fence-1" }, "Pending"),
+    ],
+    [
+      { metadata: { name: "jr2-fence-0", namespace: "inst" }, spec: { config: '{"bridge":"jr2fence0"}' } },
+      { metadata: { name: "evil", namespace: "other" }, spec: { config: '{"bridge":"jr2fence0"}' } },
+      { metadata: { name: "fine", namespace: "other" }, spec: { config: '{"bridge":"br0"}' } },
+    ],
+  );
+  assert.deepEqual(lines, [
+    "the pod other/waits (Pending), v1.multus-cni.io/default-network: inst/jr2-fence-0 — the namespace other is not the namespace of a jr2 Instance (it has no label jr2.dev/instance)",
+    "the pod other/done (Succeeded), k8s.v1.cni.cncf.io/networks: inst/jr2-fence-uplink@net1 — the namespace other is not the namespace of a jr2 Instance (it has no label jr2.dev/instance)",
+    "the pod inst-b/cross, v1.multus-cni.io/default-network: inst/jr2-fence-0 — a network in it is not <namespace>/<name> or <namespace>/<name>@<interface> with the namespace of the pod, inst-b, in a comma list with no JSON and no space",
+    "the pod new/late (Pending), v1.multus-cni.io/default-network: inst/jr2-fence-1 — the namespace new is not the namespace of a jr2 Instance (it has no label jr2.dev/instance)",
+    "the NetworkAttachmentDefinition other/evil — its config holds jr2fence0 or a JSON escape \\u, and it is not in the namespace of a jr2 Instance (the label jr2.dev/instance) with a name that starts with jr2-fence-",
+  ]);
+});
+
+test("the audit lists the namespaces, the pods and the attachments of each namespace; it refuses with each one named and what to do; a list that fails refuses", async () => {
+  const lists: string[] = [];
+  const kube = (pods: unknown[], fail?: string) => ({
+    async listJson<T>(o: { kind: string; allNamespaces?: boolean }): Promise<T[]> {
+      lists.push(`${o.kind}${o.allNamespaces ? " (all)" : ""}`);
+      if (o.kind === fail) throw new Error("kubectl get exited (1): Error from server (Forbidden): cannot list");
+      if (o.kind === "namespace")
+        return [{ metadata: { name: "inst", labels: own.labels } }, { metadata: { name: "other" } }] as T[];
+      if (o.kind === "pod") return pods as T[];
+      return [] as T[];
+    },
+  });
+  await auditFenceGuard(
+    kube([{ metadata: { name: "h", namespace: "inst", annotations: { [DN]: "inst/jr2-fence-0" } } }]),
+    {},
+  );
+  assert.deepEqual(lists, ["namespace", "pod (all)", "network-attachment-definitions.k8s.cni.cncf.io (all)"]);
+  const many = Array.from({ length: 22 }, (_, i) => ({
+    metadata: { name: `p${i}`, namespace: "other", annotations: { [DN]: "inst/jr2-fence-0" } },
+    status: { phase: "Pending" },
+  }));
+  await assert.rejects(auditFenceGuard(kube(many), {}), (e: Error) => {
+    const lines = e.message.split("\n");
+    assert.equal(
+      lines[0],
+      "fence: the cluster has objects that jr2's admission policies refuse now. Each one was made while the policies were absent, and each one can join the VLANs of an Instance (ADR-0084):",
+    );
+    assert.match(
+      lines[1]!,
+      /^ {2}- the pod other\/p0 \(Pending\), v1\.multus-cni\.io\/default-network: inst\/jr2-fence-0 — /,
+    );
+    assert.equal(lines[21], "  - and 2 more");
+    assert.match(lines[22]!, /^Delete each one \(`kubectl delete pod -n <namespace> <name>`, /);
+    assert.match(lines[22]!, /This converge applied no attachment of the Fence\.$/);
+    return true;
+  });
+  await assert.rejects(
+    auditFenceGuard(kube([], "network-attachment-definitions.k8s.cni.cncf.io"), {}),
+    /fence: jr2 cannot list the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster \(kubectl get exited \(1\): Error from server \(Forbidden\): cannot list\)/,
   );
 });

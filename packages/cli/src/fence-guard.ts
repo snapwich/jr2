@@ -6,10 +6,12 @@
 // binding, before any attachment of the Fence exists, and checks them with server-side dry runs.
 //
 //   jr2-fence-guard-pods         a pod (CREATE, and an UPDATE that changes one of the two
-//                                annotations, also through pods/status) whose annotation holds the
-//                                reserved prefix `jr2-fence-`, or a JSON escape `\u`, must be in an
-//                                Instance's namespace (the label `jr2.dev/instance`, which `jr2 up`
-//                                sets), and each network of that annotation must be
+//                                annotations, also through pods/status), or a Binding (CREATE, of
+//                                pods/binding or bindings: its annotations are merged into its
+//                                pod), whose annotation holds the reserved prefix `jr2-fence-`, or
+//                                a JSON escape `\u`, must be in an Instance's namespace (the label
+//                                `jr2.dev/instance`, which `jr2 up` sets), and each network of that
+//                                annotation must be
 //                                `<its own namespace>/<name>[@<interface>]`, in a comma list: no
 //                                JSON, no bare name, no space. So it cannot name another namespace.
 //   jr2-fence-guard-attachments  a NetworkAttachmentDefinition (CREATE, UPDATE) whose config holds
@@ -19,8 +21,9 @@
 //
 // A blunt rule, not a parse: an annotation or a config that can reach the Fence is one that names
 // it in plain text, because the names are lowercase letters, digits and `-`, and only a JSON escape
-// `\u` can spell those in another way. A person who can label a namespace, or create a pod or an
-// attachment in an Instance's namespace, is trusted: those rights already reach the Instance.
+// `\u` can spell those in another way. The policies judge a request only, so `jr2 up` also audits
+// the pods and the attachments that are there (`auditFenceGuard`), with the same rules in
+// TypeScript. Whom the guard holds against, and whom jr2 trusts, is ADR-0084's statement.
 
 import {
   FENCE_ATTACHMENT_PREFIX,
@@ -72,6 +75,72 @@ export const ATTACHMENT_GUARD = {
   instance: POD_GUARD.instance,
 } as const;
 
+// ---- the same rules in TypeScript, for the audit of what the cluster has ---------------------------
+// Each function below is the CEL above, clause by clause, as the API server applies it to a CREATE
+// (no `oldObject`). Change the two together: the unit tests judge both with one table of cases, and
+// the @kind scenario judges each row of its matrix with the API server and with these functions.
+
+/** A namespace as the policies read it: its name and its labels. */
+export type GuardNamespace = { name: string; labels?: Record<string, string> };
+
+const ESCAPE = "\\u";
+const instanceOf = (ns: GuardNamespace): boolean => LABEL_INSTANCE in (ns.labels ?? {});
+const ownOf = (ns: GuardNamespace): RegExp =>
+  new RegExp(`^${ns.name}/${LABEL}(@[a-z0-9]+)?(,${ns.name}/${LABEL}(@[a-z0-9]+)?)*$`);
+
+/**
+ * Why `jr2-fence-guard-pods` refuses a CREATE of an object with these annotations (a pod, or a
+ * Binding) in `namespace`, or `undefined` when it admits it. The reason names the annotation.
+ */
+export function podGuardRefusal(
+  annotations: Record<string, string> | undefined,
+  namespace: GuardNamespace,
+): { annotation: string; why: string } | undefined {
+  const values = annotations ?? {};
+  // fence
+  const fence = [FENCE_DEFAULT_NETWORK_ANNOTATION, MULTUS_NETWORKS_ANNOTATION].filter(
+    (k) => k in values && (values[k]!.includes(FENCE_ATTACHMENT_PREFIX) || values[k]!.includes(ESCAPE)),
+  );
+  if (fence.length === 0) return undefined;
+  // the first validation: `variables.fence.size() == 0 || variables.instance`
+  if (!instanceOf(namespace)) {
+    return {
+      annotation: fence[0]!,
+      why: `the namespace ${namespace.name} is not the namespace of a jr2 Instance (it has no label ${LABEL_INSTANCE})`,
+    };
+  }
+  // the second: `variables.fence.all(k, variables.annotations[k].matches(variables.own))`
+  const own = ownOf(namespace);
+  const wrong = fence.find((k) => !own.test(values[k]!));
+  if (wrong === undefined) return undefined;
+  return {
+    annotation: wrong,
+    why:
+      `a network in it is not <namespace>/<name> or <namespace>/<name>@<interface> with the namespace of the ` +
+      `pod, ${namespace.name}, in a comma list with no JSON and no space`,
+  };
+}
+
+/**
+ * Why `jr2-fence-guard-attachments` refuses a CREATE of a NetworkAttachmentDefinition with this
+ * name and config in `namespace`, or `undefined` when it admits it.
+ */
+export function attachmentGuardRefusal(
+  name: string,
+  config: string | undefined,
+  namespace: GuardNamespace,
+): string | undefined {
+  const text = config ?? "";
+  // bridge
+  if (!(text.includes(FENCE_BRIDGE) || text.includes(ESCAPE))) return undefined;
+  // `!variables.bridge || (variables.instance && object.metadata.name.startsWith(prefix))`
+  if (instanceOf(namespace) && name.startsWith(FENCE_ATTACHMENT_PREFIX)) return undefined;
+  return (
+    `its config holds ${FENCE_BRIDGE} or a JSON escape ${ESCAPE}, and it is not in the namespace of a jr2 ` +
+    `Instance (the label ${LABEL_INSTANCE}) with a name that starts with ${FENCE_ATTACHMENT_PREFIX}`
+  );
+}
+
 const labels = (): Record<string, string> => ({
   "app.kubernetes.io/managed-by": "jr2",
   [LABEL_VERSION]: KIT_VERSION,
@@ -105,6 +174,15 @@ export function fenceGuardObjects(): Json {
             // pods/status can change a pod's annotations too, and Multus reads them again when the
             // pod's network is made again.
             resources: ["pods", "pods/status"],
+          },
+          {
+            // A Binding's annotations are merged into the pod that it binds, so a Binding can set an
+            // annotation on a pod that was admitted with none. Here `object` is the Binding, and
+            // `oldObject` is null, so each Multus annotation of the Binding is judged.
+            apiGroups: [""],
+            apiVersions: ["v1"],
+            operations: ["CREATE"],
+            resources: ["pods/binding", "bindings"],
           },
         ],
       },
@@ -318,6 +396,101 @@ export async function checkFenceGuard(
       );
     }
   }
+}
+
+/** The attachments' resource, as kubectl names it. */
+const ATTACHMENTS_RESOURCE = "network-attachment-definitions.k8s.cni.cncf.io";
+/** The audit names at most this many objects, and then a count of the others. */
+const AUDIT_NAMED = 20;
+
+type AuditPod = {
+  metadata: { name: string; namespace: string; annotations?: Record<string, string> };
+  status?: { phase?: string };
+};
+type AuditAttachment = { metadata: { name: string; namespace: string }; spec?: { config?: string } };
+
+/**
+ * Each pod and each NetworkAttachmentDefinition of the cluster that the policies would refuse now,
+ * as one line each (ADR-0084). The policies judge a request, not an object that is there: a pod or
+ * an attachment that was made while they were absent (before the first `jr2 up` with a Fence, or
+ * after `jr2 down --all`) is not judged. And a pod that waits for its network gets it when the
+ * attachment that it names is made: Multus reads the attachment at each CNI ADD. A pod that has
+ * ended is named too: its annotation is the evidence of an attempt.
+ */
+export function auditFenceGuardObjects(
+  namespaces: readonly GuardNamespace[],
+  pods: readonly AuditPod[],
+  attachments: readonly AuditAttachment[],
+): string[] {
+  const byName = new Map(namespaces.map((ns) => [ns.name, ns]));
+  // A namespace that the list did not have (made after it) is judged with no label.
+  const nsOf = (name: string): GuardNamespace => byName.get(name) ?? { name };
+  const lines: string[] = [];
+  for (const pod of pods) {
+    const { name, namespace, annotations } = pod.metadata;
+    const refused = podGuardRefusal(annotations, nsOf(namespace));
+    if (refused === undefined) continue;
+    const phase = pod.status?.phase !== undefined ? ` (${pod.status.phase})` : "";
+    lines.push(
+      `the pod ${namespace}/${name}${phase}, ${refused.annotation}: ${annotations![refused.annotation]} — ${refused.why}`,
+    );
+  }
+  for (const nad of attachments) {
+    const { name, namespace } = nad.metadata;
+    const why = attachmentGuardRefusal(name, nad.spec?.config, nsOf(namespace));
+    if (why !== undefined) lines.push(`the NetworkAttachmentDefinition ${namespace}/${name} — ${why}`);
+  }
+  return lines;
+}
+
+/**
+ * Refuse the converge while the cluster has a pod or a NetworkAttachmentDefinition that jr2's
+ * policies would refuse now (`auditFenceGuardObjects`). It runs after the dry runs of the guard
+ * passed, so the policies judge each object that is made after the lists, and before the first
+ * attachment of the Fence of this converge. A list that fails refuses the converge.
+ */
+export async function auditFenceGuard(kube: Pick<KubeAdmin, "listJson">, opts: { context?: string }): Promise<void> {
+  const ctx = opts.context !== undefined ? { context: opts.context } : {};
+  let lines: string[];
+  try {
+    const namespaces = await kube.listJson<{ metadata: { name: string; labels?: Record<string, string> } }>({
+      kind: "namespace",
+      ...ctx,
+    });
+    const pods = await kube.listJson<AuditPod>({ kind: "pod", allNamespaces: true, ...ctx });
+    const attachments = await kube.listJson<AuditAttachment>({
+      kind: ATTACHMENTS_RESOURCE,
+      allNamespaces: true,
+      ...ctx,
+    });
+    lines = auditFenceGuardObjects(
+      namespaces.map((ns) => ({
+        name: ns.metadata.name,
+        ...(ns.metadata.labels !== undefined ? { labels: ns.metadata.labels } : {}),
+      })),
+      pods,
+      attachments,
+    );
+  } catch (err) {
+    throw new Error(
+      `fence: jr2 cannot list the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster ` +
+        `(${firstLine(err)}), so it cannot see whether one was made while its admission policies were absent ` +
+        "(ADR-0084). Give the user of this context the right to list them in each namespace, then run `jr2 up` " +
+        "again. This converge applied no attachment of the Fence.",
+    );
+  }
+  if (lines.length === 0) return;
+  const named = lines.slice(0, AUDIT_NAMED).map((l) => `  - ${l}`);
+  if (lines.length > AUDIT_NAMED) named.push(`  - and ${lines.length - AUDIT_NAMED} more`);
+  throw new Error(
+    "fence: the cluster has objects that jr2's admission policies refuse now. Each one was made while the " +
+      "policies were absent, and each one can join the VLANs of an Instance (ADR-0084):\n" +
+      `${named.join("\n")}\n` +
+      "Delete each one (`kubectl delete pod -n <namespace> <name>`, " +
+      "`kubectl delete network-attachment-definitions.k8s.cni.cncf.io -n <namespace> <name>`), then run " +
+      "`jr2 up` again. A pod that has ended is named too: its annotation shows an attempt to join. This " +
+      "converge applied no attachment of the Fence.",
+  );
 }
 
 /** Delete the bindings and the policies (`jr2 down --all`). A delete that fails warns. */

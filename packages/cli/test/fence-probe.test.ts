@@ -385,7 +385,7 @@ test("the refusal names each node and part, and the likely causes, with the page
   assert.match(fenceRefusal([{ node: "x", part: "p", why: "w" }]).message, /^fence: a Sandbox node fails/);
 });
 
-test("from the API: no attachment definition, or a Sandbox node with no Ready pod of jr2's Multus, refuses; a Multus of another owner is not read; then the guard's dry runs", async () => {
+test("from the API: no attachment definition, or a Sandbox node with no Ready pod of jr2's Multus, refuses; a Multus of another owner is not read; then the guard's dry runs, then the audit", async () => {
   const ready = (node: string, status = "True") => ({
     spec: { nodeName: node },
     status: { conditions: [{ type: "Ready", status }] },
@@ -404,6 +404,9 @@ test("from the API: no attachment definition, or a Sandbox node with no Ready po
         assert.equal(opts.fieldSelector, "metadata.name=network-attachment-definitions.k8s.cni.cncf.io");
         return crds as never[];
       }
+      // The audit's lists (fence-guard.test.ts judges what they hold).
+      if (opts.kind === "namespace" || opts.kind === "network-attachment-definitions.k8s.cni.cncf.io") return [];
+      if (opts.kind === "pod" && opts.selector === undefined) return [];
       assert.deepEqual([opts.namespace, opts.selector], ["kube-system", "app=multus"]);
       return pods as never[];
     },
@@ -434,6 +437,9 @@ test("from the API: no attachment definition, or a Sandbox node with no Ready po
     "dry-run Pod",
     "dry-run Pod",
     "dry-run NetworkAttachmentDefinition",
+    "list namespace",
+    "list pod",
+    "list network-attachment-definitions.k8s.cni.cncf.io",
   ]);
   // A Multus of another owner: jr2 does not look for its pods; the probe pod's address judges it.
   calls.length = 0;
@@ -443,6 +449,9 @@ test("from the API: no attachment definition, or a Sandbox node with no Ready po
     "dry-run Pod",
     "dry-run Pod",
     "dry-run NetworkAttachmentDefinition",
+    "list namespace",
+    "list pod",
+    "list network-attachment-definitions.k8s.cni.cncf.io",
   ]);
 });
 
