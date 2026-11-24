@@ -388,8 +388,10 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   the NetworkAttachmentDefinitions of the cluster. When one exists that the policies refuse now, the error starts with
   `fence: the cluster has objects that jr2's admission policies refuse now.` and names each one. It was made while the
   policies were absent. Delete each one, and run `jr2 up` again. When jr2 cannot list them, the error starts with
-  `fence: jr2 cannot list the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster (<reason>)`. Give
-  the user of your kubectl context the right to list them in each namespace.
+  `fence: jr2 cannot list the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster (<reason>)`. When
+  the reason is a refused read, give the user of your kubectl context the right to list them in each namespace. When the
+  reason names `maxBuffer`, the list of all pods of the cluster is larger than the 64 MiB that jr2 reads: the cluster is
+  too large for this check.
 
 - When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` checks the Fence on each Sandbox node, after it installed
   or found its prerequisites. While a node fails, `jr2 up` refuses to converge. The error starts with

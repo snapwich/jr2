@@ -187,13 +187,15 @@ the power of a node, or the power to change the policies. Thus, on a shared clus
 must not reach an Instance:
 
 1. Enforce the Pod Security level `baseline`, or a stricter level, in each namespace where the person can create pods,
-   or workloads that make pods. Without it, the person can make a pod with the network of the node, or with added
-   capabilities.
+   or workloads that make pods. Without it, the person can make a pod with the network of the node, or with a capability
+   that `baseline` does not permit, such as `NET_ADMIN`.
 2. Do not give the person the right to create or change NetworkAttachmentDefinitions, in any namespace. An attachment
    can name each device, bridge and VLAN of a node.
 3. Do not give the person the right to create `pods/binding`.
 4. Do not give the person the right to create or label namespaces.
 5. Do not give the person the right to change ValidatingAdmissionPolicies or their bindings.
+6. Do not give the person the right to create pods, or workloads that make pods, in the namespace of the Instance. A pod
+   there can name an attachment of the Instance.
 
 [ADR-0084](../reference/decisions/0084-a-sandboxs-only-network-leads-to-the-custodian.md) states whom jr2 trusts, and
 why.

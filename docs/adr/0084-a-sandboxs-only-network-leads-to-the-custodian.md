@@ -204,10 +204,11 @@ and that holds when Workspace code is root in the Sandbox.
   the converge, `jr2 up` lists the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster, and judges
   each pod and each attachment as the policies judge a CREATE. It refuses while one object exists that the policies
   refuse now, names each one with its annotation or the cause in its config, and says to delete it. A pod that has ended
-  is named too, because its annotation is the evidence of an attempt. A list that fails stops the converge. It does this
-  at each converge on the Fence. The rule of this audit is TypeScript beside the CEL of the policies, clause by clause,
-  and the `@kind` scenario of the guard judges each row of its matrix with the API server and with that rule. On a
-  control plane with more than one API server, a denied dry run shows that a policy is in force on the server that
+  is named too, because its annotation is the evidence of an attempt. A list that fails stops the converge, and jr2
+  reads at most 64 MiB of a list, so a cluster of several thousand pods is too large for the audit as it is. It does
+  this at each converge on the Fence. The rule of this audit is TypeScript beside the CEL of the policies, clause by
+  clause, and the `@kind` scenario of the guard judges each row of its matrix with the API server and with that rule. On
+  a control plane with more than one API server, a denied dry run shows that a policy is in force on the server that
   answered it only. Another server can admit a request until it has the policy, and an object that it admits after the
   audit's lists is found only by the next converge.
 
@@ -218,8 +219,10 @@ and that holds when Workspace code is root in the Sandbox.
   - To create or change a NetworkAttachmentDefinition in any namespace. An attachment can name each device, bridge or
     VLAN of a node. In a namespace with the label `jr2.dev/instance`, it can name each VLAN of the bridge, so it reaches
     each Instance of the cluster, not only its own.
-  - To create a pod with the node's network or with added capabilities: this needs a namespace with no Pod Security
-    enforcement.
+  - To create a pod with the node's network, or with a capability that `baseline` does not permit (such as `NET_ADMIN`
+    or `NET_RAW`): this needs a namespace that enforces no level stricter than `privileged`.
+  - To create a pod, or a workload that makes pods, in the Instance's own namespace. Such a pod can name an attachment
+    of the Instance, and the Custodian takes it for the Sandbox of that slot.
   - To label or create namespaces.
   - To change the policies or their bindings.
 

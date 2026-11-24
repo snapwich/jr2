@@ -475,8 +475,10 @@ export async function auditFenceGuard(kube: Pick<KubeAdmin, "listJson">, opts: {
     throw new Error(
       `fence: jr2 cannot list the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster ` +
         `(${firstLine(err)}), so it cannot see whether one was made while its admission policies were absent ` +
-        "(ADR-0084). Give the user of this context the right to list them in each namespace, then run `jr2 up` " +
-        "again. This converge applied no attachment of the Fence.",
+        "(ADR-0084). If the cause is a refused read, give the user of this context the right to list them in each " +
+        "namespace. If the cause is `maxBuffer`, the list of all pods of the cluster is larger than the 64 MiB " +
+        "that jr2 reads, and this cluster is too large for the audit as it is. Then run `jr2 up` again. This " +
+        "converge applied no attachment of the Fence.",
     );
   }
   if (lines.length === 0) return;
