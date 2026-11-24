@@ -210,7 +210,7 @@ import {
   custodianValueSecrets,
 } from "../deploy.ts";
 import { claimRange, ensureNamespace, makeSlotLive, type LiveKube } from "../fence.ts";
-import { checkFenceApi, fenceRefusal, probeFenceNodes } from "../fence-probe.ts";
+import { checkFenceApi, FOREIGN_MULTUS_NOTE, fenceRefusal, probeFenceNodes } from "../fence-probe.ts";
 import { applyFenceGuard } from "../fence-guard.ts";
 import { describeInstall, installFence, planFenceInstall } from "../fence-install.ts";
 import { syncAgentsMd } from "../agents-md.ts";
@@ -1070,13 +1070,20 @@ export async function up(args: string[], io: Io): Promise<number> {
       warn: (line) => activity(io, line),
       ...ctx,
     });
-    await awaitRollout(kube, {
-      kind: "daemonset",
-      name: CUSTODIAN_SERVICE,
-      namespace,
-      selector: `app=${CUSTODIAN_SERVICE}`,
-      ...ctx,
-    });
+    try {
+      await awaitRollout(kube, {
+        kind: "daemonset",
+        name: CUSTODIAN_SERVICE,
+        namespace,
+        selector: `app=${CUSTODIAN_SERVICE}`,
+        ...ctx,
+      });
+    } catch (err) {
+      // With no Multus, the Custodian's pod has no uplink `net1`, and its rollout fails with no
+      // word about Multus.
+      if (fencePlan!.multus !== "foreign" || !(err instanceof Error)) throw err;
+      throw new Error(`${err.message}\n\n${FOREIGN_MULTUS_NOTE}`);
+    }
     await verifyRunningImage(io, kube, {
       layer: "custodian",
       namespace,
@@ -1096,7 +1103,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...ctx,
       log: (line) => activity(io, line),
     });
-    if (gaps.length > 0) throw fenceRefusal(gaps);
+    if (gaps.length > 0) throw fenceRefusal(gaps, fencePlan!.multus);
     activity(
       io,
       "fence: verified on each Sandbox node — a pod on the Fence has its slot's address, the Custodian answers its " +

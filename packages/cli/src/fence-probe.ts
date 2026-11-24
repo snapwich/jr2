@@ -472,12 +472,14 @@ export function gapOf(node: string, pod: ProbePod | undefined): FenceGap | undef
  * likely causes. `jr2 up` installed or found the admission policies, Multus and the DaemonSet
  * jr2-fence-node before the check, so a node that fails it differs from what jr2 can see from the API.
  */
-export function fenceRefusal(gaps: readonly FenceGap[]): Error {
+export function fenceRefusal(gaps: readonly FenceGap[], multus?: FenceInstallPlan["multus"]): Error {
   const nodes = new Set(gaps.map((g) => g.node)).size;
+  const noNetwork = gaps.some((g) => g.part === PART.attachment || g.part === "the probe");
   return new Error(
     [
       `fence: ${nodes === 1 ? "a Sandbox node fails" : `${nodes} Sandbox nodes fail`} the check of the Fence (ADR-0084):`,
       ...gaps.map((g) => `  ${g.node}: ${g.part} — ${g.why}${g.replaced !== undefined ? `. ${g.replaced}` : ""}`),
+      ...(multus === "foreign" && noNetwork ? [FOREIGN_MULTUS_NOTE] : []),
       "The likely causes: the node's container runtime reads its CNI plugins or configuration from a folder other " +
         `than ${CNI_BIN_DIR} and ${CNI_CONF_DIR}; a file bridge, static or tuning in ${CNI_BIN_DIR} that is not ` +
         "a stock CNI plugin that knows vlanTrunk and preserveDefaultVlan (jr2 never replaces one); a primary CNI " +
@@ -489,6 +491,19 @@ export function fenceRefusal(gaps: readonly FenceGap[]): Error {
     ].join("\n"),
   );
 }
+
+/**
+ * The likely cause when the plan was "a Multus of another owner" and a pod of the Fence got no
+ * attachment. jr2 reads that Multus only by its CustomResourceDefinition, and a definition can stay
+ * after Multus itself is gone (an uninstall that keeps the definitions), so it says what to look at.
+ */
+export const FOREIGN_MULTUS_NOTE =
+  "jr2 found the CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io with no " +
+  "annotation jr2.dev/multus, so it took the cluster to have a Multus of another owner, and installed none. " +
+  "The likely cause is that this Multus does not run: the definition stays after an uninstall of Multus. " +
+  "Look for a Multus DaemonSet (`kubectl get daemonsets -A`), its pod on the node, and Multus's file in " +
+  `${CNI_CONF_DIR} on the node (it must be the first). When the cluster has no Multus, delete the ` +
+  "CustomResourceDefinition (it deletes each NetworkAttachmentDefinition), and `jr2 up` installs Multus.";
 
 // ---- from the API, before the Custodian is applied ------------------------------------------------
 

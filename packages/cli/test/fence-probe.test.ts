@@ -20,6 +20,7 @@ import {
   fenceProbeMain,
   fenceProbePods,
   fenceRefusal,
+  FOREIGN_MULTUS_NOTE,
   gapOf,
   nodesWithoutMultus,
   probeFenceNodes,
@@ -383,6 +384,21 @@ test("the refusal names each node and part, and the likely causes, with the page
     "the rule table inet jr2_fence",
   );
   assert.match(fenceRefusal([{ node: "x", part: "p", why: "w" }]).message, /^fence: a Sandbox node fails/);
+  // A Multus of another owner, and a pod with no attachment: the refusal names Multus as the likely
+  // cause, because a definition with no Multus reads as one (ADR-0084). Not for another part, and
+  // not for jr2's own Multus.
+  const noAttachment = gapOf(
+    "n1",
+    ended(`jr2.fence-probe ${JSON.stringify({ probe: "fence", ok: false, part: "attachment", why: "w" })}`),
+  )!;
+  const foreign = fenceRefusal([noAttachment], "foreign").message;
+  assert.equal(foreign.split("\n")[2], FOREIGN_MULTUS_NOTE, foreign);
+  assert.match(FOREIGN_MULTUS_NOTE, /the definition stays after an uninstall of Multus\. Look for a Multus DaemonSet/);
+  assert.ok(!fenceRefusal([noAttachment], "jr2").message.includes(FOREIGN_MULTUS_NOTE));
+  assert.ok(!fenceRefusal([{ node: "x", part: "p", why: "w" }], "foreign").message.includes(FOREIGN_MULTUS_NOTE));
+  assert.ok(
+    fenceRefusal([{ node: "x", part: "the probe", why: "w" }], "foreign").message.includes(FOREIGN_MULTUS_NOTE),
+  );
 });
 
 test("from the API: no attachment definition, or a Sandbox node with no Ready pod of jr2's Multus, refuses; a Multus of another owner is not read; then the guard's dry runs, then the audit", async () => {
