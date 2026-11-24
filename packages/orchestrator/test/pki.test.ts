@@ -51,7 +51,11 @@ test("a leaf: one SAN, DNS or IP, chained to the CA, a server certificate, one y
   ] as const) {
     const leaf = issueLeaf(ca, host);
     const cert = new X509Certificate(leaf.cert);
-    assert.equal(cert.subject, isIP(host) === 0 ? `CN=${host}` : undefined, "an address leaf has no subject");
+    assert.equal(
+      cert.subject || undefined,
+      isIP(host) === 0 ? `CN=${host}` : undefined,
+      "an address leaf has no subject",
+    );
     assert.equal(cert.issuer, caCert.subject);
     assert.equal(cert.subjectAltName, san);
     assert.ok(check(cert), `${host} matches its own SAN`);
