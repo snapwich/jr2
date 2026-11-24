@@ -379,6 +379,18 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   A server that does not answer is a warning. [Give an Agent MCP tools](give-an-agent-mcp-tools.md#rules) gives each
   text.
 
+- Before the Custodian, `jr2 up` checks its admission policies with server-side dry runs, which make nothing. When the
+  cluster admits one, the error says
+  `fence: the cluster admits <what> (a server-side dry run, which makes nothing), so jr2's admission policy <name> is not in force, …`.
+  Look at `kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding <name>`, and run `jr2 up` again. When
+  something else refuses a dry run, for example Pod Security admission, the error starts with
+  `fence: jr2 cannot see its admission policy <name> in force:` and gives the reason. Then `jr2 up` lists the pods and
+  the NetworkAttachmentDefinitions of the cluster. When one exists that the policies refuse now, the error starts with
+  `fence: the cluster has objects that jr2's admission policies refuse now.` and names each one. It was made while the
+  policies were absent. Delete each one, and run `jr2 up` again. When jr2 cannot list them, the error starts with
+  `fence: jr2 cannot list the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster (<reason>)`. Give
+  the user of your kubectl context the right to list them in each namespace.
+
 - When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` checks the Fence on each Sandbox node, after it installed
   or found its prerequisites. While a node fails, `jr2 up` refuses to converge. The error starts with
   `error: fence: a Sandbox node fails the check of the Fence (ADR-0084):`, and each next line names a node, the part and
@@ -394,17 +406,17 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`. Run `jr2 up`
   again: it installs Multus when the cluster has none. When the part is `Multus or the attachment` and the probe pod's
   address is not its slot's address, Multus did not give the pod the Fence: look at the Multus pod of that node (it must
-  be Ready) and at the first CNI configuration of the node in `/etc/cni/net.d` (it must be Multus's). Before the
-  Custodian, `jr2 up` also checks its admission policies with server-side dry runs, which make nothing. When the cluster
-  admits one, the error says
-  `fence: the cluster admits <what> (a server-side dry run, which makes nothing), so jr2's admission policy <name> is not in force, …`.
-  Look at `kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding <name>`, and run `jr2 up` again. When
-  something else refuses a dry run, for example Pod Security admission, the error starts with
-  `fence: jr2 cannot see its admission policy <name> in force:` and gives the reason. The last line of the error names
-  the likely causes: a container runtime that reads its CNI plugins or configuration from other folders; a file
-  `bridge`, `static` or `tuning` in `/opt/cni/bin` that is not a recent stock CNI plugin (jr2 never replaces one); a
-  primary CNI that removes the configuration of Multus; a node firewall that changes bridged VLAN frames; or a node with
-  no rule table `inet jr2_fence`. It also gives the page of the prerequisites:
+  be Ready) and at the first CNI configuration of the node in `/etc/cni/net.d` (it must be Multus's). When the cluster
+  has the CustomResourceDefinition of Multus with no annotation `jr2.dev/multus`, `jr2 up` uses it as a Multus of
+  another owner. When no Multus runs, the error also says
+  `jr2 found the CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io with no annotation jr2.dev/multus, …`,
+  and a rollout of the Custodian that fails says it too. Look for a Multus DaemonSet. When the cluster has none, delete
+  the CustomResourceDefinition, and run `jr2 up` again: it installs Multus. The delete also deletes each
+  NetworkAttachmentDefinition of the cluster. The last line of the error names the likely causes: a container runtime
+  that reads its CNI plugins or configuration from other folders; a file `bridge`, `static` or `tuning` in
+  `/opt/cni/bin` that is not a recent stock CNI plugin (jr2 never replaces one); a primary CNI that removes the
+  configuration of Multus; a node firewall that changes bridged VLAN frames; or a node with no rule table
+  `inet jr2_fence`. It also gives the page of the prerequisites:
   [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#prerequisites-of-the-fence).
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See

@@ -97,12 +97,13 @@ the cluster, see [Architecture](architecture.md).
 12. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
     Then it reads Multus from the cluster, and checks the admission policies with server-side dry runs, which make
     nothing: a pod of another namespace that names the Instance's attachment, and an attachment on the Fence's bridge
-    outside an Instance's namespace, must each be denied. Then it applies the Custodian, its uplink on each Sandbox node
-    and its resolver. When the Custodian is ready, a short pod on each Sandbox node checks the Fence: the pod gets the
-    address of its slot (so the Multus of the node works), the Custodian answers it and refuses its dial to the address
-    of the API Service at once, and only the Custodian answers its dial to the kubelet's port on the node. The pod has
-    no privilege, so it sees what the bridge and the table do, not its VLANs. While a Sandbox node fails, the converge
-    fails, and the error names the node, the part and the likely causes.
+    outside an Instance's namespace, must each be denied. It lists the pods and the attachments of the cluster, and
+    refuses while one exists that the policies refuse now: one that was made while they were absent. Then it applies the
+    Custodian, its uplink on each Sandbox node and its resolver. When the Custodian is ready, a short pod on each
+    Sandbox node checks the Fence: the pod gets the address of its slot (so the Multus of the node works), the Custodian
+    answers it and refuses its dial to the address of the API Service at once, and only the Custodian answers its dial
+    to the kubelet's port on the node. The pod has no privilege, so it sees what the bridge and the table do, not its
+    VLANs. While a Sandbox node fails, the converge fails, and the error names the node, the part and the likely causes.
 13. It checks each model that an Agent uses: one pod on a Sandbox node, behind the Fence as each Harness pod is, asks
     the provider through the Custodian for one tool call for each model. Until each check passes, `jr2 up` writes
     nothing else that the Instance or the operator reads. The pod has up to 5 minutes to start, and each model has up to
@@ -258,8 +259,8 @@ would remove, and removes nothing.
   of a newer Kit changes the DaemonSet `jr2-fence-node` and the admission policies with no question, and asks before it
   changes the Multus that it installed. It refuses when it cannot install safely: before it applies anything, for what
   it reads in the API; after it applies the DaemonSet, for what the pod finds on a node; before the Custodian, when the
-  admission policies do not deny the dry runs. It never changes a Multus that it did not install, and never replaces a
-  plugin file on a node.
+  admission policies do not deny the dry runs, or while the cluster has a pod or an attachment that they refuse now. It
+  never changes a Multus that it did not install, and never replaces a plugin file on a node.
 - `jr2 up` refuses a cluster that is not kind when `registry` is not set and it must build an image. When no registered
   Machine makes a [Sandbox](../reference/glossary.md#sandbox), `jr2 up` builds no image and needs no `registry`.
 - Each verb that reads the Instance, other than `jr2 version`, refuses when the Instance and the CLI do not use the same

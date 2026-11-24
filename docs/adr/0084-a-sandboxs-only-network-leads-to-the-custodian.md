@@ -17,21 +17,22 @@ and that holds when Workspace code is root in the Sandbox.
   another Sandbox, the node, the kubelet, the API server, a pod or a public address.
 - **The Fence is outside the pod. The VLAN state of a bridge of the node is the boundary, and a rule table of the node
   is a second barrier.** Each Sandbox node has one bridge (`jr2fence0`). The stock CNI plugin `bridge` makes it, with
-  VLAN filtering, from jr2's attachment objects when the first pod joins it: no other step makes it or changes its VLAN
-  state, and only `jr2 down --all` deletes it (Consequences). Each Sandbox's port is a member of the Sandbox's own VLAN
-  only, and the uplink's port is a member of its Instance's range only. The bridge's own side, the node's network stack,
-  is a member of VLAN 1 only, which no pod's port carries, so a Sandbox cannot exchange a frame with the node. This VLAN
-  state keeps a Sandbox off the node and off other pods, also with no rule table. A Sandbox's frame enters the bridge
-  untagged at its access port, and the node's prerouting hooks see it before the bridge gives it its VLAN: on a node
-  with `net.bridge.bridge-nf-call-iptables = 1`, as with kube-proxy, the NAT of the node changes a dial to a Service
-  address there, and the bridge then drops the frame, so the dial gets no answer and the Custodian sees nothing. So each
-  node has the rule table `inet jr2_fence`, which matches the bridge alone. It keeps the node's NAT from changing a
-  Sandbox's frames, so that each dial reaches the Custodian, and it is a second barrier: each packet that enters from
-  the bridge skips the node's connection tracking, and no packet goes from the bridge to the node's own network stack,
-  between the bridge and another interface, or from the node's stack to the bridge. The tagged frames of the uplink's
-  trunk go through no firewall hook (`net.bridge.bridge-nf-filter-vlan-tagged` is 0 by default). The Sandbox cannot
-  choose its VLAN, so the uplink knows which Sandbox sent a frame. The plugin writes the VLAN state when it adds a port,
-  and no rule is written for a pod, so there is no window at a pod's start. Nothing in the pod is part of the Fence.
+  VLAN filtering, from jr2's attachment objects when the first pod joins it: no other step of jr2 makes it or changes
+  its VLAN state, and of jr2 only `jr2 down --all` deletes it (Consequences). A person whom jr2 trusts (below) can
+  change it. Each Sandbox's port is a member of the Sandbox's own VLAN only, and the uplink's port is a member of its
+  Instance's range only. The bridge's own side, the node's network stack, is a member of VLAN 1 only, which no pod's
+  port carries, so a Sandbox cannot exchange a frame with the node. This VLAN state keeps a Sandbox off the node and off
+  other pods, also with no rule table. A Sandbox's frame enters the bridge untagged at its access port, and the node's
+  prerouting hooks see it before the bridge gives it its VLAN: on a node with `net.bridge.bridge-nf-call-iptables = 1`,
+  as with kube-proxy, the NAT of the node changes a dial to a Service address there, and the bridge then drops the
+  frame, so the dial gets no answer and the Custodian sees nothing. So each node has the rule table `inet jr2_fence`,
+  which matches the bridge alone. It keeps the node's NAT from changing a Sandbox's frames, so that each dial reaches
+  the Custodian, and it is a second barrier: each packet that enters from the bridge skips the node's connection
+  tracking, and no packet goes from the bridge to the node's own network stack, between the bridge and another
+  interface, or from the node's stack to the bridge. The tagged frames of the uplink's trunk go through no firewall hook
+  (`net.bridge.bridge-nf-filter-vlan-tagged` is 0 by default). The Sandbox cannot choose its VLAN, so the uplink knows
+  which Sandbox sent a frame. The plugin writes the VLAN state when it adds a port, and no rule is written for a pod, so
+  there is no window at a pod's start. Nothing in the pod is part of the Fence.
 - **Instances share a node's bridge by VLAN ranges.** Each Instance with a Harness pod claims a range of 128 VLANs on
   the cluster: `jr2 up` creates the Kubernetes Lease object `jr2-fence-range-<k>` in `jr2-system`, which names the
   Instance's namespace, and a create of a name that exists fails, so two Instances cannot claim one range. The range is
@@ -46,18 +47,18 @@ and that holds when Workspace code is root in the Sandbox.
   EndpointSlices of `jr2-custodian` name, and may not read Pods, so a Custodian pod with no address yet (one that a
   rollout replaces, or one that is Pending) is not asked. Then the 2 minutes alone keep the slot: they cover a pod of a
   deleted Sandbox, which leaves its node in its grace period. The uplink of an Instance has the trunk of its own range
-  only, and no port of a pod on the bridge is a member of VLAN 1, so a frame of one Instance never reaches the uplink or
-  a Harness pod of another. An Instance keeps its range until `jr2 down`, also while it has no Harness pod, because a
-  pod of it can still be on a VLAN of the range: a held run's Sandbox
-  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), or an Instance Harness
-  pod that drains. For the same reason, `jr2 up` deletes the Custodian of an Instance with no Harness pod only when its
-  namespace has no Sandbox and no Instance Harness pod left. An Orchestrator that `jr2 up` gave no range refuses each
-  Sandbox provision, with a reason that names `jr2 up`, so the next Sandbox of a held run after such a converge is not
-  on the cluster's network. `jr2 down` gives the range back when the namespace is NotFound, and only the claim that it
-  read: a claim that another Instance took in the meantime stays. `jr2 up` takes a range again only when the namespace
-  that holds it is NotFound: while that namespace is Terminating, a pod of it can still be on a VLAN of the range. The
-  claims are in `jr2-system`, which goes with the operator, so `jr2 down --all` refuses while another namespace on the
-  cluster holds a range.
+  only, and no port of a pod on the bridge is a member of VLAN 1. So, against each person whom jr2 does not trust
+  (below), a frame of one Instance never reaches the uplink or a Harness pod of another. An Instance keeps its range
+  until `jr2 down`, also while it has no Harness pod, because a pod of it can still be on a VLAN of the range: a held
+  run's Sandbox ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), or an
+  Instance Harness pod that drains. For the same reason, `jr2 up` deletes the Custodian of an Instance with no Harness
+  pod only when its namespace has no Sandbox and no Instance Harness pod left. An Orchestrator that `jr2 up` gave no
+  range refuses each Sandbox provision, with a reason that names `jr2 up`, so the next Sandbox of a held run after such
+  a converge is not on the cluster's network. `jr2 down` gives the range back when the namespace is NotFound, and only
+  the claim that it read: a claim that another Instance took in the meantime stays. `jr2 up` takes a range again only
+  when the namespace that holds it is NotFound: while that namespace is Terminating, a pod of it can still be on a VLAN
+  of the range. The claims are in `jr2-system`, which goes with the operator, so `jr2 down --all` refuses while another
+  namespace on the cluster holds a range.
 - **The uplink gives all traffic to the Custodian.** It sends each TCP connection to the Custodian and each DNS query to
   the Custodian's resolver, whatever address the Sandbox dialed. It drops all else: UDP, QUIC, ICMP, IPv6 and frames of
   another type. No tool needs a proxy setting, and `HTTPS_PROXY` is not set.
@@ -171,30 +172,56 @@ and that holds when Workspace code is root in the Sandbox.
   same name, with `failurePolicy: Fail` and the action `Deny`, in each namespace:
   - **`jr2-fence-guard-pods`** acts on each pod CREATE, and on each UPDATE, also through `pods/status`, that sets or
     changes one of the two annotations. Multus reads the annotations each time it makes the pod's network, so a later
-    change counts. An annotation can reach the Fence when it holds the reserved prefix of the attachments' names,
-    `jr2-fence-`, or a JSON escape `\u`: the names are lowercase letters, digits and `-`, and only `\u` can spell them
-    in another way. Such an annotation is refused when the pod's namespace has no label `jr2.dev/instance`, or when a
-    network in it is not `<the pod's namespace>/<name>`, with an optional `@<interface>`, in a comma list with no space.
-    So it cannot name another namespace: no JSON form, which can carry a `namespace`, and no bare name, which Multus
-    reads in the pod's namespace for `networks` but in its own namespace (`kube-system`) for `default-network`. A
-    reference from one Instance's namespace to another's is refused too. jr2's own pods use this form: a Harness pod's
-    default network is `<namespace>/jr2-fence-<slot>`, and the Custodian's trunk is `<namespace>/jr2-fence-uplink@net1`.
-    The namespace `default` needs no rule of its own: the policy reads no namespace by its name.
+    change counts. It also acts on each CREATE of a Binding (`pods/binding`, and the older `bindings`): the API server
+    merges a Binding's annotations into the pod that it binds, so the policy judges them as a pod's. An annotation can
+    reach the Fence when it holds the reserved prefix of the attachments' names, `jr2-fence-`, or a JSON escape `\u`:
+    the names are lowercase letters, digits and `-`, and only `\u` can spell them in another way. Such an annotation is
+    refused when the pod's namespace has no label `jr2.dev/instance`, or when a network in it is not
+    `<the pod's namespace>/<name>`, with an optional `@<interface>`, in a comma list with no space. So it cannot name
+    another namespace: no JSON form, which can carry a `namespace`, and no bare name, which Multus reads in the pod's
+    namespace for `networks` but in its own namespace (`kube-system`) for `default-network`. A reference from one
+    Instance's namespace to another's is refused too. jr2's own pods use this form: a Harness pod's default network is
+    `<namespace>/jr2-fence-<slot>`, and the Custodian's trunk is `<namespace>/jr2-fence-uplink@net1`. The namespace
+    `default` needs no rule of its own: the policy reads no namespace by its name.
   - **`jr2-fence-guard-attachments`** acts on each NetworkAttachmentDefinition CREATE and UPDATE. A config that holds
     the bridge's name `jr2fence0`, or a JSON escape `\u`, is refused unless the attachment is in a namespace with the
     label `jr2.dev/instance` and its name starts with `jr2-fence-`. So each attachment on the bridge falls under the
     first policy, whatever plugin names the bridge.
 
-  `jr2 up` sets the label `jr2.dev/instance` on the Instance's namespace. A person who can label a namespace, or create
-  a pod or an attachment in an Instance's namespace, is trusted: those rights already reach the Instance. `jr2 up`
-  applies the policies at each converge of an Instance on the Fence, right after the Instance's namespace and before the
-  first pod of the Instance and the first attachment of the Fence, so a newer Kit applies its version, as it does the
-  DaemonSet below. A converge whose apply the cluster refuses stops there. Before it applies the Custodian, `jr2 up`
-  checks the guard with server-side dry runs, which make nothing: from a namespace that is not an Instance's
-  (`jr2-system`), a pod that names the Instance's slot attachment through each annotation, and a
-  NetworkAttachmentDefinition on the bridge, must each be denied by jr2's policy, and the denial must name it. A new
-  policy can take some seconds to be in force, so an admitted dry run is tried again for 30 s. Then a dry run that is
-  admitted, or that something else refuses, stops the converge.
+  `jr2 up` sets the label `jr2.dev/instance` on the Instance's namespace. It applies the policies at each converge of an
+  Instance on the Fence, right after the Instance's namespace and before the first pod of the Instance and the first
+  attachment of the Fence, so a newer Kit applies its version, as it does the DaemonSet below. A converge whose apply
+  the cluster refuses stops there. Before it applies the Custodian, `jr2 up` checks the guard with server-side dry runs,
+  which make nothing: from a namespace that is not an Instance's (`jr2-system`), a pod that names the Instance's slot
+  attachment through each annotation, and a NetworkAttachmentDefinition on the bridge, must each be denied by jr2's
+  policy, and the denial must name it. A new policy can take some seconds to be in force, so an admitted dry run is
+  tried again for 30 s. Then a dry run that is admitted, or that something else refuses, stops the converge.
+
+  The policies judge a request, not an object that is there. A pod or an attachment that was made while they were absent
+  (before the first `jr2 up` with a Fence, or after `jr2 down --all`) was not judged. Such a pod can wait for its
+  network, because the kubelet tries again, and Multus reads an attachment at each CNI ADD: so the pod gets the slot
+  when a later `jr2 up` makes the attachment that it names. So, after the dry runs and before the first attachment of
+  the converge, `jr2 up` lists the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster, and judges
+  each pod and each attachment as the policies judge a CREATE. It refuses while one object exists that the policies
+  refuse now, names each one with its annotation or the cause in its config, and says to delete it. A pod that has ended
+  is named too, because its annotation is the evidence of an attempt. A list that fails stops the converge. It does this
+  at each converge on the Fence. The rule of this audit is TypeScript beside the CEL of the policies, clause by clause,
+  and the `@kind` scenario of the guard judges each row of its matrix with the API server and with that rule. On a
+  control plane with more than one API server, a denied dry run shows that a policy is in force on the server that
+  answered it only. Another server can admit a request until it has the policy, and an object that it admits after the
+  audit's lists is found only by the next converge.
+
+- **The guard holds against a person who can create pods in a namespace that is not an Instance's.** jr2 does not trust
+  a person who can create pods, or workloads that make pods, in a namespace that is not the Instance's, where that
+  namespace enforces Pod Security `baseline` or stricter. jr2 trusts each person who has one of these rights, because
+  each right already gives the power of a node or of the guard itself:
+  - To create or change a NetworkAttachmentDefinition in any namespace. An attachment can name each device, bridge or
+    VLAN of a node. In a namespace with the label `jr2.dev/instance`, it can name each VLAN of the bridge, so it reaches
+    each Instance of the cluster, not only its own.
+  - To create a pod with the node's network or with added capabilities: this needs a namespace with no Pod Security
+    enforcement.
+  - To label or create namespaces.
+  - To change the policies or their bindings.
 
 - **The Fence has three cluster prerequisites, and `jr2 up` installs each one that a cluster lacks, after it asks.**
   They are jr2's admission policies (above), the second network of a pod, Multus, and jr2's DaemonSet
@@ -292,11 +319,14 @@ and that holds when Workspace code is root in the Sandbox.
   it, a dial to the API Service's cluster address must get the Custodian's answer at once, and the node's address must
   give no answer but the Custodian's. A pod with another address names the node, and says to look at the Multus pod of
   that node and at the node's first CNI configuration: this is how jr2 sees that a Multus of another owner does not work
-  there. When no DNS answer comes, an ARP answer from the uplink says that the bridge carries the frames and the node
-  changes them (a firewall hook on bridged VLAN frames), and no ARP answer says that the bridge or the Custodian pod
-  does not carry them. Then `jr2 up` also replaces that node's Custodian pod, so that the plugin puts its trunk on the
-  bridge that the node has now. When the SYN of the dial to the Service address gets no answer in 3 seconds, the node's
-  NAT changed it, so the node has no rule table: `jr2 up` names the node and that cause, and replaces the node's pod of
+  there. A CustomResourceDefinition with no Multus (one that an uninstall of Multus kept) reads as a Multus of another
+  owner. So, when jr2 took the cluster to have one, this refusal, and a rollout of the Custodian that fails (its pod
+  then has no uplink `net1`), say that the likely cause is a Multus that does not run, and what to look at. When no DNS
+  answer comes, an ARP answer from the uplink says that the bridge carries the frames and the node changes them (a
+  firewall hook on bridged VLAN frames), and no ARP answer says that the bridge or the Custodian pod does not carry
+  them. Then `jr2 up` also replaces that node's Custodian pod, so that the plugin puts its trunk on the bridge that the
+  node has now. When the SYN of the dial to the Service address gets no answer in 3 seconds, the node's NAT changed it,
+  so the node has no rule table: `jr2 up` names the node and that cause, and replaces the node's pod of
   `jr2-fence-node`, which loads the table again at its start. A dial that a peer accepts and that stays silent, or that
   fails in another way, is not that sign: `jr2 up` names it as a cause of its own and replaces no pod. The refusal says
   each pod that `jr2 up` replaced. The probe pod has no privilege: no node network, no capability and no token. So it
@@ -433,8 +463,10 @@ and that holds when Workspace code is root in the Sandbox.
   `jr2-system` cannot have the segment.
 - **jr2's admission policies refuse some pods and attachments of other owners.** A pod outside an Instance's namespace
   whose Multus annotation holds `jr2-fence-` or `\u`, and an attachment outside an Instance's namespace whose config
-  holds `jr2fence0` or `\u`, are refused, also when they would not reach the Fence. The user of `jr2 up` needs the right
-  to create ValidatingAdmissionPolicies and their bindings, which are cluster-wide.
+  holds `jr2fence0` or `\u`, are refused, also when they would not reach the Fence. While such a pod or attachment
+  exists, also one made before the policies, `jr2 up` refuses to converge an Instance on the Fence. The user of `jr2 up`
+  needs the right to create ValidatingAdmissionPolicies and their bindings, which are cluster-wide, and to list the
+  namespaces, and the pods and the NetworkAttachmentDefinitions of each namespace.
 - **The version check of the `bridge` plugin sees only `/opt/cni/bin`.** Multus can run plugins from a second folder
   ahead of it (its `binDir`, or `--additional-bin-dir`). An old `bridge` there is not seen by the check, and the probe
   sees its effect only where the attachment fails (v1.3.0 to v1.7.1 refuse the trunk). A `bridge` older than v1.3.0 in
@@ -442,7 +474,7 @@ and that holds when Workspace code is root in the Sandbox.
   finds its plugins.
 - **A NetworkAttachmentDefinition can take a node's interface by its MAC or PCI address** (the `host-device` plugin),
   also the host side of a Sandbox's port. The policies do not refuse this: each person who can create an attachment has
-  this right with Multus, whatever jr2 does.
+  this right with Multus, whatever jr2 does, and jr2 trusts that person (Decision).
 - **jr2 writes files and a rule table on each node, and the bridge plugin makes a bridge there.** The plugins stay in
   `/opt/cni/bin` after `jr2 down --all`, because jr2 cannot tell them from files that another tool put there. The kernel
   module `8021q` also stays loaded, because another user of the node can need it. `jr2 down --all` removes the rule

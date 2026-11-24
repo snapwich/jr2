@@ -167,15 +167,36 @@ the first attachment of the Fence, at each converge. They act in each namespace:
   escape `\u`, unless the pod is in the namespace of an Instance (the label `jr2.dev/instance`, which `jr2 up` sets) and
   each network in the annotation is `<the pod's namespace>/<name>` or `<the pod's namespace>/<name>@<interface>`, in a
   comma list with no space. It acts on a create, and on each change of one of the two annotations, also through
-  `pods/status`.
+  `pods/status`. It also acts on a Binding, because the API server puts the annotations of a Binding on its pod.
 - `jr2-fence-guard-attachments` refuses a NetworkAttachmentDefinition whose config holds `jr2fence0` (the bridge of the
   Fence) or a JSON escape `\u`, unless it is in the namespace of an Instance and its name starts with `jr2-fence-`.
 
-So a pod of your own that uses Multus is not touched, unless its annotation holds `jr2-fence-` or `\u`. A person who can
-label a namespace, or create a pod or an attachment in the namespace of an Instance, can reach that Instance: give those
-rights only to its owners. Before it applies the Custodian, `jr2 up` makes three server-side dry runs, which make
-nothing: from `jr2-system`, a pod that names the attachment of the Instance through each annotation, and an attachment
-on the bridge. jr2's policies must deny each one, or `jr2 up` refuses to converge.
+So a pod of your own that uses Multus is not touched, unless its annotation holds `jr2-fence-` or `\u`. Before it
+applies the Custodian, `jr2 up` makes three server-side dry runs, which make nothing: from `jr2-system`, a pod that
+names the attachment of the Instance through each annotation, and an attachment on the bridge. jr2's policies must deny
+each one, or `jr2 up` refuses to converge.
+
+The policies judge each new request. They do not judge a pod or an attachment that was made before they were in force.
+So `jr2 up` then lists the pods and the attachments of the cluster, and refuses while one exists that the policies
+refuse now. It names each one. Delete each one that it names, then run `jr2 up` again.
+
+### Who can reach an Instance
+
+The policies keep a person who can create pods in another namespace off the Fence. They do not keep off a person who has
+the power of a node, or the power to change the policies. Thus, on a shared cluster, do these steps for each person who
+must not reach an Instance:
+
+1. Enforce the Pod Security level `baseline`, or a stricter level, in each namespace where the person can create pods,
+   or workloads that make pods. Without it, the person can make a pod with the network of the node, or with added
+   capabilities.
+2. Do not give the person the right to create or change NetworkAttachmentDefinitions, in any namespace. An attachment
+   can name each device, bridge and VLAN of a node.
+3. Do not give the person the right to create `pods/binding`.
+4. Do not give the person the right to create or label namespaces.
+5. Do not give the person the right to change ValidatingAdmissionPolicies or their bindings.
+
+[ADR-0084](../reference/decisions/0084-a-sandboxs-only-network-leads-to-the-custodian.md) states whom jr2 trusts, and
+why.
 
 ### A Multus of another owner
 
@@ -185,6 +206,11 @@ uses it as it is: it reads none of its settings, installs no Multus beside it, a
 the guard, so its `namespaceIsolation` does not matter to jr2. Whether it works on a node, the check pod shows: when the
 pod does not get the address of its slot, `jr2 up` names the node and says to look at the Multus pod of that node and at
 the first CNI configuration of the node.
+
+An uninstall of Multus can keep its CustomResourceDefinition. To `jr2 up`, such a cluster has a Multus of another owner.
+Then the check pod, or the rollout of the Custodian, fails, and the error says that the likely cause is a Multus that
+does not run. When the cluster has no Multus, delete the CustomResourceDefinition, then run `jr2 up` again: it installs
+Multus. The delete also deletes each NetworkAttachmentDefinition of the cluster.
 
 A Multus can run plugins from a folder other than `/opt/cni/bin` (its `binDir`). jr2 checks the version of `bridge` in
 `/opt/cni/bin` only. Do not put an older `bridge` in such a folder.

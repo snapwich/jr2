@@ -83,12 +83,13 @@ loudly narrated, safe to re-run:
   version or that is a link that the pod cannot run, a folder that it cannot write, a rule table that does not load, or
   no pod. Those refusals keep what was applied, and say so. It still creates no cluster. Then it probes the Fence: it
   refuses to converge while a Sandbox node fails, and names the node, the part and the likely causes. Before it applies
-  the Custodian, it reads Multus from the API and checks the policies with server-side dry runs, which must be denied;
-  after the Custodian is Ready, it probes the attachment, the bridge and the rule table with a one-shot pod on each
-  Sandbox node that has no privilege; a node with no rule table is a refusal too. ADR-0084 states what it checks and
-  what it cannot see. `jr2 down --all` removes the rule table and the bridge `jr2fence0` from each node, the DaemonSet,
-  the policies with their bindings, and a Multus that jr2 installed, with its definition, unless the cluster has a
-  NetworkAttachmentDefinition of another owner; the plugin files and the kernel module `8021q` stay.
+  the Custodian, it reads Multus from the API, checks the policies with server-side dry runs, which must be denied, and
+  refuses while the cluster has a pod or an attachment that the policies refuse now; after the Custodian is Ready, it
+  probes the attachment, the bridge and the rule table with a one-shot pod on each Sandbox node that has no privilege; a
+  node with no rule table is a refusal too. ADR-0084 states what it checks and what it cannot see. `jr2 down --all`
+  removes the rule table and the bridge `jr2fence0` from each node, the DaemonSet, the policies with their bindings, and
+  a Multus that jr2 installed, with its definition, unless the cluster has a NetworkAttachmentDefinition of another
+  owner; the plugin files and the kernel module `8021q` stay.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep
