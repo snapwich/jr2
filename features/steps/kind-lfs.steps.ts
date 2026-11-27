@@ -489,7 +489,7 @@ When(
           `headers: { "content-type": "application/json", authorization: "Bearer jr2-held-JR2_SANDBOX_TOKEN" }, ` +
           `body: JSON.stringify({ identity: id, ...JSON.parse(ask) }) }).then(async (r) => ` +
           `console.log("asked-" + r.status + " " + (await r.text())), (e) => console.log("asked-fault " + e))' ` +
-          `"\${JR2_CUSTODIAN_URL:-http://127.0.0.1:8081}" "$id" '${ask}'`,
+          `"\${JR2_CUSTODIAN_URL:-http://custodian.jr2.internal}" "$id" '${ask}'`,
       ].join("; "),
     });
     s.asked = await toolResultWith(this, "asked-");

@@ -1,0 +1,504 @@
+// A Sandbox's objects on the Fence (ADR-0084, ADR-0059): the slot Secret that the Custodian reads, the
+// trust ConfigMap and the Stand-in Secret that the pod mounts, and the CR that names the slot's
+// attachment with no Custodian container. Pinned: the slot Secret's keys and owner, that the
+// Custodian's renderer finds a leaf for each TLS chain, that each leaf chains to the CA that the pod
+// trusts, that no object holds the CA's key, the placeholder table's growth, and the CR's Fence part.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createPrivateKey, createPublicKey, X509Certificate } from "node:crypto";
+import { renderSlot } from "../src/custodian-rules.ts";
+import { readSlotSecret, SLOT_SPEC_KEY } from "../src/custodian-slot.ts";
+import { JR2_CUSTODIAN_NAME } from "../src/custodian.ts";
+import {
+  CONTROL_TOKEN_NAME,
+  effectorBindingName,
+  gitPushStandIn,
+  heldStandIn,
+  leafStem,
+  pushBindingName,
+  SANDBOX_TOKEN_NAME,
+  type HeldManifest,
+} from "../src/held-secrets.ts";
+import { heldStandInKey, standInValueFile } from "../src/custodian.ts";
+import { sandboxEffectorVolumes } from "../src/sandbox-kube.ts";
+import { checkAppendOnly, placeholderOf } from "../src/placeholders.ts";
+import {
+  fenceComposition,
+  fencePodNetwork,
+  FENCE_CUSTODIAN_URL,
+  harnessHealthcheck,
+  leafTargets,
+  podFenceObjects,
+  sandboxFenceObjects,
+  withPushTokens,
+} from "../src/sandbox-fence.ts";
+import { issueCa, issueLeaf } from "../src/pki.ts";
+import { gitPushTokenSecretName } from "../src/git-push.ts";
+import { sandboxCr, sandboxEffectorContainer } from "../src/sandbox-kube.ts";
+import { resolveSize, splitSize } from "../src/size.ts";
+import { controlStandIn, controlToken, sandboxToken } from "../src/tokens.ts";
+import { INSTANCE_MANIFEST, RANGES, rule, SANDBOX_MANIFEST } from "./_custodian-slots.ts";
+
+const KEY = Buffer.from("the-signing-key-of-the-instance");
+const UID = "6f1c0d6e-0000-4000-8000-000000000003";
+
+/** The Instance's `upstream.crt` as `jr2 up` wrote it: here a stand-in for its roots and `caBundle`. */
+const UPSTREAM = "-----BEGIN CERTIFICATE-----\nroots-of-jr2-up\n-----END CERTIFICATE-----\n";
+
+const objectsOf = (over: Partial<Parameters<typeof sandboxFenceObjects>[0]> = {}) =>
+  sandboxFenceObjects({
+    namespace: "jr2-test",
+    sandbox: "ws-3",
+    uid: UID,
+    slot: 7,
+    manifest: SANDBOX_MANIFEST,
+    heldPod: "ws-abc",
+    ranges: RANGES,
+    signingKey: KEY,
+    upstream: UPSTREAM,
+    ...over,
+  });
+
+const text = (b64: string) => Buffer.from(b64, "base64").toString("utf8");
+
+test("the slot Secret: its name, its labels, the CR as its owner, and a key for each file of the slot", () => {
+  const { slotSecret } = objectsOf();
+  assert.equal(slotSecret.kind, "Secret");
+  assert.deepEqual(slotSecret.metadata, {
+    name: "jr2-custodian-slot-7",
+    namespace: "jr2-test",
+    labels: { "jr2.dev/sandbox": "ws-3", "jr2.dev/fence-slot": "7" },
+    ownerReferences: [
+      {
+        apiVersion: "core.jr2.dev/v1alpha1",
+        kind: "Sandbox",
+        name: "ws-3",
+        uid: UID,
+        controller: true,
+        blockOwnerDeletion: false,
+      },
+    ],
+  });
+  const stems = leafTargets(SANDBOX_MANIFEST).map((t) => leafStem(t.host, t.port));
+  assert.deepEqual(
+    Object.keys(slotSecret.data).sort(),
+    [
+      SLOT_SPEC_KEY,
+      `values.${CONTROL_TOKEN_NAME}`,
+      `values.${CONTROL_TOKEN_NAME}.standin`,
+      `values.${SANDBOX_TOKEN_NAME}`,
+      "values.ANTHROPIC_API_KEY.standin",
+      "values.GH_TOKEN.standin",
+      "values.LOCAL_KEY.standin",
+      ...stems.flatMap((s) => [`tls.${s}.crt`, `tls.${s}.key`]),
+    ].sort(),
+  );
+  // No held value is in it: the values are in `jr2-held-secrets-<pod>` and the user's Secrets.
+  assert.ok(!Object.keys(slotSecret.data).some((k) => /^values\.(ANTHROPIC_API_KEY|GH_TOKEN|LOCAL_KEY)$/.test(k)));
+});
+
+test("the slot Secret's values are the Sandbox's signed tokens and Stand-ins, and its spec names the Sandbox", () => {
+  const { slotSecret } = objectsOf();
+  const { spec, files } = readSlotSecret(slotSecret.data);
+  assert.deepEqual(spec.owner, { sandbox: "ws-3" });
+  assert.equal(spec.heldPod, "ws-abc", "the manifest holds a literal");
+  assert.deepEqual(spec.manifest, SANDBOX_MANIFEST);
+  const value = (path: string) => files.get(path)?.toString("utf8");
+  assert.equal(value(`values/${CONTROL_TOKEN_NAME}`), controlToken(KEY, "ws-3"));
+  assert.equal(value(`values/${CONTROL_TOKEN_NAME}.standin`), controlStandIn(KEY, "ws-3"));
+  assert.equal(value(`values/${SANDBOX_TOKEN_NAME}`), sandboxToken(KEY, "ws-3"));
+  assert.equal(value("values/GH_TOKEN.standin"), heldStandIn(KEY, "ws-3", "GH_TOKEN"));
+
+  const noLiteral = {
+    ...SANDBOX_MANIFEST,
+    secrets: SANDBOX_MANIFEST.secrets.filter((s) => s.source.kind === "secret"),
+  };
+  assert.equal(readSlotSecret(objectsOf({ manifest: noLiteral }).slotSecret.data).spec.heldPod, undefined);
+});
+
+test("the Custodian renders the slot from the Secret, and each TLS chain finds its leaf there", () => {
+  const { slotSecret } = objectsOf();
+  const { spec, files } = readSlotSecret(slotSecret.data);
+  const rules = renderSlot({
+    slot: 7,
+    owner: spec.owner,
+    manifest: spec.manifest,
+    placeholders: spec.placeholders,
+    ranges: RANGES,
+  });
+  const named = [...JSON.stringify(rules.listener).matchAll(/\/tls\/([0-9a-f]{16}\.(?:crt|key))/g)].map((m) => m[1]);
+  assert.ok(named.length > 0);
+  for (const file of named) assert.ok(files.has(`tls/${file}`), `tls/${file} is in the slot Secret`);
+  assert.ok(named.includes(`${leafStem(JR2_CUSTODIAN_NAME, 443)}.crt`), "jr2's own name has its leaf");
+});
+
+test("each leaf chains to the CA in the trust files, names its host, and has its own key; no object holds the CA's key", () => {
+  const { slotSecret, trust, standIns } = objectsOf({
+    caBundle: "-----BEGIN CERTIFICATE-----\nuser\n-----END CERTIFICATE-----\n",
+  });
+  const { files } = readSlotSecret(slotSecret.data);
+  // The trust files: `extra.crt` is the user's bundle, then the Sandbox's CA.
+  const extra = trust.data["extra.crt"]!;
+  assert.ok(extra.startsWith("-----BEGIN CERTIFICATE-----\nuser\n"));
+  const caPem = extra.slice(extra.indexOf("-----END CERTIFICATE-----\n") + "-----END CERTIFICATE-----\n".length);
+  const ca = new X509Certificate(caPem);
+  assert.equal(ca.subject, "CN=jr2 Sandbox CA (ws-3)");
+  assert.equal(
+    trust.data["bundle.crt"],
+    `${UPSTREAM}${caPem}`,
+    "bundle.crt is the Instance's upstream.crt, then the Sandbox's CA: not the roots of the Orchestrator's Node",
+  );
+
+  for (const { host, port } of leafTargets(SANDBOX_MANIFEST)) {
+    const stem = leafStem(host, port);
+    const cert = new X509Certificate(files.get(`tls/${stem}.crt`)!);
+    assert.ok(cert.verify(ca.publicKey), `${host}:${port} chains to the Sandbox's CA`);
+    assert.ok(host.includes(":") || cert.checkHost(host) !== undefined || cert.checkIP(host) !== undefined, host);
+    assert.ok(cert.checkPrivateKey(createPrivateKey(files.get(`tls/${stem}.key`)!)));
+  }
+
+  // Each private key of each object written is a leaf's: none is the CA's.
+  const caPublic = ca.publicKey.export({ type: "spki", format: "der" });
+  let keys = 0;
+  for (const object of [slotSecret, trust, standIns]) {
+    for (const [k, v] of Object.entries(object.data)) {
+      const body = object.kind === "Secret" ? text(v) : v;
+      for (const m of body.matchAll(/-----BEGIN PRIVATE KEY-----[\s\S]+?-----END PRIVATE KEY-----\n?/g)) {
+        keys++;
+        const pub = createPublicKey(m[0]).export({ type: "spki", format: "der" });
+        assert.ok(!pub.equals(caPublic), `${k} of ${object.metadata?.name} holds the CA's key`);
+      }
+      if (object.kind !== "Secret" || !k.startsWith("tls.")) {
+        assert.doesNotMatch(body, /PRIVATE KEY/, `${k} of ${object.metadata?.name} holds a key`);
+      }
+    }
+  }
+  assert.equal(keys, leafTargets(SANDBOX_MANIFEST).length, "one key for each leaf, and no other");
+});
+
+test("each write makes a new CA; the leaves of jr2's name and of each Intercepted host are the CA's constraints", () => {
+  const a = objectsOf().trust.data["extra.crt"];
+  const b = objectsOf().trust.data["extra.crt"];
+  assert.notEqual(a, b);
+  assert.deepEqual(
+    leafTargets(SANDBOX_MANIFEST).map((t) => `${t.host}:${t.port}`),
+    [
+      `${JR2_CUSTODIAN_NAME}:443`,
+      "api.anthropic.com:443",
+      "api.github.com:443",
+      "registry.npmjs.org:443",
+      "10.0.0.7:8443",
+    ],
+    "port 80 of an Intercepted host is plain HTTP: no leaf",
+  );
+});
+
+test("the trust ConfigMap and the Stand-in Secret: owned by the CR; Stand-ins and no token", () => {
+  const { trust, standIns } = objectsOf();
+  assert.equal(trust.kind, "ConfigMap");
+  assert.equal(trust.metadata?.name, "ws-3-trust");
+  assert.deepEqual(Object.keys(trust.data).sort(), ["bundle.crt", "extra.crt"]);
+  assert.equal(standIns.metadata?.name, "ws-3-standins");
+  for (const o of [trust, standIns]) {
+    assert.deepEqual(
+      (o.metadata as { ownerReferences: Array<{ uid: string }> }).ownerReferences.map((r) => r.uid),
+      [UID],
+    );
+  }
+  assert.deepEqual(Object.keys(standIns.data).sort(), [
+    "control-standin",
+    "standin-ANTHROPIC_API_KEY",
+    "standin-GH_TOKEN",
+    "standin-LOCAL_KEY",
+  ]);
+  assert.equal(text(standIns.data["control-standin"]!), controlStandIn(KEY, "ws-3"));
+  const all = Object.values(standIns.data).map(text).join("\n");
+  for (const token of [controlToken(KEY, "ws-3"), sandboxToken(KEY, "ws-3")]) assert.ok(!all.includes(token));
+});
+
+test("the placeholder table grows append-only: a known name keeps its address, a new name gets the next", () => {
+  const first = objectsOf().placeholders;
+  assert.equal(first.range, RANGES.placeholders);
+  const more = {
+    ...SANDBOX_MANIFEST,
+    egress: [...SANDBOX_MANIFEST.egress, rule("pypi.org", 443, "name", false, "entry")],
+  };
+  const second = objectsOf({ manifest: more, placeholders: first }).placeholders;
+  checkAppendOnly(first, second);
+  for (const row of first.rows) assert.equal(placeholderOf(second, row.name), row.address);
+  assert.equal(second.rows.length, first.rows.length + 1);
+  // A table of another range is a program error, and nothing is written.
+  assert.throws(() => objectsOf({ placeholders: { range: "198.18.16.0/20", rows: [] } }), /not the Instance's/);
+});
+
+test("the Fence composition: the slot's attachment and nameserver, the Custodian by name over HTTPS, the trust, no proxy variable", () => {
+  const fence = fenceComposition(SANDBOX_MANIFEST, {
+    sandbox: "ws-3",
+    slot: 7,
+    ranges: RANGES,
+    granted: ["GH_TOKEN", "NOT_HELD"],
+  });
+  assert.deepEqual(fence.network, { attachment: "jr2-fence-7", nameserver: "198.19.0.1" });
+  const env = Object.fromEntries(fence.harnessEnv.map((e) => [e.name, e.value]));
+  assert.deepEqual(env, {
+    JR2_CUSTODIAN_URL: FENCE_CUSTODIAN_URL,
+    JR2_CONTROL_STANDIN_FILE: "/run/jr2/control/standin",
+    JR2_GRANTED_SECRETS: "GH_TOKEN",
+    NODE_EXTRA_CA_CERTS: "/etc/jr2/ca/extra.crt",
+    SSL_CERT_FILE: "/etc/jr2/ca/bundle.crt",
+    REQUESTS_CA_BUNDLE: "/etc/jr2/ca/bundle.crt",
+    GIT_SSL_CAINFO: "/etc/jr2/ca/bundle.crt",
+  });
+  assert.equal(FENCE_CUSTODIAN_URL, "https://custodian.jr2.internal");
+  const json = JSON.stringify(fence);
+  assert.doesNotMatch(json, /HTTPS_PROXY|https_proxy|NO_PROXY|JR2_CUSTODIAN_SOCKET|control\.sock|-token"/);
+  assert.match(json, /"ws-3-trust"/);
+  assert.match(json, /"ws-3-standins"/);
+  assert.doesNotMatch(json, /jr2-ca/, "no caBundle: no ca.crt");
+  const withBundle = fenceComposition(SANDBOX_MANIFEST, { sandbox: "ws-3", slot: 7, ranges: RANGES, caBundle: true });
+  assert.match(JSON.stringify(withBundle.volumes), /"jr2-ca".*"ca\.crt"/);
+  // A moved segment moves the nameserver.
+  const moved = fenceComposition(SANDBOX_MANIFEST, {
+    sandbox: "ws-3",
+    slot: 7,
+    ranges: { segment: "10.77.0.0/20", placeholders: RANGES.placeholders },
+  });
+  assert.equal(moved.network.nameserver, "10.77.0.1");
+});
+
+test("a Sandbox CR on the Fence: spec.network, no Custodian container, and the Sandbox Effector with exec probes", () => {
+  const fence = fenceComposition(SANDBOX_MANIFEST, { sandbox: "ws-3", slot: 7, ranges: RANGES });
+  const effector = sandboxEffectorContainer({
+    image: "img",
+    keys: [],
+    securityContext: {},
+    secretVolume: "s",
+    keyVolume: "k",
+    scratchVolume: "x",
+    caVolume: "effector-ca",
+  });
+  const cr = sandboxCr({
+    namespace: "jr2-test",
+    req: { name: "ws-3", runId: "r1", workflow: "w", path: "" },
+    seat: { image: "img", env: [], homeVolume: [], homeMount: [], securityContext: { runAsNonRoot: true } as never },
+    repos: [],
+    pod: fence,
+    split: splitSize(resolveSize(undefined, undefined)),
+    sidecars: [effector],
+    env: fence.harnessEnv,
+    envFrom: [],
+    harnessImage: "harness:1",
+    gitCredentials: [],
+    priorityClassName: "jr2-sandbox",
+    idleTimeout: "30m",
+  });
+  assert.deepEqual(cr.spec.network, { attachment: "jr2-fence-7", nameserver: "198.19.0.1" });
+  assert.deepEqual(
+    cr.spec.sidecars.map((c) => c.name),
+    ["effector"],
+    "no Custodian container in the pod",
+  );
+  assert.ok(!JSON.stringify(cr).includes("custodian-values"));
+  assert.ok(cr.spec.volumeMounts.some((m) => m.mountPath === "/etc/jr2/ca"));
+  const command = ["/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8082/healthz"];
+  assert.deepEqual((effector as Record<string, unknown>).startupProbe, {
+    exec: { command },
+    timeoutSeconds: 2,
+    periodSeconds: 1,
+    failureThreshold: 600,
+  });
+  assert.deepEqual(effector.readinessProbe, { exec: { command }, timeoutSeconds: 2, periodSeconds: 10 });
+});
+
+// --- a Harness pod that `jr2 up` makes on the Fence (ADR-0084): the Instance Harness, the check pod
+
+/** The leaves of a CA for each TLS target of `manifest`, as `jr2 up` keeps them in `jr2-held-tls`. */
+function heldLeaves(manifest: typeof INSTANCE_MANIFEST) {
+  const ca = issueCa("jr2-test");
+  return {
+    ca,
+    leaves: Object.fromEntries(leafTargets(manifest).map((t) => [leafStem(t.host, t.port), issueLeaf(ca, t.host)])),
+  };
+}
+
+const podObjectsOf = (over: Partial<Parameters<typeof podFenceObjects>[0]> = {}) => {
+  const { leaves } = heldLeaves(INSTANCE_MANIFEST);
+  return podFenceObjects({
+    namespace: "jr2-test",
+    pod: "jr2-instance-harness",
+    slot: 0,
+    manifest: INSTANCE_MANIFEST,
+    heldPod: "instance",
+    controlToken: controlToken(KEY, "jr2-instance-harness"),
+    placement: "jr2-instance-harness",
+    leaves,
+    trust: { extra: "EXTRA", bundle: "BUNDLE" },
+    ranges: RANGES,
+    signingKey: KEY,
+    labels: { "jr2.dev/instance": "jr2-test" },
+    ...over,
+  });
+};
+
+test("a pod that jr2 up makes: slot 0's Secret names the pod, its signed control token, its Stand-ins and the leaves of the Instance's CA, and no owner", () => {
+  const { slotSecret, trust, standIns } = podObjectsOf();
+  assert.equal(slotSecret.metadata?.name, "jr2-custodian-slot-0");
+  assert.equal(
+    (slotSecret.metadata as { ownerReferences?: unknown }).ownerReferences,
+    undefined,
+    "no CR owns it: jr2 up deletes it with the pod",
+  );
+  assert.deepEqual(slotSecret.metadata?.labels, { "jr2.dev/instance": "jr2-test", "jr2.dev/fence-slot": "0" });
+  const { spec, files } = readSlotSecret(slotSecret.data);
+  assert.deepEqual(spec.owner, { pod: "jr2-instance-harness" });
+  assert.equal(files.get(`values/${CONTROL_TOKEN_NAME}`)!.toString(), controlToken(KEY, "jr2-instance-harness"));
+  assert.equal(
+    files.get(`values/${CONTROL_TOKEN_NAME}.standin`)!.toString(),
+    controlStandIn(KEY, "jr2-instance-harness"),
+  );
+  assert.equal(files.get(`values/${SANDBOX_TOKEN_NAME}`), undefined, "the pod serves no fetch");
+  for (const s of INSTANCE_MANIFEST.secrets) {
+    assert.equal(files.get(`values/${s.name}.standin`)!.toString(), heldStandIn(KEY, "instance", s.name));
+  }
+  // The renderer finds a leaf for each TLS chain.
+  const rules = renderSlot({
+    slot: 0,
+    owner: spec.owner,
+    manifest: spec.manifest,
+    placeholders: spec.placeholders,
+    ranges: RANGES,
+  });
+  const named = [...JSON.stringify(rules.listener).matchAll(/\/tls\/([0-9a-f]{16}\.(?:crt|key))/g)].map((m) => m[1]);
+  assert.ok(named.includes(`${leafStem(JR2_CUSTODIAN_NAME, 443)}.crt`), "jr2's own name has its leaf");
+  for (const file of named) assert.ok(files.has(`tls/${file}`), `tls/${file} is in the slot Secret`);
+  assert.equal(trust.metadata?.name, "jr2-instance-harness-trust");
+  assert.deepEqual(trust.data, { "extra.crt": "EXTRA", "bundle.crt": "BUNDLE" });
+  assert.equal(standIns.metadata?.name, "jr2-instance-harness-standins");
+  assert.equal(text(standIns.data["control-standin"]!), controlStandIn(KEY, "jr2-instance-harness"));
+});
+
+test("a pod that jr2 up makes: a literal's value is read from the pod's held Secret, or, for a check pod, copied into the slot", () => {
+  const literal = INSTANCE_MANIFEST.secrets.find((s) => s.source.kind === "literal")!;
+  const named = readSlotSecret(podObjectsOf().slotSecret.data);
+  assert.equal(named.spec.heldPod, "instance");
+  assert.equal(named.files.get(`values/${literal.name}`), undefined, "no value in the slot");
+  const copied = readSlotSecret(podObjectsOf({ values: { [literal.name]: "the-value" } }).slotSecret.data);
+  assert.equal(copied.spec.heldPod, undefined);
+  assert.equal(copied.files.get(`values/${literal.name}`)!.toString(), "the-value");
+  assert.throws(() => podObjectsOf({ values: {} }), /no value of the literal held secret/);
+});
+
+test("a pod that jr2 up makes: a TLS target with no leaf of the Instance's CA is a defect, and the placeholder table of before stays", () => {
+  assert.throws(() => podObjectsOf({ leaves: {} }), /no leaf of the Instance's CA for custodian\.jr2\.internal:443/);
+  const first = podObjectsOf();
+  const again = podObjectsOf({ placeholders: first.placeholders });
+  assert.deepEqual(again.placeholders, first.placeholders);
+  // A table of another placeholder range (a moved `fence`) starts again.
+  const moved = podObjectsOf({ placeholders: { range: "10.99.0.0/16", rows: [] } });
+  assert.equal(moved.placeholders.range, RANGES.placeholders);
+});
+
+test("a pod that jr2 up makes: Multus's default network is its slot's attachment, and its one nameserver the uplink's", () => {
+  const network = fencePodNetwork("jr2-test", { attachment: "jr2-fence-0", nameserver: "198.19.0.1" });
+  assert.deepEqual(network, {
+    annotations: { "v1.multus-cni.io/default-network": "jr2-test/jr2-fence-0" },
+    dnsPolicy: "None",
+    dnsConfig: { nameservers: ["198.19.0.1"], searches: [], options: [{ name: "ndots", value: "1" }] },
+  });
+  assert.deepEqual(harnessHealthcheck(8080), ["/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:8080/healthz"]);
+});
+
+/** A Sandbox's manifest with a secret that the Custodian holds for its Sandbox Effector (ADR-0068). */
+const EFFECTOR_MANIFEST: HeldManifest = {
+  ...SANDBOX_MANIFEST,
+  secrets: [
+    ...SANDBOX_MANIFEST.secrets,
+    {
+      name: effectorBindingName("files-token"),
+      source: { kind: "literal" },
+      hosts: [{ host: "files.example.com", port: 443, leaf: leafStem("files.example.com", 443) }],
+      headers: ["authorization"],
+      holder: "effector",
+    },
+  ],
+  egress: [...SANDBOX_MANIFEST.egress, rule("files.example.com", 443, "name", true, "effector")],
+};
+
+test("a secret the Custodian holds for the Sandbox Effector: its Stand-in is in the Sandbox's Stand-ins and the slot, and the Harness mounts none of it (ADR-0068)", () => {
+  const name = effectorBindingName("files-token");
+  assert.equal(name, "effector_files_2dtoken");
+  const { standIns, slotSecret } = objectsOf({ manifest: EFFECTOR_MANIFEST });
+  const standIn = heldStandIn(KEY, "ws-3", name);
+  assert.equal(text(standIns.data[heldStandInKey(name)]!), standIn);
+  assert.equal(text(slotSecret.data[`values.${standInValueFile(name)}`]!), standIn);
+  const composed = fenceComposition(EFFECTOR_MANIFEST, { sandbox: "ws-3", slot: 7, ranges: RANGES, granted: [name] });
+  const mounted = JSON.stringify(composed.volumes);
+  assert.ok(!mounted.includes(heldStandInKey(name)), "the Harness container mounts no Stand-in of the Effector's");
+  assert.ok(!composed.harnessEnv.some((e) => (e.value ?? "").includes(name)), "and no workspace() grants it");
+  // The Effector's own volume projects it as the file of the secret's own name, beside its trust:
+  // the Sandbox's bundle.crt, with the Sandbox's CA.
+  const volumes = sandboxEffectorVolumes({
+    sandbox: "ws-3",
+    manifest: { version: 1, secret: "jr2-effector-p", sources: [], standIns: [{ name: "files-token", binding: name }] },
+  }) as Array<{ name: string; projected?: { sources: unknown[] }; configMap?: unknown }>;
+  assert.deepEqual(volumes.find((v) => v.name === "effector-secrets")?.projected?.sources, [
+    { secret: { name: "ws-3-standins", items: [{ key: heldStandInKey(name), path: "files-token" }] } },
+  ]);
+  assert.deepEqual(volumes.find((v) => v.name === "effector-ca")?.configMap, {
+    name: "ws-3-trust",
+    items: [{ key: "bundle.crt", path: "ca.crt" }],
+  });
+});
+
+test("a push over https: the provision binds the entry's token toward the url's host, which becomes Intercepted, with the entry's Stand-in (ADR-0068, ADR-0051)", () => {
+  const secret = "jr2-git-push-0a1b2c3d";
+  const pushed = withPushTokens(
+    SANDBOX_MANIFEST,
+    [
+      { secret, host: "git.example.com", port: 443 },
+      { secret, host: "github.com", port: 443 },
+    ],
+    RANGES,
+  );
+  const binding = pushed.secrets.find((s) => s.name === pushBindingName(secret))!;
+  assert.deepEqual(binding, {
+    name: "push_0a1b2c3d",
+    source: { kind: "secret", secret: gitPushTokenSecretName(secret), key: "token" },
+    hosts: [
+      { host: "git.example.com", port: 443, leaf: leafStem("git.example.com", 443) },
+      { host: "github.com", port: 443, leaf: leafStem("github.com", 443) },
+    ],
+    headers: ["authorization"],
+    holder: "effector",
+    basic: true,
+    push: secret,
+  });
+  // A new host gets an Intercepted rule; github.com:443, a Tunneled entry, becomes Intercepted and
+  // keeps its entry, so a request with no Stand-in is still carried there (ADR-0084).
+  assert.deepEqual(
+    pushed.egress.find((r) => r.host === "git.example.com"),
+    rule("git.example.com", 443, "name", true, "effector"),
+  );
+  assert.deepEqual(
+    pushed.egress.find((r) => r.host === "github.com" && r.port === 443),
+    rule("github.com", 443, "name", true, "entry", "effector"),
+  );
+  assert.equal(
+    SANDBOX_MANIFEST.egress.find((r) => r.host === "github.com" && r.port === 443)?.intercept,
+    false,
+    "the manifest given is not changed",
+  );
+  assert.equal(withPushTokens(SANDBOX_MANIFEST, [], RANGES), SANDBOX_MANIFEST);
+  assert.throws(
+    () => withPushTokens(SANDBOX_MANIFEST, [{ secret, host: "localhost", port: 443 }], RANGES),
+    /the push to localhost:443 cannot go through the Fence/,
+  );
+  // The slot holds the entry's Stand-in, which the push Secret holds as `password`; the Sandbox's
+  // Stand-ins hold none of it: the operator projects the entry's own.
+  const { standIns, slotSecret } = objectsOf({ manifest: pushed });
+  assert.equal(text(slotSecret.data[`values.${standInValueFile("push_0a1b2c3d")}`]!), gitPushStandIn(KEY, secret));
+  assert.equal(standIns.data[heldStandInKey("push_0a1b2c3d")], undefined);
+  const spec = readSlotSecret(slotSecret.data).spec;
+  assert.equal(spec.manifest.secrets.find((s) => s.name === "push_0a1b2c3d")?.basic, true);
+});

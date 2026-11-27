@@ -23,9 +23,10 @@ ANTHROPIC_API_KEY=<your key>
 ```
 
 The `name` of the entry is the env var that the provider reads. When an Agent names a model of that provider, the key is
-a [Held secret](../reference/glossary.md#held-secret) in the pod of the Agent. The Harness container holds only its
-[Stand-in](../reference/glossary.md#stand-in). The [Custodian](../reference/glossary.md#custodian) of the pod puts the
-key into the requests to the provider.
+a [Held secret](../reference/glossary.md#held-secret) for the pod of the Agent. The Harness container holds only its
+[Stand-in](../reference/glossary.md#stand-in). The [Custodian](../reference/glossary.md#custodian) puts the key into the
+requests to the provider. The host of the key needs no entry on the [Egress list](../reference/glossary.md#egress-list)
+of a Sandbox.
 
 You do not say which pods get the key. jr2 finds them from the models that the Agents of each pod name.
 
@@ -60,10 +61,12 @@ For an Instance whose Agent has only the [Menu](../reference/glossary.md#menu) a
 …
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
+the Instance Harness: Egress list Intercepted api.anthropic.com:443
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
-provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for api.anthropic.com
+…
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for api.anthropic.com
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
-provider: the check pod is not running yet — custodian: PodInitializing
+provider: the check pod is not running yet — check: ContainerCreating
 provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 ```
@@ -73,7 +76,7 @@ For an Agent in a [Workspace](../reference/glossary.md#workspace), the line name
 Machine, the label continues with its route, such as ` → "<state>"`.
 
 Before `jr2 up` applies the operator and the Instance, it checks each catalog model that an Agent names. A pod in the
-cluster asks the provider for one tool call, through a Custodian that holds the key, as a
+cluster asks the provider for one tool call, through the Custodian, which holds the key, as a
 [Turn](../reference/glossary.md#turn) asks. When the model id or the key is wrong, `jr2 up` stops with
 `error: provider preflight failed for model "<model>"`. The Instance, its Assembly and the operator do not change.
 [Fix a failed converge](fix-a-failed-converge.md#rules) gives the full error.
@@ -100,12 +103,16 @@ Obey these conditions:
 - `baseUrl` is the whole base URL that the provider's API adds its paths to. For `anthropic`, it is `https://<gateway>`,
   and the API adds `/v1/messages`. For `openai`, it is `https://<gateway>/v1`.
 - `baseUrl` is `https://`, because the Custodian sends a key over TLS only.
+- The gateway accepts TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305. The Custodian offers only
+  these. The TLS of LiteLLM itself (`--ssl_certfile_path`, v1.83) gives TLS 1.0 only, and the Custodian then stops with
+  `could not be reached: the host closed the connection before the TLS handshake ended`. Put a TLS terminator, such as
+  nginx, in front of LiteLLM.
 - The gateway serves each model under its catalog id. The Harness sends the catalog id, not a name that you choose.
 - The key has the name that the provider reads, here `ANTHROPIC_API_KEY`. With no `hosts`, the key goes to the host of
   `baseUrl`, not to `api.anthropic.com`.
 
 `paths` limits the key to the path prefixes that the Agents use. A gateway key can often reach admin routes too, such as
-a route that makes new keys. An Agent could take a new key out of the pod. Thus give a gateway key `paths`.
+a route that makes new keys. An Agent could read a new key and take it away. Thus give a gateway key `paths`.
 
 When the certificate of the gateway comes from a private CA, name the CA in
 [`harness.caBundle`](../reference/config.md#harness-cabundle). The guide
@@ -121,14 +128,20 @@ The key now goes to the gateway:
 
 ```text
 …
+secret ANTHROPIC_API_KEY: Held in the Instance Harness
+the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
+the Instance Harness: Egress list Intercepted <gateway>:443
 held secret ANTHROPIC_API_KEY → <gateway> (literal)
-provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for <gateway>
 …
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for <gateway>
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: the check pod is not running yet — check: ContainerCreating
 provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 ```
 
-`<gateway>` is the host of `GATEWAY_URL`. When its port is not 443, the port follows the host, such as `<gateway>:8443`.
+`<gateway>` is the host of `GATEWAY_URL`. The line of the Egress list always gives the port. When the port is not 443,
+the other lines also give it, such as `<gateway>:8443`.
 
 A gateway that serves its own model names, or only `/v1/chat/completions`, is not a catalog provider. Declare it as a
 custom provider, with `harness.provider` and `apiKey`. The guide

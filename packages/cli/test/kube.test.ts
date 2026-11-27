@@ -13,6 +13,7 @@ import {
   kubectlAdmin,
   kubectlKube,
   LAST_APPLIED,
+  onceMoreIfCreated,
   splitSecrets,
   REACH_BUDGET_MS,
   rolloutFailure,
@@ -24,6 +25,46 @@ import {
   waitPodEnd,
   type PodEndPorts,
 } from "../src/kube.ts";
+
+// --- two converges at once --------------------------------------------------------------------
+
+test("an apply that fails with AlreadyExists is made once more; any other failure is thrown at once", async () => {
+  // Two first converges each create a cluster-wide object (the operator's CRDs): the second create
+  // fails, and the second apply then updates the object that is there.
+  let calls = 0;
+  const raced = await onceMoreIfCreated(async () => {
+    calls++;
+    if (calls === 1) {
+      throw new Error(
+        'Command failed: kubectl apply -f -\nError from server (AlreadyExists): error when creating "STDIN": ' +
+          'customresourcedefinitions.apiextensions.k8s.io "repos.core.jr2.dev" already exists',
+      );
+    }
+    return "applied";
+  });
+  assert.deepEqual([raced, calls], ["applied", 2]);
+
+  let other = 0;
+  await assert.rejects(
+    onceMoreIfCreated(async () => {
+      other++;
+      throw new Error("Error from server (Forbidden): customresourcedefinitions is forbidden");
+    }),
+    /Forbidden/,
+  );
+  assert.equal(other, 1);
+
+  // A second AlreadyExists is the caller's: no loop.
+  let twice = 0;
+  await assert.rejects(
+    onceMoreIfCreated(async () => {
+      twice++;
+      throw new Error("Error from server (AlreadyExists): x");
+    }),
+    /AlreadyExists/,
+  );
+  assert.equal(twice, 2);
+});
 
 // --- the rollout wait's diagnosis (ADR-0046) ---------------------------------------------------
 // Same philosophy one layer up: `kubectl rollout status` says "timed out waiting for the condition"
@@ -84,6 +125,9 @@ function mkKube(opts: {
     awaitPodEnd: async () => assert.fail("a diagnosis runs no pods") as never,
     serverVersion: async () => assert.fail("a diagnosis reads no version") as never,
     dryRunCreate: async () => assert.fail("a diagnosis dry-runs nothing") as never,
+    create: async () => assert.fail("unused") as never,
+    replace: async () => assert.fail("unused") as never,
+    deleteIf: async () => assert.fail("unused") as never,
     getJson: async <T>(o: { kind: string; name: string }): Promise<T | undefined> => {
       assert.equal(o.kind, "node");
       const architecture = opts.arch?.[o.name];
@@ -415,7 +459,7 @@ test("podProgress: a pod that cannot start stops the wait; a pulling one does no
   ): Parameters<typeof podProgress>[0] => ({
     status: {
       phase,
-      initContainerStatuses: [{ name: "custodian", ...init }],
+      initContainerStatuses: [{ name: "runtime", ...init }],
       containerStatuses: [{ name: "check", ...main }],
     },
   });
@@ -426,20 +470,15 @@ test("podProgress: a pod that cannot start stops the wait; a pulling one does no
       { state: { waiting: { reason: "ContainerCreating" } } },
     ),
     "check",
-    "custodian",
   );
   assert.deepEqual([pulling.phase, pulling.stuck, pulling.running], [undefined, undefined, false]);
   for (const reason of ["CreateContainerConfigError", "CrashLoopBackOff", "InvalidImageName"]) {
-    const seen = podProgress(pod("Pending", {}, { state: { waiting: { reason } } }), "check", "custodian");
+    const seen = podProgress(pod("Pending", {}, { state: { waiting: { reason } } }), "check");
     assert.equal(seen.stuck, `check: ${reason}`);
   }
   // A pull is final only when the registry says the image, or the right to it, is not there.
   const waiting = (reason: string, message?: string) =>
-    podProgress(
-      pod("Pending", {}, { state: { waiting: { reason, ...(message ? { message } : {}) } } }),
-      "check",
-      "custodian",
-    );
+    podProgress(pod("Pending", {}, { state: { waiting: { reason, ...(message ? { message } : {}) } } }), "check");
   for (const message of ["manifest unknown", "pull access denied", "401 Unauthorized", "not found"]) {
     assert.equal(waiting("ErrImagePull", message).stuck, "check: ErrImagePull", message);
   }
@@ -452,37 +491,9 @@ test("podProgress: a pod that cannot start stops the wait; a pulling one does no
   }
   // CreateContainerError can pass by itself (a runtime that is slow to start a container).
   assert.equal(waiting("CreateContainerError").stuck, undefined);
-  const restarted = podProgress(pod("Pending", { restartCount: 1, state: { running: {} } }, {}), "check", "custodian");
-  assert.equal(restarted.stuck, "custodian: restarted", "the Custodian refused to start, and will again");
-  const running = podProgress(
-    pod("Running", { state: { running: {} } }, { state: { running: {} } }),
-    "check",
-    "custodian",
-  );
+  const running = podProgress(pod("Running", { state: { running: {} } }, { state: { running: {} } }), "check");
   assert.deepEqual([running.stuck, running.running], [undefined, true]);
-  assert.equal(podProgress(pod("Failed", {}, {}), "check", "custodian").phase, "Failed");
-});
-
-test("podProgress: a Custodian that restarted says how its run before ended", () => {
-  const seen = podProgress(
-    {
-      status: {
-        phase: "Pending",
-        initContainerStatuses: [
-          {
-            name: "custodian",
-            restartCount: 1,
-            lastState: { terminated: { reason: "OOMKilled" } },
-            state: { running: {} },
-          },
-        ],
-      },
-    },
-    "check",
-    "custodian",
-  );
-  assert.equal(seen.stuck, "custodian: restarted (last ended OOMKilled)");
-  assert.ok(seen.reasons.includes("custodian: last ended OOMKilled"));
+  assert.equal(podProgress(pod("Failed", {}, {}), "check").phase, "Failed");
 });
 
 /** `waitPodEnd`'s ports over a scripted pod and a fake clock: each `pod()` read is the next state,
@@ -518,7 +529,7 @@ function scripted(
 const statusOf = (check: Record<string, unknown>, phase = "Pending") => ({
   status: {
     phase,
-    initContainerStatuses: [{ name: "custodian", state: { running: {} } }],
+    initContainerStatuses: [{ name: "runtime", state: { terminated: { reason: "Completed" } } }],
     containerStatuses: [{ name: "check", ...check }],
   },
 });
@@ -534,7 +545,7 @@ test("waitPodEnd: the run bound starts when the check container runs, and its wh
   const end = await waitPodEnd(ports, { container: "check", startSeconds: 300, runSeconds: 10 });
   assert.deepEqual([end.phase, end.started, end.output], ["Succeeded", true, "jr2.preflight model=a/b ok"]);
   assert.equal(clock(), 101 * 2000);
-  assert.deepEqual(reads, ["check -1", "custodian 50"], "the whole check log, every model's line");
+  assert.deepEqual(reads, ["check -1"], "the whole check log, every model's line");
 });
 
 test("waitPodEnd: a pod that never starts times out at the start bound; one that runs too long at the run bound", async () => {
@@ -546,28 +557,10 @@ test("waitPodEnd: a pod that never starts times out at the start bound; one that
   assert.deepEqual([long.phase, long.started, slow.clock()], ["timeout", true, 6000]);
 });
 
-test("waitPodEnd: a Custodian restart stops the wait at once, and its run before is read for the refusal", async () => {
-  const restarted = {
-    status: {
-      phase: "Pending",
-      initContainerStatuses: [
-        { name: "custodian", restartCount: 1, state: { waiting: { reason: "PodInitializing" } } },
-      ],
-    },
-  };
-  const { ports, reads, clock } = scripted([restarted], {
-    "custodian previous": "jr2.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value",
-  });
-  const end = await waitPodEnd(ports, { container: "check", startSeconds: 300, runSeconds: 90 });
-  assert.deepEqual([end.phase, end.stuck, clock()], ["stuck", "custodian: restarted", 0]);
-  assert.match(end.custodian, /reason=empty-value/);
-  assert.deepEqual(reads, ["check -1", "custodian previous 50", "custodian 50"]);
-});
-
 test("failedMount: the kubelet's texts for a missing Secret, Secret key or ConfigMap key, counted when said again", () => {
   const texts = [
-    'MountVolume.SetUp failed for volume "custodian-values" : secret "team" not found',
-    'MountVolume.SetUp failed for volume "custodian-values" : references non-existent secret key: anthropic',
+    'MountVolume.SetUp failed for volume "harness-credentials" : secret "team" not found',
+    'MountVolume.SetUp failed for volume "harness-credentials" : references non-existent secret key: anthropic',
     'MountVolume.SetUp failed for volume "config" : configmap references non-existent config key: harness.json',
   ];
   for (const message of texts) {
@@ -596,7 +589,7 @@ test("failedMount: the kubelet's texts for a missing Secret, Secret key or Confi
 test("waitPodEnd: a volume that cannot mount stops the wait once the kubelet says it again", async () => {
   const creating = statusOf({ state: { waiting: { reason: "ContainerCreating" } } });
   const message =
-    'MountVolume.SetUp failed for volume "custodian-values" : references non-existent secret key: anthropic';
+    'MountVolume.SetUp failed for volume "harness-credentials" : references non-existent secret key: anthropic';
   let polls = 0;
   const { ports, clock } = scripted([creating]);
   ports.events = async () => [{ reason: "FailedMount", message, count: ++polls > 2 ? 2 : 1 }];
@@ -645,7 +638,10 @@ test("waitPodEnd: while the check container runs, its log goes to `log` on each 
 test('podPending: a pod that runs with no container waiting says nothing — not "not running yet"', () => {
   assert.equal(
     podPending({
-      status: { phase: "Running", initContainerStatuses: [{ name: "custodian", state: { running: {} } }] },
+      status: {
+        phase: "Running",
+        initContainerStatuses: [{ name: "runtime", state: { terminated: { reason: "Completed" } } }],
+      },
     }),
     undefined,
   );

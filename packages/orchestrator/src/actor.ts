@@ -692,8 +692,8 @@ export function agentActorWith(
       if (!binding.instanceHarness) {
         throw new Error(
           `turn ${instanceId}: agent "${input.agentName}" has workspace: "none" — its Turn runs on ` +
-            `the Instance Harness (ADR-0031), and this host knows no Instance Harness address (deployed ` +
-            `instances derive it from their namespace; tests pass an explicit \`endpoint\`)`,
+            `the Instance Harness (ADR-0031), and this host knows no Instance Harness address (a deployed ` +
+            `Instance derives it from the VLAN range that \`jr2 up\` gave it, ADR-0084; tests pass an explicit \`endpoint\`)`,
         );
       }
       endpoint = binding.instanceHarness;

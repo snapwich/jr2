@@ -3,8 +3,9 @@
 // namespace are constants (namespace is the identity); every object carries the instance label so
 // ownership is derivable from the cluster — there is no local target state.
 
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CALLER_DIGESTS_KEY,
@@ -13,26 +14,20 @@ import {
   callerTokenDigest,
   callerTokenSecret,
   CA_CONFIGMAP,
+  FENCE_CONFIGMAP,
+  FENCE_MOUNT,
   CA_MOUNT,
   EFFECTOR_PORT,
   INSTANCE_EFFECTOR,
   CONVERSATIONS_DIR,
   CONVERSATIONS_DIR_ENV,
   CONVERSATIONS_VOLUME,
-  custodianComposition,
-  CUSTODIAN_BOOTSTRAP_KEY,
   CUSTODIAN_PROGRAM,
   CUSTODIAN_PROGRAM_KEY,
-  CUSTODIAN_SCRIPT_KEY,
-  CREDENTIAL_KEYS,
-  controlStandIn,
-  controlToken,
-  heldStandIn,
   heldStandInKey,
   HOOK_DIGESTS_KEY,
   HOOK_DIGESTS_MOUNT,
   HOOK_DIGESTS_SECRET,
-  INSTANCE_CUSTODIAN_CONFIGMAP,
   GIT_SSH_SECRET,
   HELD_CA_SECRET,
   HELD_CONFIGMAP,
@@ -47,8 +42,14 @@ import {
   IMAGES_MOUNT,
   HARNESS_CONFIGMAP,
   HARNESS_CONFIG_KEY,
+  INSTANCE_HARNESS_PODS_SERVICE,
   INSTANCE_HARNESS_PORT,
   INSTANCE_HARNESS_SERVICE,
+  INSTANCE_HARNESS_SLOT,
+  CHECK_POD_SLOT,
+  fenceComposition,
+  fencePodNetwork,
+  harnessHealthcheck,
   INSTANCE_SECRET,
   KIT_VERSION,
   NO_DISRUPT_ANNOTATIONS,
@@ -81,11 +82,31 @@ import {
   markHarnessEnv,
   type PriorityClasses,
   type SandboxPlacement,
+  CUSTODIAN_CONTROL_PORT,
+  CUSTODIAN_DIAL_KEY,
+  CUSTODIAN_DIAL_SECRET,
+  CUSTODIAN_HEALTH_PORT,
+  CUSTODIAN_INBOUND_PORT,
+  CUSTODIAN_POD_ARGS,
+  CUSTODIAN_POD_BOOTSTRAP,
+  CUSTODIAN_POD_CONFIG,
+  CUSTODIAN_POD_PROGRAM,
+  CUSTODIAN_SERVICE,
+  CUSTODIAN_STATE,
+  custodianPodBootstrap,
+  custodianSlotSecret,
+  FENCE_PLACEHOLDERS,
+  FENCE_SEGMENT,
+  FENCE_SLOTS,
+  FENCE_TRUNK_ATTACHMENT,
+  type FenceRanges,
 } from "@jr2/orchestrator/internal";
-import type { Pem } from "./held-pki.ts";
+import { fenceAttachments, FENCE_TRUNK_INTERFACE, UPLINK_SCRIPT, uplinkArgs } from "./fence.ts";
+import type { Pem } from "@jr2/orchestrator/internal";
 
 export {
   INSTANCE_EFFECTOR,
+  INSTANCE_HARNESS_PODS_SERVICE,
   GIT_SSH_SECRET,
   HARNESS_CONFIGMAP,
   HARNESS_ENV_SECRET,
@@ -175,7 +196,7 @@ export function hookDigestsObject(
   };
 }
 
-/** The HMAC over the held-secret inputs, on the Instance Harness's pod template (ADR-0059). */
+/** The digest of the Instance Harness's trust files, on its pod template (ADR-0020, ADR-0084). */
 export const ANNOTATION_HELD_DIGEST = "jr2.dev/held-digest";
 
 /** The digest of the `jr2-harness` ConfigMap's text (`harnessConfigJson`), on the Instance
@@ -185,41 +206,8 @@ export const ANNOTATION_HELD_DIGEST = "jr2.dev/held-digest";
 export const ANNOTATION_HARNESS_CONFIG_DIGEST = "jr2.dev/harness-config-digest";
 
 /** The Instance Harness pod's `fsGroup` — a Sandbox pod's default work group (ADR-0005), for the
- * same reason: a group every container is granted, which the Custodian's values are readable by. */
+ * same reason: a group every container is granted, which the Stand-in files are readable by. */
 const INSTANCE_HARNESS_FS_GROUP = 2000;
-
-/**
- * The Instance Harness's credentials Secret (ADR-0076, ADR-0059): what a Sandbox's `<sandbox>-token`
- * is to a Sandbox. It holds the pod's control token (`controlToken`, for the placement's name), its
- * secret control Stand-in and one secret Stand-in per held secret of the pod, under
- * `CREDENTIAL_KEYS` and `heldStandInKey`. `jr2 up` mints it, as the pod's maker. The Custodian
- * mounts the token and the Stand-ins; the Harness container mounts the Stand-ins alone, as files
- * under `/run/jr2/` (`custodianComposition`). A Secret of its own, never `jr2-instance`: the
- * Instance token and the signing key share no Secret with anything the Harness container mounts.
- */
-export const INSTANCE_HARNESS_CREDENTIALS = `${INSTANCE_HARNESS_SERVICE}-token`;
-
-/**
- * One pod's credentials Secret data (ADR-0076, ADR-0059), minted by `jr2 up` as that pod's maker:
- * the control token, the secret control Stand-in, and one secret Stand-in per held secret of
- * `manifest` (`heldStandIn`, under the pod key `heldPod`). The Instance Harness's control token is
- * signed for the placement's name, so it speaks only for the Turns hosted there; a check pod's
- * (`controlToken: "unsigned"`) is a value the Orchestrator never signed — it reads no Menu
- * (ADR-0019). No pod here serves a fetch, so neither holds a fetch token. Never logged: the values
- * reach a Secret and nothing else.
- */
-export function podCredentials(
-  key: Buffer,
-  opts: { placement: string; heldPod: string; manifest: HeldManifest; controlToken?: "signed" | "unsigned" },
-): Record<string, string> {
-  const data: Record<string, string> = {
-    [CREDENTIAL_KEYS.controlToken]:
-      opts.controlToken === "unsigned" ? randomBytes(24).toString("hex") : controlToken(key, opts.placement),
-    [CREDENTIAL_KEYS.controlStandIn]: controlStandIn(key, opts.placement),
-  };
-  for (const s of opts.manifest.secrets) data[heldStandInKey(s.name)] = heldStandIn(key, opts.heldPod, s.name);
-  return data;
-}
 
 /** How long the Instance Harness pod is given to stop (ADR-0031's drain): on SIGTERM it stops
  * admitting and finishes the Turns it holds, so the grace is a Turn's worst case. `jr2 up` waits
@@ -229,57 +217,6 @@ export const INSTANCE_HARNESS_DRAIN_SECONDS = 600;
 /** The Instance Harness's conversations volume (ADR-0031): the StatefulSet's one claim, and the
  * PVC ordinal 0 gets from it — `<claim>-<statefulset>-<ordinal>`. */
 export const INSTANCE_HARNESS_PVC = `${CONVERSATIONS_VOLUME}-${INSTANCE_HARNESS_SERVICE}-0`;
-
-/** The Instance Harness StatefulSet's governing Service (ADR-0031): headless, and dialed by no one
- * today — it is what gives each ordinal the stable name N > 1 would pin a conversation to. The
- * Orchestrator dials the ClusterIP Service `INSTANCE_HARNESS_SERVICE`, never this one. */
-export const INSTANCE_HARNESS_PODS_SERVICE = `${INSTANCE_HARNESS_SERVICE}-pods`;
-
-/** The two ingress NetworkPolicies (ADR-0058) — see `harnessIngressPolicies`. */
-export const SANDBOX_INGRESS_POLICY = "jr2-sandbox-ingress";
-export const INSTANCE_HARNESS_INGRESS_POLICY = "jr2-instance-harness-ingress";
-/** The two egress NetworkPolicies (ADR-0076) — see `metadataEgress`. */
-export const SANDBOX_EGRESS_POLICY = "jr2-sandbox-egress";
-export const INSTANCE_HARNESS_EGRESS_POLICY = "jr2-instance-harness-egress";
-
-/**
- * The cloud metadata addresses that a Harness pod does not reach (ADR-0076): where a node's
- * metadata service answers pods, it gives the node's own cloud credential, which no `workspace()`
- * grants. AWS's IMDS (IPv4 and IPv6), ECS's and EKS Pod Identity's credential agents, the
- * metadata service of GCP and Azure (the same 169.254.169.254), and Alibaba's. Each is a single
- * address: all of 169.254.0.0/16 would cut NodeLocal DNSCache (169.254.20.10). The list is not
- * complete for every provider, so the shared-cluster guide tells the admin to check theirs.
- */
-export const METADATA_ADDRESSES_V4 = [
-  "169.254.169.254/32",
-  "169.254.170.2/32",
-  "169.254.170.23/32",
-  "100.100.100.200/32",
-] as const;
-export const METADATA_ADDRESSES_V6 = ["fd00:ec2::254/128"] as const;
-
-/**
- * The egress of a Harness pod (ADR-0076): everything, except the cloud metadata addresses.
- * NetworkPolicy has no deny rule, so the rule allows every address but those, and every pod of the
- * cluster as a peer of its own. A CNI that matches an `ipBlock` against a pod's address too (Cilium)
- * would otherwise cut DNS, the Orchestrator and each Service. The policy needs a CNI that enforces
- * NetworkPolicy; on one that does not, nothing is blocked.
- */
-export function metadataEgress(podSelector: Record<string, unknown>): Record<string, unknown> {
-  return {
-    podSelector,
-    policyTypes: ["Egress"],
-    egress: [
-      {
-        to: [
-          { ipBlock: { cidr: "0.0.0.0/0", except: [...METADATA_ADDRESSES_V4] } },
-          { ipBlock: { cidr: "::/0", except: [...METADATA_ADDRESSES_V6] } },
-          { namespaceSelector: {} },
-        ],
-      },
-    ],
-  };
-}
 
 /** The operator's install location — per-cluster, shared by every instance (ADR-0019). */
 export const OPERATOR_NAMESPACE = "jr2-system";
@@ -328,13 +265,27 @@ export const KIT_POD_SIZES = {
   orchestrator: { requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "1Gi" } },
   /** It holds the conversations its live runs hold, and frees the rest on the live set (ADR-0031). */
   instanceHarness: { requests: { cpu: "250m", memory: "1Gi" }, limits: { memory: "1Gi" } },
-  /** The Instance Harness pod's Custodian: the same 64Mi/50m slice a Sandbox's takes, kit-sized. */
-  instanceCustodian: { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } },
   repoCache: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "1Gi" } },
   /** The Instance Effector (ADR-0068): one http call at a time per Effect, its text body bounded. */
   instanceEffector: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "128Mi" } },
   /** The provider preflight's check container (ADR-0019): one Node.js process, pi-ai, one call at a time. */
   checkContainer: { requests: { cpu: "100m", memory: "512Mi" }, limits: { memory: "512Mi" } },
+  /** The Custodian pod of a Sandbox node (ADR-0084): its Envoy holds the rules of each slot of the
+   * Instance, and its control process holds each slot's Secrets, its files in the pod's memory and
+   * the resolver. Sized for a full range, because each pod holds each slot of the Instance. Measured
+   * on kind as each container's cgroup `memory.peak`, at 128 slots of 30 entries each (5 of them
+   * Intercepted, with a secret and a leaf): Envoy 652 MiB and the control process 260 MiB when a pod
+   * starts with every slot or takes them live; when each slot's rules change at once, the old
+   * listeners drain for 60 s beside the new ones, and Envoy reached 1,222 MiB and the control
+   * process 293 MiB. Idle: the pod 98 MiB and 6 millicores with no live slot, 144 MiB and 7
+   * millicores with 20. An OOM of either container cuts each connection of that node's Harness
+   * pods. The `uplink` init container runs `ip` and `nft` once. */
+  custodianEnvoy: { requests: { cpu: "50m", memory: "1536Mi" }, limits: { memory: "1536Mi" } },
+  custodianControl: { requests: { cpu: "50m", memory: "384Mi" }, limits: { memory: "384Mi" } },
+  custodianUplink: { requests: { cpu: "50m", memory: "32Mi" }, limits: { memory: "32Mi" } },
+  /** Each of the two one-shot pods that probe the Fence on a Sandbox node (`fence-probe.ts`): one
+   * Node.js process, a few sockets, for a few seconds. */
+  fenceProbe: { requests: { cpu: "50m", memory: "96Mi" }, limits: { memory: "96Mi" } },
 } as const;
 
 /** A fresh copy, so no manifest shares an object with another (or with the constant). */
@@ -411,9 +362,6 @@ export type HeldPodObjects = {
   values: Record<string, string>;
 };
 
-/** A Custodian's two rendered files: Envoy's bootstrap (JSON) and the `HELD` table script. */
-export type CustodianFiles = { bootstrap: string; script: string };
-
 /**
  * What `jr2 up` resolved about held secrets (ADR-0059), ready to become objects. Values appear in
  * two places only: each pod's `values` (the literals, for its own `jr2-held-secrets-<pod>` Secret)
@@ -422,11 +370,8 @@ export type CustodianFiles = { bootstrap: string; script: string };
 export type HeldObjects = {
   /** Every Harness pod the walk found, each with what its Custodian holds. */
   pods: HeldPodObjects[];
-  /** The Instance Harness's Custodian files, when the walk placed it — the one pod `jr2 up` makes,
-   * so the one it renders for; a Sandbox's are rendered by the Orchestrator at provision
-   * (`kubeSandbox`). */
-  instance?: CustodianFiles;
-  /** The per-Instance CA — kept across converges; present whenever a secret is held. */
+  /** The per-Instance CA — kept across converges; present whenever a secret is held or the Instance
+   * is on the Fence (ADR-0084). */
   ca?: Pem;
   /** One leaf per bound target of any pod, by file stem (`leafStem`). */
   leaves: Record<string, Pem>;
@@ -531,6 +476,9 @@ export function instanceObjects(opts: {
   /** Each `git.credentials` entry's clone Secret (ADR-0068): the token the cache agent spends. The
    * Orchestrator names it from `git-clone.json` and never holds it. */
   gitClone?: readonly GitCloneSecret[];
+  /** The Instance's Custodian (ADR-0084), when it has one: the Orchestrator provisions each Sandbox
+   * on the Fence and dials it through the Custodian. Its env changes with it, so the pod rolls. */
+  fence?: { range: number; ranges: FenceRanges };
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const priority = priorityClassNames(opts.priorityClasses);
@@ -554,7 +502,7 @@ export function instanceObjects(opts: {
     },
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(ORCHESTRATOR_SA) },
     {
-      // The orchestrator drives Sandbox CRs (+ their token Secrets) in its own namespace
+      // The orchestrator drives Sandbox CRs in its own namespace
       // (ADR-0012/0013), watches them (ADR-0063), and creates the Repo CRs the cache agent
       // reconciles (ADR-0051). Nothing on Pods: it never reads one — the operator publishes the pod
       // facts on the Sandbox's status — and the attach is the Harness's own `POST /attach`, so no
@@ -565,17 +513,20 @@ export function instanceObjects(opts: {
       rules: [
         { apiGroups: ["core.jr2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
         // Secrets: create and patch, nothing else (ADR-0068). The Orchestrator server-side
-        // applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, owned by the CR,
+        // applies its own per-Sandbox `<sandbox>-effector`, slot Secret and `<sandbox>-standins`
+        // (ADR-0084), each owned by the CR,
         // and holds no git credential and no Effect secret (ADR-0068): no get, no list, so it cannot read or enumerate the Effect
         // secrets, the clone and push Secrets, or a user's Secret through the API. RBAC cannot
         // pin `create` to a name, and `resourceNames` has no prefix form.
         { apiGroups: [""], resources: ["secrets"], verbs: ["create", "patch"] },
-        // A Sandbox's Custodian files, rendered at provision and server-side applied (ADR-0059);
-        // owned by the CR, so the garbage collector deletes them with the pod.
+        // A Sandbox's trust ConfigMap `<sandbox>-trust` (ADR-0084), server-side applied at
+        // provision and owned by the CR, so the garbage collector deletes it with the pod. No
+        // Service: a pod on the Fence has none (ADR-0068, ADR-0084).
         { apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] },
-        // A Sandbox Effector's headless Service, written at provision beside its key (ADR-0068): how
-        // this process reaches the pod's own address. Owned by the CR, like the ConfigMap.
-        { apiGroups: [""], resources: ["services"], verbs: ["create", "patch"] },
+        // The Custodian's pods and their nodes (ADR-0084): the EndpointSlices of its headless
+        // Service, so that the Orchestrator dials a Harness pod through the Custodian pod on that
+        // pod's node. Still no read of a Pod.
+        { apiGroups: ["discovery.k8s.io"], resources: ["endpointslices"], verbs: ["list", "watch"] },
       ],
     },
     {
@@ -619,7 +570,6 @@ export function instanceObjects(opts: {
       metadata: meta(HELD_CONFIGMAP),
       data: {
         ...Object.fromEntries(opts.held.pods.map((p) => [heldManifestKey(p.pod), JSON.stringify(p.manifest, null, 2)])),
-        [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
         // Each Sandbox Effector's manifest (ADR-0068): the sources of its secrets mount, by name.
         // The provision adds the container only for a pod whose manifest is here.
         ...Object.fromEntries(
@@ -656,7 +606,8 @@ export function instanceObjects(opts: {
     ),
     // Each entry's push Secret (ADR-0051): what it pushes and signs with, in Flux's key names where
     // Flux has them. The operator projects one into the Sandbox Effector of a Sandbox whose push
-    // the entry's match covers; nothing else mounts it.
+    // the entry's match covers; nothing else mounts it. And each entry's token Secret, which holds
+    // the push token alone: only the Custodian reads it (ADR-0068).
     ...(opts.gitPush?.secrets ?? []).map(
       (s): KubeManifest => ({
         apiVersion: "v1",
@@ -749,6 +700,19 @@ export function instanceObjects(opts: {
                   // The claim's size as this converge applied it (ADR-0065): the space guard
                   // measures against it, because a hostPath class's `statfs` gives the node's disk.
                   { name: "JR2_STATE_VOLUME", value: opts.stateVolume ?? STATE_VOLUME_DEFAULT },
+                  // The Fence (ADR-0084): the VLAN range this Instance claimed, and its two ranges
+                  // when `fence` moves them. With them, each Sandbox is on the Fence.
+                  ...(opts.fence
+                    ? [
+                        { name: "JR2_FENCE_RANGE", value: String(opts.fence.range) },
+                        ...(opts.fence.ranges.segment !== FENCE_SEGMENT
+                          ? [{ name: "JR2_FENCE_SEGMENT", value: opts.fence.ranges.segment }]
+                          : []),
+                        ...(opts.fence.ranges.placeholders !== FENCE_PLACEHOLDERS
+                          ? [{ name: "JR2_FENCE_PLACEHOLDERS", value: opts.fence.ranges.placeholders }]
+                          : []),
+                      ]
+                    : []),
                 ],
                 // The Orchestrator creates Repo resources and never clones (ADR-0051) — the cache
                 // agent on each node does, reading the credential Secret a Repo's `secretRef`
@@ -770,6 +734,9 @@ export function instanceObjects(opts: {
                   // The digests of the `token` Hooks' secrets (ADR-0078), read again in the same
                   // way: a new or changed secret costs one kubelet propagation window. Never a value.
                   { name: "hooks", mountPath: HOOK_DIGESTS_MOUNT, readOnly: true },
+                  // The trust texts of each Sandbox on the Fence (`jr2-fence`, ADR-0020), read per
+                  // provision. Certificates only.
+                  ...(opts.fence ? [{ name: "fence", mountPath: FENCE_MOUNT, readOnly: true }] : []),
                 ],
                 resources: sized(KIT_POD_SIZES.orchestrator),
                 // The period, not the boot, is what `up`'s rollout wait measures. Measured: the
@@ -809,6 +776,7 @@ export function instanceObjects(opts: {
               { name: "held", configMap: { name: HELD_CONFIGMAP } },
               { name: "callers", secret: { secretName: CALLER_DIGESTS_SECRET } },
               { name: "hooks", secret: { secretName: HOOK_DIGESTS_SECRET } },
+              ...(opts.fence ? [{ name: "fence", configMap: { name: FENCE_CONFIGMAP } }] : []),
             ],
           },
         },
@@ -823,8 +791,6 @@ export function instanceObjects(opts: {
         ports: [{ port: ORCHESTRATOR_PORT, targetPort: ORCHESTRATOR_PORT }],
       },
     },
-    ...harnessIngressPolicies(opts.name, meta),
-    ...harnessEgressPolicies(meta),
     ...(opts.repoCache
       ? repoCacheObjects({
           ...opts.repoCache,
@@ -837,64 +803,6 @@ export function instanceObjects(opts: {
   ];
 
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
-}
-
-/** The operator's label on every Sandbox pod (operator/internal/controller/helpers.go) — and on no
- * other pod, which is what lets one selector mean "every Sandbox, now and later". */
-const SANDBOX_POD_LABEL = "sandbox.jr2.dev/name";
-
-/**
- * Ingress to every Harness pod is the Orchestrator's alone (ADR-0058) — the NetworkPolicy half of
- * the wire's defense; the bearer is the other, and the control (ADR-0013: policy bounds where a pod
- * may talk, only a token bounds what it may do). One policy per placement: every Sandbox pod, by
- * the label the operator stamps on each, and the Instance Harness.
- *
- * Converged UNCONDITIONALLY, not only when a Machine composes a Sandbox or declares a `"none"`
- * Agent: a policy that selects nothing costs nothing, and a pod born before its policy would be a
- * window. The peer is this instance's Orchestrator and no other — a `podSelector` never crosses the
- * namespace, and the instance label pins it within one. What is NOT here, on purpose:
- *
- * - The Orchestrator is not selected. Every route there is token-gated, and a Custodian in any
- *   Harness pod must reach it; a policy could not tell the Custodian's packets from the Agent's.
- * - No egress. That is `harnessEgressPolicies`: open, except the cloud metadata addresses (ADR-0076).
- * - No port. The Orchestrator speaks only the Harness wire to these pods, and a port here would
- *   have to track the CR's `port`; `kubectl port-forward` (the CLI, a human's shell into the User
- *   Container — ADR-0005) and kubelet probes never cross a policy at all.
- */
-function harnessIngressPolicies(instance: string, meta: (name: string) => KubeManifest): KubeManifest[] {
-  const fromOrchestrator = [
-    { from: [{ podSelector: { matchLabels: { app: ORCHESTRATOR_SERVICE, [LABEL_INSTANCE]: instance } } }] },
-  ];
-  const policy = (name: string, podSelector: Record<string, unknown>): KubeManifest => ({
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    metadata: meta(name),
-    spec: { podSelector, policyTypes: ["Ingress"], ingress: fromOrchestrator },
-  });
-  return [
-    policy(SANDBOX_INGRESS_POLICY, { matchExpressions: [{ key: SANDBOX_POD_LABEL, operator: "Exists" }] }),
-    policy(INSTANCE_HARNESS_INGRESS_POLICY, { matchLabels: { app: INSTANCE_HARNESS_SERVICE } }),
-  ];
-}
-
-/**
- * No Harness pod reaches a cloud metadata address (ADR-0076, `metadataEgress`). A Sandbox runs
- * Workspace code, and the node's credential is one that no `workspace()` grants. The Instance
- * Harness runs no Workspace code, but it gets the same rule: a check pod of the provider preflight
- * stands for every Harness pod (ADR-0019), so a model that only the node's credential reaches must
- * fail the check, not a Turn. Converged unconditionally, for the reason the ingress policies are.
- */
-function harnessEgressPolicies(meta: (name: string) => KubeManifest): KubeManifest[] {
-  const policy = (name: string, podSelector: Record<string, unknown>): KubeManifest => ({
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    metadata: meta(name),
-    spec: metadataEgress(podSelector),
-  });
-  return [
-    policy(SANDBOX_EGRESS_POLICY, { matchExpressions: [{ key: SANDBOX_POD_LABEL, operator: "Exists" }] }),
-    policy(INSTANCE_HARNESS_EGRESS_POLICY, { matchLabels: { app: INSTANCE_HARNESS_SERVICE } }),
-  ];
 }
 
 /** Where the cache agent's pod sees the node's directory: `--cache-dir`'s default. */
@@ -1027,17 +935,374 @@ function repoCacheObjects(opts: {
   ];
 }
 
+/** The uid and the group of the Custodian pod's `envoy` and `control` containers. The group owns the
+ * pod's state folder, so that `control` writes each file there and `envoy` reads it. */
+export const CUSTODIAN_POD_USER = 65532;
+
+/** The annotation on the Custodian pod template: the digest of its ConfigMap. Envoy reads its
+ * bootstrap once, at start, so a changed bootstrap, program or trust must replace the pods. */
+export const ANNOTATION_CUSTODIAN_CONFIG_DIGEST = "jr2.dev/custodian-config-digest";
+
+/**
+ * Each Secret that the Custodian's control process may read, other than the slot Secrets and the
+ * dial token (ADR-0084): each pod's `jr2-held-secrets-<pod>` that holds a literal, each Secret of
+ * the user's that a held secret's `secretKeyRef` names, and each token Secret in `pushes`, whose
+ * `token` the Custodian swaps into a push (ADR-0068). Sorted, once each. Its Role names these and
+ * no other Secret, so it cannot read `jr2-instance`, the signing key, or an entry's push Secret,
+ * which holds the ssh push key and the commit-signing key.
+ */
+export function custodianValueSecrets(held: HeldObjects, pushes: readonly string[] = []): string[] {
+  const names = new Set<string>(pushes);
+  for (const pod of held.pods) {
+    if (Object.keys(pod.values).length > 0) names.add(heldSecretsSecret(pod.pod));
+    for (const binding of pod.manifest.secrets) {
+      if (binding.source.kind === "secret") names.add(binding.source.secret);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * The Custodian of an Instance (ADR-0084), as one List: one pod on each Sandbox node, outside every
+ * Harness pod. An Instance with a Harness pod (a Sandbox or the Instance Harness) has it.
+ *
+ * - The attachments: one for each slot of the Instance's VLAN range, and the trunk.
+ * - The DaemonSet `jr2-custodian`, with the Sandbox placement, so that a Custodian pod is on each
+ *   node where a Harness pod can be. Its pod has three containers:
+ *   - `uplink` (init; the Orchestrator image, root with `NET_ADMIN` alone, in the pod's own network
+ *     namespace): the VLAN interfaces of the range and the static rule set (`UPLINK_SCRIPT`);
+ *   - `envoy` (the pinned image, no capability): a listener for each slot with rules, the inbound
+ *     listener of the Orchestrator's dial, and the health listener;
+ *   - `control` (the Orchestrator image, no capability): reads the slot Secrets, makes each slot's
+ *     rules live in Envoy, and serves the resolver of each slot and its own API. It is the one
+ *     container with a ServiceAccount token.
+ * - The headless Service `jr2-custodian`: no address routes to it; its EndpointSlices name each
+ *   ready Custodian pod and its node, which is how the Orchestrator finds the pod on a Harness pod's
+ *   node.
+ * - The Role: `get` on a fixed list of Secret names (each slot Secret, the dial token, and
+ *   `valueSecrets`), and nothing else.
+ * - The NetworkPolicy: the inbound and control ports admit this Instance's Orchestrator only. The
+ *   dial token is the control that holds on a CNI that enforces no policy, and the Harness's bearer
+ *   is the second one (ADR-0058).
+ * - The dial token's Secret and the ConfigMap of Envoy's bootstrap, the Custodian's program and its
+ *   upstream trust (the roots and the user's `caBundle`, never a jr2 CA).
+ *
+ * The pod template changes only with the images, the range, the ranges, the placement and the
+ * ConfigMap's digest: a Harness pod's rules change through `control`, never through the template,
+ * because each roll cuts every connection of that node's Harness pods.
+ */
+export function custodianObjects(opts: {
+  name: string;
+  namespace: string;
+  /** The Instance's VLAN range (`claimRange`). */
+  range: number;
+  /** The Instance's two Fence ranges (`fenceRangesOf(config.fence)`). */
+  ranges: FenceRanges;
+  /** The Orchestrator Kit image: the `uplink` and `control` containers. */
+  orchestratorImage: string;
+  /** The pinned Envoy (`custodianRef`). */
+  envoyImage: string;
+  /** The Instance's dial token (`custodianDialToken`). */
+  dialToken: string;
+  /** The Secrets of held values that the control process may read (`custodianValueSecrets`). */
+  valueSecrets: readonly string[];
+  /** The user's `caBundle` (ADR-0020), trusted upstream beside the roots. */
+  upstreamTrust: string;
+  placement?: SandboxPlacement;
+  priorityClasses?: PriorityClasses;
+}): string {
+  const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
+  const meta = (name: string): KubeManifest => ({ name, namespace: opts.namespace, labels: { ...labels } });
+  const app = { app: CUSTODIAN_SERVICE };
+  const config = {
+    "envoy.json": JSON.stringify(
+      custodianPodBootstrap({
+        orchestrator: { host: `${ORCHESTRATOR_SERVICE}.${opts.namespace}.svc`, port: ORCHESTRATOR_PORT },
+        range: opts.range,
+        ranges: opts.ranges,
+      }),
+    ),
+    [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
+    "upstream.crt": opts.upstreamTrust,
+  };
+  const digest = createHash("sha256");
+  for (const [k, v] of Object.entries(config)) digest.update(k).update("\0").update(v).update("\0");
+  const secretNames = [
+    ...Array.from({ length: FENCE_SLOTS }, (_, i) => custodianSlotSecret(i)),
+    CUSTODIAN_DIAL_SECRET,
+    ...opts.valueSecrets,
+  ];
+  const security = {
+    runAsUser: CUSTODIAN_POD_USER,
+    runAsGroup: CUSTODIAN_POD_USER,
+    runAsNonRoot: true,
+    readOnlyRootFilesystem: true,
+    allowPrivilegeEscalation: false,
+    capabilities: { drop: ["ALL"] },
+    seccompProfile: { type: "RuntimeDefault" },
+  };
+  const serviceAccountDir = posix.dirname(SERVICE_ACCOUNT_CA);
+  const moved = [
+    ...(opts.ranges.segment !== FENCE_SEGMENT ? [{ name: "JR2_FENCE_SEGMENT", value: opts.ranges.segment }] : []),
+    ...(opts.ranges.placeholders !== FENCE_PLACEHOLDERS
+      ? [{ name: "JR2_FENCE_PLACEHOLDERS", value: opts.ranges.placeholders }]
+      : []),
+  ];
+
+  const items: KubeManifest[] = [
+    ...fenceAttachments({ namespace: opts.namespace, labels, range: opts.range, ranges: opts.ranges }),
+    {
+      apiVersion: "v1",
+      kind: "ServiceAccount",
+      metadata: meta(CUSTODIAN_SERVICE),
+      automountServiceAccountToken: false,
+    },
+    {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "Role",
+      metadata: meta(CUSTODIAN_SERVICE),
+      rules: [{ apiGroups: [""], resources: ["secrets"], verbs: ["get"], resourceNames: secretNames }],
+    },
+    {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "RoleBinding",
+      metadata: meta(CUSTODIAN_SERVICE),
+      roleRef: { apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: CUSTODIAN_SERVICE },
+      subjects: [{ kind: "ServiceAccount", name: CUSTODIAN_SERVICE, namespace: opts.namespace }],
+    },
+    {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: meta(CUSTODIAN_DIAL_SECRET),
+      type: "Opaque",
+      stringData: { [CUSTODIAN_DIAL_KEY]: opts.dialToken },
+    },
+    { apiVersion: "v1", kind: "ConfigMap", metadata: meta(CUSTODIAN_SERVICE), data: config },
+    {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: meta(CUSTODIAN_SERVICE),
+      spec: {
+        clusterIP: "None",
+        selector: app,
+        ports: [
+          { name: "inbound", port: CUSTODIAN_INBOUND_PORT, targetPort: CUSTODIAN_INBOUND_PORT },
+          { name: "control", port: CUSTODIAN_CONTROL_PORT, targetPort: CUSTODIAN_CONTROL_PORT },
+        ],
+      },
+    },
+    {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: meta(CUSTODIAN_SERVICE),
+      spec: {
+        podSelector: { matchLabels: app },
+        policyTypes: ["Ingress"],
+        ingress: [
+          {
+            from: [{ podSelector: { matchLabels: { app: ORCHESTRATOR_SERVICE, [LABEL_INSTANCE]: opts.name } } }],
+            ports: [
+              { protocol: "TCP", port: CUSTODIAN_INBOUND_PORT },
+              { protocol: "TCP", port: CUSTODIAN_CONTROL_PORT },
+            ],
+          },
+          // The health listener answers 200 and nothing else, to any peer.
+          { ports: [{ protocol: "TCP", port: CUSTODIAN_HEALTH_PORT }] },
+        ],
+      },
+    },
+    {
+      apiVersion: "apps/v1",
+      kind: "DaemonSet",
+      metadata: { ...meta(CUSTODIAN_SERVICE), labels: { ...labels, [LABEL_VERSION]: KIT_VERSION } },
+      spec: {
+        selector: { matchLabels: app },
+        // One pod of a node at a time, and never two at once on a node: the VLAN interfaces of
+        // each pod have the same fixed MACs, and two pods on one bridge would share them.
+        updateStrategy: { type: "RollingUpdate", rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
+        template: {
+          metadata: {
+            labels: { ...labels, ...app },
+            annotations: {
+              // The text form, with the namespace: jr2's admission policy admits an attachment of
+              // the Fence only in this form, and only of the pod's own namespace (ADR-0084).
+              "k8s.v1.cni.cncf.io/networks": `${opts.namespace}/${FENCE_TRUNK_ATTACHMENT}@${FENCE_TRUNK_INTERFACE}`,
+              [ANNOTATION_CUSTODIAN_CONFIG_DIGEST]: digest.digest("hex"),
+            },
+          },
+          spec: {
+            serviceAccountName: CUSTODIAN_SERVICE,
+            // Only `control` gets a token, through its own projected volume.
+            automountServiceAccountToken: false,
+            enableServiceLinks: false,
+            // Control tier (ADR-0060): every Harness pod on the node needs it.
+            priorityClassName: priorityClassNames(opts.priorityClasses).control,
+            // On each node where a Harness pod can be (ADR-0052): the Sandbox placement, as the
+            // cache agent has it.
+            ...(opts.placement?.nodeSelector ? { nodeSelector: opts.placement.nodeSelector } : {}),
+            ...(opts.placement?.tolerations?.length ? { tolerations: opts.placement.tolerations } : {}),
+            securityContext: { fsGroup: CUSTODIAN_POD_USER, seccompProfile: { type: "RuntimeDefault" } },
+            initContainers: [
+              {
+                name: "uplink",
+                image: opts.orchestratorImage,
+                imagePullPolicy: "IfNotPresent",
+                command: [
+                  "sh",
+                  "-c",
+                  UPLINK_SCRIPT,
+                  ...uplinkArgs({
+                    range: opts.range,
+                    ranges: opts.ranges,
+                    state: CUSTODIAN_STATE,
+                    group: CUSTODIAN_POD_USER,
+                  }),
+                ],
+                terminationMessagePolicy: "FallbackToLogsOnError",
+                volumeMounts: [{ name: "state", mountPath: CUSTODIAN_STATE }],
+                resources: sized(KIT_POD_SIZES.custodianUplink),
+                // Root in the pod's own network namespace, with NET_ADMIN and no other capability.
+                securityContext: {
+                  runAsUser: 0,
+                  runAsGroup: 0,
+                  runAsNonRoot: false,
+                  readOnlyRootFilesystem: true,
+                  allowPrivilegeEscalation: false,
+                  capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
+                  seccompProfile: { type: "RuntimeDefault" },
+                },
+              },
+            ],
+            containers: [
+              {
+                name: "control",
+                image: opts.orchestratorImage,
+                imagePullPolicy: "IfNotPresent",
+                command: ["tsx", "node_modules/@jr2/orchestrator/bin/custodian-control.ts"],
+                env: [
+                  { name: "JR2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
+                  { name: "JR2_FENCE_RANGE", value: String(opts.range) },
+                  ...moved,
+                  // The API server's trust: the client is built-in `fetch` (ADR-0063).
+                  { name: "NODE_EXTRA_CA_CERTS", value: SERVICE_ACCOUNT_CA },
+                ],
+                ports: [{ name: "control", containerPort: CUSTODIAN_CONTROL_PORT }],
+                volumeMounts: [
+                  { name: "state", mountPath: CUSTODIAN_STATE },
+                  { name: "kube-api", mountPath: serviceAccountDir, readOnly: true },
+                  { name: "tmp", mountPath: "/tmp" },
+                ],
+                // Ready once each slot that has rules is live in Envoy, and sticky after that.
+                readinessProbe: {
+                  httpGet: { path: "/healthz", port: CUSTODIAN_CONTROL_PORT },
+                  initialDelaySeconds: 1,
+                  periodSeconds: 2,
+                  failureThreshold: 15,
+                },
+                resources: sized(KIT_POD_SIZES.custodianControl),
+                securityContext: security,
+              },
+              {
+                name: "envoy",
+                image: opts.envoyImage,
+                imagePullPolicy: "IfNotPresent",
+                args: [...CUSTODIAN_POD_ARGS],
+                ports: [
+                  { name: "health", containerPort: CUSTODIAN_HEALTH_PORT },
+                  { name: "inbound", containerPort: CUSTODIAN_INBOUND_PORT },
+                ],
+                volumeMounts: [
+                  { name: "config", mountPath: CUSTODIAN_POD_CONFIG, readOnly: true },
+                  { name: "trust", mountPath: CA_MOUNT, readOnly: true },
+                  { name: "state", mountPath: CUSTODIAN_STATE, readOnly: true },
+                ],
+                readinessProbe: {
+                  httpGet: { path: "/healthz", port: CUSTODIAN_HEALTH_PORT },
+                  initialDelaySeconds: 1,
+                  periodSeconds: 2,
+                  failureThreshold: 15,
+                },
+                resources: sized(KIT_POD_SIZES.custodianEnvoy),
+                securityContext: security,
+              },
+            ],
+            volumes: [
+              {
+                name: "config",
+                configMap: {
+                  name: CUSTODIAN_SERVICE,
+                  items: [
+                    { key: "envoy.json", path: posix.basename(CUSTODIAN_POD_BOOTSTRAP) },
+                    { key: CUSTODIAN_PROGRAM_KEY, path: posix.basename(CUSTODIAN_POD_PROGRAM) },
+                  ],
+                },
+              },
+              {
+                name: "trust",
+                configMap: { name: CUSTODIAN_SERVICE, items: [{ key: "upstream.crt", path: "upstream.crt" }] },
+              },
+              // The LDS and CDS files and each slot's values, leaves and Lua tables: in the pod's
+              // memory, never on the node's disk.
+              { name: "state", emptyDir: { medium: "Memory", sizeLimit: "64Mi" } },
+              // tsx's cache of the control process's compiled files.
+              { name: "tmp", emptyDir: { sizeLimit: "64Mi" } },
+              {
+                name: "kube-api",
+                projected: {
+                  sources: [
+                    { serviceAccountToken: { path: "token", expirationSeconds: 3607 } },
+                    { configMap: { name: "kube-root-ca.crt", items: [{ key: "ca.crt", path: "ca.crt" }] } },
+                    { downwardAPI: { items: [{ path: "namespace", fieldRef: { fieldPath: "metadata.namespace" } }] } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  ];
+  return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/**
+ * What the Orchestrator reads of the Fence (ADR-0084, ADR-0020): `jr2-fence`, with `upstream.crt` (the
+ * roots of the Node that runs `jr2 up`, and the user's `caBundle`) and the `caBundle` alone as
+ * `ca.crt`. Each Sandbox's `bundle.crt` and `extra.crt` start with them. Its own manifest, apart
+ * from the List: the roots are past what client-side apply's annotation can hold, so `jr2 up`
+ * applies it server-side, before the Orchestrator that mounts it.
+ */
+export function fenceConfigObject(opts: {
+  name: string;
+  namespace: string;
+  upstream: string;
+  caBundle?: string;
+}): string {
+  return JSON.stringify({
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: {
+      name: FENCE_CONFIGMAP,
+      namespace: opts.namespace,
+      labels: { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" },
+    },
+    data: { "upstream.crt": opts.upstream, ...(opts.caBundle !== undefined ? { "ca.crt": opts.caBundle } : {}) },
+  });
+}
+
 /** The label on each pod's `jr2-held-secrets-<pod>` Secret: its pod, so `jr2 up` finds and deletes
  * the one a pod no longer needs. */
 export const LABEL_HELD_POD = "jr2.dev/held-pod";
 
 /**
- * The held-secret Secrets (ADR-0059), present only while a secret is held: the CA (which NO pod
- * mounts — `jr2 up` alone reads it back), each pod's literal values (its Custodian's alone) and the
- * leaves (the Custodians'). `stringData` as written: no trailing newline is added to a value.
+ * The held-secret Secrets (ADR-0059, ADR-0084), present while the Instance has a CA: while a secret
+ * is held, or a Harness pod that `jr2 up` makes is on the Fence. The CA (which NO pod mounts —
+ * `jr2 up` alone reads it back), each pod's literal values (the Custodian's alone) and the leaves
+ * (`jr2 up` reads them back, and copies each into the slot Secret of a pod it makes).
+ * `stringData` as written: no trailing newline is added to a value.
  */
 function heldSecretObjects(held: HeldObjects, meta: (name: string) => KubeManifest): KubeManifest[] {
-  if (!holdsAny(held) || !held.ca) return [];
+  if (!held.ca) return [];
   const secret = (name: string, stringData: Record<string, string>, pod?: string): KubeManifest => {
     const m = meta(name);
     return {
@@ -1063,18 +1328,12 @@ function heldSecretObjects(held: HeldObjects, meta: (name: string) => KubeManife
 }
 
 /**
- * The trust ConfigMap (ADR-0020, ADR-0059): the user's `caBundle` as `ca.crt`, and while a secret
- * is held, the three bundles its path needs. Its own manifest, apart from the List, because the
- * bundles carry every root certificate — past what client-side apply's annotation can hold — so
- * `jr2 up` applies it server-side. Undefined when there is nothing to trust.
+ * The trust ConfigMap (ADR-0020): the user's `caBundle` as `ca.crt`, which the Instance Effector and
+ * each Harness pod read. Its own manifest, apart from the List, and `jr2 up` applies it server-side.
+ * Undefined when there is no `caBundle`: then `jr2 up` deletes it.
  */
-export function trustObject(opts: {
-  name: string;
-  namespace: string;
-  caBundle?: string;
-  bundles?: { extra: string; bundle: string; upstream: string };
-}): string | undefined {
-  if (opts.caBundle === undefined && opts.bundles === undefined) return undefined;
+export function trustObject(opts: { name: string; namespace: string; caBundle?: string }): string | undefined {
+  if (opts.caBundle === undefined) return undefined;
   return JSON.stringify({
     apiVersion: "v1",
     kind: "ConfigMap",
@@ -1083,26 +1342,26 @@ export function trustObject(opts: {
       namespace: opts.namespace,
       labels: { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" },
     },
-    data: {
-      ...(opts.caBundle !== undefined ? { "ca.crt": opts.caBundle } : {}),
-      ...(opts.bundles
-        ? { "extra.crt": opts.bundles.extra, "bundle.crt": opts.bundles.bundle, "upstream.crt": opts.bundles.upstream }
-        : {}),
-    },
+    data: { "ca.crt": opts.caBundle },
   });
 }
 
 /**
- * The Instance Harness (ADR-0031): the per-instance Harness StatefulSet + Service `jr2 up`
- * converges whenever an Agent a registered Machine CARRIES declares `workspace: "none"`
+ * The Instance Harness (ADR-0031): the per-instance Harness StatefulSet and its headless Service, which
+ * `jr2 up` converges whenever an Agent a registered Machine CARRIES declares `workspace: "none"`
  * (ADR-0049's walk) — the placement for every Menu-only Agent's Turn, regardless of any enclosing
- * Workspace. The one Harness shape, minus the Workspace: the stock Harness image plus the Custodian,
- * composed by the same function a Sandbox's is (custodian.ts, ADR-0059), the same harness-config
- * ConfigMap and env/envFrom/trust wiring a Sandbox's Harness container gets — and NO `/work`
- * volume, no attach step. It runs the STOCK image permanently: `workspace: "none"` withholds the
- * whole Working toolset (ADR-0028), so there are no tools to carry and no Sandbox Image to resolve
- * (ADR-0037). No config key names, sizes, addresses, or enables it: the Machine walk is the entire
- * surface.
+ * Workspace. The one Harness shape, minus the Workspace: the stock Harness image, the same
+ * harness-config ConfigMap and env/envFrom wiring a Sandbox's Harness container gets — and NO
+ * `/work` volume, no attach step and no container of the Custodian. It is on slot 0 of the Fence
+ * (ADR-0084), as a Sandbox is on its slot: its one network leads to the Instance's Custodian, outside
+ * the pod, at jr2's own name, and it takes the Sandbox placement, so a Custodian pod is on its node.
+ * It runs the STOCK image permanently: `workspace: "none"` withholds the whole Working toolset
+ * (ADR-0028), so there are no tools to carry and no Sandbox Image to resolve (ADR-0037). No config
+ * key names, sizes, addresses, or enables it: the Machine walk is the entire surface.
+ *
+ * Its Fence objects (`podFenceObjects`: the slot Secret, `jr2-instance-harness-trust` and
+ * `jr2-instance-harness-standins`) are not in this List: `jr2 up` applies them first, and waits
+ * until the Custodian says that the slot's rules are live, before the pod starts.
  */
 export function instanceHarnessObjects(opts: {
   name: string;
@@ -1115,23 +1374,16 @@ export function instanceHarnessObjects(opts: {
    * a Sandbox's refs travel through the `jr2-images` ConfigMap. Both are right for what they are —
    * this StatefulSet is supposed to roll when its image moves; the Orchestrator is not. */
   harnessImage: string;
-  /** The resolved Custodian ref: the Harness's one route to its Menu, kept even though a `"none"`
-   * Agent cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
-  custodianImage: string;
   /** What this converge placed in the Instance Harness (ADR-0059): its own manifest — the model
    * keys its `"none"` Agents' providers read and the secrets of the remote MCP servers they name
-   * (ADR-0079), and nothing else. */
+   * (ADR-0079), and nothing else. The pod gets the Stand-in of each as a file. */
   held: HeldManifest;
-  /** Its Custodian's two files, rendered from `held` — applied here, with the pod they are for
-   * (`INSTANCE_CUSTODIAN_CONFIGMAP`, ADR-0059). */
-  custodian: CustodianFiles;
-  /** An HMAC over this pod's held-secret inputs (its manifest, its leaves, its literal values, its
-   * Custodian's config), keyed with the signing key so it reveals nothing — on the pod template, so
-   * a change to any of them rolls this pod (ADR-0059). */
-  heldDigest: string;
-  /** The pod's credentials Secret data (`podCredentials`): its control token and its secret
-   * Stand-ins, applied here as {@link INSTANCE_HARNESS_CREDENTIALS} with the pod they are for. */
-  credentials: Record<string, string>;
+  /** The Instance's two Fence ranges: slot 0's attachment and the uplink's address. */
+  ranges: FenceRanges;
+  /** A digest of the pod's trust files (`jr2-instance-harness-trust`), on the pod template: the
+   * Harness reads them once, at start, so a new CA or `caBundle` must roll the pod. A held value
+   * reaches the Custodian with no roll (ADR-0059). */
+  trustDigest: string;
   harness?: HarnessConfig;
   /** The config's `mcp` block (ADR-0079): with `harness`, the text of the `jr2-harness` ConfigMap,
    * whose digest is on the pod template. */
@@ -1143,6 +1395,9 @@ export function instanceHarnessObjects(opts: {
    * every Sandbox Harness container gets, so this pod can verify the Orchestrator and mint
    * nothing. */
   bearerSha256: string;
+  /** The Sandbox placement (ADR-0052): the Instance Harness is on a Sandbox node, where a Custodian
+   * pod is (ADR-0084). */
+  placement?: SandboxPlacement;
   /** `priorityClasses` from jr2.config.ts (ADR-0060): the classes to name instead of jr2's own. */
   priorityClasses?: PriorityClasses;
 }): string {
@@ -1162,19 +1417,17 @@ export function instanceHarnessObjects(opts: {
     seccompProfile: { type: "RuntimeDefault" },
   });
 
-  // The Custodian (ADR-0013, ADR-0059, ADR-0076): the placement's control token — signed for this
-  // placement's name, so it speaks only for the Turns hosted HERE (tokens.ts) — and the held secrets
-  // placed here, from the pod's own credentials Secret (`podCredentials`). The tokens are mounted
-  // into the Custodian alone, the Stand-ins into the Custodian and, as files, the Harness; the
-  // Instance token itself never enters this pod. The pod serves no fetch: no Repo is mounted here.
-  const custodian = custodianComposition(opts.held, {
-    image: opts.custodianImage,
-    pod: INSTANCE_HARNESS_HELD_POD,
-    config: INSTANCE_CUSTODIAN_CONFIGMAP,
-    credentials: { secret: INSTANCE_HARNESS_CREDENTIALS },
+  // On the Fence (ADR-0084), as a Sandbox is: the Custodian's URL at jr2's own name, the control
+  // Stand-in's file and the trust variables; the trust files and the Stand-ins as files. The pod's
+  // tokens are in its slot Secret, which only the Custodian reads (ADR-0076).
+  const fence = fenceComposition(opts.held, {
+    sandbox: INSTANCE_HARNESS_SERVICE,
+    slot: INSTANCE_HARNESS_SLOT,
+    ranges: opts.ranges,
     caBundle: opts.caBundle === true,
-    resources: sized(KIT_POD_SIZES.instanceCustodian),
   });
+  const network = fencePodNetwork(opts.namespace, fence.network);
+  const probe = { exec: { command: harnessHealthcheck(INSTANCE_HARNESS_PORT) }, timeoutSeconds: 2 };
 
   const harnessContainer = {
     name: "harness",
@@ -1183,7 +1436,7 @@ export function instanceHarnessObjects(opts: {
     ports: [{ containerPort: INSTANCE_HARNESS_PORT }],
     // The same asymmetry the Sandbox pod builds (ADR-0013/0020/0059): the mounted harness config
     // and the instance's valueFrom entries ride `env` (literal values live in the jr2-harness-env
-    // Secret), then the Custodian's address and every Stand-in, and no credential ever does.
+    // Secret), then the Custodian's address and the trust variables, and no credential ever does.
     // Marked (ADR-0076, `harness-env.ts`): the stock image's command starts the Harness with
     // `effector nocore --harness-env`, which gives the Harness process jr2's names alone.
     ...markHarnessEnv(
@@ -1198,7 +1451,7 @@ export function instanceHarnessObjects(opts: {
         // rather than asserted. The bearer (below) narrows who may try; this decides what.
         { name: "JR2_MENU_ONLY", value: "1" },
         ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
-        ...custodian.harnessEnv,
+        ...fence.harnessEnv,
         // Where the conversations persist (ADR-0031): the claim below. Mechanism, as on a Sandbox.
         { name: CONVERSATIONS_DIR_ENV, value: CONVERSATIONS_DIR },
         // The wire's gate (ADR-0058), last — as on a Sandbox — so no `harness.env` entry chooses it.
@@ -1206,44 +1459,18 @@ export function instanceHarnessObjects(opts: {
       ],
       [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(opts.harness?.envFrom ?? [])],
     ),
-    // The Harness container's alone: the Custodian has no business with an Agent's history.
-    volumeMounts: [{ name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR }, ...custodian.harnessMounts],
-    // The operator probes a Sandbox's Harness the same way: serving = the socket accepts.
-    // Period and threshold as reasoned on the Orchestrator above: the default 10s period is the
-    // rollout wait rather than the boot, and the threshold then has to carry the stall tolerance
-    // the period used to supply. This pod is single-replica too.
-    // The Harness's own route, not the port (ADR-0063): a socket probe would pass for whatever
-    // listens there. A draining Harness still answers it (ADR-0031).
-    readinessProbe: {
-      httpGet: { path: "/healthz", port: INSTANCE_HARNESS_PORT },
-      initialDelaySeconds: 1,
-      periodSeconds: 2,
-      failureThreshold: 15,
-    },
+    volumeMounts: [{ name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR }, ...fence.harnessMounts],
+    // The Harness's own route, not the port (ADR-0063): an exec probe from inside the container,
+    // because no HTTP probe of the kubelet reaches a pod on the Fence (ADR-0084). Every second until
+    // it first answers, then every 2 s with the threshold that carries a stall; a draining Harness
+    // still answers it (ADR-0031). This pod is single-replica.
+    startupProbe: { ...probe, periodSeconds: 1, failureThreshold: 120 },
+    readinessProbe: { ...probe, periodSeconds: 2, failureThreshold: 15 },
     resources: sized(KIT_POD_SIZES.instanceHarness),
     securityContext: hardenedContainerSecurityContext(),
   };
 
   const items: KubeManifest[] = [
-    // The pod's credentials (ADR-0076): a Secret, never a ConfigMap, env or the pod template.
-    {
-      apiVersion: "v1",
-      kind: "Secret",
-      metadata: { ...meta(), name: INSTANCE_HARNESS_CREDENTIALS },
-      type: "Opaque",
-      stringData: opts.credentials,
-    },
-    // The one pod `jr2 up` makes, so the one whose Custodian files it renders: its bootstrap and
-    // its HELD table, from its own manifest, beside the program its volume projects from `jr2-held`.
-    {
-      apiVersion: "v1",
-      kind: "ConfigMap",
-      metadata: { ...meta(), name: INSTANCE_CUSTODIAN_CONFIGMAP },
-      data: {
-        [CUSTODIAN_BOOTSTRAP_KEY]: opts.custodian.bootstrap,
-        [CUSTODIAN_SCRIPT_KEY]: opts.custodian.script,
-      },
-    },
     {
       apiVersion: "apps/v1",
       kind: "StatefulSet",
@@ -1251,10 +1478,10 @@ export function instanceHarnessObjects(opts: {
       spec: {
         // A StatefulSet of ONE (ADR-0031): the value is the stable volume — a restart or a rollout
         // brings the same conversations back — and the stable name is what N > 1 would pin a
-        // conversation to. Never more than one pod behind this Service for one conversation, and
-        // never an HPA: a scale-down would kill conversations. At N = 1 a rollout has no surge,
-        // so admissions are refused while the new pod starts, which the Orchestrator absorbs
-        // (ADR-0042).
+        // conversation to. Never more than one pod on slot 0 for one conversation, and never an
+        // HPA: a scale-down would kill conversations. At N = 1 a rollout has no surge, so
+        // admissions are refused while the new pod starts, which the Orchestrator absorbs
+        // (ADR-0042). And never two pods at once: they would share slot 0's address.
         replicas: 1,
         serviceName: INSTANCE_HARNESS_PODS_SERVICE,
         selector: { matchLabels: { app: INSTANCE_HARNESS_SERVICE } },
@@ -1273,14 +1500,14 @@ export function instanceHarnessObjects(opts: {
         template: {
           metadata: {
             labels: { ...labels, app: INSTANCE_HARNESS_SERVICE },
-            // A held-secret edit rolls this pod; a live Sandbox keeps what its Custodian read at
-            // start (ADR-0059, the ADR-0037 stance). A move costs a drain, not the conversations
-            // (the volume keeps them), yet no autoscaler may choose one (ADR-0060) — a drain still
-            // can.
+            // A new trust rolls this pod: the Harness reads it once, at start (ADR-0020). A move
+            // costs a drain, not the conversations (the volume keeps them), yet no autoscaler may
+            // choose one (ADR-0060) — a drain still can.
             // The same for the `jr2-harness` text, which the Harness reads once at start: a server
             // added to `mcp`, or a url, an argv or a timeout changed, reaches the pod (ADR-0079).
             annotations: {
-              [ANNOTATION_HELD_DIGEST]: opts.heldDigest,
+              ...network.annotations,
+              [ANNOTATION_HELD_DIGEST]: opts.trustDigest,
               [ANNOTATION_HARNESS_CONFIG_DIGEST]: createHash("sha256")
                 .update(harnessConfigJson(opts.harness, opts.mcp))
                 .digest("base64url")
@@ -1290,29 +1517,31 @@ export function instanceHarnessObjects(opts: {
           },
           spec: {
             // The drain (ADR-0031): on SIGTERM the Harness stops admitting and finishes the Turns
-            // it holds, so the grace is a Turn's worst case — a deploy loses no Turn.
+            // it holds, so the grace is a Turn's worst case — a deploy loses no Turn. The
+            // Custodian is outside the pod and does not stop with it.
             terminationGracePeriodSeconds: INSTANCE_HARNESS_DRAIN_SECONDS,
             // The Sandbox tier's class (ADR-0060): it holds live conversations, as a Sandbox holds
             // `/work`, and it may wait rather than preempt.
             priorityClassName: priorityClassNames(opts.priorityClasses).sandbox,
-            // The Custodian is a native sidecar, so it outlives the drain (ADR-0031): the kubelet
-            // stops a pod's sidecars only after its main containers exit, and the draining Harness
-            // needs its Custodian to the end — its one route to the Menu and to the model. As a
-            // plain container Envoy took SIGTERM with the Harness and quit at once.
-            initContainers: [{ ...custodian.custodianContainer, restartPolicy: "Always" }],
+            // On a Sandbox node (ADR-0052, ADR-0084): a Custodian pod is on each one.
+            ...(opts.placement?.nodeSelector ? { nodeSelector: opts.placement.nodeSelector } : {}),
+            ...(opts.placement?.tolerations?.length ? { tolerations: opts.placement.tolerations } : {}),
             containers: [harnessContainer],
             // The operator's isolation baseline (sandbox_controller.go), mirrored: same Harness
             // image, same "never reach the Kubernetes API" north star — JR2_MENU_ONLY makes code
-            // execution here unlikely, not unimaginable. No `shareProcessNamespace`: the Harness
-            // container must not read the Custodian's `/proc`. `fsGroup` makes the Custodian's
-            // group-readable values readable by Envoy's own uid, as a Sandbox pod's does.
+            // execution here unlikely, not unimaginable. `fsGroup` makes the group-readable
+            // Stand-in files readable, as a Sandbox pod's does.
             automountServiceAccountToken: false,
+            enableServiceLinks: false,
             securityContext: {
               runAsNonRoot: true,
               seccompProfile: { type: "RuntimeDefault" },
               fsGroup: INSTANCE_HARNESS_FS_GROUP,
             },
-            volumes: custodian.volumes,
+            // On the Fence, the uplink's nameserver alone, as the operator gives a Sandbox.
+            dnsPolicy: network.dnsPolicy,
+            dnsConfig: network.dnsConfig,
+            volumes: fence.volumes,
           },
         },
       },
@@ -1320,24 +1549,13 @@ export function instanceHarnessObjects(opts: {
     {
       apiVersion: "v1",
       kind: "Service",
-      metadata: meta(),
-      spec: {
-        // The address the Agent actor dials: a ClusterIP Service, deliberately not the headless
-        // one below. A draining pod is terminating, so DNS stops naming it, but kube-proxy still
-        // routes a ClusterIP to a terminating pod that serves while no other is ready — and at
-        // N = 1 none is until it exits. So during the drain reads, waits and aborts keep reaching
-        // it (ADR-0031), and a refused admission meets its 503, not a name that resolves to nothing.
-        selector: { app: INSTANCE_HARNESS_SERVICE },
-        ports: [{ port: INSTANCE_HARNESS_PORT, targetPort: INSTANCE_HARNESS_PORT }],
-      },
-    },
-    {
-      apiVersion: "v1",
-      kind: "Service",
       metadata: { ...meta(), name: INSTANCE_HARNESS_PODS_SERVICE },
       spec: {
-        // Headless — the StatefulSet's governing Service (`serviceName`), for the per-ordinal names.
+        // Headless — the StatefulSet's governing Service (`serviceName`), and no address routes to it
+        // (ADR-0084). Its EndpointSlices name the pod's node, also while the pod drains, which is
+        // how the Orchestrator finds the Custodian pod that carries a dial to slot 0.
         clusterIP: "None",
+        publishNotReadyAddresses: true,
         selector: { app: INSTANCE_HARNESS_SERVICE },
         ports: [{ port: INSTANCE_HARNESS_PORT, targetPort: INSTANCE_HARNESS_PORT }],
       },
@@ -1408,13 +1626,17 @@ export const LABEL_PROVIDER_PREFLIGHT = "jr2.dev/provider-preflight";
 /** The check container in that pod, whose output `jr2 up` reads. An older `jr2 up` named it `probe`. */
 export const CHECK_CONTAINER = "check";
 
-/** Every object of one check pod (`checkPodObjects`), for its deletion. */
+/** Every object of one check pod (`checkPodObjects` and its Fence objects but the slot Secret, which
+ * `jr2 up` deletes apart), for its deletion. `<object>-ca`, `<object>-tls` and `<object>` the Secret
+ * are of a check pod before the Fence, whose Custodian was in the pod: a later run deletes them. */
 export function checkPodObjectNames(object: string): Array<{ kind: string; name: string }> {
   return [
     { kind: "pod", name: object },
     { kind: "networkpolicy", name: object },
     { kind: "configmap", name: object },
+    { kind: "configmap", name: `${object}-trust` },
     { kind: "configmap", name: `${object}-ca` },
+    { kind: "secret", name: `${object}-standins` },
     { kind: "secret", name: object },
     { kind: "secret", name: `${object}-tls` },
     { kind: "secret", name: `${object}-env` },
@@ -1422,33 +1644,25 @@ export function checkPodObjectNames(object: string): Array<{ kind: string; name:
 }
 
 /**
- * One check pod of the provider preflight (ADR-0019, ADR-0059): a Harness pod with no Harness in
- * it, and its own copies of every object a Harness pod reads. So a check pod writes nothing that a
- * running pod of the Instance reads, and a check that fails leaves the Instance as it was.
+ * One check pod of the provider preflight (ADR-0019, ADR-0059, ADR-0084): a Harness pod with no
+ * Harness in it, on slot 1 of the Fence, and its own copies of every object a Harness pod reads. So a
+ * check pod writes nothing that a running pod of the Instance reads, and a check that fails leaves
+ * the pods of the Instance as they were.
  *
- * - `<object>` (ConfigMap): the Custodian's bootstrap and script, the program and the harness config
- *   (`harnessConfigJson`).
- * - `<object>-ca` (ConfigMap): the trust bundles, as `jr2-ca` would carry them.
- * - `<object>` (Secret): the Custodian's control token, a value the Orchestrator never signed (the
- *   check pod reads no Menu), the check pod's own secret Stand-ins (`podCredentials`, ADR-0059), and
- *   the LITERAL values of the keys it holds, from the host. A `valueFrom` key
- *   stays a reference to the user's Secret. The values are in this Secret for the check pod's life.
- * - `<object>-tls` (Secret): the leaves of the bound hosts. `<object>-env` (Secret): the literal
- *   `harness.env` values, which `jr2-harness-env` would carry.
+ * - `<object>` (ConfigMap): the harness config (`harnessConfigJson`).
+ * - `<object>-env` (Secret): the literal `harness.env` values, which `jr2-harness-env` would carry.
  *
- * The Custodian is composed by the function every Harness pod's is (`custodianComposition`). With
- * no binding, it holds nothing and the check pod's HTTPS goes direct, as in a Harness pod that holds no
- * secret. The check container runs the stock Harness image's `provider-preflight.ts` with the Harness
- * container's env, so the call is the one a Turn makes, and the key never enters that container,
- * its argv or its log. The argv is the model specifiers alone.
+ * Its Fence objects are not in this List (`podFenceObjects`: slot 1's Secret, with the copy of the
+ * literal values of the keys it holds, `<object>-trust` and `<object>-standins`): `jr2 up` applies
+ * them first, waits until the Custodian says that the slot's rules are live, and deletes them after
+ * the check. The check reaches a provider as a Turn does, through the Instance's Custodian, which
+ * holds the keys; the key never enters the pod, its argv or its log. The check container runs the
+ * stock Harness image's `provider-preflight.ts` with the Harness container's env and the pod's
+ * Stand-ins, so the call is the one a Turn makes. The argv is the model specifiers alone.
  *
- * - `<object>` (NetworkPolicy): the egress of a Harness pod (`metadataEgress`, ADR-0076), so the
- *   check reaches a provider only as a Turn does. It is in the List before the pod.
- *
- * The pod has the placement and the priority class of the Harness pods it stands for (ADR-0052,
- * ADR-0060). Its labels are its own and match no Harness pod's: the Instance Harness Service
- * selects by label, and would send Turns to it. The Custodian is a native sidecar with a startup
- * probe, so the check starts only once Envoy serves and the pod ends when the check does.
+ * The pod has the Sandbox placement and the priority class of the Harness pods it stands for
+ * (ADR-0052, ADR-0060). Its labels are its own and match no Harness pod's. It has no probe: it ends
+ * when the check does.
  */
 export function checkPodObjects(opts: {
   name: string;
@@ -1458,20 +1672,10 @@ export function checkPodObjects(opts: {
   run: string;
   /** The resolved stock Harness ref: the image a Turn's Harness runs, with pi-ai at the pin. */
   harnessImage: string;
-  custodianImage: string;
   /** The bindings of the keys this check pod holds: each a part of a held pod's manifest. */
   held: HeldManifest;
-  /** The literal values of those keys, by name, from the host. */
-  values: Record<string, string>;
-  /** The leaves of their bound hosts, by file stem. */
-  leaves: Record<string, Pem>;
-  /** The trust bundles (`ca.crt`, `extra.crt`, `bundle.crt`, `upstream.crt`), as `jr2-ca` has them. */
-  trust: Record<string, string>;
-  /** The Custodian's two files, rendered from `held`. */
-  custodian: CustodianFiles;
-  /** The check pod's credentials (`podCredentials`, ADR-0076): a control token the Orchestrator
-   * never signed, and its own secret Stand-ins, minted for this pod alone. */
-  credentials: Record<string, string>;
+  /** The Instance's two Fence ranges: slot 1's attachment and the uplink's address. */
+  ranges: FenceRanges;
   /** The literal `harness.env` values. */
   harnessEnvData: Record<string, string>;
   /** The `<provider>/<model>` specifiers to check, in order. */
@@ -1481,7 +1685,7 @@ export function checkPodObjects(opts: {
   /** The config's `mcp` block: the check pod's harness config carries it, as the Harness pods'
    * does, so the check reads each server's url and secret name where a Turn reads them. */
   mcp?: JR2Config["mcp"];
-  /** The node predicate of the Harness pods this check pod stands for. */
+  /** The node predicate of the Harness pods this check pod stands for: the Sandbox placement. */
   placement?: SandboxPlacement;
   priorityClassName: string;
   harness?: HarnessConfig;
@@ -1496,41 +1700,35 @@ export function checkPodObjects(opts: {
   };
   const meta = (name: string) => ({ name, namespace: opts.namespace, labels });
   const o = opts.object;
-  const custodian = custodianComposition(opts.held, {
-    image: opts.custodianImage,
-    pod: o,
-    reads: { literals: o, tls: `${o}-tls`, trust: `${o}-ca`, program: o },
-    config: o,
-    credentials: { secret: o },
+  const fence = fenceComposition(opts.held, {
+    sandbox: o,
+    slot: CHECK_POD_SLOT,
+    ranges: opts.ranges,
     caBundle: opts.caBundle === true,
-    resources: sized(KIT_POD_SIZES.instanceCustodian),
+    caBundleFrom: `${o}-trust`,
   });
-  const ready = custodian.custodianContainer.readinessProbe as { httpGet: unknown };
+  const network = fencePodNetwork(opts.namespace, fence.network);
   const pod = {
     apiVersion: "v1",
     kind: "Pod",
-    metadata: { ...meta(o), labels: { ...labels, app: PROVIDER_PREFLIGHT } },
+    metadata: { ...meta(o), labels: { ...labels, app: PROVIDER_PREFLIGHT }, annotations: network.annotations },
     spec: {
       restartPolicy: "Never",
       activeDeadlineSeconds: opts.deadlineSeconds,
       automountServiceAccountToken: false,
+      enableServiceLinks: false,
       priorityClassName: opts.priorityClassName,
       ...(opts.placement?.nodeSelector ? { nodeSelector: opts.placement.nodeSelector } : {}),
       ...(opts.placement?.tolerations?.length ? { tolerations: opts.placement.tolerations } : {}),
-      // The Instance Harness pod's baseline, and its `fsGroup` for the same reason: the
-      // Custodian's values are group-readable, and Envoy runs as its own uid.
+      // The Instance Harness pod's baseline, and its `fsGroup` for the same reason: the Stand-in
+      // files are group-readable.
       securityContext: {
         runAsNonRoot: true,
         seccompProfile: { type: "RuntimeDefault" },
         fsGroup: INSTANCE_HARNESS_FS_GROUP,
       },
-      initContainers: [
-        {
-          ...custodian.custodianContainer,
-          restartPolicy: "Always",
-          startupProbe: { httpGet: ready.httpGet, periodSeconds: 1, failureThreshold: 60 },
-        },
-      ],
+      dnsPolicy: network.dnsPolicy,
+      dnsConfig: network.dnsConfig,
       containers: [
         {
           name: CHECK_CONTAINER,
@@ -1551,14 +1749,14 @@ export function checkPodObjects(opts: {
           env: [
             { name: "JR2_HARNESS_JSON", valueFrom: { configMapKeyRef: { name: o, key: HARNESS_CONFIG_KEY } } },
             ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
-            ...custodian.harnessEnv,
+            ...fence.harnessEnv,
             ...opts.held.secrets.map((s) => ({
               name: s.name,
-              valueFrom: { secretKeyRef: { name: o, key: heldStandInKey(s.name) } },
+              valueFrom: { secretKeyRef: { name: `${o}-standins`, key: heldStandInKey(s.name) } },
             })),
           ],
           envFrom: [{ secretRef: { name: `${o}-env` } }, ...(opts.harness?.envFrom ?? [])],
-          volumeMounts: custodian.harnessMounts,
+          volumeMounts: fence.harnessMounts,
           resources: sized(KIT_POD_SIZES.checkContainer),
           securityContext: {
             runAsNonRoot: true,
@@ -1568,48 +1766,17 @@ export function checkPodObjects(opts: {
           },
         },
       ],
-      volumes: custodian.volumes,
+      volumes: fence.volumes,
     },
   };
-  const secret = (name: string, stringData: Record<string, string>): KubeManifest => ({
-    apiVersion: "v1",
-    kind: "Secret",
-    metadata: meta(name),
-    type: "Opaque",
-    stringData,
-  });
-  const leaves: Record<string, string> = {};
-  for (const stem of new Set(opts.held.secrets.flatMap((s) => s.hosts.map((h) => h.leaf)))) {
-    const pem = opts.leaves[stem];
-    if (!pem) throw new Error(`no leaf for a bound host of the provider preflight (${stem}) — a jr2 defect`);
-    leaves[`${stem}.crt`] = pem.cert;
-    leaves[`${stem}.key`] = pem.key;
-  }
-  const literals = Object.fromEntries(
-    opts.held.secrets.filter((s) => s.source.kind === "literal").map((s) => [s.name, opts.values[s.name] ?? ""]),
-  );
   const items: KubeManifest[] = [
     {
       apiVersion: "v1",
       kind: "ConfigMap",
       metadata: meta(o),
-      data: {
-        [CUSTODIAN_BOOTSTRAP_KEY]: opts.custodian.bootstrap,
-        [CUSTODIAN_SCRIPT_KEY]: opts.custodian.script,
-        [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
-        [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness, opts.mcp),
-      },
+      data: { [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness, opts.mcp) },
     },
-    { apiVersion: "v1", kind: "ConfigMap", metadata: meta(`${o}-ca`), data: opts.trust },
-    secret(o, { ...opts.credentials, ...literals }),
-    secret(`${o}-tls`, leaves),
-    secret(`${o}-env`, opts.harnessEnvData),
-    {
-      apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicy",
-      metadata: meta(o),
-      spec: metadataEgress({ matchLabels: { app: PROVIDER_PREFLIGHT, [LABEL_PROVIDER_PREFLIGHT]: opts.run } }),
-    },
+    { apiVersion: "v1", kind: "Secret", metadata: meta(`${o}-env`), type: "Opaque", stringData: opts.harnessEnvData },
     pod,
   ];
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
@@ -1670,7 +1837,7 @@ export const effectorGraceSeconds = (plan: EffectorPlan): number =>
  *   the Effects placed there, plus a margin for the outcome to be read.
  * - A headless Service that publishes addresses that are not ready: "ask every replica" is its
  *   name's addresses, a stopping replica included.
- * - A NetworkPolicy of `jr2-sandbox-ingress`'s form: ingress from this Instance's Orchestrator only.
+ * - A NetworkPolicy: ingress from this Instance's Orchestrator only.
  *   No egress rule: the pod holds real values and calls the hosts its Effects name.
  * - The Secret `jr2-instance-effector`: the literal Effect secrets placed here, the placement's key,
  *   and `effector.json` (the targets). A secret from the user's own Secret is projected from there

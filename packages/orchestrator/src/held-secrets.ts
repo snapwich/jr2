@@ -32,6 +32,7 @@ import {
   SIGNING_CREDENTIALS,
 } from "./model-keys.ts";
 import {
+  CUSTODIAN_SERVICE,
   HELD_CA_SECRET,
   HELD_SECRETS_SECRET,
   HELD_TLS_SECRET,
@@ -41,29 +42,40 @@ import {
 } from "./names.ts";
 import type { PlacementRoute } from "./parts.ts";
 import { sign } from "./tokens.ts";
+import type { EgressRule } from "./egress.ts";
 
 /** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, each
  * pod's literal held values, the leaves, the CA, and every Effector's (ADR-0068) — the Instance
  * Effector's Effect secrets and key, each Workspace's Sandbox Effector Secret (`jr2-effector-<pod>`),
  * each Sandbox's Effector key (`<sandbox>-effector`), and each `git.credentials` entry's clone and
  * push Secrets (`jr2-git-<hash>`, `jr2-git-push-<hash>`, ADR-0051) — and each pod's own credentials
- * (ADR-0076): the Instance Harness's (`jr2-instance-harness-token`) and each Sandbox's
- * (`<sandbox>-token`), which hold the real control token beside the Stand-ins. */
+ * (ADR-0076) on the Fence (ADR-0084): its slot Secret (`jr2-custodian-slot-<i>`), which holds its real
+ * tokens, its control Stand-in and its leaf keys, and its Stand-in Secret (`<sandbox>-standins`, the
+ * Instance Harness's `jr2-instance-harness-standins`), and a pod's credentials Secret of before the
+ * Fence (`jr2-instance-harness-token`, which `jr2 up` deletes, and `<sandbox>-token`, which goes with
+ * its CR), each of which holds a live control token — and the Instance's
+ * dial token (`jr2-custodian-dial`). Every Secret of the Custodian starts `jr2-custodian-`. */
 const KIT_SECRETS: readonly string[] = [
   INSTANCE_SECRET,
   HELD_TLS_SECRET,
   HELD_CA_SECRET,
   INSTANCE_EFFECTOR,
   `${INSTANCE_HARNESS_SERVICE}-token`,
+  `${INSTANCE_HARNESS_SERVICE}-standins`,
 ];
-const KIT_SECRET_PREFIXES: readonly string[] = [`${HELD_SECRETS_SECRET}-`, "jr2-effector-", "jr2-git-"];
+const KIT_SECRET_PREFIXES: readonly string[] = [
+  `${HELD_SECRETS_SECRET}-`,
+  "jr2-effector-",
+  "jr2-git-",
+  `${CUSTODIAN_SERVICE}-`,
+];
 const isKitSecret = (name: string): boolean =>
   KIT_SECRETS.includes(name) ||
   name === HELD_SECRETS_SECRET ||
   KIT_SECRET_PREFIXES.some((p) => name.startsWith(p)) ||
-  // A Sandbox's own Effector key and its credentials: every Sandbox's name starts `ws-`
-  // (`workspaceName`).
-  (name.startsWith("ws-") && (name.endsWith("-effector") || name.endsWith("-token")));
+  // A Sandbox's own Effector key and its Stand-ins: every Sandbox's name starts `ws-`
+  // (`workspaceName`). `-token` is a Sandbox's credentials Secret of before the Fence (above).
+  (name.startsWith("ws-") && ["-effector", "-standins", "-token"].some((s) => name.endsWith(s)));
 
 /**
  * The pod key of one Workspace (ADR-0059): its registered workflow and the placement route to its
@@ -150,10 +162,21 @@ export const SANDBOX_TOKEN_NAME = "JR2_SANDBOX_TOKEN";
  * is secret: the Harness process alone holds it, as `/run/jr2/control/standin`. */
 export const CONTROL_TOKEN_NAME = "JR2_CONTROL_TOKEN";
 
-/** The env names the mechanism owns on a Harness container (ADR-0059): the proxy, the trust
- * bundles, and every `JR2_` name. A held secret may not choose them, and while a held secret exists,
- * `harness.env` may not either — the Custodian cannot chain to a second proxy yet (R11). */
+/** The env names the mechanism owns on a Harness container (ADR-0059, ADR-0084): the trust bundles
+ * of the pod's CA (`fenceComposition`), and every `JR2_` name. Neither a held secret (R2) nor
+ * `harness.env` (R11) may choose them. */
 export const MECHANISM_ENV: readonly string[] = [
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "REQUESTS_CA_BUNDLE",
+  "GIT_SSL_CAINFO",
+];
+
+/** The proxy variables (ADR-0084): a Harness pod's only network is the Fence, and jr2 sets none of
+ * them. Neither a held secret (R2) nor `harness.env` (R11) may choose them: a proxy would send the
+ * Harness's requests to a host that the Custodian carries as one more Tunneled host, never through
+ * its swap, and the Harness removes each one from a confined child's env. */
+export const PROXY_ENV: readonly string[] = [
   "HTTPS_PROXY",
   "https_proxy",
   "HTTP_PROXY",
@@ -161,16 +184,14 @@ export const MECHANISM_ENV: readonly string[] = [
   "NO_PROXY",
   "no_proxy",
   "ALL_PROXY",
+  "all_proxy",
   "NODE_USE_ENV_PROXY",
-  "NODE_EXTRA_CA_CERTS",
-  "SSL_CERT_FILE",
-  "REQUESTS_CA_BUNDLE",
-  "GIT_SSL_CAINFO",
 ];
 
 /** What `jr2 up` placed in one pod; what its composition reads (`held-<pod>.json` in the `jr2-held`
- * ConfigMap). Values never appear here. */
-export type HeldManifest = { version: 1; secrets: HeldBinding[] };
+ * ConfigMap): its Held secrets, and its derived Egress list (ADR-0084), one rule per host and port.
+ * Values never appear here. */
+export type HeldManifest = { version: 1; secrets: HeldBinding[]; egress: EgressRule[] };
 
 /** One held secret, normalized. */
 export type HeldBinding = {
@@ -183,12 +204,48 @@ export type HeldBinding = {
   hosts: HeldHost[];
   headers: string[];
   paths?: string[];
+  /** A secret of the pod's Sandbox Effector (ADR-0068), which the Custodian holds for it: its Stand-in
+   * is a file of the Effector's container, never of the Harness's. Absent: a Held secret of the
+   * Harness. Its name is {@link effectorBindingName} or {@link pushBindingName}. */
+  holder?: "effector";
+  /** It rides a Basic pair (an http Effect's `basic` auth, a token push): a request to its host with
+   * no credential gets 401 with `WWW-Authenticate: Basic`, so git sends its helper's pair. */
+  basic?: true;
+  /** A push token (ADR-0051): the name of the entry's push Secret. The value is the `token` key of
+   * the entry's token Secret (`gitPushTokenSecretName`), and the Stand-in is the entry's own
+   * ({@link gitPushStandIn}, minted from this name), which the push Secret holds as `password`. */
+  push?: string;
 };
+
+/**
+ * The binding name of an Effect secret that the Custodian holds for a Sandbox Effector (ADR-0068):
+ * `effector_` and the secret's name, each character outside `[A-Za-z0-9]` written `_` and its two
+ * hex digits. A Held secret's name is upper case, so no Held name takes this form, and the form is
+ * one to one. It is an env name, as the Custodian's files of values need.
+ */
+export function effectorBindingName(secret: string): string {
+  return `effector_${secret.replace(/[^A-Za-z0-9]/g, (c) => `_${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}`;
+}
+
+/** The binding name of the token of an entry's push Secret (`jr2-git-push-<hash>`): `push_<hash>`. */
+export function pushBindingName(pushSecret: string): string {
+  return `push_${pushSecret.replace(/^jr2-git-push-/, "").replace(/[^A-Za-z0-9]/g, "_")}`;
+}
+
+/**
+ * The Stand-in of an entry's push token (ADR-0068): what `jr2 up` writes as `password` in the
+ * entry's push Secret, which the operator projects into each Sandbox Effector that pushes with the
+ * entry, and what the Custodian swaps for the token (the `token` key of the entry's token Secret). One for each entry, minted
+ * with the signing key, so no process can guess it.
+ */
+export function gitPushStandIn(key: Buffer, pushSecret: string): string {
+  return heldStandIn(key, `@git/${pushSecret}`, "password");
+}
 
 export type HeldHost = { host: string; port: number; leaf: string };
 
 /** The manifest with nothing held — what `jr2 up` writes when the config holds no secret. */
-export const EMPTY_HELD: HeldManifest = { version: 1, secrets: [] };
+export const EMPTY_HELD: HeldManifest = { version: 1, secrets: [], egress: [] };
 
 /**
  * The file stem of one bound `host:port`'s leaf certificate: 16 hex characters of its sha-256.
@@ -412,7 +469,7 @@ export function heldSecretsOf(
     if (!NAME.test(e.name)) {
       throw new Error(`${e.at}.name "${e.name}" is not an env var name ([A-Z_][A-Z0-9_]*) (ADR-0059)`);
     }
-    if (e.name.startsWith("JR2_") || MECHANISM_ENV.includes(e.name)) {
+    if (e.name.startsWith("JR2_") || MECHANISM_ENV.includes(e.name) || PROXY_ENV.includes(e.name)) {
       throw new Error(
         `${e.at}.name ${e.name} is the kit's — JR2_ names and the proxy and trust variables belong to the ` +
           "mechanism (ADR-0059). Name the env var your client reads.",
@@ -440,15 +497,20 @@ export function heldSecretsOf(
     });
   }
 
-  if (entries.length > 0) {
-    // R11: the mechanism's names are the mechanism's while it runs.
-    for (const [i, v] of env.entries()) {
-      if (MECHANISM_ENV.includes(v.name)) {
-        throw new Error(
-          `harness.env[${i}] sets ${v.name}, which the Custodian owns while a held secret exists — it cannot ` +
-            "chain to another proxy or trust store yet. Drop the entry; put a private CA in harness.caBundle (ADR-0059).",
-        );
-      }
+  // R11: the mechanism's names are the mechanism's, and no Harness pod has a proxy.
+  for (const [i, v] of env.entries()) {
+    if (MECHANISM_ENV.includes(v.name)) {
+      throw new Error(
+        `harness.env[${i}] sets ${v.name}, which jr2 sets on each Harness pod: the pod trusts the CA whose ` +
+          "leaves the Custodian shows. Drop the entry; put a private CA in harness.caBundle (ADR-0059).",
+      );
+    }
+    if (PROXY_ENV.includes(v.name)) {
+      throw new Error(
+        `harness.env[${i}] sets ${v.name}, and a Harness pod has no proxy: each connection goes through the ` +
+          "Fence to the Custodian, which sends nothing on to a proxy. Drop the entry; give each host the " +
+          "pod calls an Egress entry (ADR-0059, ADR-0084).",
+      );
     }
   }
 
@@ -576,7 +638,8 @@ export function heldSecretsOf(
     }
   }
 
-  return { manifest: { version: 1, secrets }, values, warnings };
+  // The Egress list is each pod's own (`egressRulesOf`): the caller derives it per pod.
+  return { manifest: { version: 1, secrets, egress: [] }, values, warnings };
 }
 
 /** R4 and R10: exactly one source, and a literal that can ride a header. */
@@ -790,11 +853,16 @@ export async function readHeldManifest(path: string): Promise<HeldManifest> {
     return bad(`not JSON (${err instanceof Error ? err.message : err})`);
   }
   const manifest = parsed as Partial<HeldManifest>;
-  if (manifest?.version !== 1 || !Array.isArray(manifest.secrets))
-    return bad("expected { version: 1, secrets: [...] }");
+  if (manifest?.version !== 1 || !Array.isArray(manifest.secrets) || !Array.isArray(manifest.egress))
+    return bad("expected { version: 1, secrets: [...], egress: [...] }");
   for (const s of manifest.secrets) {
     if (typeof s?.name !== "string" || !Array.isArray(s.hosts) || !Array.isArray(s.headers)) {
       bad(`an entry is not { name, source, hosts, headers } (got ${JSON.stringify(s)})`);
+    }
+  }
+  for (const r of manifest.egress) {
+    if (typeof r?.host !== "string" || typeof r.port !== "number" || typeof r.intercept !== "boolean") {
+      bad(`an egress rule is not { host, port, match, intercept, from } (got ${JSON.stringify(r)})`);
     }
   }
   return manifest as HeldManifest;

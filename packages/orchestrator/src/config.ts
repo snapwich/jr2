@@ -25,6 +25,7 @@ import { hookParts, isHook, kindsById } from "./hook-kinds/door.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import { assertSize, type Size } from "./size.ts";
 import { periodMs } from "./duration.ts";
+import { checkFence, type EgressEntry } from "./egress.ts";
 
 // ------------------------------------------------------------------------------------------------
 // `git.credentials` (ADR-0051): how the cluster authenticates to a Repo, and the fence.
@@ -741,25 +742,7 @@ export function retainMs(runs: RunsConfig | undefined): number {
  * Every field is optional, and an Instance can run with no `jr2.config.ts`. Write the file as
  * `export default defineConfig({ … })`. When the config loads, a file with no default export is
  * refused: `` <file> has no default export (use `export default defineConfig({…})`) ``. The load also
- * checks the shape of `git.credentials`, `secrets`, `harness.catalog`, `priorityClasses` and `mcp`. It
- * checks that `sandbox` is an object, and checks its `resources`. Each refusal names the field.
- * `jr2 up` checks the rest.
- *
- * @example
- * ```ts
- * import { defineConfig, type JR2Config } from "@jr2/orchestrator";
- *
- * const harness: JR2Config["harness"] = {
- *   provider: {
- *     id: "vllm",
- *     api: "openai-completions",
- *     baseUrl: process.env.VLLM_URL ?? "",
- *     models: { "Qwen/Qwen3.6-35B-A3B": { contextWindow: 131072, maxTokens: 16384 } },
- *   },
- * };
- *
- * export default defineConfig({ name: "my-instance", harness });
- * ```
+ * checks the shape of each field it can; each refusal names the field. `jr2 up` checks the rest.
  *
  * @see docs/reference/config.md
  * @see docs/get-started/connect-a-model.md
@@ -789,6 +772,18 @@ export type JR2Config = {
   /** What the Harness can reach: a custom model provider, gateways for catalog providers, env
    * vars, and CAs. See {@link HarnessConfig}. */
   harness?: HarnessConfig;
+  // The Instance's default Egress list (ADR-0084). A `workspace()` that states its own replaces it
+  // for that Workspace; the Instance Harness takes from it only the hosts that `jr2 up` requires.
+  /** The Egress list, what a Sandbox may reach: {@link EgressEntry}. A `workspace()` can replace
+   * it. A host that jr2 uses with no secret needs an entry. */
+  egress?: readonly EgressEntry[];
+  // The two ranges of the Fence (ADR-0084): a pod's address and a placeholder address are never an
+  // address of the cluster or of a host of the author's, so an Instance can move them. loadConfig
+  // checks `fence` in the Orchestrator too, where `.env` is absent: each value must be a literal,
+  // or jr2 up and the Orchestrator read different ranges ({@link FenceConfig}).
+  /** The two IPv4 ranges of the Fence. Default:
+   * `{ segment: "198.19.0.0/20", placeholders: "198.18.0.0/16" }`. */
+  fence?: FenceConfig;
   // See `SandboxPlacement` (ADR-0052) and `SandboxConfig` (ADR-0060).
   /** Which nodes are Sandbox nodes, and the Size of a Workspace that states none. Default: a
    * Sandbox runs wherever an ordinary pod runs, at the kit's Size. See {@link SandboxConfig}. */
@@ -929,7 +924,35 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   if (mod.default.hooks !== undefined) checkHooks(mod.default.hooks, file);
   if (mod.default.mcp !== undefined) checkMcp(mod.default.mcp, mod.default.secrets ?? [], file);
   if (mod.default.runs !== undefined) checkRuns(mod.default.runs, file);
+  if (mod.default.fence !== undefined) checkFence(mod.default.fence, file);
+  if (mod.default.egress !== undefined) checkEgress(mod.default.egress, file);
   return mod.default;
+}
+
+/**
+ * The two IPv4 ranges of the Fence (`fence` in `jr2.config.ts`). Change one only when an address of
+ * your network is in it. Each is a network address with its prefix, at least as large as its
+ * default, outside loopback, link-local and `0.0.0.0/8`, which the Custodian never dials, and
+ * outside multicast and reserved IPv4 (`224.0.0.0/4`, `240.0.0.0/4`), and the two do not overlap.
+ * The config load refuses another value: `<file> at fence.<key>: <problem>`. When you give a
+ * Sandbox node the optional `unreachable` route of the Fence, make it for the same segment. The load
+ * runs in the Orchestrator too, where `.env` is absent: write each value as a literal.
+ */
+export type FenceConfig = {
+  /** The segment, where each Harness pod has its address. Default `"198.19.0.0/20"`; at least a /20. */
+  segment?: string;
+  /** The range from which the resolver gives each name an address in each Sandbox. Default
+   * `"198.18.0.0/16"`; at least a /16. */
+  placeholders?: string;
+};
+
+/** `egress`' SHAPE (ADR-0084): a list. Its entries are not checked here: in-cluster an entry that
+ * reads `.env` (the address of a local model) is `""` or `undefined`, because `.env` is absent, so
+ * `jr2 up` and `jr2 check` refuse a bad entry host-side (`parseEgressList`, `secretPlacementsOf`). */
+function checkEgress(egress: unknown, where: string): void {
+  if (!Array.isArray(egress)) {
+    throw new Error(`${where} at egress must be a list — egress: ["api.github.com", "*.npmjs.org"] (ADR-0084)`);
+  }
 }
 
 const RUNS_HINT = 'runs is { retain?, volume? }, such as { retain: "30d", volume: "5Gi" } (ADR-0065)';

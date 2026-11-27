@@ -6,25 +6,26 @@ description: Where jr2 keeps each credential, which tokens it makes, and what a 
 jr2 keeps each credential of the `secrets` list, the key of `harness.provider.apiKey`, and each token of its own, out of
 the containers in which an [Agent](../reference/glossary.md#agent) executes code. A
 [Held secret](../reference/glossary.md#held-secret) is a credential that the [Harness](../reference/glossary.md#harness)
-uses through its pod's [Custodian](../reference/glossary.md#custodian), and the Harness container holds only its
+uses through the [Custodian](../reference/glossary.md#custodian), and the Harness container holds only its
 [Stand-in](../reference/glossary.md#stand-in). An [Effect secret](../reference/glossary.md#effect-secret) is a
-credential that an [Effect](../reference/glossary.md#effect) uses, and only an
-[Effector](../reference/glossary.md#effector) holds its value. jr2 also makes its own tokens, for each caller of the
-[Orchestrator](../reference/glossary.md#orchestrator) and of each Harness. Without a token, a caller can see each
-[Machine](../reference/glossary.md#machine) and where each live run is in it, but it cannot control a run.
+credential that an [Effect](../reference/glossary.md#effect) uses. An [Effector](../reference/glossary.md#effector) or
+the Custodian holds its value, and the Agent executes nothing in either of them. jr2 also makes its own tokens, for each
+caller of the [Orchestrator](../reference/glossary.md#orchestrator) and of each Harness. Without a token, a caller can
+see each [Machine](../reference/glossary.md#machine) and where each live run is in it, but it cannot control a run.
 
 ## Why it exists
 
 An Agent's [Working tools](../reference/glossary.md#working-tools) give it a shell in the Harness container. Thus the
-Agent can run each program of the image, and it can send what it reads out of the pod. If a model API key were in its
-reach, the Agent could take it away. If the credential of the Orchestrator's API were in its reach, the Agent could
-answer its own review [Gate](../reference/glossary.md#gate), or send a pick for a different Agent.
+Agent can run each program of the image, and it can send what it reads to each host that its Sandbox can reach. If a
+model API key were in its reach, the Agent could take it away. If the credential of the Orchestrator's API were in its
+reach, the Agent could answer its own review [Gate](../reference/glossary.md#gate), or send a pick for a different
+Agent.
 
 jr2 does not try to hide the API from the Agent. Instead, it keeps the credentials out of the Agent's reach. The
 Instance token enters no Harness pod. Each credential of the `secrets` list, and the key of `harness.provider.apiKey`,
-goes to a container in which the Agent executes nothing. [Architecture](architecture.md) tells where those containers
-run. The Harness itself holds one secret value, and [Confined programs](#confined-programs) tells how jr2 keeps it from
-the Agent's code.
+goes to a place in which the Agent executes nothing. [Architecture](architecture.md) tells where those places are. The
+Harness itself holds one secret value, and [Confined programs](#confined-programs) tells how jr2 keeps it from the
+Agent's code.
 
 ## One list, and the name decides
 
@@ -56,23 +57,26 @@ containers that hold it. An entry can also name a key of a Secret that you manag
 ## Held secrets
 
 The Harness of a pod holds one Stand-in for each Held secret of the pod, in a file that only the Harness reads. jr2
-makes a new Stand-in for each pod, and it is secret. It has a meaning only to the Custodian of that pod. A program of an
-Agent gets the Stand-in of a Held secret only when the `workspace()` lists that secret under `secrets`. The fetch
-Stand-in is the one public Stand-in (see below).
+makes a new Stand-in for each pod, and it is secret. It has a meaning only to the Custodian, and only for that pod. A
+program of an Agent gets the Stand-in of a Held secret only when the `workspace()` lists that secret under `secrets`.
+The fetch Stand-in is the one public Stand-in (see below). A Held secret is never in a
+[Sandbox](../reference/glossary.md#sandbox).
 
-When a pod holds a Held secret other than the tokens of its Sandbox, the Harness container sends its HTTPS traffic
-through the Custodian (`HTTPS_PROXY`). For each request to a host that a Held secret is bound to, the Custodian does
-these things:
+All traffic of a Sandbox, and of the Instance Harness, goes through its [Fence](../reference/glossary.md#fence) to the
+Custodian. No tool needs a proxy setting, and jr2 sets no `HTTPS_PROXY`. For each request to a host that a Held secret
+is bound to, the Custodian does these things:
 
-1. It ends the TLS connection with a certificate that `jr2 up` issued from the CA of the
-   [Instance](../reference/glossary.md#instance).
+1. It ends the TLS connection with a certificate from the CA of that Sandbox. Each Sandbox has a CA of its own
+   ([Rules](#rules)).
 2. It replaces the Stand-in with the value, in the headers that the entry names.
 3. It opens its own TLS connection to the host, and verifies the certificate of the host.
 
 Two Held secrets can go to one host in one header, such as the tokens of two MCP servers of one service. The Custodian
-chooses the value by the Stand-in that the header holds. The Custodian sends the traffic to each other host with no
-change. It refuses a loopback, link-local or unspecified address. A request to a bound host that has no Stand-in in its
-headers does not leave the pod.
+chooses the value by the Stand-in that the header holds. It refuses a request to a bound host that has no Stand-in in
+its headers. A host that a Held secret is bound to needs no entry on the
+[Egress list](../reference/glossary.md#egress-list): the Custodian permits it for each Sandbox that holds the secret.
+The Custodian carries traffic to each other host only when the Egress list permits that name
+([Workspaces](workspaces.md#the-network-of-a-sandbox)).
 
 These fields of an entry bind a Held secret. They do not place it:
 
@@ -83,8 +87,7 @@ These fields of an entry bind a Held secret. They do not place it:
 - [`headers`](../reference/config.md#secrets-headers): the headers in which the Custodian replaces the Stand-in.
 - [`paths`](../reference/config.md#secrets-paths): the path prefixes that the value can go to.
 
-The Custodian also holds the two tokens of its [Sandbox](../reference/glossary.md#sandbox): the control token and the
-fetch token.
+The Custodian also holds the two tokens of each Sandbox: the control token and the fetch token.
 
 - The Harness reads the [Menu](../reference/glossary.md#menu) and sends each pick with the control Stand-in, and the
   Custodian replaces it with the control token. The control Stand-in is secret. Only the Harness holds it, in a file
@@ -95,25 +98,47 @@ fetch token.
 
 The Instance Harness has a token of its own for the Menu. It runs no program of an Agent.
 
+### Intercepted and tunneled hosts
+
+Each host that a Sandbox reaches is one of two kinds:
+
+- An [Intercepted host](../reference/glossary.md#intercepted-host): each host that the Custodian holds a secret for, for
+  the Harness or the [Sandbox Effector](../reference/glossary.md#sandbox-effector) of the Sandbox; the name of jr2's
+  control routes; and each entry of the Egress list with `intercept: true`. The Custodian ends the TLS, so it reads each
+  request. It checks the `Host` header, and it puts a secret in place of its Stand-in. The client must trust the CA of
+  the Sandbox.
+- A [Tunneled host](../reference/glossary.md#tunneled-host): each other host of the Egress list. The Custodian checks
+  the name and carries the bytes. The client sees the host's own certificate or host key, and the Custodian does not see
+  what is sent. A Stand-in that goes to a Tunneled host arrives as it left.
+
+Mark a host `intercept: true` when the Custodian must see what goes to it. A client that pins a certificate, or that
+uses a client certificate, cannot connect to an Intercepted host.
+
 ### What a Held secret does not stop
 
-- **The Agent's code can spend a key that the `workspace()` lists.** While the pod lives, a program of the Agent can
+- **The Agent's code can spend a key that the `workspace()` lists.** While the Sandbox lives, a program of the Agent can
   send requests through the Custodian to the bound host of that key. A key that can make new keys gives the Agent a key
   that it can take away. Use a key with no admin rights. Set narrow `paths`.
 - **A response passes with no change.** If a host puts the full key in a response, the Agent reads it.
-- **jr2 controls egress only at the cloud metadata addresses.** A client that does not use the Custodian sends only the
-  Stand-in, which is worth nothing outside the pod. The cluster decides which hosts a pod can reach. One exception: a
-  NetworkPolicy of jr2 stops each Harness pod at the metadata addresses of the large cloud providers (`169.254.169.254`,
-  `fd00:ec2::254`, `169.254.170.2`, `169.254.170.23` and `100.100.100.200`). There, the metadata service of a node can
-  give the node's cloud credential to a pod. The list is not complete for every provider, and only a CNI that enforces
-  NetworkPolicy applies it. See
+- **A Tunneled host is open for read and for write, at each host behind its address.** The Custodian does not see inside
+  its TLS. A client can name a permitted host in the TLS name and a different host of the same CDN in the `Host` header,
+  and some CDNs serve that host. A client can also write to a permitted host with an account of its own, such as an
+  `npm publish`. `intercept: true` closes both for that host.
+- **A `*.` entry is a way for data to go out.** When a Sandbox connects to a name below the domain, the Custodian looks
+  up that name, so the owner of the domain sees each label of it. An exact name closes this.
+- **The dial guard does not refuse each metadata address.** At a metadata address of a cloud provider, the metadata
+  service of a node can give the node's cloud credential to a pod. A Sandbox and the Instance Harness have no network
+  but their Fence, and the Custodian refuses each address that a pod dials itself, unless the Egress list has that
+  address as an entry. When a name that the Egress list permits resolves to a loopback or link-local address, or to an
+  address in the Fence's own ranges, the dial guard of the Custodian refuses it too. The guard does not refuse
+  `100.100.100.200` (Alibaba Cloud), because it is not link-local: a permitted name that resolves to it reaches it. See
   [Move from kind to a shared cluster](../guides/move-from-kind-to-a-shared-cluster.md#check-the-cluster).
 - **A key that signs the request cannot be a Held secret.** A SigV4 or ADC credential signs the request, and the
   Custodian cannot put a value into a signature. Use an Effect secret for such a credential. For a model provider, use a
   gateway that holds the credential, and make the key of the gateway a Held secret.
-- **A tool must trust the CA of the Instance.** When a pod holds a Held secret other than the tokens of its Sandbox, jr2
-  sets the trust variables of Node.js, OpenSSL, Python and git in its Harness container. A client that does not trust
-  the CA, such as a Java client, cannot connect to a bound host. It sends nothing.
+- **A tool must trust the CA of the Sandbox.** Each Sandbox has an Intercepted host, the name of jr2's control routes.
+  Thus jr2 sets the trust variables of Node.js, OpenSSL, Python and git in the Harness container of each Sandbox. A
+  client that does not trust the CA, such as a Java client, cannot connect to an Intercepted host. It sends nothing.
 
 ## Confined programs
 
@@ -132,28 +157,29 @@ and a program of the new domain cannot trace them.
 A confined program can do all that the user of the container can do, with these exceptions:
 
 - It cannot read, write, make, remove, move or link a file in `/run/jr2`. That folder holds the control Stand-in, the
-  Stand-in of each Held secret, the socket of the Custodian for the picks, and the conversations of the Harness. A
-  program can list the names in `/run/jr2`, as it can list each folder: `ls /` and `find /` work. The names are not
-  secrets. Two folders there it can read and not change. `/run/jr2/output`: when the output of a `bash` call is too
-  long, the Harness writes all of it to a file there, and the result gives the path of that file.
-  `/run/jr2/user-context`: the image user's `~/.pi/agent`, when the image has one, which jr2 reads for the
-  [project context](agents-and-turns.md#the-project-context).
-- It cannot make a socket in `/run/jr2`. It can connect to the socket of the Custodian, but the Custodian refuses each
-  request on the socket that does not have the control Stand-in, and the program cannot read that Stand-in.
+  Stand-in of each Held secret, and the conversations of the Harness. A program can list the names in `/run/jr2`, as it
+  can list each folder: `ls /` and `find /` work. The names are not secrets. Two folders there it can read and not
+  change. `/run/jr2/output`: when the output of a `bash` call is too long, the Harness writes all of it to a file there,
+  and the result gives the path of that file. `/run/jr2/user-context`: the image user's `~/.pi/agent`, when the image
+  has one, which jr2 reads for the [project context](agents-and-turns.md#the-project-context).
+- It can send a request to the routes of the Menu and the picks, but the Custodian refuses each request that does not
+  have the control Stand-in, and the program cannot read that Stand-in.
 - It cannot trace the Harness process, or read its environment or its memory.
 - When the kernel has Landlock ABI 6 or later, it cannot send a signal to the Harness process, or connect to an abstract
-  Unix socket that the Harness or the Custodian made.
+  Unix socket that the Harness made.
 
 Thus a program can write in a folder of the image that its user owns, move a file from one folder to another, and run
 the tools of the image. The kernel keeps the shared parts safe: the caches of each [Repo](../reference/glossary.md#repo)
 at `/repos`, the runtime of jr2 at `/opt/jr2` and the CA bundles are read-only. The pod has no ServiceAccount token. A
-program can connect to each address that the pod can reach.
+program can connect only through the Fence, to the names that the Egress list permits.
 
 The environment of a confined program is the environment with which the container started: the `ENV` of the image,
-`harness.env`, `harness.envFrom`, and the proxy and trust variables. jr2 removes its own `JR2_` names from it, except
-`JR2_CUSTODIAN_URL`. jr2 adds `HOME`, `TMPDIR` and the Stand-in of each Held secret that the `workspace()` lists, under
-the name of that secret. jr2 also adds `safe.bareRepository=explicit` for git, in `GIT_CONFIG_COUNT`,
-`GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, after the image's own entries (see
+`harness.env`, `harness.envFrom`, and the trust variables. jr2 removes its own `JR2_` names from it, except
+`JR2_CUSTODIAN_URL`. jr2 also removes the proxy variables, such as `HTTPS_PROXY` and `NO_PROXY`, because each connection
+goes through the Fence to the Custodian, and the Harness logs one line that names them. jr2 adds `HOME`, `TMPDIR` and
+the Stand-in of each Held secret that the `workspace()` lists, under the name of that secret. jr2 also adds
+`safe.bareRepository=explicit` for git, in `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, after
+the image's own entries (see
 [What the image must have](../guides/add-tools-to-the-sandbox.md#what-the-image-must-have)). The environment holds no
 control Stand-in. It holds the Stand-in of a model key only when the `workspace()` lists that key. Thus code in `/work`
 cannot call the model with your key unless you allow it. jr2 records the use of each Turn, and a call that you did not
@@ -172,9 +198,9 @@ The Harness process has its own `HOME`, in `/run/jr2`, from before Node starts. 
 `HOME`, such as `~/.aws/config` or a module in `~/.node_modules`, does not change what the Harness process does. The
 Harness does not start when Node would look for a module outside `/opt/jr2` and `/run/jr2`.
 
-The Harness process gets only the env that jr2 composes: `harness.env`, `harness.envFrom`, the proxy and trust
-variables, and jr2's own names. It does not get the `ENV` of the image. It also does not get a name that loads code from
-a path, such as `NODE_OPTIONS`, `LD_PRELOAD` or `OPENSSL_CONF`, from any of them. Thus an image with
+The Harness process gets only the env that jr2 composes: `harness.env`, `harness.envFrom`, the trust variables, and
+jr2's own names. It does not get the `ENV` of the image. It also does not get a name that loads code from a path, such
+as `NODE_OPTIONS`, `LD_PRELOAD` or `OPENSSL_CONF`, from any of them. Thus an image with
 `NODE_OPTIONS=--require /app/hook.js` changes the Agent's programs, as you expect, and not the Harness process. In
 `kubectl exec`, each key of `harness.envFrom` has the prefix `JR2_ENVFROM_`. The programs of the Agent see each key
 under its own name. A name that starts with `JR2_` is jr2's own: `jr2 up` refuses one in `harness.env` or in a Secret or
@@ -188,9 +214,20 @@ jr2 needs Landlock in the kernel of each node. See [Rules](#rules).
 
 ## Effect secrets
 
-An Effect secret is the real value, in an Effector. The Effector reads the value and puts it into the call, or into the
-environment of a `command`. The Agent executes nothing in the Effector, and the Orchestrator never holds the value.
-[Effects](effects.md) tells which Effects run in which Effector.
+The [Instance Effector](../reference/glossary.md#instance-effector) holds the value of each Effect secret that its
+Effects name. A Sandbox Effector holds a Stand-in for each Effect secret that goes in a header: a bearer token, a Basic
+credential, a header value, and the token of a push over `https://`. The Custodian puts the value in place of the
+Stand-in, as it does for a Held secret. A Sandbox Effector holds the value itself for a signing key, the ssh key of a
+push, a secret in the path of a url, and each secret of a `command`. The Effector puts each value that it holds into the
+call, or into the environment of a `command`. The Agent executes nothing in the Effector, and the Orchestrator never
+holds the value. [Effects](effects.md) tells which Effects run in which Effector.
+
+The Custodian swaps a Stand-in in three forms: the Stand-in alone, one scheme and the Stand-in (`Bearer <Stand-in>`),
+and the password of a Basic credential. `jr2 up` refuses a header that holds an Effect secret in another form, such as a
+Basic user name from a secret. It also refuses a secret that a header of a Sandbox Effector's `http` holds and that a
+`command` or a url path of the same Effector names, because one file cannot hold both the value and the Stand-in. Give
+each use its own secret. The Custodian reads plain HTTP on port 80 only, and it ends TLS on each other port. Thus
+`jr2 up` also refuses such a header secret toward `http://` on a port other than 80, and toward `https://` on port 80.
 
 A `command` that names an Effect secret can run the Agent's code, such as `npm run deploy`. It runs on a copy of one
 commit of the Agent's branch, in its scratch folder. Because the command can run the Agent's code, the Effector confines
@@ -199,7 +236,9 @@ scratch folder, and read the Effect secrets that the command names. It cannot re
 secrets, the push credentials or the [Worktree](../reference/glossary.md#worktree).
 
 The Effector removes each Effect secret that it holds from what it returns, in the forms that it sent and in common
-encodings. It does not find a changed form of an Effect secret, such as a hash or a part of it.
+encodings. It does not find a changed form of an Effect secret, such as a hash or a part of it. It cannot remove a value
+that the Custodian holds, because it holds only the Stand-in: when a host puts that value in its answer, the answer
+holds the value.
 
 ## Git credentials
 
@@ -208,11 +247,11 @@ Orchestrator matches a Repo to an entry, and names the Secret of that entry. It 
 
 - The clone credential goes into a Secret that only the Repo cache reads. The Repo cache also gets the Git LFS files
   with it, and sends it only to the origin of the Repo ([Architecture](architecture.md#large-files-in-the-repo-cache)).
-- The push credential and the signing key go to the [Sandbox Effector](../reference/glossary.md#sandbox-effector) of the
-  Sandbox whose `push` Effect uses them.
+- The ssh push key and the signing key go to the [Sandbox Effector](../reference/glossary.md#sandbox-effector) of the
+  Sandbox whose `push` Effect uses them. The Custodian holds a push token, and that Sandbox Effector holds its Stand-in.
 
-The list is also a fence. A Repo url that comes from the run input must match an entry, or the Orchestrator refuses to
-make the Sandbox. [Give the cluster git credentials](../guides/give-the-cluster-git-credentials.md) gives the fields.
+A Repo url that comes from the run input must match an entry of the list, or the Orchestrator refuses to make the
+Sandbox. [Give the cluster git credentials](../guides/give-the-cluster-git-credentials.md) gives the fields.
 
 ## The tokens
 
@@ -223,8 +262,8 @@ jr2 makes its own tokens. `jr2 up` makes the Instance token and the signing key 
 | ------------------ | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Instance token     | You and the CLI, through the Kubernetes API                                                     | Everything: start a run, read its full state, answer a Gate, cancel a run, and the routes that no scope opens.                                                                                                                                              |
 | Named Caller token | A [Caller](../reference/glossary.md#caller) that has no access to the cluster, such as a CI job | The scopes that `callers.tokens` gives its name, for the Workflows that each scope names.                                                                                                                                                                   |
-| Control token      | The Custodian of one Sandbox, as a file                                                         | Read the Menu and send the picks of the Agents in that Sandbox, for the Agent that the Harness names.                                                                                                                                                       |
-| Fetch token        | The Custodian of one Sandbox, as a file                                                         | Ask for a fetch, or for the large files, of a Repo that the Sandbox mounts.                                                                                                                                                                                 |
+| Control token      | The Custodian, for one Sandbox                                                                  | Read the Menu and send the picks of the Agents in that Sandbox, for the Agent that the Harness names.                                                                                                                                                       |
+| Fetch token        | The Custodian, for one Sandbox                                                                  | Ask for a fetch, or for the large files, of a Repo that the Sandbox mounts.                                                                                                                                                                                 |
 | Harness bearer     | The Orchestrator. The Harness holds only its SHA-256 digest.                                    | Call the Harness in one pod: start a Turn, read it, stop it, set up a Worktree, run a `command` Effect, and carry a Handoff's files from one Harness to another ([ADR-0080](../reference/decisions/0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)). |
 | Effector key       | The Orchestrator, and the Effector of one placement                                             | Sign a request to that Effector, and sign its answer.                                                                                                                                                                                                       |
 
@@ -301,20 +340,32 @@ kept copy with `GET /runs/:runId/conversations`.
 - A name that a `workspace()` lists must be in the `secrets` list. A name that an Effect gives to `secret()` must be in
   it too.
 - An Effect secret has 8 characters or more.
+- A Held secret needs no entry on the Egress list. The Custodian refuses a request to its host that carries no Stand-in.
+- A host with no secret needs an entry on the Egress list, also when jr2 itself uses it: a model endpoint with no key,
+  an MCP server with no token, or a url that a Sandbox Effector calls with no secret. A secret in the path of a url does
+  not count, because the Effector holds it, not the Custodian. `jr2 up` refuses to converge while such a host has no
+  entry, and it prints the entry to add. A host that no entry can name, such as `localhost` or an IPv6 address, is
+  refused with the reason.
 - The name of a Held secret is an env var name. It cannot start with `JR2_`, and it cannot be a proxy or trust variable.
 - The Orchestrator can make and change a Secret, but it cannot get or list one.
-- A changed value does not reach a live Sandbox. A new Sandbox gets it. When a Menu-only Agent uses the value, the next
-  `jr2 up` restarts the Instance Harness with it.
+- The Custodian uses a changed value of a Held secret while the pods run. No Harness pod restarts for it.
 - jr2 needs Landlock ABI 3 or later in the kernel of each Sandbox node: Linux 6.2 or later, or a kernel with a backport,
   with `landlock` in its list of security modules. `jr2 up` refuses to converge while a Sandbox node has no Landlock, or
   only ABI 1 or 2. On a node without it, a Harness or a Sandbox Effector does not start, and the provision of the
   Sandbox fails.
 - A name in `harness.env`, or a key that `harness.envFrom` loads, cannot start with `JR2_`.
-- When a pod holds a Held secret other than the tokens of its Sandbox, `SSL_CERT_FILE` and the other trust variables
-  replace the trust store of the image. They hold the public roots, `harness.caBundle` and the CA of the Instance. Thus
-  a private CA goes in [`harness.caBundle`](../reference/config.md#harness-cabundle), not in the image.
-- `jr2 up` makes the CA of the Instance one time, in the `jr2-held-ca` Secret, and never changes it. No pod mounts that
-  Secret. When you delete it, the next `jr2 up` makes a new CA.
+- In each Sandbox, `SSL_CERT_FILE` and the other trust variables replace the trust store of the image. They hold the
+  public roots, `harness.caBundle` and the CA of the Sandbox. Thus a private CA goes in
+  [`harness.caBundle`](../reference/config.md#harness-cabundle), not in the image.
+- The Orchestrator makes the CA of a Sandbox when it provisions the Sandbox. The CA can sign only for the Intercepted
+  hosts of that Sandbox. When one Intercepted host is below another, for example `api.corp.example` below
+  `corp.example`, the CA can also sign for the other names below the upper host. Before the pod starts, the Orchestrator
+  issues the certificates that the Custodian uses for them, and deletes the key of the CA. Thus the Intercepted hosts of
+  a Sandbox do not change while it lives. A new Intercepted host applies to the next Sandbox. A Tunneled host can be
+  added while the Sandbox lives.
+- The Instance Harness and the check pods use the CA of the [Instance](../reference/glossary.md#instance). `jr2 up`
+  makes it one time, in the `jr2-held-ca` Secret, and never changes it. No pod mounts that Secret. When you delete it,
+  the next `jr2 up` makes a new CA.
 
 ## Read next
 
@@ -338,5 +389,6 @@ kept copy with `GET /runs/:runId/conversations`.
   [ADR-0059](../reference/decisions/0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md),
   [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md),
   [ADR-0076](../reference/decisions/0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md),
-  [ADR-0077](../reference/decisions/0077-jr2-requires-landlock-on-every-sandbox-node.md) and
+  [ADR-0077](../reference/decisions/0077-jr2-requires-landlock-on-every-sandbox-node.md),
   [ADR-0079](../reference/decisions/0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)
+  and [ADR-0084](../reference/decisions/0084-a-sandboxs-only-network-leads-to-the-custodian.md)

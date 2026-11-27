@@ -106,4 +106,8 @@ export const machine = workspace(body, {
     app: { url: "https://github.com/you/app.git", ref: "main" },
     handbook: "https://github.com/you/handbook.git",
   },
+  // The Egress list of this Sandbox. It replaces the default of the Instance: here, the npm registry and
+  // the model endpoint. The second entry is the address and the port in LOCAL_MODEL_URL: the endpoint
+  // has no key, so the Sandbox reaches it only by an entry.
+  egress: ["registry.npmjs.org", "192.168.1.20:8000"],
 });

@@ -16,12 +16,14 @@ import {
   custodianRef,
   effectorKey,
   gitPushSecretName,
+  gitPushTokenSecretName,
   gitTokenSecretName,
   KIT_VERSION,
   harnessTokenDigest,
   leafStem,
   controlStandIn,
   controlToken,
+  custodianDialToken,
   heldStandIn,
   workspaceHeldPod,
   type HeldManifest,
@@ -32,7 +34,7 @@ import { linkKit } from "./_kit.ts";
 import { MAP_PROPAGATION, mountedDigests } from "../src/mount-wait.ts";
 import {
   checkPodsOf,
-  heldDigest,
+  trustDigest,
   podFault,
   CHECK_MCP_SECONDS,
   CHECK_MODEL_SECONDS,
@@ -40,6 +42,7 @@ import {
   mcpCheckVerdicts,
   mcpVerdictLines,
   envFromHeldRefusal,
+  tlsCauses,
   up,
 } from "../src/commands/up.ts";
 import {
@@ -50,8 +53,10 @@ import {
   stateVolumePlan,
   LABEL_PROVIDER_PREFLIGHT,
   PREFLIGHT_MCP_ARG,
+  custodianValueSecrets,
   type HeldObjects,
 } from "../src/deploy.ts";
+import { readSlotSecret } from "@jr2/orchestrator/internal";
 // The Harness's own result-line writer, from beside it, so the CLI's parser is held to its format.
 // Loaded at run time: it is another package's source, outside this one's compiled tree.
 type PreflightVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
@@ -67,6 +72,7 @@ const { preflightLine, PREFLIGHT_MODEL_BUDGET_SECONDS } = harnessLines;
 import type { KubeAdmin, KubeObject, PodEnd } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
 import type { Io } from "../src/output.ts";
+import { MULTUS_VERSION } from "../src/fence-install.ts";
 
 /** The instance List of a converge: the one that carries the Orchestrator's Deployment — not the
  * apply of the provider preflight's inputs before it, nor a check pod's own List (ADR-0019). */
@@ -83,6 +89,29 @@ class FakeCluster implements KubeAdmin {
   deleted: string[] = [];
   rollouts: string[] = [];
   ctx = "kind-test";
+
+  constructor() {
+    // The Fence's prerequisites (ADR-0084), as an earlier `jr2 up` installed them: Multus of this
+    // CLI's manifest, and the DaemonSet of the fence node. And the API Service, which the probe dials.
+    this.set("kube-system", "daemonset", "kube-multus-ds", {
+      metadata: {
+        name: "kube-multus-ds",
+        labels: { app: "multus" },
+        annotations: { "jr2.dev/multus": MULTUS_VERSION },
+      },
+    });
+    this.set("jr2-system", "daemonset", "jr2-fence-node", {
+      metadata: {
+        name: "jr2-fence-node",
+        uid: "fence-node-uid",
+        labels: { app: "jr2-fence-node", "jr2.dev/version": KIT_VERSION },
+        annotations: { "deprecated.daemonset.template.generation": "1" },
+      } as KubeObject["metadata"],
+    });
+    this.set("default", "service", "kubernetes", {
+      spec: { clusterIP: "10.96.0.1", ports: [{ name: "https", port: 443 }] },
+    } as Partial<KubeObject>);
+  }
 
   set(namespace: string, kind: string, name: string, obj: Partial<KubeObject>): void {
     this.objects.set(`${namespace}/${kind.toLowerCase()}/${name}`, {
@@ -105,6 +134,27 @@ class FakeCluster implements KubeAdmin {
     const refused = this.refuseApply?.(opts.manifest);
     if (refused) throw new Error(typeof refused === "string" ? refused : 'pods "x" is forbidden: exceeded quota');
     this.applied.push(opts.manifest);
+    // The shipped Multus manifest makes Multus's CustomResourceDefinition.
+    if (opts.manifest.includes("name: network-attachment-definitions.k8s.cni.cncf.io")) this.attachmentCrd = true;
+    // jr2's admission policies of the Fence (ADR-0084).
+    if (opts.manifest.includes('"name":"jr2-fence-guard-pods"')) this.guard = true;
+    // The DaemonSet jr2-fence-node: kept, with the uid and the generation of the one there, as the API does.
+    if (
+      opts.manifest.startsWith("{") &&
+      opts.manifest.includes('"kind":"DaemonSet","metadata":{"name":"jr2-fence-node"')
+    ) {
+      const ds = JSON.parse(opts.manifest) as KubeObject;
+      const was = this.objects.get("jr2-system/daemonset/jr2-fence-node");
+      this.set("jr2-system", "daemonset", "jr2-fence-node", {
+        ...ds,
+        metadata: {
+          ...ds.metadata,
+          uid: (was?.metadata as { uid?: string } | undefined)?.uid ?? "fence-node-uid",
+          annotations: { "deprecated.daemonset.template.generation": "1" },
+        } as KubeObject["metadata"],
+      });
+    }
+    this.runFenceProbes(opts.manifest);
     // A check pod's List is applied server-side too (ADR-0019); this records the named objects.
     const doc = opts.serverSide
       ? (JSON.parse(opts.manifest) as { kind: string; metadata?: { name: string } })
@@ -114,8 +164,99 @@ class FakeCluster implements KubeAdmin {
   async label(opts: Record<string, unknown>): Promise<void> {
     this.labeled.push(opts);
   }
+  /** The Fence's probe pods (ADR-0084): each one has ended when it is applied, with the result that
+   * `fenceProbeResults` scripts for its node (default: passed). */
+  fenceProbeResults: Record<string, { ok: boolean; part?: string; why?: string }> = {};
+  /** The probe pods applied, as `<node> fence`. */
+  fenceProbes: string[] = [];
+  private runFenceProbes(manifest: string): void {
+    if (!manifest.includes(`"app":"jr2-fence-probe"`)) return;
+    const items = (JSON.parse(manifest) as { items: Array<Record<string, any>> }).items;
+    for (const pod of items) {
+      const node = pod.spec.nodeName as string;
+      const probe = "fence";
+      this.fenceProbes.push(`${node} ${probe}`);
+      const result = this.fenceProbeResults[node] ?? { ok: true };
+      const message = `jr2.fence-probe ${JSON.stringify({ probe, ...result })}`;
+      this.set(pod.metadata.namespace, "pod", pod.metadata.name, {
+        metadata: { name: pod.metadata.name },
+        spec: { nodeName: node },
+        status: {
+          phase: result.ok ? "Succeeded" : "Failed",
+          containerStatuses: [{ state: { terminated: { message, exitCode: result.ok ? 0 : 1 } } }],
+        },
+      } as Partial<KubeObject>);
+    }
+  }
+  /** Whether the cluster has Multus's CustomResourceDefinition (ADR-0084), and whether it carries
+   * jr2's annotation (jr2's own Multus made it). */
+  attachmentCrd = true;
+  attachmentCrdJr2 = true;
+  /** Whether the cluster has jr2's admission policies and their bindings (ADR-0084); when it has
+   * them, the guard's server-side dry runs are denied by them. */
+  guard = true;
+  /** The nodes with no Ready Multus pod; each other node has one. */
+  nodesWithoutMultus = new Set<string>();
+  /** What the install init container of the fence node's pod says on each node (ADR-0084): unset, it passed. */
+  pluginsResults: Record<string, string> = {};
+  /** Each object `create` made, as `<namespace>/<kind>/<name>` (ADR-0084's range claims). */
+  created: string[] = [];
+  private keyOf(manifest: string): { key: string; obj: KubeObject & { metadata: { resourceVersion?: string } } } {
+    const obj = JSON.parse(manifest);
+    return { key: `${obj.metadata.namespace ?? ""}/${String(obj.kind).toLowerCase()}/${obj.metadata.name}`, obj };
+  }
+  async create(opts: { manifest: string }): Promise<"created" | "exists"> {
+    const { key, obj } = this.keyOf(opts.manifest);
+    if (this.objects.has(key)) return "exists";
+    this.objects.set(key, {
+      ...obj,
+      metadata: { ...obj.metadata, resourceVersion: "1", uid: `uid-${obj.metadata.name}` },
+    } as KubeObject);
+    this.created.push(key);
+    return "created";
+  }
+  /** Each object `replace` wrote, as `<namespace>/<kind>/<name>`. */
+  replaced: string[] = [];
+  async replace(opts: { manifest: string }): Promise<"replaced" | "changed"> {
+    const { key, obj } = this.keyOf(opts.manifest);
+    const have = this.objects.get(key) as (KubeObject & { metadata: { resourceVersion?: string } }) | undefined;
+    if (!have || have.metadata.resourceVersion !== obj.metadata.resourceVersion) return "changed";
+    const next = String(Number(have.metadata.resourceVersion) + 1);
+    this.objects.set(key, { ...obj, metadata: { ...obj.metadata, resourceVersion: next } } as KubeObject);
+    this.replaced.push(key);
+    return "replaced";
+  }
+  /** A delete on the claim that was read (ADR-0084): `changed` when its uid or version moved. */
+  async deleteIf(opts: { apiPath: string; uid: string; resourceVersion: string }): Promise<"deleted" | "changed"> {
+    const m = /^\/apis\/coordination\.k8s\.io\/v1\/namespaces\/([^/]+)\/leases\/([^/]+)$/.exec(opts.apiPath)!;
+    const key = `${m[1]}/lease/${m[2]}`;
+    const have = this.objects.get(key) as
+      | (KubeObject & { metadata: { uid?: string; resourceVersion?: string } })
+      | undefined;
+    if (!have || have.metadata.uid !== opts.uid || have.metadata.resourceVersion !== opts.resourceVersion) {
+      return "changed";
+    }
+    this.objects.delete(key);
+    this.deleted.push(key);
+    return "deleted";
+  }
+  /** How many times a node's pod of jr2-fence-node was deleted: the DaemonSet makes it again under a new
+   * name, as a pod that started after the delete. */
+  fenceNodeRestarts = new Map<string, number>();
   async deleteObject(opts: { kind: string; name: string; namespace?: string }): Promise<void> {
     this.deleted.push(`${opts.namespace ?? ""}/${opts.kind}/${opts.name}`);
+    const fenceNode =
+      opts.kind === "pod"
+        ? this.nodes.find((n) => opts.name.startsWith(`jr2-fence-node-${n.metadata.name}`))
+        : undefined;
+    if (fenceNode) {
+      this.fenceNodeRestarts.set(
+        fenceNode.metadata.name,
+        (this.fenceNodeRestarts.get(fenceNode.metadata.name) ?? 0) + 1,
+      );
+    }
+    // A range claim goes from the store, so a later converge can claim it again.
+    if (opts.kind === "lease") this.objects.delete(`${opts.namespace ?? ""}/lease/${opts.name}`);
   }
   async deleteManifest(): Promise<void> {
     this.deleted.push("(manifest)");
@@ -149,7 +290,8 @@ class FakeCluster implements KubeAdmin {
    * the applied one. Unset → an HONEST cluster, reporting a pod running whatever was last applied. */
   podImages: Record<string, string> = {};
   /** Live Sandbox CRs, as `jr2 up`'s closing report reads them (ADR-0038: report, never re-image). */
-  sandboxes: Array<{ metadata: { name: string; namespace?: string }; spec?: { image?: string } }> = [];
+  sandboxes: Array<{ metadata: { name: string; namespace?: string }; spec?: { image?: string; network?: unknown } }> =
+    [];
   /** `true` → listing Sandboxes throws, as it does when the CRD is absent or RBAC forbids it. */
   sandboxListFails = false;
   /** The sweep's roots (ADR-0039), read cluster-wide: the namespaces some instance owns, their
@@ -168,6 +310,10 @@ class FakeCluster implements KubeAdmin {
     metadata: { name: string; namespace?: string };
     spec?: { containers?: Array<{ image?: string }> };
   }> = [];
+  /** The NetworkPolicies of jr2 in the namespace, as a read by label lists them. */
+  policies: Array<{ metadata: { name: string } }> = [];
+  /** The selectors of those reads. */
+  policySelectors: string[] = [];
   /** Kinds whose `listJson` read throws, as a read does on an API blip or an RBAC refusal. */
   listFails = new Set<string>();
   async listJson<T>(opts: {
@@ -186,8 +332,99 @@ class FakeCluster implements KubeAdmin {
       return (this.checkLeftovers[opts.kind] ?? []) as T[];
     }
     if (opts.kind === "node") return this.nodes as T[];
+    if (opts.kind === "customresourcedefinition") {
+      const name = "network-attachment-definitions.k8s.cni.cncf.io";
+      const annotations = this.attachmentCrdJr2 ? { "jr2.dev/multus": MULTUS_VERSION } : {};
+      return (
+        this.attachmentCrd && opts.fieldSelector === `metadata.name=${name}`
+          ? [{ metadata: { name, annotations } }]
+          : []
+      ) as T[];
+    }
+    if (opts.kind === "validatingadmissionpolicy" || opts.kind === "validatingadmissionpolicybinding") {
+      return (
+        this.guard
+          ? ["jr2-fence-guard-pods", "jr2-fence-guard-attachments"].map((name) => ({
+              metadata: { name, labels: { "jr2.dev/version": KIT_VERSION } },
+            }))
+          : []
+      ) as T[];
+    }
+    // One DaemonSet by name (the read of jr2-fence-node, which tells NotFound from a failure).
+    if (opts.kind === "daemonset" && opts.fieldSelector?.startsWith("metadata.name=") && opts.namespace) {
+      const found = this.objects.get(`${opts.namespace}/daemonset/${opts.fieldSelector.slice(14)}`);
+      return (found ? [found] : []) as T[];
+    }
+    // The DaemonSets by label (ADR-0084's read of Multus): what `set` and the applies put there.
+    // With no selector: each DaemonSet of the cluster (the read of each Multus, of Cilium and of jr2-fence-node).
+    if (opts.kind === "daemonset" && (opts.selector || opts.allNamespaces)) {
+      const [key, value] = (opts.selector ?? "").split("=");
+      return [...this.objects]
+        .filter(
+          ([k, o]) => k.includes("/daemonset/") && (opts.selector === undefined || o.metadata.labels?.[key!] === value),
+        )
+        .map(([k, o]) => ({ ...o, metadata: { ...o.metadata, namespace: k.split("/")[0] } })) as T[];
+    }
+    // The pods of the fence node's DaemonSet (ADR-0084): one Ready pod on each node.
+    if (opts.kind === "pod" && opts.selector === "app=jr2-fence-node") {
+      return this.nodes.map((n) => {
+        const message =
+          this.pluginsResults[n.metadata.name] ?? "jr2.fence-node ok wrote= kept=bridge static tuning bridge=v1.10.0";
+        const ok = message.includes(" ok ");
+        return {
+          metadata: {
+            name: `jr2-fence-node-${n.metadata.name}${this.fenceNodeRestarts.has(n.metadata.name) ? `-r${this.fenceNodeRestarts.get(n.metadata.name)}` : ""}`,
+            labels: { "pod-template-generation": "1" },
+            ownerReferences: [{ uid: "fence-node-uid" }],
+          },
+          spec: { nodeName: n.metadata.name },
+          status: {
+            conditions: [{ type: "Ready", status: ok ? "True" : "False" }],
+            initContainerStatuses: [
+              { name: "rules", state: { terminated: { exitCode: 0, message: "jr2.fence-node ok rules=loaded" } } },
+              { name: "install", state: { terminated: { exitCode: ok ? 0 : 1, message } } },
+            ],
+          },
+        };
+      }) as T[];
+    }
+    if (opts.kind === "pod" && opts.selector === "app=multus") {
+      return this.nodes
+        .filter((n) => !this.nodesWithoutMultus.has(n.metadata.name))
+        .map((n) => ({
+          metadata: { name: `multus-${n.metadata.name}` },
+          spec: { nodeName: n.metadata.name },
+          status: { conditions: [{ type: "Ready", status: "True" }] },
+        })) as T[];
+    }
+    // A read of one namespace by name (the range claim's holder, ADR-0084): what `set` put there.
+    if (opts.kind === "namespace" && opts.fieldSelector) {
+      const name = /^metadata\.name=(.+)$/.exec(opts.fieldSelector)?.[1];
+      const found = this.objects.get(`/namespace/${name}`);
+      return (found ? [found] : []) as T[];
+    }
     if (opts.kind === "namespace") return this.instanceNamespaces as T[];
+    // The range claims (ADR-0084), by label: a bare key lists each, `key=value` those that match.
+    if (opts.kind === "lease") {
+      const [key, value] = (opts.selector ?? "").split("=");
+      return [...this.objects]
+        .filter(([k]) => k.startsWith(`${opts.namespace ?? ""}/lease/`))
+        .map(([, o]) => o)
+        .filter((o) => {
+          const labels = o.metadata.labels ?? {};
+          return key! in labels && (value === undefined || labels[key!] === value);
+        }) as T[];
+    }
+    // One ConfigMap by name in a namespace (the read of a Multus's or Cilium's settings), else the image maps.
+    if (opts.kind === "configmap" && opts.fieldSelector?.startsWith("metadata.name=") && opts.namespace) {
+      const one = this.objects.get(`${opts.namespace}/configmap/${opts.fieldSelector.slice(14)}`);
+      return (one ? [one] : []) as T[];
+    }
     if (opts.kind === "configmap") return this.imageMaps as T[];
+    if (opts.kind === "networkpolicy") {
+      this.policySelectors.push(opts.selector ?? "");
+      return this.policies as T[];
+    }
     // The cluster-wide pod read is the sweep's; the selected one is a layer's image verification.
     // Distinguished explicitly, because falling through to the verification branch would answer a
     // keep-set question with whatever the last apply happened to name.
@@ -214,7 +451,13 @@ class FakeCluster implements KubeAdmin {
     if (failed) return failed as T[];
     const image = this.podImages[opts.selector ?? ""] ?? this.lastAppliedImage(opts.selector ?? "");
     if (!image) return [];
-    return [{ metadata: { name: "pod-1" }, spec: { containers: [{ image }] } }] as T[];
+    return [
+      {
+        metadata: { name: "pod-1" },
+        spec: { nodeName: this.nodes[0]?.metadata.name, containers: [{ image }] },
+        status: { phase: "Running" },
+      },
+    ] as T[];
   }
   /** What the last apply asked this selector's Deployment to run — the honest cluster's answer. */
   private lastAppliedImage(selector: string): string | undefined {
@@ -251,8 +494,23 @@ class FakeCluster implements KubeAdmin {
   dryRunFails = false;
   async dryRunCreate(opts: { manifest: string }): Promise<{ spec?: { resources?: unknown } }> {
     this.dryRuns.push(opts.manifest);
-    if (this.dryRunFails) throw new Error('pods "jr2-probe" is forbidden: cannot create');
     const pod = JSON.parse(opts.manifest);
+    // The guard's dry runs (ADR-0084): jr2's policies deny them while the cluster has them.
+    const policy =
+      pod.kind === "NetworkAttachmentDefinition"
+        ? "jr2-fence-guard-attachments"
+        : pod.metadata?.name === "jr2-fence-guard-check"
+          ? "jr2-fence-guard-pods"
+          : undefined;
+    if (policy !== undefined) {
+      if (this.guard) {
+        throw new Error(
+          `Error from server (Forbidden): ValidatingAdmissionPolicy '${policy}' with binding '${policy}' denied request: no`,
+        );
+      }
+      return pod;
+    }
+    if (this.dryRunFails) throw new Error('pods "jr2-probe" is forbidden: cannot create');
     if (this.podResourcesDropped) delete pod.spec.resources;
     return pod;
   }
@@ -306,7 +564,6 @@ class FakeCluster implements KubeAdmin {
       phase: failed ? "Failed" : "Succeeded",
       started: true,
       output: lines.join("\n"),
-      custodian: "",
       reasons: [],
     };
   }
@@ -441,11 +698,20 @@ class FakeOrchestrator {
    * Unset: no `mounts`, as an Orchestrator that is not deployed answers. */
   mounts?: (n: number) => Record<string, string> | undefined;
   gets = 0;
+  /** Each `POST /slots/<i>` to a Custodian pod, with its dial token. */
+  slotPosts: Array<{ slot: number; dial: string }> = [];
+  /** The Custodian pods' answer to `POST /slots/<i>`, when a test scripts it. */
+  slotAnswer?: (slot: number) => Response;
 
   kube = {
     currentContext: async () => "kind-test",
     readSecret: async () => undefined,
-    portForward: async (opts: { namespace: string; service: string; port: number }) => {
+    portForward: async (opts: { namespace: string; service?: string; pod?: string; port: number }) => {
+      // A Custodian pod's control port (ADR-0084): `jr2 up` makes the rules of its own slots live.
+      if (opts.pod !== undefined) {
+        this.forwards.push(`${opts.namespace}/pod/${opts.pod}:${opts.port}`);
+        return { url: `http://custodian-${opts.pod}.test`, close: () => void this.closed++ };
+      }
       this.forwards.push(`${opts.namespace}/${opts.service}:${opts.port}`);
       return { url: "http://orchestrator.test", close: () => void this.closed++ };
     },
@@ -457,6 +723,13 @@ class FakeOrchestrator {
     const headers = Object.fromEntries(new Headers(init?.headers).entries());
     const body = init?.body as Uint8Array | undefined;
     this.requests.push({ method, url, headers, bytes: body?.byteLength ?? 0 });
+    // A Custodian pod's `POST /slots/<i>` (ADR-0084): the rules are live at once, unless scripted.
+    const slot = /^http:\/\/custodian-[^/]+\.test\/slots\/(\d+)$/.exec(url);
+    if (slot) {
+      this.slotPosts.push({ slot: Number(slot[1]), dial: headers["x-jr2-dial"] ?? "" });
+      if (this.slotAnswer) return this.slotAnswer(Number(slot[1]));
+      return Response.json({ slot: Number(slot[1]), live: true, version: `v${slot[1]}`, active: `v${slot[1]}` });
+    }
     if (url !== "http://orchestrator.test/assembly") return Response.json({ error: "not found" }, { status: 404 });
     if (method === "GET") {
       const mounts = this.mounts?.(this.gets++);
@@ -852,6 +1125,143 @@ test("first contact asks; declining bails before anything is applied; --yes skip
   assert.equal(await up(["--yes"], yes.io), 0);
   assert.equal(yes.confirms.length, 0);
   assert.ok(yes.kube.applied.length > 0, "converged without prompting");
+});
+
+test("jr2 up installs the Fence's prerequisites that the cluster lacks, before the Custodian, asking under first contact; a second converge asks nothing and prints one line (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  // A stock cluster: no Multus, no DaemonSet of the fence node.
+  const stock = () => {
+    const w = mkWorld(root, { confirm: false });
+    w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
+    w.kube.objects.delete("jr2-system/daemonset/jr2-fence-node");
+    w.kube.attachmentCrd = false;
+    w.kube.guard = false;
+    return w;
+  };
+
+  // Declined: nothing applied.
+  const declined = stock();
+  assert.equal(await up([], declined.io), 1);
+  assert.equal(declined.confirms.length, 1, "one question for the namespace and the Fence");
+  assert.equal(
+    declined.confirms[0],
+    'first contact: deploy instance "myinst" to context kind-test (create namespace "myinst"; install the ' +
+      "Fence's prerequisites in the list above)?",
+  );
+  // The list comes before the question: each part, and what it can do on a node.
+  const said = declined.err.join("");
+  assert.match(said, /fence: this converge installs the Fence's prerequisites \(ADR-0084\):\n/);
+  assert.match(
+    said,
+    /\n {2}- the DaemonSet jr2-system\/jr2-fence-node, on each Linux node\. Its pod runs as root on the node's network\./,
+  );
+  assert.match(
+    said,
+    /\n {2}- the ValidatingAdmissionPolicies jr2-fence-guard-pods and jr2-fence-guard-attachments, each with a ValidatingAdmissionPolicyBinding of the same name: cluster-wide objects\./,
+  );
+  assert.match(
+    said,
+    /\n {2}- Multus v4\.3\.2 \(thick\), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system\/kube-multus-ds\./,
+  );
+  assert.doesNotMatch(said, /namespaceIsolation|global namespace/);
+  assert.ok(said.indexOf("this converge installs") < said.indexOf("aborted"));
+  assert.deepEqual(declined.kube.applied, []);
+
+  // --yes: the fence node, then Multus and its rollout, then the Custodian.
+  const w = stock();
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(w.confirms.length, 0);
+  const err = w.err.join("");
+  assert.match(
+    err,
+    /fence: applying the DaemonSet jr2-system\/jr2-fence-node \(ghcr\.io\/snapwich\/jr2-operator:[0-9.]+\)\n/,
+  );
+  assert.match(err, /fence: kind-test-control-plane: rules=loaded wrote= kept=bridge static tuning bridge=v1\.10\.0\n/);
+  assert.match(err, /fence: applying Multus v4\.3\.2 \(thick\) to kube-system\n/);
+  assert.match(
+    err,
+    /fence: applying the admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments, each with its binding\n/,
+  );
+  const namespace = w.kube.applied.findIndex((m) => m.includes('"kind":"Namespace","metadata":{"name":"myinst"'));
+  const guard = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-fence-guard-pods"'));
+  const plugins = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-fence-node"'));
+  const multus = w.kube.applied.findIndex((m) => m.includes("name: kube-multus-ds"));
+  const custodian = w.kube.applied.findIndex((m) => m.includes('"name":"jr2-custodian"'));
+  assert.ok(
+    namespace >= 0 && guard === namespace + 1 && plugins > guard && multus > plugins && custodian > multus,
+    "the namespace, the policies at once, the fence node, Multus, then the Custodian",
+  );
+  // The guard's dry runs, each denied, before the Custodian's attachments.
+  const guardRuns = w.kube.dryRuns.filter(
+    (m) => m.includes("jr2-fence-guard-check") || m.includes("NetworkAttachmentDefinition"),
+  );
+  assert.equal(guardRuns.length, 3);
+  assert.ok(w.kube.rollouts.includes("kube-system/daemonset/kube-multus-ds"));
+  // The DaemonSet runs the operator image of this converge, and its namespace was made first.
+  const ds = JSON.parse(w.kube.applied[plugins]!) as {
+    spec: { template: { spec: { containers: [{ image: string }] } } };
+  };
+  assert.equal(ds.spec.template.spec.containers[0].image, imagesOf(w).operator);
+  assert.ok(w.kube.created.includes("/namespace/jr2-system"));
+
+  // A second converge with both there: no question, Multus untouched, the DaemonSet applied again
+  // (an apply that changes nothing), one line.
+  w.kube.set("kube-system", "daemonset", "kube-multus-ds", {
+    metadata: { name: "kube-multus-ds", labels: { app: "multus" }, annotations: { "jr2.dev/multus": MULTUS_VERSION } },
+  });
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
+  w.err.length = 0;
+  w.kube.applied.length = 0;
+  assert.equal(await up([], w.io), 0);
+  assert.equal(w.confirms.length, 0, "no question: the namespace is home and nothing is installed");
+  assert.match(
+    w.err.join(""),
+    /fence: prerequisites in place — jr2's Multus, the admission policies, and the rule table and the CNI plugins on 1 Sandbox node\n/,
+  );
+  assert.equal(w.kube.applied.filter((m) => m.includes('"name":"jr2-fence-node"')).length, 1);
+  assert.equal(w.kube.applied.filter((m) => m.includes('"name":"jr2-fence-guard-pods"')).length, 1, "applied again");
+  assert.ok(!w.kube.applied.some((m) => m.includes("kube-multus-ds")));
+
+  // Home already, but the cluster has no DaemonSet of the fence node: the Fence alone is asked about.
+  const home = stock();
+  home.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
+  assert.equal(await up([], home.io), 1);
+  assert.match(
+    home.confirms[0]!,
+    /^first setup of the Fence on context kind-test: install the Fence's prerequisites in the list above\?$/,
+  );
+});
+
+test("an Instance with no Harness pod reads and installs nothing of the Fence, and no probe runs (ADR-0084)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root, { confirm: false });
+  w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
+  w.kube.objects.delete("jr2-system/daemonset/jr2-fence-node");
+  assert.equal(await up([], w.io), 1);
+  assert.doesNotMatch(w.confirms[0]!, /Fence|Multus|plugins/);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.ok(!w.kube.applied.some((m) => m.includes("jr2-fence-node") || m.includes("kube-multus-ds")));
+  assert.doesNotMatch(w.err.join(""), /fence:/);
+  assert.deepEqual(w.kube.fenceProbes, [], "no Harness pod: nothing on the Fence to probe");
+});
+
+test("jr2 up uses a Multus of another owner as it is: it reads none of its settings, applies no Multus, and its own policies are the guard (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root, { confirm: false });
+  // The upstream thick Multus with no isolation: its DaemonSet and its definition, neither of jr2's.
+  w.kube.set("kube-system", "daemonset", "kube-multus-ds", {
+    metadata: { name: "kube-multus-ds", labels: { app: "multus" } },
+  } as Partial<KubeObject>);
+  w.kube.set("kube-system", "configmap", "multus-daemon-config", {
+    data: { "daemon-config.json": JSON.stringify({ cniConfigDir: "/host/etc/cni/net.d" }) },
+  } as Partial<KubeObject>);
+  w.kube.attachmentCrdJr2 = false;
+  assert.equal(await up(["--yes"], w.io), 0);
+  const err = w.err.join("");
+  assert.match(err, /fence: prerequisites in place — the cluster's Multus, the admission policies, and the rule table/);
+  assert.ok(!w.kube.applied.some((m) => m.includes("name: kube-multus-ds")), "jr2 applies no Multus");
+  assert.doesNotMatch(err, /namespaceIsolation/);
+  assert.equal(w.kube.dryRuns.filter((m) => m.includes("jr2-fence-guard-check")).length, 2);
 });
 
 test("operator: never downgraded — a newer deployed operator is left, with a warning", async () => {
@@ -1886,13 +2296,16 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   );
   const orch = items.find((i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator")!;
   const podSpec = orch.spec.template.spec;
+  // This Instance has a Sandbox, so it is on the Fence (ADR-0084): the VLAN range it claimed, and
+  // the trust texts of each Sandbox (`jr2-fence`, certificates only).
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
-    ["state", "images", "held", "callers", "hooks"],
+    ["state", "images", "held", "callers", "hooks", "fence"],
   );
+  assert.deepEqual(podSpec.volumes.at(-1), { name: "fence", configMap: { name: "jr2-fence" } });
   assert.deepEqual(
     podSpec.containers[0].env.map((e: { name: string }) => e.name),
-    ["JR2_NAMESPACE", "NODE_EXTRA_CA_CERTS", "JR2_STATE_VOLUME"],
+    ["JR2_NAMESPACE", "NODE_EXTRA_CA_CERTS", "JR2_STATE_VOLUME", "JR2_FENCE_RANGE"],
   );
   // The space guard measures against the claim's size as this converge applied it (ADR-0065).
   assert.equal(podSpec.containers[0].env.find((e: { name: string }) => e.name === "JR2_STATE_VOLUME").value, "5Gi");
@@ -2638,8 +3051,8 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
   assert.equal(instance.stringData.JR2_INSTANCE_TOKEN, "tok-old", "an existing token is kept (Sandboxes hold it)");
   assert.ok(instance.stringData.JR2_SIGNING_KEY, "a missing signing key is minted");
-  // The Instance Harness's credentials are not in the Orchestrator's Secret (ADR-0076): they ride
-  // `jr2-instance-harness-token`, which its Harness container mounts the Stand-ins of.
+  // The Instance Harness's credentials are not in the Orchestrator's Secret (ADR-0076): its token
+  // rides slot 0's Secret, and its Stand-ins `jr2-instance-harness-standins` (ADR-0084).
   assert.equal(instance.stringData.JR2_INSTANCE_HARNESS_TOKEN, undefined);
 
   // The ADR-0013 boundary: harness env lands in its OWN Secret — the Harness container envFroms
@@ -2728,13 +3141,13 @@ test("an MCP server's secret is held where its Agents run, the ConfigMap names t
   assert.equal(hostFetched, false, "the host never calls the server");
   assert.match(
     w.err.join("\n"),
-    /mcp: listing the tools of "slack" at https:\/\/mcp\.slack\.example\/mcp on the Instance Harness, through a Custodian that holds SLACK_TOKEN, with its Stand-in/,
+    /mcp: listing the tools of "slack" at https:\/\/mcp\.slack\.example\/mcp on the Instance Harness, through the Custodian, which holds SLACK_TOKEN, with its Stand-in/,
   );
   assert.match(w.err.join("\n"), /mcp: "slack" lists 2 tool\(s\); every allowlisted name is there/);
   assert.match(w.err.join("\n"), /the Instance Harness: Custodian holds SLACK_TOKEN \(mcp slack\)/);
 
   // The check pod: the server after the models in its argv, its harness config carries `mcp`, and
-  // its Custodian holds the server's secret as the Instance Harness's does.
+  // the Custodian holds the server's secret for its slot as it does for the Instance Harness.
   const seen = w.kube.checkPodsSeen.at(-1)!;
   const command = seen.pod.spec.containers[0].command as string[];
   assert.deepEqual(command.slice(command.indexOf(PREFLIGHT_MCP_ARG)), ["--mcp", "slack"]);
@@ -2961,12 +3374,18 @@ test("provider apiKey is a held secret: the Custodian's Secret holds it, the Har
       headers: ["authorization", "x-api-key", "x-goog-api-key", "api-key"],
     },
   ]);
-  // A leaf for that target, from a CA no pod mounts; the CA's key rides only its own Secret.
+  // A leaf for that target and for jr2's own name (ADR-0084), from a CA no pod mounts; the CA's key
+  // rides only its own Secret.
   const tls = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-held-tls")!;
-  assert.deepEqual(Object.keys(tls.stringData).sort(), [
-    `${leafStem("10.0.0.5", 8000)}.crt`,
-    `${leafStem("10.0.0.5", 8000)}.key`,
-  ]);
+  assert.deepEqual(
+    Object.keys(tls.stringData).sort(),
+    [
+      `${leafStem("10.0.0.5", 8000)}.crt`,
+      `${leafStem("10.0.0.5", 8000)}.key`,
+      `${leafStem("custodian.jr2.internal", 443)}.crt`,
+      `${leafStem("custodian.jr2.internal", 443)}.key`,
+    ].sort(),
+  );
   const ca = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-held-ca")!;
   assert.ok(
     new X509Certificate(tls.stringData[`${leafStem("10.0.0.5", 8000)}.crt`]).verify(
@@ -2993,15 +3412,19 @@ test("provider apiKey is a held secret: the Custodian's Secret holds it, the Har
   // deployment facts are all that is left to mount.
   assert.equal(spec.agents, undefined, "no Agent roster rides the deployment");
 
-  // The trust bundles, server-side: roots + the jr2 CA for the Harness, roots alone upstream.
-  const trust = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"jr2-ca"`))!);
-  assert.ok(trust.data["extra.crt"].includes(ca.stringData["ca.crt"]));
-  assert.ok(trust.data["bundle.crt"].includes(ca.stringData["ca.crt"]));
+  // No caBundle: no jr2-ca, held secret or not (ADR-0020). Each Harness pod's bundles are in its own
+  // trust ConfigMap, and the Custodian's upstream.crt in its own.
+  assert.ok(!w.kube.applied.some((m) => m.includes(`"name":"jr2-ca"`)), "no jr2-ca without a caBundle");
+  assert.ok(w.kube.deleted.includes("myinst/configmap/jr2-ca"), "a jr2-ca of an earlier converge goes");
+  // The Orchestrator's trust texts of each Sandbox on the Fence: the roots and no jr2 CA.
+  const fence = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"jr2-fence"`))!);
+  assert.ok(fence.data["upstream.crt"].includes("BEGIN CERTIFICATE"), "the roots");
   assert.ok(
-    !trust.data["upstream.crt"].includes(ca.stringData["ca.crt"]),
+    !fence.data["upstream.crt"].includes(ca.stringData["ca.crt"]),
     "the Custodian never trusts its own CA upstream",
   );
-  assert.deepEqual(w.kube.serverSide, ["jr2-ca"]);
+  assert.equal(fence.data["ca.crt"], undefined, "no caBundle, no ca.crt");
+  assert.deepEqual(w.kube.serverSide, ["jr2-fence"]);
 });
 
 test("the CA is kept, a leaf that still fits is reused, and a converge holding nothing drops the Custodian's Secrets", async () => {
@@ -3036,12 +3459,8 @@ test("the CA is kept, a leaf that still fits is reused, and a converge holding n
   const cm = (JSON.parse(none.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held",
   )!;
-  assert.deepEqual(
-    cm.data,
-    { "program.lua": CUSTODIAN_PROGRAM },
-    "the ConfigMap is applied always — here with no Harness pod to hold for, and the program once",
-  );
-  // No Instance Harness: no pod to render Custodian files for, and a stale one's go with it.
+  assert.deepEqual(cm.data ?? {}, {}, "the ConfigMap is applied always — here with no Harness pod to hold for");
+  // No Instance Harness: the objects of its Custodian of before the Fence go.
   assert.ok(none.kube.deleted.includes("myinst/configmap/jr2-held-custodian"));
   assert.ok(!none.kube.applied.some((m) => m.includes(`"jr2-held-custodian"`)), "nothing rendered for no pod");
 });
@@ -3120,7 +3539,7 @@ test("R14: a held secret of the user's own whose name is a key of an envFrom Sec
 
 test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a missing file fails loudly", async () => {
   const config =
-    `export default { name: "myinst", harness: { caBundle: "ca.crt", ` +
+    `export default { name: "myinst", egress: ["vllm.internal"], harness: { caBundle: "ca.crt", ` +
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.internal/v1" } } };\n`;
   const pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
 
@@ -3130,34 +3549,81 @@ test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a m
   assert.equal(await up(["--yes"], w.io), 0);
 
   // A ConfigMap, not a Secret — CA certs are public data (ADR-0020). Its own manifest, applied
-  // server-side and FIRST: with a held secret it carries every root, past client-side apply's limit.
+  // server-side and FIRST, and it holds the caBundle alone: a held secret adds nothing to it.
   const cm = JSON.parse(w.kube.applied[w.kube.applied.findIndex((m) => m.includes(`"name":"jr2-ca"`))]!);
   assert.equal(cm.kind, "ConfigMap");
-  assert.equal(cm.data["ca.crt"], pem);
+  assert.deepEqual(cm.data, { "ca.crt": pem });
+  assert.ok(!w.kube.deleted.includes("myinst/configmap/jr2-ca"));
   assert.ok(
     w.kube.applied.findIndex((m) => m.includes(`"name":"jr2-ca"`)) < w.kube.applied.findIndex(isInstanceList),
     "the trust exists before any pod of the Instance that mounts it",
   );
-  // The check pod trusts the same bundle the Harness will — else it fails where pods succeed.
+  // The check pod trusts the same files the Harness will — else it fails where pods succeed: the
+  // caBundle and the Instance's CA (`extra.crt`), and the caBundle itself as `ca.crt`.
   const checkSpec = w.kube.checkPodsSeen[0]!.pod.spec;
   const caEnv = checkSpec.containers[0].env.find((e: { name: string }) => e.name === "NODE_EXTRA_CA_CERTS");
-  assert.equal(caEnv?.value, "/etc/jr2/ca/ca.crt");
+  assert.equal(caEnv?.value, "/etc/jr2/ca/extra.crt");
   // …from its own copy of the trust, written for its life (ADR-0019).
-  assert.ok(
-    checkSpec.volumes.some(
-      (v: { configMap?: { name: string } }) => v.configMap?.name === `${w.kube.checkPodsSeen[0]!.pod.metadata.name}-ca`,
-    ),
+  const own = `${w.kube.checkPodsSeen[0]!.pod.metadata.name}-trust`;
+  const sources = checkSpec.volumes.find((v: { name: string }) => v.name === "ca").projected.sources;
+  assert.deepEqual(
+    sources.map((x: { configMap: { name: string } }) => x.configMap.name),
+    [own, own],
   );
+  const trust = appliedObjects(w).get(`ConfigMap/${own}`)!;
+  assert.equal(trust.data["ca.crt"], pem);
+  assert.ok(trust.data["extra.crt"].startsWith(pem), "the caBundle, then the Instance's CA");
 
   const missing = mkWorld(await mkInstance(config, "missing"));
   await assert.rejects(() => up(["--yes"], missing.io), /caBundle.*relative to the instance folder/s);
 });
 
-test("no caBundle and nothing held → no jr2-ca ConfigMap", async () => {
+test("egress (ADR-0084): each pod's held manifest carries its Egress list, reported per pod; a keyless endpoint with no entry refuses", async () => {
+  const provider = `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" }`;
+  const config = `export default { name: "myinst", egress: ["github.com", "10.0.0.5:8000"], harness: { ${provider} } };\n`;
+  const root = await mkInstance(config, "myinst", { coder: { model: "vllm/qwen-x", workspace: "none" } });
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0, w.err.join("\n"));
+  // The Instance Harness takes no entry of the author's: only the host it needs, from the list.
+  assert.match(w.err.join("\n"), /the Instance Harness: Egress list Tunneled 10\.0\.0\.5:8000/);
+  const items = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  const heldCm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+  assert.deepEqual((JSON.parse(heldCm.data["held-instance.json"]) as HeldManifest).egress, [
+    { host: "10.0.0.5", port: 8000, match: "address", intercept: false, from: ["entry"] },
+  ]);
+  // A check pod reaches what each pod of its class reaches: the rules of both, once.
+  const rules = (pod: string, host: string) => ({
+    ...heldPod(pod, []),
+    manifest: {
+      version: 1 as const,
+      secrets: [],
+      egress: [{ host, port: 443, match: "name" as const, intercept: false, from: ["entry" as const] }],
+    },
+  });
+  const [check] = checkPodsOf({}, walkOf(["openai/gpt-x"], ["openai/gpt-x"]), [
+    rules(WS_POD, "github.com"),
+    rules("instance", "api.openai.com"),
+  ]);
+  assert.deepEqual(
+    check?.manifest.egress.map((r) => r.host),
+    ["github.com", "api.openai.com"],
+  );
+
+  const bare = `export default { name: "myinst", harness: { ${provider} } };\n`;
+  const refused = mkWorld(await mkInstance(bare, "myinst", { coder: { model: "vllm/qwen-x", workspace: "none" } }));
+  await assert.rejects(
+    () => up(["--yes"], refused.io),
+    /the Instance Harness reaches 10\.0\.0\.5:8000 for the "vllm\/…" models .* add egress: \["10\.0\.0\.5:8000"\]/,
+  );
+  assert.ok(!refused.kube.applied.some(isInstanceList), "nothing of the Instance is applied");
+});
+
+test("no caBundle → no jr2-ca ConfigMap, and one that an earlier converge applied is deleted", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
   assert.ok(!w.kube.applied.some((m) => m.includes(`"name":"jr2-ca"`)));
+  assert.ok(w.kube.deleted.includes("myinst/configmap/jr2-ca"));
 });
 
 test("a referenced-but-missing Secret fails the converge naming it, with the creation hint", async () => {
@@ -3222,30 +3688,32 @@ test("provider preflight: the custom provider's models go the same path, its key
   ]);
   const env = pod.spec.containers[0].env as Array<{ name: string; value?: string; valueFrom?: any }>;
   // The check pod's own secret Stand-in (ADR-0019, ADR-0059): in its env by reference to its own
-  // Secret, never a value in the pod spec, and never the public form.
+  // Stand-in Secret, never a value in the pod spec, and never the public form.
   const providerEnv = env.find((e) => e.name === "JR2_PROVIDER_API_KEY")!;
   assert.equal(providerEnv.value, undefined);
   assert.deepEqual(providerEnv.valueFrom, {
-    secretKeyRef: { name: pod.metadata.name, key: "standin-JR2_PROVIDER_API_KEY" },
+    secretKeyRef: { name: `${pod.metadata.name}-standins`, key: "standin-JR2_PROVIDER_API_KEY" },
   });
-  const checkList = JSON.parse(ok.kube.applied.find((m) => m.includes(`"name":"${pod.metadata.name}"`))!) as {
-    items: Array<Record<string, any>>;
-  };
-  const checkSecret = checkList.items.find((i) => i.kind === "Secret" && i.metadata.name === pod.metadata.name)!;
-  assert.match(
-    checkSecret.stringData["standin-JR2_PROVIDER_API_KEY"],
-    /^jr2-held-JR2_PROVIDER_API_KEY\.[A-Za-z0-9_-]{43}$/,
-  );
-  assert.deepEqual(
-    checkList.items
-      .filter((i) => JSON.stringify(i).includes("sk-vllm-real"))
-      .map((i) => `${i.kind}/${i.metadata.name}`),
-    [`Secret/${pod.metadata.name}`],
-    "the key is in the check pod's own Secret alone — not in its pod spec, argv or script",
+  const objects = appliedObjects(ok);
+  const standIns = objects.get(`Secret/${pod.metadata.name}-standins`)!;
+  const standIn = Buffer.from(standIns.data["standin-JR2_PROVIDER_API_KEY"], "base64").toString();
+  assert.match(standIn, /^jr2-held-JR2_PROVIDER_API_KEY\.[A-Za-z0-9_-]{43}$/);
+  // The key is in slot 1's Secret, which the Custodian alone reads, for the check pod's life — not
+  // in its pod spec, argv or script, and not in its Stand-in Secret.
+  const slot = readSlotSecret(objects.get("Secret/jr2-custodian-slot-1")!.data);
+  assert.deepEqual(slot.spec.owner, { pod: pod.metadata.name });
+  assert.equal(slot.spec.heldPod, undefined, "the slot holds the value itself");
+  assert.equal(slot.files.get("values/JR2_PROVIDER_API_KEY")!.toString(), "sk-vllm-real");
+  assert.equal(slot.files.get("values/JR2_PROVIDER_API_KEY.standin")!.toString(), standIn);
+  assert.ok(!JSON.stringify(pod).includes("sk-vllm-real"));
+  assert.ok(ok.kube.deleted.includes("myinst/secret/jr2-custodian-slot-1"), "and it goes after the check");
+  assert.ok(
+    ok.orchestrator.slotPosts.some((p) => p.slot === 1),
+    "its rules were made live first",
   );
   assert.match(
     ok.err.join("\n"),
-    /provider: checking vllm\/qwen-small, vllm\/qwen-x on the Instance Harness, through a Custodian that holds JR2_PROVIDER_API_KEY for vllm\.lan:8000/,
+    /provider: checking vllm\/qwen-small, vllm\/qwen-x on the Instance Harness, through the Custodian, which holds JR2_PROVIDER_API_KEY for vllm\.lan:8000/,
   );
 
   const bad = mkWorld(await mkInstance(config, "bad", agents));
@@ -3304,6 +3772,7 @@ function heldPod(pod: string, names: string[], hosts: Record<string, string> = {
     pod,
     manifest: {
       version: 1 as const,
+      egress: [],
       secrets: names.map((name) => ({
         name,
         source: { kind: "literal" as const },
@@ -3328,7 +3797,7 @@ function walkOf(workspace: string[] | undefined, instance: string[] | undefined)
 
 const WS_POD = workspaceHeldPod({ workflow: "w", route: [] });
 
-test("checkPodsOf: every model a Harness pod runs, in a check pod with its pod's placement, with the keys a pod there holds", () => {
+test("checkPodsOf: every model a Harness pod runs, in one check pod with the Sandbox placement, with the keys a pod holds (ADR-0084)", () => {
   const config = {
     sandbox: { nodeSelector: { pool: "sandbox" } },
     harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } },
@@ -3341,12 +3810,10 @@ test("checkPodsOf: every model a Harness pod runs, in a check pod with its pod's
     ),
     [heldPod(WS_POD, ["ANTHROPIC_API_KEY"]), heldPod("instance", ["ANTHROPIC_API_KEY"])],
   );
+  // Every Harness pod is on the Fence on a Sandbox node, the Instance Harness too: one check pod.
   assert.deepEqual(
     listed.map((p) => [p.where, p.placement, p.manifest.secrets.map((b) => b.name)]),
-    [
-      ["the Sandbox nodes", { nodeSelector: { pool: "sandbox" } }, ["ANTHROPIC_API_KEY"]],
-      ["the Instance Harness", undefined, ["ANTHROPIC_API_KEY"]],
-    ],
+    [["the Sandbox nodes and the Instance Harness", { nodeSelector: { pool: "sandbox" } }, ["ANTHROPIC_API_KEY"]]],
   );
   assert.deepEqual(
     listed[0]!.providers.map((v) => [v.id, v.models, v.keys, v.hosts]),
@@ -3399,39 +3866,25 @@ test("checkVerdicts reads every line provider-preflight.ts writes: the format is
   );
 });
 
-test("podFault: the hint follows the kubelet's reason, and quotes the Custodian's refusal", () => {
-  const images = { harnessImage: "ghcr.io/x/jr2-harness:1", custodianImage: "envoyproxy/envoy@sha256:abc" };
+test("podFault: the hint follows the kubelet's reason", () => {
+  const images = { harnessImage: "ghcr.io/x/jr2-harness:1" };
   const where = { where: "the Sandbox nodes" };
   const end = (over: Partial<PodEnd>): PodEnd => ({
     phase: "stuck",
     started: false,
     output: "",
-    custodian: "",
     reasons: [],
     ...over,
   });
-  const pull = podFault(end({ stuck: "custodian: ImagePullBackOff" }), where, images);
-  assert.match(pull, /cannot pull envoyproxy\/envoy@sha256:abc/);
-  assert.ok(!/held value/.test(pull), "no Custodian-value hint for an image a node cannot pull");
   assert.match(
     podFault(end({ stuck: "check: ErrImagePull" }), where, images),
     /cannot pull ghcr\.io\/x\/jr2-harness:1/,
   );
-  assert.match(
-    podFault(
-      end({
-        stuck: "custodian: restarted",
-        custodian: "[critical] script load error: jr2.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value",
-      }),
-      where,
-      images,
-    ),
-    /Custodian did not start: jr2\.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value — .*missing, empty/,
-  );
   assert.match(podFault(end({ stuck: "check: CreateContainerConfigError" }), where, images), /harness\.envFrom/);
-  const oom = podFault(end({ stuck: "custodian: restarted (last ended OOMKilled)" }), where, images);
-  assert.match(oom, /ran out of memory: custodian: restarted \(last ended OOMKilled\).*64Mi/);
-  assert.ok(!/held value/.test(oom), "an OOMKilled Custodian is not a held value it refused");
+  assert.match(
+    podFault(end({ stuck: 'FailedMount: MountVolume.SetUp failed for volume "ca"' }), where, images),
+    /its trust ConfigMap or its Stand-in Secret is missing; a jr2 defect/,
+  );
   assert.match(
     podFault(end({ phase: "Failed", reasons: ["check: terminated OOMKilled"] }), where, images),
     /the check container's limit is 512Mi/,
@@ -3442,38 +3895,17 @@ test("podFault: the hint follows the kubelet's reason, and quotes the Custodian'
   );
 });
 
-/** The egress rule of every Harness pod (ADR-0076): all but the cloud metadata addresses, and
- * every pod of the cluster as its own peer. */
-const METADATA_EGRESS = [
-  {
-    to: [
-      {
-        ipBlock: {
-          cidr: "0.0.0.0/0",
-          except: ["169.254.169.254/32", "169.254.170.2/32", "169.254.170.23/32", "100.100.100.200/32"],
-        },
-      },
-      { ipBlock: { cidr: "::/0", except: ["fd00:ec2::254/128"] } },
-      { namespaceSelector: {} },
-    ],
-  },
-];
-
-test("checkPodObjects: the check pod takes its placement, and labels that select no Harness pod", () => {
+test("checkPodObjects: the check pod is on slot 1 of the Fence with the Sandbox placement, labels that select no Harness pod, and no Custodian in it", () => {
+  const object = "jr2-provider-preflight-ab12cd34-0";
   const list = JSON.parse(
     checkPodObjects({
       name: "myinst",
       namespace: "myinst",
-      object: "jr2-provider-preflight-ab12cd34-0",
+      object,
       run: "ab12cd34",
       harnessImage: "h",
-      custodianImage: "c",
-      held: { version: 1, secrets: [] },
-      values: {},
-      leaves: {},
-      trust: {},
-      custodian: { bootstrap: "{}", script: "" },
-      credentials: { "control-token": "t", "control-standin": "s" },
+      held: heldPod("instance", ["ANTHROPIC_API_KEY"]).manifest,
+      ranges: { segment: "198.19.0.0/20", placeholders: "198.18.0.0/16" },
       harnessEnvData: {},
       models: ["anthropic/m"],
       priorityClassName: "jr2-sandbox",
@@ -3481,6 +3913,7 @@ test("checkPodObjects: the check pod takes its placement, and labels that select
         nodeSelector: { pool: "sandbox" },
         tolerations: [{ key: "k", operator: "Exists", effect: "NoSchedule" }],
       },
+      caBundle: true,
       deadlineSeconds: 500,
     }),
   ) as { items: Array<Record<string, any>> };
@@ -3495,30 +3928,47 @@ test("checkPodObjects: the check pod takes its placement, and labels that select
     "jr2.dev/provider-preflight": "ab12cd34",
     app: "jr2-provider-preflight",
   });
-  // No key held: the Custodian mounts its token alone, and the check pod's HTTPS goes direct.
-  const values = pod.spec.volumes.find((v: { name: string }) => v.name === "custodian-values");
+  // On slot 1's attachment, with the uplink as its one nameserver (ADR-0084).
+  assert.deepEqual(pod.metadata.annotations, { "v1.multus-cni.io/default-network": "myinst/jr2-fence-1" });
+  assert.equal(pod.spec.dnsPolicy, "None");
+  assert.deepEqual(pod.spec.dnsConfig.nameservers, ["198.19.0.1"]);
+  // One container, and no Custodian in the pod: it is the Instance's, outside it.
+  assert.equal(pod.spec.initContainers, undefined);
   assert.deepEqual(
-    values.projected.sources.map((s: { secret: { name: string } }) => s.secret.name),
-    ["jr2-provider-preflight-ab12cd34-0"],
+    pod.spec.containers.map((c: { name: string }) => c.name),
+    ["check"],
   );
-  assert.ok(!pod.spec.containers[0].env.some((e: { name: string }) => e.name === "HTTPS_PROXY"));
-
-  // The egress of a Harness pod (ADR-0076): the check reaches a provider only as a Turn does. The
-  // policy is in the List before the pod, and it selects the check pods of this run alone.
-  const policy = list.items.find((i) => i.kind === "NetworkPolicy")!;
-  assert.equal(policy.metadata.name, "jr2-provider-preflight-ab12cd34-0");
-  assert.ok(list.items.indexOf(policy) < list.items.indexOf(pod), "the policy is applied before the pod");
-  assert.deepEqual(policy.spec.podSelector, {
-    matchLabels: { app: "jr2-provider-preflight", "jr2.dev/provider-preflight": "ab12cd34" },
+  const env = pod.spec.containers[0].env as Array<{ name: string; value?: string; valueFrom?: any }>;
+  assert.equal(env.find((e) => e.name === "JR2_CUSTODIAN_URL")?.value, "https://custodian.jr2.internal");
+  assert.ok(!env.some((e) => /_PROXY$|^JR2_CUSTODIAN_SOCKET$/i.test(e.name)), "no proxy variable");
+  assert.deepEqual(env.find((e) => e.name === "ANTHROPIC_API_KEY")?.valueFrom, {
+    secretKeyRef: { name: `${object}-standins`, key: "standin-ANTHROPIC_API_KEY" },
   });
-  assert.deepEqual(policy.spec.policyTypes, ["Egress"]);
-  assert.deepEqual(policy.spec.egress, METADATA_EGRESS);
-  // Its deletion goes with the check pod's other objects.
-  assert.ok(
-    checkPodObjectNames("jr2-provider-preflight-ab12cd34-0").some(
-      (o) => o.kind === "networkpolicy" && o.name === "jr2-provider-preflight-ab12cd34-0",
-    ),
+  // Its own trust files, its caBundle among them.
+  const sources = pod.spec.volumes.find((v: { name: string }) => v.name === "ca").projected.sources;
+  assert.deepEqual(
+    sources.map((x: { configMap: { name: string; items: Array<{ key: string }> } }) => [
+      x.configMap.name,
+      x.configMap.items.map((i) => i.key),
+    ]),
+    [
+      [`${object}-trust`, ["extra.crt", "bundle.crt"]],
+      [`${object}-trust`, ["ca.crt"]],
+    ],
   );
+
+  // No NetworkPolicy: the pod is on the Fence (ADR-0084). The name stays among the leftovers that
+  // a later run deletes, for a check pod of before the Fence.
+  assert.ok(!list.items.some((i) => i.kind === "NetworkPolicy"));
+  const names = checkPodObjectNames(object).map((o) => `${o.kind}/${o.name}`);
+  for (const name of [
+    `pod/${object}`,
+    `networkpolicy/${object}`,
+    `configmap/${object}-trust`,
+    `secret/${object}-standins`,
+  ]) {
+    assert.ok(names.includes(name), name);
+  }
 });
 
 const CATALOG_CONFIG = `export default { name: "myinst", secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-real-value" }] };\n`;
@@ -3533,7 +3983,7 @@ function namespaced(applied: readonly string[], namespace: string): string[] {
   });
 }
 
-test("provider preflight: a Harness-shaped pod with its own objects, before anything the Instance reads is written", async () => {
+test("provider preflight: a Harness-shaped pod on slot 1 with its own objects, after the Custodian and before anything else the Instance reads is written (ADR-0019, ADR-0084)", async () => {
   const w = mkWorld(
     await mkInstance(CATALOG_CONFIG, "myinst", {
       coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
@@ -3541,25 +3991,34 @@ test("provider preflight: a Harness-shaped pod with its own objects, before anyt
     }),
   );
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.equal(w.kube.checkPodsSeen.length, 1, "one check pod for one placement");
+  assert.equal(w.kube.checkPodsSeen.length, 1, "one check pod");
   const { pod, rolloutsBefore, appliedBefore } = w.kube.checkPodsSeen[0]!;
   const o = pod.metadata.name as string;
   assert.match(o, /^jr2-provider-preflight-[0-9a-f]{8}-0$/, "a name for this run alone");
+  // The Custodian first: the check pod reaches a provider only through it (ADR-0084). Nothing else
+  // of the Instance's waits before it, so before the publish.
   assert.deepEqual(
     rolloutsBefore.filter((r) => r.startsWith("myinst/")),
-    [],
-    "before the instance's rollout waits, so before the publish",
+    ["myinst/daemonset/jr2-custodian"],
+    "the Custodian's rollout alone",
   );
-  // A failed check writes no object the Instance reads: before it, the namespace holds the check pod's own.
-  assert.deepEqual(namespaced(appliedBefore, "myinst").sort(), [
-    `ConfigMap/${o}`,
-    `ConfigMap/${o}-ca`,
-    `NetworkPolicy/${o}`,
-    `Pod/${o}`,
-    `Secret/${o}`,
-    `Secret/${o}-env`,
-    `Secret/${o}-tls`,
-  ]);
+  // A failed check writes no other object the Instance reads: before it, the namespace holds the
+  // Custodian's, the probe pods of the Fence, and the check pod's own.
+  const before = namespaced(appliedBefore, "myinst").filter(
+    (n) => !/^(NetworkAttachmentDefinition\/jr2-fence-|Pod\/jr2-fence-probe-)/.test(n) && !n.endsWith("/jr2-custodian"),
+  );
+  assert.deepEqual(
+    before.sort(),
+    [
+      `ConfigMap/${o}`,
+      `ConfigMap/${o}-trust`,
+      `Pod/${o}`,
+      `Secret/${o}-env`,
+      `Secret/${o}-standins`,
+      "Secret/jr2-custodian-dial",
+      "Secret/jr2-custodian-slot-1",
+    ].sort(),
+  );
 
   // The check container: the stock Harness image's provider-preflight.ts, EVERY carried model in argv, the Harness's env.
   const [check] = pod.spec.containers;
@@ -3574,22 +4033,26 @@ test("provider preflight: a Harness-shaped pod with its own objects, before anyt
   const harnessPod = findInstanceHarness(w).statefulSet!.spec.template.spec;
   assert.equal(check.image, harnessPod.containers[0].image);
   const env = check.env as Array<{ name: string; value?: string; valueFrom?: any }>;
-  // Its own secret Stand-in, by reference to its own Secret (ADR-0019): it runs no Workspace code.
+  // Its own secret Stand-in, by reference to its own Stand-in Secret (ADR-0019): it runs no
+  // Workspace code.
   assert.deepEqual(env.find((e) => e.name === "ANTHROPIC_API_KEY")?.valueFrom, {
-    secretKeyRef: { name: o, key: "standin-ANTHROPIC_API_KEY" },
+    secretKeyRef: { name: `${o}-standins`, key: "standin-ANTHROPIC_API_KEY" },
   });
   assert.ok(!env.some((e) => e.value?.startsWith("jr2-held-")), "no Stand-in is a literal of the pod spec");
-  assert.equal(env.find((e) => e.name === "HTTPS_PROXY")?.value, "http://127.0.0.1:15001");
+  assert.equal(
+    env.find((e) => e.name === "HTTPS_PROXY"),
+    undefined,
+    "no proxy variable on the Fence",
+  );
   assert.equal(env.find((e) => e.name === "NODE_EXTRA_CA_CERTS")?.value, "/etc/jr2/ca/extra.crt");
   assert.equal(env.find((e) => e.name === "JR2_HARNESS_JSON")?.valueFrom.configMapKeyRef.name, o);
   assert.deepEqual(check.envFrom, [{ secretRef: { name: `${o}-env` } }]);
-
-  // The Custodian is the Instance Harness's, but for the startup probe that gates the check container.
-  const [custodian] = pod.spec.initContainers;
-  const { startupProbe, ...same } = custodian;
-  assert.ok(startupProbe?.httpGet, "the check starts once Envoy serves");
-  assert.deepEqual(same, harnessPod.initContainers[0]);
-  // …and reads the check pod's own copies, by the same paths.
+  // The same Fence env as the Instance Harness's: the Custodian at jr2's own name.
+  const fenceEnv = (c: { env: Array<{ name: string; value?: string }> }) =>
+    c.env.filter((e) => ["JR2_CUSTODIAN_URL", "SSL_CERT_FILE", "GIT_SSL_CAINFO"].includes(e.name));
+  assert.deepEqual(fenceEnv(check), fenceEnv(harnessPod.containers[0]));
+  assert.equal(pod.spec.initContainers, undefined, "no Custodian in the pod");
+  // It reads its own copies, never the Instance's.
   const volumes = JSON.stringify(pod.spec.volumes);
   for (const shared of [
     '"jr2-held"',
@@ -3597,41 +4060,39 @@ test("provider preflight: a Harness-shaped pod with its own objects, before anyt
     '"jr2-ca"',
     '"jr2-held-secrets-instance"',
     '"jr2-harness"',
-    '"jr2-instance-harness-token"',
+    '"jr2-instance-harness-standins"',
+    '"jr2-instance-harness-trust"',
   ]) {
     assert.ok(!volumes.includes(shared) && !JSON.stringify(check).includes(shared), `the check pod reads no ${shared}`);
   }
   assert.equal(pod.spec.restartPolicy, "Never");
   assert.equal(pod.spec.automountServiceAccountToken, false);
 
-  // The literal value is in the check pod's own Secret alone, and only for the check pod's life.
-  const list = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"${o}"`))!) as {
-    items: Array<Record<string, any>>;
-  };
-  const withValue = list.items.filter((i) => JSON.stringify(i).includes("sk-ant-real-value"));
-  assert.deepEqual(
-    withValue.map((i) => `${i.kind}/${i.metadata.name}`),
-    [`Secret/${o}`],
-  );
+  // The literal value is in slot 1's Secret alone, and only for the check pod's life.
+  const objects = appliedObjects(w);
+  const slot = readSlotSecret(objects.get("Secret/jr2-custodian-slot-1")!.data);
+  assert.equal(slot.files.get("values/ANTHROPIC_API_KEY")!.toString(), "sk-ant-real-value");
+  const checkList = w.kube.applied.find((m) => m.includes(`"name":"${o}"`) && m.includes('"kind":"Pod"'))!;
+  assert.ok(!checkList.includes("sk-ant-real-value"));
   for (const { kind, name } of [
     { kind: "pod", name: o },
     { kind: "configmap", name: o },
-    { kind: "configmap", name: `${o}-ca` },
-    { kind: "secret", name: o },
-    { kind: "secret", name: `${o}-tls` },
+    { kind: "configmap", name: `${o}-trust` },
+    { kind: "secret", name: `${o}-standins` },
     { kind: "secret", name: `${o}-env` },
+    { kind: "secret", name: "jr2-custodian-slot-1" },
   ]) {
     assert.ok(w.kube.deleted.includes(`myinst/${kind}/${name}`), `the check pod's ${kind} ${name} is deleted`);
   }
   const said = w.err.join("\n");
   assert.match(
     said,
-    /provider: checking anthropic\/claude-haiku-5-5, anthropic\/claude-sonnet-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for api\.anthropic\.com/,
+    /provider: checking anthropic\/claude-haiku-5-5, anthropic\/claude-sonnet-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for api\.anthropic\.com/,
   );
   assert.match(said, /provider: anthropic\/claude-sonnet-5-5 reachable, and it completed a tool call/);
 });
 
-test("provider preflight: before the first check, only the namespace, the PriorityClasses and the check's own objects are written — no operator, no deploy key", async () => {
+test("provider preflight: before the first check, only the namespace, the PriorityClasses, the Fence's prerequisites, the Custodian and the check's own objects are written — no operator, no deploy key (ADR-0019, ADR-0084)", async () => {
   const { home } = await mkSshHome();
   const root = await withWorkspace(
     await mkInstance(
@@ -3655,11 +4116,22 @@ test("provider preflight: before the first check, only the namespace, the Priori
       : `${doc.kind}/${doc.metadata!.name}`;
   });
   const o = pod.metadata.name as string;
-  assert.deepEqual(kinds, [
+  // The namespace and, at once, the admission policies of the Fence (applied at each converge).
+  assert.deepEqual(kinds.slice(0, 4), [
     "Namespace/myinst",
+    "List ValidatingAdmissionPolicy/jr2-fence-guard-pods,ValidatingAdmissionPolicyBinding/jr2-fence-guard-pods," +
+      "ValidatingAdmissionPolicy/jr2-fence-guard-attachments,ValidatingAdmissionPolicyBinding/jr2-fence-guard-attachments",
     "PriorityClass/jr2-control",
     "PriorityClass/jr2-sandbox",
-    `List ConfigMap/${o},ConfigMap/${o}-ca,Secret/${o},Secret/${o}-tls,Secret/${o}-env,NetworkPolicy/${o},Pod/${o}`,
+  ]);
+  // The DaemonSet of the fence node (applied at each converge), the
+  // Custodian (its attachments, its DaemonSet and the rest), then the probe of each Sandbox node.
+  assert.equal(kinds[4], "DaemonSet/jr2-fence-node");
+  assert.match(kinds[5]!, /^List NetworkAttachmentDefinition\/jr2-fence-0,.*,DaemonSet\/jr2-custodian$/);
+  assert.match(kinds[6]!, /^List Pod\/jr2-fence-probe-[0-9a-f]+$/);
+  assert.deepEqual(kinds.slice(7), [
+    `List Secret/jr2-custodian-slot-1,ConfigMap/${o}-trust,Secret/${o}-standins`,
+    `List ConfigMap/${o},Secret/${o}-env,Pod/${o}`,
   ]);
   assert.deepEqual(labeledBefore, [], "no label either: the operator's comes after the check");
   // …and both come after it.
@@ -3671,6 +4143,55 @@ test("provider preflight: before the first check, only the namespace, the Priori
     w.kube.applied.some((m) => /^\s*image:/m.test(m)),
     "the operator, after the check",
   );
+});
+
+test("provider preflight: a failed TLS handshake that the Custodian names puts the TLS cause first (ADR-0059)", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  const t = "jr2 custodian: api.anthropic.com:443 could not be reached:";
+  w.kube.checkAnswers["anthropic/claude-haiku-5-5"] =
+    `fault=502 ${t} the host closed the connection before the TLS handshake ended: the host may not accept TLS 1.2 ` +
+    "with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers: " +
+    "upstream_reset_before_response_started{remote_connection_failure} -";
+  w.kube.checkAnswers["anthropic/claude-sonnet-5-5"] =
+    `fault=502 ${t} the TLS handshake failed: the Custodian does not trust the certificate of the host, or the ` +
+    "certificate is not for this name (a private CA must be in harness.caBundle): upstream_reset_before_response_started" +
+    "{remote_connection_failure|TLS_error:|268435581:SSL_routines:OPENSSL_internal:CERTIFICATE_VERIFY_FAILED:TLS_error_end}";
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      const [haiku, sonnet] = err.message.split(/(?=provider preflight failed for model "anthropic\/claude-sonnet)/);
+      assert.match(
+        haiku!,
+        /TLS handshake ended[^\n]*\n {2}- the host may not accept TLS 1\.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers: put a TLS terminator, such as nginx, in front of a host that does not\n {2}- the pods may have no egress/,
+      );
+      assert.match(
+        sonnet!,
+        /TLS_error_end\}\n {2}- the Custodian does not trust the certificate of the host, or the certificate is not for the host's name: a private CA on that path must be in harness\.caBundle\n {2}- the pods may have no egress/,
+      );
+      assert.doesNotMatch(sonnet!, /may not accept TLS 1\.2\n/);
+      // The certificate's cause names harness.caBundle; the list does not say it again.
+      assert.equal(sonnet!.match(/harness\.caBundle/g)!.length, 2, "the Custodian's text and the cause");
+      assert.match(haiku!, /\n {2}- a private CA on that path must be in harness\.caBundle\n/);
+      return true;
+    },
+  );
+});
+
+test("tlsCauses: nothing for a fault that names no failed TLS handshake", () => {
+  assert.equal(
+    tlsCauses(
+      "502 jr2 custodian: x:443 could not be reached: upstream_reset_before_response_started{remote_connection_failure,delayed_connect_error:_111} -",
+    ),
+    "",
+  );
+  assert.equal(tlsCauses("anthropic-messages call failed: 401 invalid x-api-key"), "");
+  // A gateway's own error that names TLS is not the Custodian's 502.
+  assert.equal(tlsCauses("502 litellm: upstream error: the TLS handshake failed: bad record mac"), "");
 });
 
 test("provider preflight: every failure in one error, and the Instance as it was — nothing of it applied, no publish, no sweep", async () => {
@@ -3701,18 +4222,29 @@ test("provider preflight: every failure in one error, and the Instance as it was
     },
   );
   const o = w.kube.checkPodsSeen[0]!.pod.metadata.name as string;
+  // The check pod's own objects, its slot, and the Custodian with the probe of the Fence that it
+  // needs (ADR-0084): nothing that the Orchestrator or a pod of the Instance reads.
+  const own = (n: string) =>
+    n.split("/")[1]!.startsWith(o) ||
+    n === "Secret/jr2-custodian-slot-1" ||
+    /^(NetworkAttachmentDefinition\/jr2-fence-|Pod\/jr2-fence-probe-)/.test(n) ||
+    n.split("/")[1]!.startsWith("jr2-custodian");
   assert.ok(
-    namespaced(w.kube.applied, "myinst").every((n) => n.split("/")[1]!.startsWith(o)),
-    `only the check pod's own objects were applied: ${namespaced(w.kube.applied, "myinst").join(", ")}`,
+    namespaced(w.kube.applied, "myinst").every(own),
+    `only the check pod's own objects and the Custodian were applied: ${namespaced(w.kube.applied, "myinst").join(", ")}`,
   );
   assert.ok(!w.kube.applied.some((m) => m.includes('"name":"jr2-ca"')), "no trust bundle either");
-  assert.equal(w.orchestrator.requests.length, 0, "no Assembly is published");
-  assert.equal(w.kube.rollouts.filter((r) => r.startsWith("myinst/")).length, 0);
+  assert.ok(!w.orchestrator.requests.some((r) => r.url.includes("orchestrator.test")), "no Assembly is published");
+  assert.deepEqual(
+    w.kube.rollouts.filter((r) => r.startsWith("myinst/")),
+    ["myinst/daemonset/jr2-custodian"],
+  );
+  assert.ok(w.kube.deleted.includes("myinst/secret/jr2-custodian-slot-1"), "its slot goes, pass or fail");
   assert.ok(!w.kube.deleted.some((d) => d.includes("jr2-held-secrets-")), "no stale held Secret is deleted");
   assert.ok(w.kube.deleted.includes(`myinst/pod/${o}`), "the pod goes, pass or fail");
 });
 
-test("provider preflight: a check pod the cluster refuses is that check pod's fault; the other check pods still run", async () => {
+test("provider preflight: a check pod the cluster refuses is the check's fault, for each model it would check", async () => {
   const root = await mkInstance(
     `export default { name: "myinst", sandbox: { nodeSelector: { pool: "sandbox" } }, ` +
       `secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-real-value" }] };\n`,
@@ -3727,20 +4259,25 @@ test("provider preflight: a check pod the cluster refuses is that check pod's fa
       `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" } });\n`,
   );
   const w = mkWorld(root);
-  w.kube.refuseApply = (m) => m.includes('"kind":"Pod"') && m.includes('"pool":"sandbox"');
+  w.kube.refuseApply = (m) => m.includes('"kind":"Pod"') && m.includes('"jr2.dev/provider-preflight"');
   await assert.rejects(
     () => up(["--yes"], w.io),
     (err: Error) => {
-      assert.match(
-        err.message,
-        /model "anthropic\/claude-haiku-5-5" .*on the Sandbox nodes.*the cluster refused the check pod's objects: .*exceeded quota/s,
-      );
-      assert.ok(!/claude-sonnet-5-5/.test(err.message), "the Instance Harness's check pod ran, and passed");
+      // One check pod, with the Sandbox placement, for the Workspace's model and the Instance Harness's.
+      for (const model of ["anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5"]) {
+        assert.match(
+          err.message,
+          new RegExp(
+            `model "${model.replace(/[/.]/g, "\\$&")}" .*on the Sandbox nodes and the Instance Harness.*the cluster refused the check pod's objects: .*exceeded quota`,
+            "s",
+          ),
+        );
+      }
       return true;
     },
   );
-  assert.equal(w.kube.checkPodsSeen.length, 1, "the second check pod ran after the first was refused");
-  assert.equal(w.kube.checkPodsSeen[0]!.pod.spec.nodeSelector, undefined);
+  assert.equal(w.kube.checkPodsSeen.length, 0, "no check pod ran");
+  assert.ok(w.kube.deleted.includes("myinst/secret/jr2-custodian-slot-1"), "its slot goes");
 });
 
 test("catalog provider preflight: a busy provider and an unforced answer in text warn, and the converge goes on", async () => {
@@ -3803,7 +4340,6 @@ test("catalog provider preflight: a pod that never ran says why, from the kubele
     started: false,
     stuck: "check: ErrImagePull",
     output: "",
-    custodian: "",
     reasons: [],
   };
   await assert.rejects(
@@ -3812,53 +4348,34 @@ test("catalog provider preflight: a pod that never ran says why, from the kubele
   );
 });
 
-test("checkPodsOf: a check pod stands for one class of pod — its nodes, and whether it holds a secret (its proxy)", () => {
-  // A Workspace that holds a workspace() secret calls a keyless provider through its Custodian's
-  // tunnel; the check pod holds that pod's set, so it has the proxy too.
-  const tunnel = checkPodsOf({}, walkOf(["openai/gpt-x"], undefined), [
-    heldPod(WS_POD, ["JIRA_TOKEN"], { JIRA_TOKEN: "jira.example" }),
-  ]);
+test("checkPodsOf: on the Fence one check pod stands for every Harness pod, holds the keys its check uses alone, and reaches what each pod reaches (ADR-0084)", () => {
+  // A Workspace that holds a workspace() secret, and an Instance Harness that holds nothing: each
+  // reaches a provider through the Custodian, so whether a pod holds a secret no longer splits them.
+  const pods = [heldPod(WS_POD, ["JIRA_TOKEN"], { JIRA_TOKEN: "jira.example" }), heldPod("instance", [])];
+  pods[0]!.manifest.egress = [
+    { host: "jira.example", port: 443, match: "name", intercept: true, from: ["held"] },
+  ] as never;
+  pods[1]!.manifest.egress = [
+    { host: "10.0.0.5", port: 8000, match: "address", intercept: false, from: ["entry"] },
+  ] as never;
+  const one = checkPodsOf({}, walkOf(["openai/gpt-x"], ["anthropic/claude-haiku-5-5"]), pods);
   assert.deepEqual(
-    tunnel.map((p) => [p.manifest.secrets.map((b) => b.name), p.providers.map((v) => [v.id, v.keys])]),
-    [[["JIRA_TOKEN"], [["openai", []]]]],
-  );
-  // The same nodes, a Workspace that holds a key and an Instance Harness that holds nothing: two
-  // check pods, one through a Custodian, one direct.
-  const split = checkPodsOf({}, walkOf(["anthropic/claude-haiku-5-5"], ["openai/gpt-x"]), [
-    heldPod(WS_POD, ["ANTHROPIC_API_KEY"]),
-    heldPod("instance", []),
-  ]);
-  assert.deepEqual(
-    split.map((p) => [p.where, p.manifest.secrets.map((b) => b.name), p.providers.map((v) => v.id)]),
+    one.map((p) => [p.where, p.manifest.secrets.map((b) => b.name), p.providers.map((v) => [v.id, v.keys])]),
     [
-      ["the Sandbox nodes", ["ANTHROPIC_API_KEY"], ["anthropic"]],
-      ["the Instance Harness", [], ["openai"]],
+      [
+        "the Sandbox nodes and the Instance Harness",
+        [],
+        [
+          ["openai", []],
+          ["anthropic", []],
+        ],
+      ],
     ],
+    "no JIRA_TOKEN: the check uses no key of it",
   );
-});
-
-test("checkPodObjects: a binding with no leaf is a jr2 defect, thrown before anything is applied", () => {
-  assert.throws(
-    () =>
-      checkPodObjects({
-        name: "myinst",
-        namespace: "myinst",
-        object: "o",
-        run: "r",
-        harnessImage: "h",
-        custodianImage: "c",
-        held: heldPod("instance", ["ANTHROPIC_API_KEY"]).manifest,
-        values: { ANTHROPIC_API_KEY: "v" },
-        leaves: {},
-        trust: {},
-        custodian: { bootstrap: "{}", script: "" },
-        credentials: { "control-token": "t", "control-standin": "s" },
-        harnessEnvData: {},
-        models: ["anthropic/m"],
-        priorityClassName: "jr2-sandbox",
-        deadlineSeconds: 500,
-      }),
-    /no leaf .* a jr2 defect/,
+  assert.deepEqual(
+    one[0]!.manifest.egress.map((r) => `${r.host}:${r.port}`),
+    ["jira.example:443", "10.0.0.5:8000"],
   );
 });
 
@@ -3868,7 +4385,7 @@ test("provider preflight: a new namespace's missing default ServiceAccount is wa
   );
   let refusals = 1;
   w.kube.refuseApply = (m) =>
-    m.includes('"kind":"Pod"') && refusals-- > 0
+    m.includes('"kind":"Pod"') && m.includes('"jr2.dev/provider-preflight"') && refusals-- > 0
       ? 'pods "jr2-provider-preflight-x" is forbidden: error looking up service account myinst/default: serviceaccount "default" not found'
       : false;
   w.kube.checkPending = ["Unschedulable: 0/3 nodes are available"];
@@ -3902,7 +4419,6 @@ test("provider preflight: each result is said as it comes, with the worst-case t
     phase: "Failed",
     started: true,
     output: "jr2.preflight model=anthropic/claude-haiku-5-5 start",
-    custodian: "",
     reasons: ["check: terminated DeadlineExceeded"],
   };
   await assert.rejects(
@@ -3979,7 +4495,7 @@ test("provider preflight: an empty last log read still knows which model the che
       reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
     }),
   );
-  w.kube.checkEnd = { phase: "Failed", started: true, output: "", custodian: "", reasons: [] };
+  w.kube.checkEnd = { phase: "Failed", started: true, output: "", reasons: [] };
   w.kube.checkLive = "jr2.preflight model=anthropic/claude-haiku-5-5 start";
   await assert.rejects(
     () => up(["--yes"], w.io),
@@ -3995,7 +4511,7 @@ test("provider preflight: a result said while the pod ran stands when the last l
   const w = mkWorld(
     await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
   );
-  w.kube.checkEnd = { phase: "Succeeded", started: true, output: "", custodian: "", reasons: [] };
+  w.kube.checkEnd = { phase: "Succeeded", started: true, output: "", reasons: [] };
   w.kube.checkLive =
     "jr2.preflight model=anthropic/claude-haiku-5-5 start\njr2.preflight model=anthropic/claude-haiku-5-5 ok";
   assert.equal(await up(["--yes"], w.io), 0);
@@ -4022,7 +4538,7 @@ test("provider preflight: a check pod whose log cannot be read says so, and is n
   const w = mkWorld(
     await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
   );
-  w.kube.checkEnd = { phase: "Succeeded", started: true, output: "", custodian: "", reasons: [] };
+  w.kube.checkEnd = { phase: "Succeeded", started: true, output: "", reasons: [] };
   await assert.rejects(() => up(["--yes"], w.io), /the check pod ended Succeeded, and jr2 up could not read its log/);
 });
 
@@ -4163,31 +4679,15 @@ test("provider preflight: this Instance's check pods that ended over 10 minutes 
   );
   const mine = w.kube.checkPodsSeen[0]!.pod.metadata.name as string;
   const gone = w.kube.deleted.filter((d) => d.includes("jr2-provider-preflight-") && !d.includes(mine));
+  // Each object of a check pod that goes (`checkPodObjectNames`): those of a check pod on the Fence,
+  // and those of a check pod before it.
   assert.deepEqual(
     gone.sort(),
     [
-      "myinst/configmap/jr2-provider-preflight-dead0000-0",
-      "myinst/configmap/jr2-provider-preflight-dead0000-0-ca",
+      ...["dead0000", "older000", "stuck000"].flatMap((run) =>
+        checkPodObjectNames(`jr2-provider-preflight-${run}-0`).map((o) => `myinst/${o.kind}/${o.name}`),
+      ),
       "myinst/configmap/jr2-provider-preflight-orphan00-0-ca",
-      "myinst/pod/jr2-provider-preflight-dead0000-0",
-      "myinst/networkpolicy/jr2-provider-preflight-dead0000-0",
-      "myinst/secret/jr2-provider-preflight-dead0000-0",
-      "myinst/secret/jr2-provider-preflight-dead0000-0-env",
-      "myinst/secret/jr2-provider-preflight-dead0000-0-tls",
-      "myinst/configmap/jr2-provider-preflight-older000-0",
-      "myinst/configmap/jr2-provider-preflight-older000-0-ca",
-      "myinst/pod/jr2-provider-preflight-older000-0",
-      "myinst/networkpolicy/jr2-provider-preflight-older000-0",
-      "myinst/secret/jr2-provider-preflight-older000-0",
-      "myinst/secret/jr2-provider-preflight-older000-0-env",
-      "myinst/secret/jr2-provider-preflight-older000-0-tls",
-      "myinst/configmap/jr2-provider-preflight-stuck000-0",
-      "myinst/configmap/jr2-provider-preflight-stuck000-0-ca",
-      "myinst/pod/jr2-provider-preflight-stuck000-0",
-      "myinst/networkpolicy/jr2-provider-preflight-stuck000-0",
-      "myinst/secret/jr2-provider-preflight-stuck000-0",
-      "myinst/secret/jr2-provider-preflight-stuck000-0-env",
-      "myinst/secret/jr2-provider-preflight-stuck000-0-tls",
     ].sort(),
   );
 });
@@ -4456,7 +4956,7 @@ function findInstanceHarness(w: World): { statefulSet?: Record<string, any>; ser
   return {};
 }
 
-test('a workspace: "none" definition converges the Instance Harness — Harness + Custodian, minus the Workspace', async () => {
+test('a workspace: "none" definition converges the Instance Harness — the Harness alone, on slot 0 of the Fence (ADR-0031, ADR-0084)', async () => {
   const root = await mkInstance(
     `export default { name: "myinst", harness: { env: [{ name: "K", value: "v" }] } };\n`,
     "myinst",
@@ -4467,49 +4967,42 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
 
   const { statefulSet, service } = findInstanceHarness(w);
   assert.ok(statefulSet, "the StatefulSet is applied");
-  assert.ok(service, "…with its Service");
+  assert.equal(service, undefined, "no Service routes to it (ADR-0084)");
+  assert.ok(w.kube.deleted.includes("myinst/service/jr2-instance-harness"), "the ClusterIP Service of before goes");
   assert.ok(w.kube.rollouts.includes("myinst/statefulset/jr2-instance-harness"), "and the rollout is waited for");
 
-  // The one Harness shape, minus the Workspace (ADR-0031): two containers, no /work, no user.
+  // The one Harness shape, minus the Workspace (ADR-0031): one container, no /work, no user, and no
+  // container of the Custodian, which is outside the pod (ADR-0084).
   const podSpec = statefulSet.spec.template.spec;
   assert.deepEqual(
     podSpec.containers.map((c: { name: string }) => c.name),
     ["harness"],
   );
-  // The Custodian as a native sidecar: the kubelet stops it only after the Harness exits, so the
-  // drain keeps its route to the Menu and the model to the end (ADR-0031).
-  assert.deepEqual(
-    podSpec.initContainers.map((c: { name: string; restartPolicy?: string }) => [c.name, c.restartPolicy]),
-    [["custodian", "Always"]],
-  );
+  assert.equal(podSpec.initContainers, undefined, "no Custodian in the pod");
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
-    ["custodian-values", "custodian-config", "custodian-socket", "harness-credentials"],
-    "no /work — nothing to attach; the Custodian's own two, its control socket and the Harness's Stand-ins alone",
+    ["ca", "harness-credentials"],
+    "no /work — nothing to attach; its trust files and its Stand-ins alone",
   );
-  // Its Custodian's two files from the ConfigMap `jr2 up` rendered for this pod, beside the one
-  // program every pod projects from `jr2-held` (ADR-0059).
-  assert.deepEqual(
-    podSpec.volumes.find((v: { name: string }) => v.name === "custodian-config"),
-    {
-      name: "custodian-config",
-      projected: {
-        sources: [
-          {
-            configMap: {
-              name: "jr2-held-custodian",
-              items: [
-                { key: "envoy.json", path: "envoy.json" },
-                { key: "custodian.lua", path: "custodian.lua" },
-              ],
-            },
-          },
-          { configMap: { name: "jr2-held", items: [{ key: "program.lua", path: "program.lua" }] } },
-        ],
-      },
-    },
+  // On slot 0's attachment, with the uplink as its one nameserver, as a Sandbox is.
+  assert.equal(
+    statefulSet.spec.template.metadata.annotations["v1.multus-cni.io/default-network"],
+    "myinst/jr2-fence-0",
   );
-  assert.equal(podSpec.shareProcessNamespace, undefined, "the Harness cannot read the Custodian's /proc");
+  assert.equal(podSpec.dnsPolicy, "None");
+  assert.deepEqual(podSpec.dnsConfig, {
+    nameservers: ["198.19.0.1"],
+    searches: [],
+    options: [{ name: "ndots", value: "1" }],
+  });
+  assert.equal(podSpec.enableServiceLinks, false);
+  assert.deepEqual(podSpec.volumes[0].projected.sources[0].configMap, {
+    name: "jr2-instance-harness-trust",
+    items: [
+      { key: "extra.crt", path: "extra.crt" },
+      { key: "bundle.crt", path: "bundle.crt" },
+    ],
+  });
 
   // Same wiring a Sandbox's Harness container gets: the harness-config ConfigMap + the env Secret.
   const harness = podSpec.containers[0];
@@ -4532,67 +5025,64 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
     harness.env.some((e: { name: string; value?: string }) => e.name === "JR2_MENU_ONLY" && e.value === "1"),
     "the Harness is told it is the Instance Harness",
   );
+  // The Custodian at jr2's own name, under the pod's trust; no proxy variable and no socket.
+  const env = Object.fromEntries(harness.env.map((e: { name: string; value?: string }) => [e.name, e.value]));
+  assert.equal(env.JR2_CUSTODIAN_URL, "https://custodian.jr2.internal");
+  assert.equal(env.NODE_EXTRA_CA_CERTS, "/etc/jr2/ca/extra.crt");
+  assert.equal(env.SSL_CERT_FILE, "/etc/jr2/ca/bundle.crt");
+  for (const name of ["JR2_CUSTODIAN_SOCKET", "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "JR2_CONTROL_TOKEN"]) {
+    assert.ok(!(name in env), `${name} is not set`);
+  }
+  // An exec probe: no HTTP probe of the kubelet reaches a pod on the Fence.
+  assert.deepEqual(harness.readinessProbe.exec.command, [
+    "/opt/jr2/bin/effector",
+    "healthcheck",
+    "http://127.0.0.1:8080/healthz",
+  ]);
 
-  // The Custodian's credential is the PLACEMENT's own signed CONTROL token, not the Instance token:
-  // it may deliver only for registrations recording the Instance Harness (tokens.ts, ADR-0013/0031,
-  // ADR-0076). It and its secret Stand-in ride the pod's own credentials Secret, which `jr2 up`
-  // mints — never `jr2-instance`. FILES: the token in the Custodian alone, the Stand-in in both.
+  // Slot 0's Secret, which the Custodian alone reads: the PLACEMENT's own signed CONTROL token, not
+  // the Instance token (tokens.ts, ADR-0013/0031, ADR-0076), and its Stand-in, and a leaf of the
+  // Instance's CA for jr2's own name. The pod mounts its Stand-in alone.
   const objects = appliedObjects(w);
-  const credentials = objects.get("Secret/jr2-instance-harness-token")!;
   const signing = Buffer.from(
     (objects.get("Secret/jr2-instance")!.stringData as Record<string, string>).JR2_SIGNING_KEY!,
     "base64",
   );
-  assert.deepEqual(credentials.stringData, {
-    "control-token": controlToken(signing, "jr2-instance-harness"),
-    "control-standin": controlStandIn(signing, "jr2-instance-harness"),
-  });
-  const values = podSpec.volumes.find((v: { name: string }) => v.name === "custodian-values");
-  assert.deepEqual(values.projected.sources, [
-    {
-      secret: {
-        name: "jr2-instance-harness-token",
-        items: [
-          { key: "control-token", path: "JR2_CONTROL_TOKEN" },
-          { key: "control-standin", path: "JR2_CONTROL_TOKEN.standin" },
-        ],
-      },
-    },
-  ]);
+  const slot = readSlotSecret(objects.get("Secret/jr2-custodian-slot-0")!.data);
+  assert.deepEqual(slot.spec.owner, { pod: "jr2-instance-harness" });
+  assert.equal(slot.files.get("values/JR2_CONTROL_TOKEN")!.toString(), controlToken(signing, "jr2-instance-harness"));
+  assert.equal(
+    slot.files.get("values/JR2_CONTROL_TOKEN.standin")!.toString(),
+    controlStandIn(signing, "jr2-instance-harness"),
+  );
+  const leaf = slot.files.get(`tls/${leafStem("custodian.jr2.internal", 443)}.crt`)!.toString();
+  const ca = Buffer.from(objects.get("Secret/jr2-held-ca")!.stringData["ca.crt"]);
+  assert.ok(new X509Certificate(leaf).verify(new X509Certificate(ca).publicKey), "a leaf of the Instance's CA");
+  assert.match(new X509Certificate(leaf).subjectAltName ?? "", /DNS:custodian\.jr2\.internal/);
+  const standIns = objects.get("Secret/jr2-instance-harness-standins")!;
+  assert.deepEqual(Object.keys(standIns.data), ["control-standin"]);
+  assert.match(objects.get("ConfigMap/jr2-instance-harness-trust")!.data["extra.crt"], /BEGIN CERTIFICATE/);
   assert.ok(!JSON.stringify(podSpec).includes('"jr2-instance"'), "no container of this pod mounts jr2-instance");
-  // The Harness holds the control Stand-in as a file, never in env (ADR-0059, C1).
-  assert.ok(
-    !harness.env.some((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN" || e.name === "JR2_CONTROL_TOKEN"),
-    "no Stand-in rides the Harness's env",
+  assert.ok(!JSON.stringify(podSpec).includes("jr2-custodian-slot"), "no container of this pod mounts its slot");
+  // Slot 0 is written before the pod, and its rules are live on each Custodian pod before it starts
+  // (ADR-0084): `jr2 up` asks each one with the Instance's dial token, over a port-forward.
+  const at = (needle: string) => w.kube.applied.findIndex((m) => m.includes(needle));
+  assert.ok(at('"jr2-custodian-slot-0"') < at('"kind":"StatefulSet"'));
+  assert.deepEqual(
+    w.orchestrator.slotPosts.filter((p) => p.slot === 0),
+    [{ slot: 0, dial: custodianDialToken(signing) }],
   );
-  assert.ok(
-    harness.volumeMounts.some(
-      (m: { name: string; mountPath: string }) => m.name === "harness-credentials" && m.mountPath === "/run/jr2",
-    ),
-  );
-  // Its control requests go to the Custodian's control socket, as a Sandbox's do (ADR-0076).
-  assert.ok(
-    harness.env.some(
-      (e: { name: string; value?: string }) =>
-        e.name === "JR2_CUSTODIAN_SOCKET" && e.value === "/run/jr2/custodian/control.sock",
-    ),
-  );
-  assert.equal(podSpec.securityContext.fsGroup, 2000, "the values are readable by the Custodian's uid");
-  // Where the Custodian carries the Menu: this instance's Orchestrator Service, rendered by `jr2 up`
-  // for the one pod it makes — and the script is the HELD table, which loads the program.
-  const files = objects.get("ConfigMap/jr2-held-custodian")!;
-  assert.deepEqual(Object.keys(files.data).sort(), ["custodian.lua", "envoy.json"]);
-  assert.match(files.data["envoy.json"], /jr2-orchestrator\.myinst\.svc/);
-  assert.match(files.data["custodian.lua"], /\ndofile\("\/etc\/jr2\/custodian\/config\/program\.lua"\)\n$/);
-  // `jr2-held` DECLARES: each pod's manifest and the program once — nothing rendered per pod.
+  assert.ok(w.orchestrator.forwards.includes("myinst/pod/pod-1:18081"), w.orchestrator.forwards.join(", "));
+  // What the pod had before the Fence goes.
+  assert.ok(w.kube.deleted.includes("myinst/configmap/jr2-held-custodian"));
+  assert.ok(w.kube.deleted.includes("myinst/secret/jr2-instance-harness-token"));
+  assert.equal(objects.get("ConfigMap/jr2-held-custodian"), undefined);
+  // `jr2-held` DECLARES: each pod's manifest — nothing rendered per pod. The program is the
+  // Custodian's, in its own ConfigMap (ADR-0084).
   const heldCm = objects.get("ConfigMap/jr2-held")!;
   const keys = Object.keys(heldCm.data);
-  assert.ok(keys.includes("held-instance.json") && keys.includes("program.lua"), keys.join(", "));
-  for (const key of keys) {
-    assert.ok(key === "program.lua" || /^held-[a-z0-9-]+\.json$/.test(key), `jr2-held holds no rendered file: ${key}`);
-  }
-  assert.equal(heldCm.data["program.lua"], CUSTODIAN_PROGRAM);
-  assert.ok(statefulSet.spec.template.metadata.annotations["jr2.dev/held-digest"], "a held-secret edit rolls this pod");
+  assert.deepEqual(keys, ["held-instance.json"]);
+  assert.ok(statefulSet.spec.template.metadata.annotations["jr2.dev/held-digest"], "a new trust rolls this pod");
 });
 
 test("the Instance Harness checks the bearer derived for ITS placement — a digest, never the Instance token's (ADR-0058)", async () => {
@@ -4626,74 +5116,52 @@ function policiesOf(w: World): Record<string, Record<string, any>> {
   return Object.fromEntries(items.filter((i) => i.kind === "NetworkPolicy").map((i) => [i.metadata.name, i]));
 }
 
-test("ingress to every Harness pod is the Orchestrator's alone — Sandboxes and the Instance Harness (ADR-0058)", async () => {
+test("no NetworkPolicy selects a Harness pod, and each one jr2 made before the Fence goes on an upgrade (ADR-0084)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
   const w = mkWorld(root);
-  assert.equal(await up(["--yes"], w.io), 0);
-  const policies = policiesOf(w);
-
-  // Only the Orchestrator's pods, and only this instance's: a second instance's Orchestrator in
-  // another namespace is not a peer — `podSelector` alone never crosses a namespace.
-  const fromOrchestrator = [
-    { from: [{ podSelector: { matchLabels: { app: "jr2-orchestrator", "jr2.dev/instance": "myinst" } } }] },
-  ];
-  const sandboxes = policies["jr2-sandbox-ingress"]!;
-  assert.equal(sandboxes.metadata.namespace, "myinst");
-  // Every pod the operator makes for a Sandbox carries this label (helpers.go) — and only those.
-  assert.deepEqual(sandboxes.spec.podSelector, {
-    matchExpressions: [{ key: "sandbox.jr2.dev/name", operator: "Exists" }],
-  });
-  assert.deepEqual(sandboxes.spec.policyTypes, ["Ingress"], "egress is not decided here (ADR-0058)");
-  assert.deepEqual(sandboxes.spec.ingress, fromOrchestrator);
-
-  const instanceHarness = policies["jr2-instance-harness-ingress"]!;
-  assert.deepEqual(instanceHarness.spec.podSelector, { matchLabels: { app: "jr2-instance-harness" } });
-  assert.deepEqual(instanceHarness.spec.policyTypes, ["Ingress"]);
-  assert.deepEqual(instanceHarness.spec.ingress, fromOrchestrator);
-
-  // The Orchestrator itself is NOT selected: every route there is token-gated (ADR-0013), and a
-  // Custodian in any Harness pod must reach it.
-  for (const policy of Object.values(policies)) {
-    assert.notDeepEqual(policy.spec.podSelector, { matchLabels: { app: "jr2-orchestrator" } });
-  }
-});
-
-test("the ingress policies converge with the instance, whatever it composes — a Harness pod is never unguarded", async () => {
-  // No Sandbox and no "none" Agent: the policies still ship, so the first Harness pod a later
-  // `jr2 up` adds is born selected, never in a window before its policy exists.
-  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst");
-  const w = mkWorld(root);
-  assert.equal(await up(["--yes"], w.io), 0);
-  assert.deepEqual(Object.keys(policiesOf(w)).sort(), [
-    "jr2-instance-harness-egress",
-    "jr2-instance-harness-ingress",
-    "jr2-sandbox-egress",
+  // What an Instance of before the Fence has: the four Harness pod policies, beside the two that
+  // jr2 still makes (the Custodian's, the Instance Effector's).
+  const before = [
     "jr2-sandbox-ingress",
-  ]);
+    "jr2-sandbox-egress",
+    "jr2-instance-harness-ingress",
+    "jr2-instance-harness-egress",
+  ];
+  w.kube.policies = [...before, "jr2-custodian", "jr2-instance-effector"].map((name) => ({ metadata: { name } }));
+  assert.equal(await up(["--yes"], w.io), 0);
+  // A Harness pod is on the Fence, with no address on the cluster's network: no policy is for it.
+  assert.deepEqual(Object.keys(policiesOf(w)), []);
+  // Read by jr2's own labels, so a policy of the user's is never listed.
+  assert.deepEqual(w.kube.policySelectors, ["jr2.dev/instance=myinst,app.kubernetes.io/managed-by=jr2"]);
+  for (const name of before) {
+    assert.ok(w.kube.deleted.includes(`myinst/networkpolicy/${name}`), `${name} is deleted`);
+  }
+  assert.ok(!w.kube.deleted.includes("myinst/networkpolicy/jr2-custodian"), "the Custodian's stays");
+  // The Instance Effector's goes only by its own converge (no http Effect here), never by the sweep.
+  assert.ok(w.kube.deleted.filter((d) => d === "myinst/networkpolicy/jr2-instance-effector").length <= 1);
 });
 
-test("no Harness pod reaches a cloud metadata address, and its other egress stays open (ADR-0076)", async () => {
+test("a Sandbox made before the Fence keeps the two Sandbox policies until it goes, and the converge after deletes them (ADR-0084)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
   const w = mkWorld(root);
+  const before = ["jr2-sandbox-ingress", "jr2-sandbox-egress", "jr2-instance-harness-ingress"];
+  w.kube.policies = [...before, "jr2-custodian"].map((name) => ({ metadata: { name } }));
+  // One Sandbox of the old Orchestrator (no spec.network) and one on the Fence.
+  w.kube.sandboxes = [
+    { metadata: { name: "ws-old", namespace: "myinst" }, spec: { image: "img" } },
+    { metadata: { name: "ws-new", namespace: "myinst" }, spec: { image: "img", network: {} } },
+  ];
   assert.equal(await up(["--yes"], w.io), 0);
-  const policies = policiesOf(w);
+  assert.ok(!w.kube.deleted.includes("myinst/networkpolicy/jr2-sandbox-ingress"), "kept while ws-old runs");
+  assert.ok(!w.kube.deleted.includes("myinst/networkpolicy/jr2-sandbox-egress"), "kept while ws-old runs");
+  assert.ok(w.kube.deleted.includes("myinst/networkpolicy/jr2-instance-harness-ingress"), "no Sandbox needs it");
+  assert.match(w.err.join("\n"), /1 Sandbox\(es\) made before the Fence \(ws-old\) keep their NetworkPolicies/);
 
-  const sandboxes = policies["jr2-sandbox-egress"]!;
-  assert.equal(sandboxes.metadata.namespace, "myinst");
-  // The same pods as the ingress policy: every pod the operator makes for a Sandbox.
-  assert.deepEqual(sandboxes.spec.podSelector, policies["jr2-sandbox-ingress"]!.spec.podSelector);
-  // Egress alone: the ingress rule stays the ingress policy's, and policies of one direction add up.
-  assert.deepEqual(sandboxes.spec.policyTypes, ["Egress"]);
-  assert.deepEqual(sandboxes.spec.egress, METADATA_EGRESS);
-
-  const instanceHarness = policies["jr2-instance-harness-egress"]!;
-  assert.deepEqual(instanceHarness.spec.podSelector, { matchLabels: { app: "jr2-instance-harness" } });
-  assert.deepEqual(instanceHarness.spec.policyTypes, ["Egress"]);
-  assert.deepEqual(instanceHarness.spec.egress, METADATA_EGRESS);
-
-  // Not all of the link-local range: NodeLocal DNSCache answers on 169.254.20.10.
-  const except = JSON.stringify(sandboxes.spec.egress);
-  assert.ok(!except.includes("169.254.0.0/16"), "the link-local range stays open");
+  // ws-old is gone: the next converge deletes the two policies.
+  w.kube.sandboxes = [w.kube.sandboxes[1]!];
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.ok(w.kube.deleted.includes("myinst/networkpolicy/jr2-sandbox-ingress"));
+  assert.ok(w.kube.deleted.includes("myinst/networkpolicy/jr2-sandbox-egress"));
 });
 
 test("both readiness probes set a period — a ~1s boot must not be billed as a 10s rollout wait", async () => {
@@ -4744,11 +5212,11 @@ test("the Orchestrator carries a liveness probe that restarts only a process sil
   assert.equal(container.readinessProbe.periodSeconds * container.readinessProbe.failureThreshold, 30);
 });
 
-test("the Instance Harness is a StatefulSet of one: its conversations on a claim, a drain for a grace, a ClusterIP to dial (ADR-0031)", async () => {
+test("the Instance Harness is a StatefulSet of one: its conversations on a claim, a drain for a grace, a headless Service that names its node (ADR-0031, ADR-0084)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
-  const { statefulSet, service } = findInstanceHarness(w);
+  const { statefulSet } = findInstanceHarness(w);
 
   assert.equal(statefulSet!.spec.replicas, 1, "N is 1 until a measured need");
   assert.equal(statefulSet!.spec.serviceName, "jr2-instance-harness-pods", "governed by the headless Service");
@@ -4771,7 +5239,6 @@ test("the Instance Harness is a StatefulSet of one: its conversations on a claim
   assert.equal(pod.terminationGracePeriodSeconds, 600);
   assert.equal(pod.securityContext.fsGroup, 2000, "the claim is writable by the Harness's group");
   const [harness] = pod.containers;
-  const [custodian] = pod.initContainers;
   // Under `/run/jr2`, with every other path that the Harness holds alone (ADR-0076).
   assert.deepEqual(harness.volumeMounts[0], { name: "conversations", mountPath: "/run/jr2/conversations" });
   assert.ok(
@@ -4781,21 +5248,30 @@ test("the Instance Harness is a StatefulSet of one: its conversations on a claim
     ),
     "the Harness is told where its conversations persist",
   );
-  assert.ok(
-    !(custodian.volumeMounts ?? []).some((m: { name: string }) => m.name === "conversations"),
-    "the Custodian never reads an Agent's history",
-  );
 
-  // The dialed name is a ClusterIP Service: kube-proxy still routes it to the draining pod while
-  // no other is ready, where a headless name stops resolving the moment the pod terminates.
-  assert.equal(service!.spec.clusterIP, undefined);
-  assert.deepEqual(service!.spec.selector, { app: "jr2-instance-harness" });
+  // No address routes to it: the Orchestrator dials slot 0 through the Custodian pod on its node,
+  // and finds the node in the EndpointSlices of the headless Service, also while the pod drains.
   const governing = appliedObjects(w).get("Service/jr2-instance-harness-pods")!;
   assert.equal(governing.spec.clusterIP, "None");
+  assert.equal(governing.spec.publishNotReadyAddresses, true);
   assert.deepEqual(governing.spec.selector, { app: "jr2-instance-harness" });
+  assert.equal(appliedObjects(w).get("Service/jr2-instance-harness"), undefined);
 
   // `jr2 up` waits out a rollout as long as the old pod may drain, then its start.
   assert.equal(w.kube.rolloutTimeouts["myinst/jr2-instance-harness"], 600 + 180);
+});
+
+test("the Instance Harness takes the Sandbox placement: a Custodian pod is on its node (ADR-0031, ADR-0084)", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", sandbox: { nodeSelector: { pool: "agents" }, tolerations: [{ key: "agents", operator: "Exists" }] } };\n`,
+    "myinst",
+    DECISIONER_AGENTS,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const pod = findInstanceHarness(w).statefulSet!.spec.template.spec;
+  assert.deepEqual(pod.nodeSelector, { pool: "agents" });
+  assert.deepEqual(pod.tolerations, [{ key: "agents", operator: "Exists" }]);
 });
 
 test('no "none" definitions → nothing new deploys, and a stale Instance Harness is deleted on converge', async () => {
@@ -4831,7 +5307,7 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
   assert.match(images.harness, /^jr2-harness:[0-9a-f]{12}-amd64$/);
   const { statefulSet } = findInstanceHarness(w);
   assert.equal(statefulSet!.spec.template.spec.containers[0].image, images.harness);
-  assert.equal(statefulSet!.spec.template.spec.initContainers[0].image, images.custodian);
+  assert.equal(statefulSet!.spec.template.spec.initContainers, undefined, "the Custodian is outside the pod");
 });
 
 // --- the post-converge sweep (ADR-0039) ----------------------------------------------------------
@@ -5007,38 +5483,52 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
   const pod = findInstanceHarness(w).statefulSet!.spec.template.spec;
   const env = pod.containers[0].env as Array<{ name: string; value?: string }>;
   // The Stand-ins are SECRET and FILES (ADR-0059, ADR-0076): minted by `jr2 up` for this pod
-  // (`instance`), in the pod's credentials Secret, mounted under `/run/jr2/standins/` — never env.
+  // (`instance`), in the pod's Stand-in Secret, mounted under `/run/jr2/standins/` — never env.
   assert.ok(!env.some((e) => e.name === "ANTHROPIC_API_KEY" || e.name === "OPENAI_API_KEY"), "no Stand-in in env");
   const objects = appliedObjects(w);
   const signing = Buffer.from(
     (objects.get("Secret/jr2-instance")!.stringData as Record<string, string>).JR2_SIGNING_KEY!,
     "base64",
   );
-  const minted = objects.get("Secret/jr2-instance-harness-token")!.stringData as Record<string, string>;
+  const decode = (data: Record<string, string>) =>
+    Object.fromEntries(Object.entries(data).map(([k, v]) => [k, Buffer.from(v, "base64").toString()]));
+  const minted = decode(objects.get("Secret/jr2-instance-harness-standins")!.data);
+  const slot = readSlotSecret(objects.get("Secret/jr2-custodian-slot-0")!.data);
   for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
     assert.equal(minted[`standin-${name}`], heldStandIn(signing, "instance", name));
     assert.match(minted[`standin-${name}`]!, new RegExp(`^jr2-held-${name}\\.[A-Za-z0-9_-]{43}$`));
     assert.ok(!minted[`standin-${name}`]!.includes("sk-ant-oat"), "never pi's OAuth mark (ADR-0059)");
+    // The Custodian compares the same Stand-in, from slot 0's Secret.
+    assert.equal(slot.files.get(`values/${name}.standin`)!.toString(), minted[`standin-${name}`]);
   }
+  // The literal's value is where the Custodian reads it: `jr2-held-secrets-instance`, which slot 0
+  // names. The slot Secret holds no value.
+  assert.equal(slot.spec.heldPod, "instance");
+  assert.equal(slot.files.get("values/ANTHROPIC_API_KEY"), undefined);
   const credentials = pod.volumes.find((v: { name: string }) => v.name === "harness-credentials");
-  assert.deepEqual(credentials.projected.sources[0].secret.items, [
-    { key: "control-standin", path: "control/standin" },
-    { key: "standin-ANTHROPIC_API_KEY", path: "standins/ANTHROPIC_API_KEY" },
-    { key: "standin-OPENAI_API_KEY", path: "standins/OPENAI_API_KEY" },
-  ]);
-  assert.equal(env.find((e) => e.name === "HTTPS_PROXY")?.value, "http://127.0.0.1:15001");
+  assert.deepEqual(credentials.projected.sources[0].secret, {
+    name: "jr2-instance-harness-standins",
+    items: [
+      { key: "control-standin", path: "control/standin" },
+      { key: "standin-ANTHROPIC_API_KEY", path: "standins/ANTHROPIC_API_KEY" },
+      { key: "standin-OPENAI_API_KEY", path: "standins/OPENAI_API_KEY" },
+    ],
+  });
+  assert.equal(
+    env.find((e) => e.name === "HTTPS_PROXY"),
+    undefined,
+    "no proxy variable on the Fence",
+  );
   assert.deepEqual(env.at(-2)?.name, "JR2_HARNESS_TOKEN_SHA256", "the gate still rides after harness.env");
   assert.deepEqual(env.at(-1)?.name, "JR2_HARNESS_ENV_NAMES", "the list of the container's names, last (ADR-0076)");
 
-  // Only the Custodian references what it holds; no manifest but its own Secret names the CA.
-  const held = ["jr2-held-secrets-instance", "jr2-held-tls", "team"];
-  const harnessRefs = JSON.stringify(pod.containers[0]);
-  for (const name of held) assert.ok(!harnessRefs.includes(`"${name}"`), `the Harness container references ${name}`);
-  const values = pod.volumes.find((v: { name: string }) => v.name === "custodian-values");
-  assert.deepEqual(
-    values.projected.sources.map((s: { secret: { name: string } }) => s.secret.name),
-    ["jr2-instance-harness-token", "jr2-held-secrets-instance", "team"],
-  );
+  // No container of the pod references what the Custodian holds, or the CA.
+  const held = ["jr2-held-secrets-instance", "jr2-held-tls", "jr2-held-ca", "team"];
+  const podRefs = JSON.stringify(pod);
+  for (const name of held) assert.ok(!podRefs.includes(`"${name}"`), `the pod references ${name}`);
+  // The Custodian's Role names them, and no other Secret of the user's.
+  const role = objects.get("Role/jr2-custodian")!;
+  for (const name of ["jr2-held-secrets-instance", "team"]) assert.ok(role.rules[0].resourceNames.includes(name));
   // The provider preflight's check pod holds its own copy for its life (ADR-0019); it is left out here.
   const everything = w.kube.applied.filter((m) => !m.includes(`"jr2.dev/provider-preflight"`)).join("\n");
   const caMentions = everything.split('"jr2-held-ca"').length - 1;
@@ -5098,7 +5588,7 @@ test("a split that leaves the Harness below its floor is refused at the converge
   const err = w.err.join("\n");
   assert.match(
     err,
-    /refusing: workflow "sized" \(on the Machine composed as "review"\): the Size leaves the Harness container 160Mi/,
+    /refusing: workflow "sized" \(on the Machine composed as "review"\): the Size leaves the Harness container 224Mi/,
   );
   assert.match(err, /the User Container's 800Mi \(its user\.resources\.limits\.memory\)/);
   assert.match(
@@ -5111,7 +5601,7 @@ test("a split that leaves the Harness below its floor is refused at the converge
 
 test("the Instance default is split too: a sandbox.resources below the floor is refused naming jr2.config.ts", async () => {
   const root = await withWorkspace(
-    await mkInstance(`export default { name: "myinst", sandbox: { resources: { limits: { memory: "300Mi" } } } };\n`),
+    await mkInstance(`export default { name: "myinst", sandbox: { resources: { limits: { memory: "200Mi" } } } };\n`),
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 1);
@@ -5239,9 +5729,8 @@ test("the Instance Harness: kit-sized, the sandbox class, and the two disruption
   assert.equal(pod.metadata.annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"], "false");
   assert.equal(pod.metadata.annotations["karpenter.sh/do-not-disrupt"], "true");
   const [harness] = pod.spec.containers;
-  const [custodian] = pod.spec.initContainers;
   assert.deepEqual(harness.resources, { requests: { cpu: "250m", memory: "1Gi" }, limits: { memory: "1Gi" } });
-  assert.deepEqual(custodian.resources, { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } });
+  assert.equal(pod.spec.initContainers, undefined, "the Custodian is outside the pod (ADR-0084)");
 });
 
 // --- the Instance Effector (ADR-0068) ---------------------------------------------------------
@@ -5590,11 +6079,11 @@ test("every text that says what jr2 up keeps of a valueFrom value names the dige
   );
   const flat = adr.replace(/\s+/g, " ");
   assert.match(flat, /keeps that length and a keyed digest of the value/);
-  // Both tests above roll a pod on that digest; the ADR names both, not the Effector alone.
-  assert.match(flat, /The digest rolls [^.]*the Instance Effector[^.]*and the Instance Harness/);
+  // The ADR names the pod that the digest rolls. Behind the Fence the Instance Harness holds no value (ADR-0084).
+  assert.match(flat, /The digest rolls the Instance Effector/);
 });
 
-test("a value edited in the user's Secret behind a valueFrom rolls the Instance Harness at the next converge (ADR-0059)", async () => {
+test("a value edited in the user's Secret behind a valueFrom reaches the Custodian with no roll of the Instance Harness, and slot 0's Secret stays the same (ADR-0059, ADR-0084)", async () => {
   const root = await mkInstance(
     `export default { name: "myinst", secrets: [` +
       `{ name: "ANTHROPIC_API_KEY", valueFrom: { secretKeyRef: { name: "team", key: "anthropic" } } }] };\n`,
@@ -5622,13 +6111,20 @@ test("a value edited in the user's Secret behind a valueFrom rolls the Instance 
         data: Object.fromEntries(Object.entries(kept).map(([k, v]) => [k, b64(v)])),
       } as never);
     }
-    return findInstanceHarness(w).statefulSet!.spec.template.metadata.annotations["jr2.dev/held-digest"];
+    // …and slot 0's Secret, whose placeholder table the next converge keeps.
+    const slot = appliedObjects(w).get("Secret/jr2-custodian-slot-0")!;
+    w.kube.set("myinst", "secret", "jr2-custodian-slot-0", { data: slot.data } as never);
+    return JSON.stringify([
+      findInstanceHarness(w).statefulSet!.spec.template.metadata.annotations["jr2.dev/held-digest"],
+      slot.data,
+    ]);
   };
   w.kube.set("myinst", "secret", "team", { data: { anthropic: b64("sk-ant-first-value") } } as never);
   const first = await digest();
-  assert.equal(await digest(), first, "the same value, the same pod");
+  assert.equal(await digest(), first, "the same value, the same pod and slot");
+  // The Custodian reads the user's Secret itself (ADR-0059): nothing that `jr2 up` writes changes.
   w.kube.set("myinst", "secret", "team", { data: { anthropic: b64("sk-ant-rotated-value") } } as never);
-  assert.notEqual(await digest(), first, "a new value under the same key rolls it");
+  assert.equal(await digest(), first, "a new value under the same key rolls nothing");
   assert.ok(!w.kube.applied.some((m) => m.includes("sk-ant-")), "no applied object holds the value");
 });
 
@@ -5759,6 +6255,7 @@ test("hosts alone places nothing: an Effect secret with hosts that no workspace(
 function wsManifest(i: number): HeldManifest {
   return {
     version: 1,
+    egress: [],
     secrets: [
       {
         name: "ANTHROPIC_API_KEY",
@@ -5777,7 +6274,7 @@ function wsManifest(i: number): HeldManifest {
   };
 }
 
-test("jr2-held grows by one manifest per Workspace and holds the program once — 40 Workspaces stay under the apply limit (ADR-0059)", () => {
+test("jr2-held grows by one manifest per Workspace — 40 Workspaces stay under the apply limit (ADR-0059)", () => {
   // The @kind failure this pins: nine pods' rendered Envoy files in one ConfigMap passed client-side
   // apply's 256 KiB annotation. `jr2 up` DECLARES; a pod's maker renders its own files.
   const heldOf = (n: number): HeldObjects => ({
@@ -5801,18 +6298,18 @@ test("jr2-held grows by one manifest per Workspace and holds the program once �
       }),
     ) as { items: Array<Record<string, any>> };
     const cm = list.items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
-    // The whole List, too: no other object carries a rendered file or a copy of the program.
-    assert.equal(JSON.stringify(list).split("function envoy_on_request").length - 1, 1, "the program once");
+    // The whole List, too: no object carries a rendered file or the program, which is the
+    // Custodian's (ADR-0084).
+    assert.equal(JSON.stringify(list).split("function envoy_on_request").length - 1, 0, "no program");
     assert.ok(!list.items.some((i) => i.metadata.name === "jr2-held-custodian"), "no Instance Harness, no files");
     return { text: JSON.stringify(cm), data: cm.data };
   };
 
   const forty = heldCm(40);
   assert.ok(forty.text.length < 256 * 1024, `jr2-held for 40 Workspaces: ${forty.text.length} bytes`);
-  assert.equal(Object.keys(forty.data).length, 41, "forty manifests and one program");
-  assert.equal(forty.data["program.lua"], CUSTODIAN_PROGRAM);
+  assert.equal(Object.keys(forty.data).length, 40, "forty manifests");
   for (const key of Object.keys(forty.data)) {
-    assert.ok(key === "program.lua" || /^held-ws-[0-9a-f]+\.json$/.test(key), `no rendered file: ${key}`);
+    assert.ok(/^held-ws-[0-9a-f]+\.json$/.test(key), `no rendered file: ${key}`);
   }
 
   // One more Workspace adds its manifest, and nothing else.
@@ -5847,6 +6344,8 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
           targets: [],
           pushes: [{ slot: "app", sign: true, url: "https://github.com/acme/app.git", match: "*" }],
           commands: true,
+          custodian: [],
+          custodianValues: {},
           effects: ["ticket/deploy", "ticket/publish"],
         },
       ],
@@ -5940,43 +6439,17 @@ test("no ADR and no glossary entry says `jr2 up` writes a Sandbox's Custodian co
     const text = raw.replace(/\s+/g, " ");
     for (const re of stale) assert.equal(re.exec(text)?.[0], undefined, `${file} still says the old placement`);
   }
-  // ADR-0005's mount table, "stated once", names the pod's own ConfigMap beside the program.
-  const adr5 = texts.find(([f]) => f.startsWith("0005-"))![1];
-  const row = adr5.split("\n").find((l) => l.startsWith("| `custodian` |"))!;
-  assert.match(row, /`<sandbox>-custodian`/);
-  assert.match(row, /`program\.lua` from `jr2-held`/);
 });
 
-test("the Instance Harness's held digest covers its Custodian's two files: a changed custodian.lua rolls it (ADR-0059)", () => {
-  // A literal bound to no target, so the digest reads no leaf: what moves it here is the files.
-  const manifest: HeldManifest = {
-    version: 1,
-    secrets: [{ name: "JIRA_TOKEN", source: { kind: "literal" }, hosts: [], headers: ["authorization"] }],
-  };
-  const pod = { pod: "instance", manifest, values: { JIRA_TOKEN: "jira-value-0" } };
-  const files = { bootstrap: '{"static_resources":{}}', script: 'HELD = {}\ndofile("program.lua")\n' };
-  const all: HeldObjects = { pods: [pod], instance: files, leaves: {} };
-  const digest = (custodian: { bootstrap: string; script: string }) =>
-    heldDigest(Buffer.from("k"), all, { ...pod, custodian }, () => "d");
-  const first = digest(files);
-  assert.equal(digest({ ...files }), first, "the same files, the same pod");
-  assert.notEqual(digest({ ...files, script: 'HELD = { x = 1 }\ndofile("program.lua")\n' }), first, "custodian.lua");
-  assert.notEqual(digest({ ...files, bootstrap: '{"static_resources":{"x":1}}' }), first, "envoy.json");
-});
-
-test("the Instance Harness's held digest covers the program its custodian.lua loads: a changed program.lua rolls it (ADR-0059)", () => {
-  const manifest: HeldManifest = {
-    version: 1,
-    secrets: [{ name: "JIRA_TOKEN", source: { kind: "literal" }, hosts: [], headers: ["authorization"] }],
-  };
-  const pod = { pod: "instance", manifest, values: { JIRA_TOKEN: "jira-value-0" } };
-  const files = { bootstrap: '{"static_resources":{}}', script: 'HELD = {}\ndofile("program.lua")\n' };
-  const all: HeldObjects = { pods: [pod], instance: files, leaves: {} };
-  const digest = (program?: string) =>
-    heldDigest(Buffer.from("k"), all, { ...pod, custodian: files }, () => "d", program);
-  // `jr2 up` passes no program, so the digest it writes is over the kit's own program.lua.
-  assert.equal(digest(), digest(CUSTODIAN_PROGRAM), "the kit's program is the default");
-  assert.notEqual(digest(`${CUSTODIAN_PROGRAM}\n-- edited\n`), digest(), "program.lua");
+test("the Instance Harness's held digest covers its trust files alone: a new CA or caBundle rolls it, and a held value does not (ADR-0084, ADR-0059)", () => {
+  // The Harness reads its trust files once, at start; the Custodian takes a held value, a leaf and an
+  // Egress list live, through slot 0's Secret, so those roll nothing.
+  const trust = { extra: "EXTRA", bundle: "BUNDLE" };
+  const first = trustDigest(trust);
+  assert.equal(trustDigest({ ...trust }), first, "the same trust, the same pod");
+  assert.notEqual(trustDigest({ ...trust, extra: "EXTRA2" }), first, "extra.crt (a new CA)");
+  assert.notEqual(trustDigest({ ...trust, bundle: "BUNDLE2" }), first, "bundle.crt (new roots)");
+  assert.notEqual(trustDigest({ ...trust, ca: "CA" }), first, "a caBundle");
 });
 
 test("the Orchestrator may apply a Sandbox's Custodian ConfigMap — and may not read, list or delete one (ADR-0059)", async () => {
@@ -6032,7 +6505,11 @@ test("jr2 up reads the Sandbox Effector's image for what each push form owes, an
     () => up(["--yes"], bare.io),
     /over ssh needs ssh, and its Sandbox Effector's image .* holds none/,
   );
-  assert.ok(!bare.kube.applied.some((m) => m.includes(`"kind":"List"`)), "nothing applied");
+  // Nothing of the Instance: the Fence's admission policies, a cluster prerequisite, come with the namespace.
+  assert.ok(
+    !bare.kube.applied.some((m) => m.includes(`"kind":"List"`) && !m.includes("jr2-fence-guard-pods")),
+    "nothing applied",
+  );
   // ssh, but no passwd entry for uid 1000 (the image declares no USER): adduser is the fix.
   const nobody = mkWorld(await sshPushing(), {
     imageFiles: (_image, paths) => ({ present: [...paths], passwd: "root:x:0:0::/root:/bin/sh\n" }),
@@ -6092,7 +6569,10 @@ test("jr2 up reads the Sandbox Effector's image for what each push form owes, an
     () => up(["--yes"], stock.io),
     /over ssh needs ssh, and its Sandbox Effector runs in the stock Harness image .*, which holds git alone/,
   );
-  assert.ok(!stock.kube.applied.some((m) => m.includes(`"kind":"List"`)), "nothing applied");
+  assert.ok(
+    !stock.kube.applied.some((m) => m.includes(`"kind":"List"`) && !m.includes("jr2-fence-guard-pods")),
+    "nothing applied",
+  );
   // A token over https owes nothing beyond git: the image is not read.
   const https = mkWorld(
     await withImage(
@@ -6180,7 +6660,27 @@ test("jr2 up writes one push Secret per git.credentials entry — the token, the
     Object.entries(secret.data as Record<string, string>).map(([k, v]) => [k, Buffer.from(v, "base64").toString()]),
   );
   assert.equal(data.username, "x-access-token");
-  assert.equal(data.password, "ghp_0123456789abcdef");
+  // The operator projects `password`, the entry's Stand-in, into the Effector. The token is in the
+  // entry's token Secret alone, which only the Custodian reads: its Role names that Secret and
+  // never the push Secret, which holds the ssh push key and the signing key (ADR-0068).
+  assert.match(data.password!, /^jr2-held-password\./);
+  assert.equal(data.token, undefined, "the push Secret holds no token");
+  const tokenSecret = objects.get(`Secret/${gitPushTokenSecretName(name)}`)!;
+  assert.ok(tokenSecret, "the entry's token Secret");
+  assert.equal(tokenSecret.metadata.labels?.["jr2.dev/git-push"], "true", "labelled, so a stale one is deleted");
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(tokenSecret.data as Record<string, string>).map(([k, v]) => [
+        k,
+        Buffer.from(v, "base64").toString(),
+      ]),
+    ),
+    { token: "ghp_0123456789abcdef" },
+  );
+  const role = [...objects.values()].find((o) => o.kind === "Role" && o.metadata.name === "jr2-custodian");
+  const readable = (role as { rules: Array<{ resourceNames: string[] }> } | undefined)?.rules[0]!.resourceNames ?? [];
+  assert.ok(readable.includes(gitPushTokenSecretName(name)), "the Custodian may read the entry's token Secret");
+  assert.ok(!readable.includes(name), "the Custodian may not read the entry's push Secret");
   assert.equal(data.identity, "PRIVATE-PUSH");
   assert.equal(data.known_hosts, "github.com ssh-ed25519 AAAA");
   assert.equal(data["sign.identity"], "PRIVATE-SIGN");
@@ -6289,6 +6789,26 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   const own = items.find((i) => i.kind === "Secret" && String(i.metadata.name).startsWith("jr2-effector-"))!;
   assert.ok(own, "the Workspace's Effector Secret");
   const pod = own.metadata.labels["jr2.dev/effector-pod"] as string;
+  // A bearer of a file-body http is the Custodian's (ADR-0068): its value is in the pod's held
+  // values, bound toward the Effect's host; the Effector's own Secret holds none of it, and its
+  // manifest names the Stand-in to project.
+  assert.ok(!JSON.stringify(own).includes(Buffer.from("aws-secret-value-0123").toString("base64")));
+  assert.ok(!JSON.stringify(own).includes("aws-secret-value-0123"));
+  const values = items.find((i) => i.kind === "Secret" && i.metadata.name === `jr2-held-secrets-${pod}`)!;
+  const value = values.stringData?.effector_aws ?? Buffer.from(values.data.effector_aws, "base64").toString();
+  assert.equal(value, "aws-secret-value-0123");
+  const heldMap = appliedObjects(first).get("ConfigMap/jr2-held")!;
+  const manifest = JSON.parse(heldMap.data[`held-${pod}.json`]) as {
+    secrets: Array<{ name: string; holder?: string; hosts: Array<{ host: string; port: number }>; headers: string[] }>;
+  };
+  assert.deepEqual(
+    manifest.secrets.map((b) => [b.name, b.holder, b.hosts.map((h) => `${h.host}:${h.port}`), b.headers]),
+    [["effector_aws", "effector", ["files.example.com:443"], ["authorization"]]],
+  );
+  assert.deepEqual(JSON.parse(heldMap.data[`effector-${pod}.json`]).standIns, [
+    { name: "aws", binding: "effector_aws" },
+  ]);
+  assert.match(first.err.join("\n"), /holds no Effect secret; the Custodian holds aws for it/);
 
   const w = mkWorld(root);
   w.kube.set("myinst", "secret", own.metadata.name, {
@@ -6302,9 +6822,10 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   assert.ok(!w.kube.deleted.includes(`myinst/secret/${own.metadata.name}`), "the placing Workspace's stays");
 });
 
-test("the Orchestrator's Role reads no Secret: create and patch only, and ConfigMaps as ADR-0059 states (ADR-0068)", async () => {
-  // It applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, server-side, and
-  // holds no value (ADR-0068): no get, no list, no watch, no delete, no update on a Secret.
+test("the Orchestrator's Role reads no Secret: create and patch only, and ConfigMaps for the trust ConfigMap (ADR-0068, ADR-0084)", async () => {
+  // It applies its own per-Sandbox slot Secret, `<sandbox>-standins`, `<sandbox>-effector` and
+  // `<sandbox>-trust`, server-side, and holds no value (ADR-0068): no get, no list, no watch, no
+  // delete, no update on a Secret.
   const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
   assert.equal(await up(["--yes"], w.io), 0);
   const role = appliedObjects(w).get("Role/jr2-orchestrator")!;
@@ -6318,13 +6839,12 @@ test("the Orchestrator's Role reads no Secret: create and patch only, and Config
   );
 });
 
-test("the Orchestrator may apply a Sandbox Effector's Service — and may not read, list or delete one (ADR-0068)", async () => {
-  // It writes the headless Service at provision, server-side applied, owned by the CR.
+test("the Orchestrator's Role writes no Service: a pod on the Fence has none (ADR-0068, ADR-0084)", async () => {
   const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
   assert.equal(await up(["--yes"], w.io), 0);
   const role = appliedObjects(w).get("Role/jr2-orchestrator")!;
   const rules = role.rules.filter((r: { resources: string[] }) => r.resources.includes("services"));
-  assert.deepEqual(rules, [{ apiGroups: [""], resources: ["services"], verbs: ["create", "patch"] }]);
+  assert.deepEqual(rules, []);
 });
 
 // --- Chart wrappers (ADR-0070): the walk reads an Open body's declaration --------------------------
@@ -6678,4 +7198,366 @@ test("up refuses a runs.volume smaller than the claim, and applies nothing", asy
   assert.equal(await up(["--yes"], w.io), 1);
   assert.match(w.err.join("\n"), /refusing: runs.volume is 2Gi, smaller than the state volume claim jr2-state \(5Gi\)/);
   assert.deepEqual(w.kube.applied, []);
+});
+
+// ---- the Custodian of an Instance (ADR-0084) ------------------------------------------------------
+
+/** The Custodian's List of a converge: the one with its DaemonSet. */
+function custodianList(w: World): Array<Record<string, any>> | undefined {
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"name":"jr2-custodian"`));
+  return list === undefined ? undefined : (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+}
+
+test("an Instance with a Harness pod claims a VLAN range and converges the Custodian on each Sandbox node (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  // The lowest free range, claimed by an atomic create in jr2-system, held by the namespace.
+  assert.deepEqual(w.kube.created, ["/namespace/jr2-system", "jr2-system/lease/jr2-fence-range-0"]);
+  const claim = (await w.kube.getJson({ kind: "lease", name: "jr2-fence-range-0", namespace: "jr2-system" })) as any;
+  assert.equal(claim.spec.holderIdentity, "myinst");
+  assert.match(w.err.join("\n"), /custodian: converging on each Sandbox node \(VLAN range 0\)/);
+
+  const items = custodianList(w)!;
+  const of = (kind: string) => items.filter((i) => i.kind === kind);
+  // One attachment for each slot and the trunk; nothing in the List names another namespace.
+  assert.equal(of("NetworkAttachmentDefinition").length, 129);
+  assert.ok(
+    items.every((i) => i.metadata.namespace === "myinst" && i.metadata.labels["jr2.dev/instance"] === "myinst"),
+  );
+
+  const ds = of("DaemonSet")[0]!;
+  const pod = ds.spec.template.spec;
+  assert.equal(ds.metadata.name, "jr2-custodian");
+  assert.deepEqual(ds.spec.updateStrategy, {
+    type: "RollingUpdate",
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 },
+  });
+  // The text form with the pod's own namespace: the only form that jr2's admission policy admits.
+  assert.equal(ds.spec.template.metadata.annotations["k8s.v1.cni.cncf.io/networks"], "myinst/jr2-fence-uplink@net1");
+  assert.equal(pod.hostNetwork, undefined, "no jr2 pod has the node's network");
+  assert.equal(pod.automountServiceAccountToken, false);
+  assert.equal(pod.priorityClassName, "jr2-control");
+  assert.equal(pod.nodeSelector, undefined, "the Sandbox placement: none configured");
+  // The uplink: root with NET_ADMIN alone, in the pod's own network namespace.
+  const [uplink] = pod.initContainers;
+  assert.equal(uplink.name, "uplink");
+  assert.equal(uplink.image, imagesOf(w).orchestrator);
+  assert.deepEqual(uplink.securityContext.capabilities, { drop: ["ALL"], add: ["NET_ADMIN"] });
+  assert.equal(uplink.securityContext.allowPrivilegeEscalation, false);
+  assert.equal(uplink.securityContext.privileged, undefined);
+  assert.deepEqual(uplink.command.slice(3, 6), ["uplink", "0", "198.19.0.0/20"]);
+  // `envoy` and `control`: no capability, not root; only `control` has the API token.
+  const byName = Object.fromEntries(pod.containers.map((c: { name: string }) => [c.name, c]));
+  assert.deepEqual(Object.keys(byName), ["control", "envoy"]);
+  for (const c of Object.values(byName) as any[]) {
+    assert.deepEqual(c.securityContext.capabilities, { drop: ["ALL"] });
+    assert.equal(c.securityContext.runAsNonRoot, true);
+    assert.equal(c.securityContext.readOnlyRootFilesystem, true);
+  }
+  assert.equal(byName.envoy.image, custodianRef());
+  assert.equal(byName.control.image, imagesOf(w).orchestrator);
+  assert.deepEqual(byName.control.command, ["tsx", "node_modules/@jr2/orchestrator/bin/custodian-control.ts"]);
+  const env = Object.fromEntries(byName.control.env.map((e: { name: string }) => [e.name, e]));
+  assert.equal(env.JR2_FENCE_RANGE.value, "0");
+  assert.equal(env.JR2_FENCE_SEGMENT, undefined, "the default segment needs no variable");
+  const mounts = (c: any) => c.volumeMounts.map((m: { name: string }) => m.name);
+  assert.ok(mounts(byName.control).includes("kube-api"));
+  assert.ok(!mounts(byName.envoy).includes("kube-api"));
+  assert.deepEqual(
+    pod.volumes.find((v: { name: string }) => v.name === "state").emptyDir,
+    { medium: "Memory", sizeLimit: "64Mi" },
+    "the slots' values are in the pod's memory",
+  );
+
+  // The Role: get on a fixed list of Secret names, never `jr2-instance`.
+  const role = of("Role")[0]!;
+  assert.equal(role.rules.length, 1);
+  assert.deepEqual(role.rules[0].verbs, ["get"]);
+  const names: string[] = role.rules[0].resourceNames;
+  assert.equal(names.filter((n) => n.startsWith("jr2-custodian-slot-")).length, 128);
+  assert.ok(names.includes("jr2-custodian-dial"));
+  assert.ok(!names.includes("jr2-instance"));
+  // The dial token: the one the Orchestrator derives again from the kept key.
+  const instance = (JSON.parse(w.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
+  const key = instance.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!.stringData
+    .JR2_SIGNING_KEY;
+  const dial = of("Secret")[0]!;
+  assert.equal(dial.metadata.name, "jr2-custodian-dial");
+  assert.equal(dial.stringData.token, custodianDialToken(Buffer.from(key, "base64")));
+  // The inbound and control ports admit this Instance's Orchestrator only.
+  const policy = of("NetworkPolicy")[0]!;
+  assert.deepEqual(policy.spec.ingress[0], {
+    from: [{ podSelector: { matchLabels: { app: "jr2-orchestrator", "jr2.dev/instance": "myinst" } } }],
+    ports: [
+      { protocol: "TCP", port: 18080 },
+      { protocol: "TCP", port: 18081 },
+    ],
+  });
+  assert.deepEqual(policy.spec.ingress[1], { ports: [{ protocol: "TCP", port: 15021 }] });
+  const service = of("Service")[0]!;
+  assert.equal(service.spec.clusterIP, "None");
+  // Its bootstrap names the Orchestrator's Service; its trust is the roots, never a jr2 CA.
+  const config = of("ConfigMap")[0]!;
+  assert.match(config.data["envoy.json"], /jr2-orchestrator\.myinst\.svc/);
+  assert.equal(config.data["program.lua"], CUSTODIAN_PROGRAM);
+  assert.match(config.data["upstream.crt"], /BEGIN CERTIFICATE/);
+
+  // Applied server-side, and waited on like each other layer: before the provider preflight, whose
+  // check pod reaches a provider through it, and so before the Orchestrator (ADR-0019, ADR-0084).
+  const rollouts = w.kube.rollouts.filter((r) => r.startsWith("myinst/"));
+  assert.ok(rollouts.indexOf("myinst/daemonset/jr2-custodian") >= 0);
+  assert.ok(rollouts.indexOf("myinst/daemonset/jr2-custodian") < rollouts.indexOf("myinst/jr2-orchestrator"));
+
+  // The Orchestrator may list and watch EndpointSlices, and still reads no Pod.
+  const orchestratorRole = instance.find((i) => i.kind === "Role" && i.metadata.name === "jr2-orchestrator")!;
+  assert.ok(
+    orchestratorRole.rules.some(
+      (r: any) => r.apiGroups.includes("discovery.k8s.io") && r.resources.includes("endpointslices"),
+    ),
+  );
+  assert.ok(!orchestratorRole.rules.some((r: any) => r.resources.some((x: string) => x.startsWith("pods"))));
+
+  // A converge again keeps its range and claims no other.
+  const again = mkWorld(root);
+  again.kube.objects = w.kube.objects;
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.deepEqual(again.kube.created, []);
+  assert.equal(
+    custodianList(again)!.find((i) => i.kind === "DaemonSet")!.spec.template.spec.initContainers[0].command[4],
+    "0",
+  );
+});
+
+test("the Custodian's pod template moves with its config, and not with a converge that changes nothing", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const template = (x: World) => custodianList(x)!.find((i) => i.kind === "DaemonSet")!.spec.template;
+  const again = mkWorld(root);
+  again.kube.objects = w.kube.objects;
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.deepEqual(template(again), template(w));
+  // Another Instance folder: a config module loads once in a process.
+  const movedRoot = await withWorkspace(
+    await mkInstance(`export default { name: "myinst", fence: { segment: "100.64.0.0/16" } };\n`),
+  );
+  const moved = mkWorld(movedRoot);
+  moved.kube.objects = w.kube.objects;
+  assert.equal(await up(["--yes"], moved.io), 0);
+  const t = template(moved);
+  assert.notEqual(
+    t.metadata.annotations["jr2.dev/custodian-config-digest"],
+    template(w).metadata.annotations["jr2.dev/custodian-config-digest"],
+  );
+  assert.ok(t.spec.containers[0].env.some((e: any) => e.name === "JR2_FENCE_SEGMENT" && e.value === "100.64.0.0/16"));
+});
+
+test("an Instance with no Harness pod claims no range and installs no Custodian; one left from before goes once no Harness pod is left, and its range stays claimed until jr2 down", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(custodianList(w), undefined);
+  assert.deepEqual(w.kube.created, []);
+  assert.ok(!w.kube.deleted.includes("(manifest)"), "nothing to delete");
+
+  // A Custodian from a converge that had a Harness pod. A pod of the Instance can still be on a VLAN
+  // of its range: a held run's Sandbox (ADR-0069), or the Instance Harness pod, which drains.
+  const stale = () => {
+    const s = mkWorld(root);
+    s.kube.set("myinst", "daemonset", "jr2-custodian", {});
+    s.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+    s.kube.set("jr2-system", "lease", "jr2-fence-range-5", rangeClaim(5, "other"));
+    return s;
+  };
+  const held = stale();
+  held.kube.sandboxes = [{ metadata: { name: "ticket-a1b2c", namespace: "myinst" } }];
+  assert.equal(await up(["--yes"], held.io), 0);
+  assert.ok(!held.kube.deleted.includes("(manifest)"), "a held run's Sandbox keeps the Custodian");
+  assert.match(held.err.join("\n"), /custodian: kept — 1 Sandbox still on the Fence; a later `jr2 up` deletes it/);
+  const draining = stale();
+  draining.kube.podImages["app=jr2-instance-harness"] = "jr2-harness:old";
+  assert.equal(await up(["--yes"], draining.io), 0);
+  assert.ok(!draining.kube.deleted.includes("(manifest)"), "a draining Instance Harness pod keeps the Custodian");
+  assert.match(draining.err.join("\n"), /custodian: kept — the Instance Harness pod still on the Fence/);
+
+  const gone = stale();
+  assert.equal(await up(["--yes"], gone.io), 0);
+  assert.ok(gone.kube.deleted.includes("(manifest)"), "with no Harness pod left, the Custodian's objects go");
+  assert.match(gone.err.join("\n"), /custodian: none \(no Harness pod\) — deleting the Custodian/);
+  for (const s of [held, draining, gone]) {
+    assert.ok(
+      !s.kube.deleted.some((d) => d.includes("/lease/")),
+      "`jr2 up` gives no range back: the claim stays until `jr2 down`",
+    );
+    assert.doesNotMatch(s.err.join("\n"), /gave back/);
+  }
+  // A Harness pod again: the Instance keeps the range it held, and claims no other.
+  const again = mkWorld(await withWorkspace(root));
+  again.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.match(again.err.join("\n"), /custodian: converging on each Sandbox node \(VLAN range 4\)/);
+  assert.ok(!again.kube.created.some((c) => c.includes("/lease/")));
+});
+
+/** The Orchestrator's env of a converge, by name. */
+function orchestratorEnv(w: World): Record<string, { value?: string }> {
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"name":"jr2-orchestrator"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const orch = items.find((i) => i.kind === "Deployment")!;
+  return Object.fromEntries(orch.spec.template.spec.containers[0].env.map((e: { name: string }) => [e.name, e]));
+}
+
+test("the Orchestrator gets the Instance's VLAN range, claimed before it is applied, while a Custodian is kept (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  // The claim comes first: the Orchestrator that dials through the Custodian starts with its range.
+  assert.equal(orchestratorEnv(w).JR2_FENCE_RANGE?.value, "0");
+
+  // A converge with no Harness pod that keeps the Custodian for a held run's Sandbox keeps the range
+  // on the Orchestrator, which still dials that Sandbox through it.
+  const bare = await mkInstance(`export default { name: "myinst" };\n`);
+  const held = mkWorld(bare);
+  held.kube.set("myinst", "daemonset", "jr2-custodian", {});
+  held.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+  held.kube.sandboxes = [{ metadata: { name: "ticket-a1b2c", namespace: "myinst" } }];
+  assert.equal(await up(["--yes"], held.io), 0);
+  assert.equal(orchestratorEnv(held).JR2_FENCE_RANGE?.value, "4");
+  assert.ok(held.kube.applied.some((m) => m.includes(`"name":"jr2-fence"`)));
+
+  // With no Harness pod left, the Custodian goes, and the Orchestrator has no Fence.
+  const gone = mkWorld(bare);
+  gone.kube.set("myinst", "daemonset", "jr2-custodian", {});
+  gone.kube.set("jr2-system", "lease", "jr2-fence-range-4", rangeClaim(4, "myinst"));
+  assert.equal(await up(["--yes"], gone.io), 0);
+  assert.equal(orchestratorEnv(gone).JR2_FENCE_RANGE, undefined);
+  assert.ok(gone.kube.deleted.includes("myinst/configmap/jr2-fence"));
+  assert.ok(!gone.kube.applied.some((m) => m.includes(`"name":"jr2-fence"`)));
+});
+
+test("after the Custodian is Ready, jr2 up probes the bridge on each node of a Custodian pod (ADR-0084)", async () => {
+  const w = mkWorld(await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)));
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.deepEqual(w.kube.fenceProbes, ["kind-test-control-plane fence"]);
+  const err = w.err.join("\n");
+  assert.match(err, /fence: probing the bridge on 1 Sandbox node\(s\): kind-test-control-plane/);
+  assert.match(
+    err,
+    /fence: verified on each Sandbox node — a pod on the Fence has its slot's address, the Custodian answers its DNS query, and only the Custodian answers its dials to the API Service's address and to the node's kubelet port/,
+  );
+  assert.doesNotMatch(err, /rule set|unreachable route|warning: fence/);
+  // The probe pods come after the Custodian's rollout, and go again.
+  const at = (needle: string) => w.kube.applied.findIndex((m) => m.includes(needle));
+  assert.ok(at(`"app":"jr2-fence-probe"`) > at(`"kind":"DaemonSet","metadata":{"name":"jr2-custodian"`));
+  // No pod of the probe has the node's network.
+  const probes = (JSON.parse(w.kube.applied[at(`"app":"jr2-fence-probe"`)]!) as { items: any[] }).items;
+  assert.ok(probes.every((p) => p.spec.hostNetwork === undefined && p.spec.nodeName === "kind-test-control-plane"));
+});
+
+test("a Sandbox node that fails the check of the Fence refuses the converge, and names the node, the part and the likely causes (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  w.kube.fenceProbeResults["kind-test-control-plane"] = {
+    ok: false,
+    part: "bridge",
+    why: "no answer from the uplink at 198.19.0.1 on VLAN 2",
+  };
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (e: Error) => {
+      assert.match(e.message, /^fence: a Sandbox node fails the check of the Fence \(ADR-0084\)/);
+      assert.match(
+        e.message,
+        /\n {2}kind-test-control-plane: the bridge, its VLAN filtering, or the Custodian pod of this node — no answer/,
+      );
+      assert.match(e.message, /\nThe likely causes: the node's container runtime reads its CNI plugins/);
+      return true;
+    },
+  );
+  // The node's Custodian pod, whose trunk did not answer, is replaced; the Instance Harness and the
+  // rest of the converge do not run.
+  assert.ok(w.kube.deleted.includes("myinst/pod/pod-1"));
+  assert.ok(!w.kube.rollouts.includes("myinst/statefulset/jr2-instance-harness"));
+});
+
+test("a Sandbox node whose CNI folders are not the default ones refuses the converge before Multus and the Custodian (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  w.kube.objects.delete("kube-system/daemonset/kube-multus-ds");
+  w.kube.attachmentCrd = false;
+  w.kube.pluginsResults["kind-test-control-plane"] =
+    "jr2.fence-node fail folder no CNI configuration in /etc/cni/net.d on the node: the container runtime reads it from another folder";
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    /fence: the DaemonSet jr2-system\/jr2-fence-node failed on a Sandbox node \(ADR-0084\):\n {2}kind-test-control-plane: no CNI configuration in \/etc\/cni\/net\.d on the node/,
+  );
+  assert.ok(!w.kube.applied.some((m) => m.includes("kube-multus-ds")), "Multus is not applied");
+  assert.equal(custodianList(w), undefined);
+});
+
+test("without Multus's attachment definition, or with a Sandbox node that has no Ready Multus pod, jr2 up refuses before the Custodian (ADR-0084)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const none = mkWorld(root);
+  none.kube.attachmentCrd = false;
+  await assert.rejects(() => up(["--yes"], none.io), /no CustomResourceDefinition network-attachment-definitions/);
+  assert.equal(custodianList(none), undefined);
+  assert.deepEqual(
+    none.kube.created.filter((k) => k.includes("/lease/")),
+    [],
+    "no range is claimed",
+  );
+
+  const gap = mkWorld(root);
+  gap.kube.nodes = [
+    { metadata: { name: "n1" }, status: { nodeInfo: { architecture: "amd64" } } },
+    { metadata: { name: "n2" }, status: { nodeInfo: { architecture: "amd64" } } },
+  ];
+  gap.kube.nodesWithoutMultus.add("n2");
+  await assert.rejects(
+    () => up(["--yes"], gap.io),
+    /\n {2}n2: Multus — no Ready pod of jr2's Multus \(kube-system: app=multus\) on the node/,
+  );
+  assert.equal(custodianList(gap), undefined);
+});
+
+function rangeClaim(range: number, holder: string): Partial<KubeObject> {
+  return {
+    metadata: {
+      name: `jr2-fence-range-${range}`,
+      uid: `uid-${range}`,
+      resourceVersion: "3",
+      labels: { "jr2.dev/fence-range": String(range), "jr2.dev/fence-holder": holder },
+    },
+    spec: { holderIdentity: holder },
+  } as Partial<KubeObject>;
+}
+
+test("the Custodian may read each slot Secret, the dial token, each pod's literals and each Secret a held secret names, and no other", () => {
+  const binding = (name: string, source: any) =>
+    ({ name, hosts: [], header: "authorization", scheme: "Bearer", source }) as any;
+  const held: HeldObjects = {
+    pods: [
+      {
+        pod: "instance",
+        manifest: { version: 1, secrets: [binding("K", { kind: "literal" })], egress: [] },
+        values: { K: "v" },
+      },
+      {
+        pod: "ws-1",
+        manifest: {
+          version: 1,
+          secrets: [
+            binding("A", { kind: "secret", secret: "user-a", key: "k" }),
+            binding("B", { kind: "secret", secret: "user-a", key: "j" }),
+          ],
+          egress: [],
+        },
+        values: {},
+      },
+    ],
+    leaves: {},
+  };
+  assert.deepEqual(custodianValueSecrets(held), ["jr2-held-secrets-instance", "user-a"]);
 });

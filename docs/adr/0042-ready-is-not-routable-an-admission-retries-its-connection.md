@@ -1,4 +1,4 @@
-# Ready is not routable: the two calls a turn starts with re-ask a Service that has not answered
+# Ready is not routable: the two calls a turn starts with re-ask an address that has not answered
 
 [ADR-0016](0016-agent-turn-mechanics-are-internal.md) sorted an Agent run's failures into classes and said which ones
 jr2 absorbs. Its **infra** class is stated as already-covered: _"provider-stream retry lives inside the turn in the
@@ -8,14 +8,19 @@ model is ever asked were single, unretried `fetch`es** — the Orchestrator's ad
 the Harness's `GET /agents/:iid/surface` that builds the turn's Menu — and either one rejecting settles the turn, which
 `actor.ts` reports as the terminal `agent.fault`. One dropped packet, one lost turn.
 
-The gap is not theoretical and not rare, because both of those calls dial a **Service that has only just started
-mattering**. The admission is the FIRST HTTP request jr2 ever sends over a Workspace's Service: the wrapper waits on the
-Sandbox CR's `phase: Ready`, which the operator computes from the POD's readiness, and the attach then reaches into the
-pod through the API server (`kubectl exec`) — neither proves the Service dialable. The surface read dials the
-Orchestrator's Service, which is between EndpointSlices every time the Orchestrator restarts, and restarting is ordinary
-([ADR-0007](0007-durable-machine-state.md)'s restore is built on it). Kubernetes programs the EndpointSlice behind a
-ClusterIP **after** the pod passes its probe, and until it does, kube-proxy REJECTs. **Ready is a statement about a pod;
-routable is a statement about a Service, and jr2 was reading the first as the second — at both ends of the same turn.**
+The gap is not theoretical and not rare, because both of those calls dial **a path that has only just started
+mattering**. A Harness pod has no Service: the Orchestrator reaches each Harness, a Sandbox's or the Instance Harness's,
+through the Custodian's uplink, which accepts a dial toward a Harness pod from the Orchestrator only
+([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), on a path that starts to matter when the pod
+starts. The attach ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)), or the admission when a Workspace has no
+Repo Slot, is the FIRST HTTP request that jr2 sends on that path to a Sandbox, and the admission to the Instance Harness
+is the first after that pod restarts. The wrapper waits on the Sandbox CR's `phase: Ready`, which the operator computes
+from the POD's readiness, and that does not prove the path dialable; no measurement says when it first answers. The
+surface read goes through the Custodian to the Orchestrator's Service, which is between EndpointSlices every time its
+pod restarts, and restarting is ordinary ([ADR-0007](0007-durable-machine-state.md)'s restore is built on it).
+Kubernetes programs the EndpointSlice behind a ClusterIP **after** the pod passes its probe, and until it does,
+kube-proxy REJECTs. **Ready is a statement about a pod; routable is a statement about the path to it, and a call that
+reads the first as the second loses a turn — at both ends of the same turn.**
 
 Measured: this is what cost the `@kind` tier its parallel default ([ADR-0010](0010-bdd-acceptance-tests.md)). Roughly
 one parallel run in three lost a scenario whose first turn never reached the scripted model, and the symptom was read
@@ -45,12 +50,13 @@ windows more often. That is why the flake was degree-independent and serial runs
   answered, nor were the kernel's re-sends of it on the same connection, so the global `fetch` waited its 10 s connect
   timeout. The next attempt, on a new connection, connected and answered in 172 ms. A longer wait on the same connection
   buys nothing, so the bound makes a DROP cost about 2 s, not about 10.5 s. `dialFetch`
-  (`packages/orchestrator/src/dial.ts`) holds it for the two calls that can be first to reach a Service just come into
-  service: the attach ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)) to a Sandbox's, and the admission to a
-  Sandbox's (a Workspace with no Repo Slot skips the attach) or to the Instance Harness's after it restarts. The carry
-  of a Handoff ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)) uses it too, for both of its legs:
-  the child's Harness can be just come into service, and the carry streams a body that the global `fetch` sends only
-  with `duplex: "half"`.
+  (`packages/orchestrator/src/dial.ts`) holds it for the two calls that can be first to reach a Harness just come into
+  service: the attach ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)) to a Sandbox's, through the uplink, and
+  the admission to a Sandbox's (a Workspace with no Repo Slot skips the attach) or to the Instance Harness's after it
+  restarts, through the uplink too. The carry of a Handoff
+  ([ADR-0080](0080-a-nested-workspace-takes-a-handoff-at-its-cut.md)) uses it too, for both of its legs: the child's
+  Harness can be just come into service, and the carry streams a body that the global `fetch` sends only with
+  `duplex: "half"`.
   - **The bound starts when the name lookup has answered.** Node cannot cancel a `getaddrinfo`, so a bound that cut the
     lookup would leave it holding one of libuv's pool threads (4 by default), and in a DNS outage the retries of
     concurrent attaches would fill the pool and stall every other lookup and file read in the process. The drop measured
@@ -73,6 +79,13 @@ windows more often. That is why the flake was degree-independent and serial runs
     `fetch` and refuses what it does not take: a `Request` input, or a body that is not a string or a `ReadableStream`.
     A `ReadableStream` body goes in chunks, as it is read: an error of the body ends the request, and the end of the
     request cancels the body.
+- **Through the uplink, "never delivered" is the Custodian's word.** A TCP connect to the uplink always succeeds,
+  because Envoy accepts it. When the Harness pod does not answer, the uplink answers 503 with
+  `x-jr2-custodian: unreachable` and Envoy's flags, and when the Custodian refuses the dial itself, it answers with
+  `x-jr2-custodian: refused` or `not-ready` ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The
+  Orchestrator reads such an answer as the transport failure it is, never as the Harness's: "never delivered" when the
+  Custodian refused the dial or when each flag is `UF`, `UH`, `DF` or `URX`, and "may have been delivered" for any other
+  flag. A dial to a slot whose pod has no node, or whose node has no ready Custodian pod, is never delivered too.
 - **Only never-delivered.** Admission is accept-and-queue
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)): a POST the Harness received but
   could not answer has already queued a Submission, so re-sending it would run the turn **twice** — a worse failure than
@@ -82,7 +95,7 @@ windows more often. That is why the flake was degree-independent and serial runs
 - **One answer is re-sent too: a draining Harness's 503.** A Harness that received SIGTERM refuses an admission before
   it reads or queues anything, and closes the connection
   ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), so that 503 is as undelivered as a refused
-  connection — nothing ran, and the re-send dials the Service anew. It rides the same ladder and window. Every other
+  connection — nothing ran, and the re-send dials a new connection. It rides the same ladder and window. Every other
   status is the Harness's word about this admission, and stays a fault.
 - **The window is bounded, where `wait`'s is not.** `wait` may reconnect forever because its Submission is already
   admitted, so the lease owns the reporting ([ADR-0021](0021-workspace-continuity-is-a-lease-that-answers-back.md)'s
@@ -97,11 +110,11 @@ windows more often. That is why the flake was degree-independent and serial runs
   already populated. The bound covers both. Its cost is paid only by an address that is genuinely wrong, and that one
   faults with the address in hand either way.
 - **The ladder is jittered, because the callers arrive together.** Sandboxes that converge together cross the same
-  window together, and every Custodian in the cluster dials the same Orchestrator Service — so an un-jittered ladder
-  does not merely fail to help, it organizes the callers into a herd that retries and misses in lockstep. Each sleep is
-  drawn from the TOP HALF of its rung (equal jitter). The random half decorrelates them; the half that stays a floor is
-  the deliberate part, and it is what full jitter would give away — it is what still holds four clients off a Service
-  that is genuinely down.
+  window together, and the surface read of every Harness of an Instance goes through its one Custodian to the same
+  Orchestrator Service — so an un-jittered ladder does not merely fail to help, it organizes the callers into a herd
+  that retries and misses in lockstep. Each sleep is drawn from the TOP HALF of its rung (equal jitter). The random half
+  decorrelates them; the half that stays a floor is the deliberate part, and it is what full jitter would give away — it
+  is what still holds four clients off a Service that is genuinely down.
 - **A transport failure says what it was.** `fetch` reports every one of them as the same three words, and
   `reason: "fetch failed"` on a run is a diagnosis of nothing — the errno one level down (`connect ECONNREFUSED …`,
   `getaddrinfo ENOTFOUND …`) is the whole answer. Both the admission fault and the echo's log line now carry it.

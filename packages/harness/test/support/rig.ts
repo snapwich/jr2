@@ -4,7 +4,8 @@
 //   the provider  — a scripted OpenAI-compatible fake, so a turn's SHAPE is chosen by the test
 //                   (where it stalls, what it half-emits, when it fails) instead of by a model.
 //                   Records every request body, which is the only place context loss is visible.
-//   the Custodian — what answers at `$JR2_CUSTODIAN_URL`, over a real socket: the Orchestrator's
+//   the Custodian — what answers at `$JR2_CUSTODIAN_URL`: HTTPS at jr2's own name under a test CA,
+//                   as on the Fence (ADR-0059, ADR-0084), over a real socket: the Orchestrator's
 //                   surface and delivery routes as the Custodian relays them, a surface that can
 //                   be killed or swapped mid-run (what a state exit does to a registration), and
 //                   deliveries that can be held open (an abort mid-tool-call). The Custodian's
@@ -13,12 +14,16 @@
 // Both are SHARED across a file's tests (`reset` rearms them per scenario), so per-scenario
 // servers do not each wait out a keep-alive to close.
 
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { createServer as createTlsServer, type Server as TlsServer } from "node:https";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, LookupFunction } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
+import { CUSTODIAN_URL, controlFetch } from "../../src/control-fetch.ts";
 import type { Surface } from "../../src/menu.ts";
 
 /** The control Stand-in the Harness process holds and sends as its Menu bearer (ADR-0076): secret,
@@ -209,8 +214,11 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
 
 export type FakeSandbox = {
   url: string;
-  /** The same Custodian on a Unix socket, as the control socket under `/run/jr2` is (ADR-0076). */
-  socket: string;
+  /** The same Custodian over HTTPS at jr2's own name (`https://custodian.jr2.internal:<port>`), its
+   * TLS ended with a leaf of a test CA, as on the Fence (ADR-0059, ADR-0084). `fetch` trusts that
+   * CA alone and looks jr2's name up as the loopback: what the Harness's `controlFetch` does in a
+   * pod, with the pod's CA and the slot's resolver. */
+  https: { url: string; fetch: typeof globalThis.fetch; ca: string; lookup: LookupFunction };
   /** What the next surface read serves — a Machine state change, or a guard that changed its
    * answer, between two Submissions (ADR-0029: the Allowed picks move, the Menu does not). */
   setSurface: (surface: Surface) => void;
@@ -330,13 +338,20 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     });
   });
   const port = await listen(server);
-  // The control socket (ADR-0076): one more listener, the same answers.
-  const socket = join(mkdtempSync(join(tmpdir(), "jr2-custodian-")), "control.sock");
-  const onSocket: Server = createServer((req, res) => server.emit("request", req, res));
-  await new Promise<void>((resolve) => onSocket.listen(socket, resolve));
+  // jr2's own name over HTTPS (ADR-0084): one more listener, the same answers.
+  const tls = testTls(new URL(CUSTODIAN_URL).hostname);
+  const onTls: TlsServer = createTlsServer({ cert: tls.cert, key: tls.key }, (req, res) =>
+    server.emit("request", req, res),
+  );
+  const tlsPort = await listen(onTls as unknown as Server);
   return {
     url: `http://127.0.0.1:${port}`,
-    socket,
+    https: {
+      url: `${CUSTODIAN_URL}:${tlsPort}`,
+      fetch: controlFetch({ ca: tls.ca, lookup: loopbackLookup }),
+      ca: tls.ca,
+      lookup: loopbackLookup,
+    },
     setSurface: (next) => (surface = next),
     killSurface: () => (live = false),
     reviveSurface: () => (live = true),
@@ -371,13 +386,109 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
       slots.length = 0;
     },
     close: () => {
-      onSocket.closeAllConnections();
-      onSocket.close();
+      onTls.closeAllConnections();
+      onTls.close();
       server.closeAllConnections();
       return close(server);
     },
   };
 }
+
+// ─── a test CA ───────────────────────────────────────────────────────────────
+
+/** A test CA and one leaf of it for `host` (one DNS SAN), made with `openssl` in the test's tmpdir:
+ * ECDSA P-256, valid from an hour back to a day ahead. With `under`, the leaf is of that CA instead
+ * of a new one.
+ *
+ * `notBefore` is an hour back, as the orchestrator's pki.ts sets it, because the wall clock can step back: a
+ * certificate that starts at the current second is "not yet valid" to a handshake after such a
+ * step. OpenSSL 3.0 has no `-not_before`, so `openssl ca` signs both, with `-startdate`. */
+export function testTls(
+  host: string,
+  under?: { ca: string; caKey: string },
+): { ca: string; caKey: string; cert: string; key: string } {
+  const dir = mkdtempSync(join(tmpdir(), "jr2-test-ca-"));
+  const f = (name: string) => join(dir, name);
+  const ssl = (...args: string[]) => execFileSync("openssl", args, { stdio: ["ignore", "ignore", "pipe"] });
+  const ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"];
+  writeFileSync(f("index.txt"), "");
+  writeFileSync(f("serial"), `${randomBytes(8).toString("hex").replace(/^./, "1")}\n`);
+  writeFileSync(
+    f("ca.cnf"),
+    [
+      "[ca]",
+      "default_ca = test",
+      "[test]",
+      `database = ${f("index.txt")}`,
+      `new_certs_dir = ${dir}`,
+      `serial = ${f("serial")}`,
+      "default_md = sha256",
+      "policy = any",
+      "unique_subject = no",
+      "copy_extensions = none",
+      "[any]",
+      "commonName = supplied",
+      "",
+    ].join("\n"),
+  );
+  // `openssl ca` writes times as UTCTime: YYMMDDHHMMSSZ.
+  const start = new Date(Date.now() - 3_600_000).toISOString().replace(/[-:T]/g, "").slice(2, 14) + "Z";
+  const sign = (csr: string, ext: string, out: string, signer: string[]) => {
+    writeFileSync(f(`${out}.ext`), ext);
+    ssl(
+      "ca",
+      "-batch",
+      "-config",
+      f("ca.cnf"),
+      "-notext",
+      "-startdate",
+      start,
+      "-days",
+      "1",
+      ...signer,
+      "-extfile",
+      f(`${out}.ext`),
+      "-in",
+      f(csr),
+      "-out",
+      f(out),
+    );
+  };
+  if (under) {
+    writeFileSync(f("ca.crt"), under.ca);
+    writeFileSync(f("ca.key"), under.caKey);
+  } else {
+    ssl("req", "-new", ...ec, "-keyout", f("ca.key"), "-out", f("ca.csr"), "-subj", "/CN=jr2 test CA");
+    sign(
+      "ca.csr",
+      "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n",
+      "ca.crt",
+      ["-selfsign", "-keyfile", f("ca.key")],
+    );
+  }
+  ssl("req", "-new", ...ec, "-keyout", f("leaf.key"), "-out", f("leaf.csr"), "-subj", `/CN=${host}`);
+  sign(
+    "leaf.csr",
+    `subjectAltName=DNS:${host}\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid\n`,
+    "leaf.crt",
+    ["-cert", f("ca.crt"), "-keyfile", f("ca.key")],
+  );
+  return {
+    ca: readFileSync(f("ca.crt"), "utf8"),
+    caKey: readFileSync(f("ca.key"), "utf8"),
+    cert: readFileSync(f("leaf.crt"), "utf8"),
+    key: readFileSync(f("leaf.key"), "utf8"),
+  };
+}
+
+/** A lookup that answers every name with the loopback: the slot's resolver, for a test. */
+export const loopbackLookup: LookupFunction = (_hostname, options, callback) => {
+  if ((options as { all?: boolean }).all) {
+    (callback as unknown as (err: null, addresses: { address: string; family: number }[]) => void)(null, [
+      { address: "127.0.0.1", family: 4 },
+    ]);
+  } else callback(null, "127.0.0.1", 4);
+};
 
 // ─── small helpers ───────────────────────────────────────────────────────────
 

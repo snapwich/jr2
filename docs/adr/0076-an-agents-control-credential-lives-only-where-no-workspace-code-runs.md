@@ -92,56 +92,50 @@ another, whatever it writes.
   Landlock only narrows the Unix permissions, so a confined program can do everything that the uid can do without
   Landlock, except:
   - reach the contents of `/run/jr2`: read, write, truncate, make, remove, move or link a file or a folder there.
-    `/run/jr2` holds the control Stand-in, each held secret's Stand-in, the folder of the Custodian's control socket,
-    the folder of the shell's socket, the Harness's conversations, and the Harness's output folder. Every path that jr2
-    holds for the Harness alone is under `/run/jr2`. Landlock allows a path only by its rules, so the confiner allows
-    every sibling of `/run/jr2` and of each folder above it, one level at a time. It also gives the root the right to
-    list names on its whole tree, so `ls /`, `ls /run` and `find /` work as they do outside jr2. That right lists the
-    names under `/run/jr2` too: a held secret's name, a conversation's file name. These names are not secrets.
+    `/run/jr2` holds the control Stand-in, each held secret's Stand-in, the folder of the shell's socket, the Harness's
+    conversations, and the Harness's output folder. Every path that jr2 holds for the Harness alone is under `/run/jr2`.
+    Landlock allows a path only by its rules, so the confiner allows every sibling of `/run/jr2` and of each folder
+    above it, one level at a time. It also gives the root the right to list names on its whole tree, so `ls /`,
+    `ls /run` and `find /` work as they do outside jr2. That right lists the names under `/run/jr2` too: a held secret's
+    name, a conversation's file name. These names are not secrets.
   - trace the Harness process, or read its `/proc/<pid>/environ` or `/proc/<pid>/mem`. A confined process cannot ptrace
     a process outside its domain.
   - at Landlock ABI 6 or later, connect to an abstract Unix socket that a process outside the domain made. The
     containers of the pod share one network namespace, so this keeps the domain off the abstract sockets of the Harness
-    and of the Custodian.
+    and of the pod's other containers.
 
-  Landlock does not limit a connect to a named Unix socket. So a confined program can connect to the Custodian's control
-  socket. There the Custodian is the guard: it refuses a request that does not carry the secret control Stand-in, and
-  the fetch Stand-in, which every confined program holds, is valid only on the fetch route. Each listener answers 404 to
-  the other's routes, so the fetch Stand-in gets nothing on the control socket.
+  A confined program reaches the Custodian by the same path as the Harness, as every process of the Sandbox does
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). There the Custodian is the guard: it refuses a
+  control request that does not carry the secret control Stand-in, and the fetch Stand-in, which every confined program
+  holds, is valid only on the fetch route.
 
   The kernel, not the rules, keeps what other pods share. The Repo caches under `/repos`, the runtime under `/opt/jr2`
   and the CA bundles are mounted read-only, and the pod mounts no ServiceAccount token. The domain does not limit the
-  network. A request reaches a held credential only through the Custodian
-  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
+  network: the Fence limits it for the whole Sandbox (ADR-0084). A request reaches a held credential only through the
+  Custodian ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
 
 - **No Harness pod reaches a cloud metadata address.** Where the metadata service of a node answers pods, it gives the
-  node's cloud credential, which no `workspace()` grants. The Custodian's dial guard (ADR-0059) applies only to a
-  request that goes through the Custodian, and a program of the Agent can connect directly. So `jr2 up` converges an
-  egress NetworkPolicy for each Harness pod: `jr2-sandbox-egress` selects each Sandbox pod,
-  `jr2-instance-harness-egress` selects the Instance Harness, and each check pod of the provider preflight gets one of
-  its own, before the pod. Each policy allows all egress except `169.254.169.254/32`, `fd00:ec2::254/128`,
-  `169.254.170.2/32`, `169.254.170.23/32` and `100.100.100.200/32`: the metadata service of AWS, GCP and Azure, the
-  credential agents of ECS and EKS Pod Identity, and the metadata service of Alibaba Cloud.
-  - NetworkPolicy has no deny rule. So the rule allows `0.0.0.0/0` and `::/0`, each with its addresses as `except`, and
-    it also allows every pod of the cluster (`namespaceSelector: {}`).
-  - The Instance Harness and the check pod run no Workspace code. They get the policy because the check pod stands for
-    every Harness pod ([ADR-0019](0019-one-converging-command-against-the-current-context.md)): a model that only the
-    node's credential reaches must fail the check, not a Turn.
-  - The block has two limits. The list is not complete for every cloud provider, and only a CNI that enforces
-    NetworkPolicy applies it. So the shared-cluster guide tells the admin to check the metadata address of their
-    provider, and to give pods no node credential: Workload Identity, or IMDSv2 with a hop limit of 1.
+  node's cloud credential, which no `workspace()` grants. Each Harness pod, the Instance Harness and each check pod
+  included, reaches no address but the Custodian (ADR-0084), and the Custodian's dial guard refuses each link-local
+  address (ADR-0059). The guard has a limit: it refuses loopback, link-local and unspecified addresses and the Fence's
+  own ranges only, so Alibaba Cloud's `100.100.100.200` is not in it, and a permitted name that resolves to it reaches
+  it. So the shared-cluster guide tells the admin to check the metadata address of their provider, and to give pods no
+  node credential: Workload Identity, or IMDSv2 with a hop limit of 1.
 
 - **The env of the domain is the container's own env, with the granted Stand-ins.** A program in the domain gets the env
-  that the container started with: the image's `ENV`, `harness.env` and `envFrom`, the proxy and CA variables. jr2's own
-  `JR2_*` names are removed, except `JR2_CUSTODIAN_URL`. It also gets `HOME`, `TMPDIR`, and the Stand-ins of the secrets
-  that the `workspace()` grants (its `secrets` list), each under its own name, and `safe.bareRepository=explicit` for
-  git, because a commit can hold a bare repository whose config runs a program on a `git status` inside its folder
-  (ADR-0080). The entry goes after the start env's own `GIT_CONFIG_KEY_<n>` entries: with a start env that sets
-  `GIT_CONFIG_COUNT=n`, jr2 sets `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, and `GIT_CONFIG_COUNT=n+1`. So an
-  image's own entries stay, and the Harness needs to read no image. A start-env `GIT_CONFIG_COUNT` that is not a count
-  is replaced, and the Harness logs one line. `jr2 up` warns, and does not refuse, when the `ENV` of a Sandbox Image
-  that it builds sets `GIT_CONFIG_COUNT`: the warning says which entries an Agent's git then gets, so that the image's
-  author sees that jr2's entry comes last and wins over an image entry of the same key. It warns too when the image's
+  that the container started with: the image's `ENV`, `harness.env` and `envFrom`, and the CA variables. jr2's own
+  `JR2_*` names are removed, except `JR2_CUSTODIAN_URL`. The proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`
+  and `NO_PROXY`, in both cases, and `NODE_USE_ENV_PROXY`) are removed too, and the Harness logs one line that names
+  them: the Fence takes each connection to the Custodian (ADR-0084), so such a variable could only send a program's
+  requests to another host. It also gets `HOME`, `TMPDIR`, and the Stand-ins of the secrets that the `workspace()`
+  grants (its `secrets` list), each under its own name, and `safe.bareRepository=explicit` for git, because a commit can
+  hold a bare repository whose config runs a program on a `git status` inside its folder (ADR-0080). The entry goes
+  after the start env's own `GIT_CONFIG_KEY_<n>` entries: with a start env that sets `GIT_CONFIG_COUNT=n`, jr2 sets
+  `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, and `GIT_CONFIG_COUNT=n+1`. So an image's own entries stay, and the
+  Harness needs to read no image. A start-env `GIT_CONFIG_COUNT` that is not a count is replaced, and the Harness logs
+  one line. `jr2 up` warns, and does not refuse, when the `ENV` of a Sandbox Image that it builds sets
+  `GIT_CONFIG_COUNT`: the warning says which entries an Agent's git then gets, so that the image's author sees that
+  jr2's entry comes last and wins over an image entry of the same key. It warns too when the image's
   `GIT_CONFIG_PARAMETERS` names `safe.bareRepository`, because git reads that variable after the counted entries. The
   domain never gets what the Harness process added to its own env after the start, and so it never gets the control
   Stand-in, or the Stand-in of a model key that the `secrets` list does not name. A toolchain and a bring-your-own image
@@ -226,12 +220,13 @@ another, whatever it writes.
   library reads `~/.config/gcloud`. The domain keeps the Workspace's `HOME`.
 - **One secret control Stand-in for each Sandbox.** Only the Harness process holds it, as a file under `/run/jr2`. It is
   in no env of the domain. The Custodian puts the Sandbox's control token in its place on the control routes (ADR-0059),
-  and the real token never leaves the Custodian.
-- **The control routes are a Unix socket under `/run/jr2`.** The Harness sends each control request to the Custodian's
-  control socket, not to a loopback port. A confined program cannot make a socket under `/run/jr2`, so it cannot take
-  the control listener's place while the Custodian restarts, and it cannot receive the control Stand-in. It can connect
-  to the socket, and the Custodian refuses what it sends (above). The fetch route stays on loopback, because its
-  Stand-in is public.
+  and the real token never leaves the Custodian, which is outside every Sandbox.
+- **The control routes are HTTPS to a name of jr2's own.** The Sandbox's resolver answers that name (ADR-0084), and it
+  is an Intercepted host: the Custodian ends its TLS with a leaf of the Sandbox's CA, whose key is deleted before the
+  pod starts (ADR-0059). So the Harness sends the control Stand-in only to a peer that holds that leaf, and no process
+  in the Sandbox can take the Custodian's place and receive the control Stand-in. A confined program can send to that
+  name, and the Custodian refuses what it sends (above). The fetch route also reaches the Custodian through the Fence;
+  its Stand-in is public.
 - **The Harness states the slot.** On each control request, the Harness states the Agent that the conversation belongs
   to: its slot. It takes the slot from its own record of the conversation, never from the URL. The slot is the Agent's
   full identity below the run: the actor path of its Machine and its agent name, which is a continued conversation's
@@ -342,21 +337,14 @@ another, whatever it writes.
   `/dev/zero` or a FIFO in its place between the check and that open. The Harness then reads without end, or waits for
   ever. It also needs the Harness's `TMPDIR` to be the domain's, so a Sandbox Image with its own `TMPDIR` cannot serve.
   A folder that the domain only reads closes both.
-- **The control routes on a loopback port.** Rejected. A confined program can bind `127.0.0.1:<port>` while the
-  Custodian restarts, and it then receives the secret control Stand-in on the Harness's next request.
-- **The Custodian authenticates the caller.** Rejected alone: every process reaches the Custodian over the one pod
-  loopback. The Custodian can tell the Harness from a child only by a secret that the child cannot read, which is this
-  decision.
+- **The control routes over plain HTTP to a name of jr2's own.** Rejected: the Harness would then send the secret
+  control Stand-in to whatever answers its connection, with no proof that the peer is the Custodian.
+- **The Custodian authenticates the caller.** Rejected alone: every process of a Sandbox reaches the Custodian by the
+  one path, from the one Sandbox. The Custodian can tell the Harness from a child only by a secret that the child cannot
+  read, which is this decision.
 - **Keep the Sandbox-scoped credential, and call the Agents of one Workspace mutually trusting.** Rejected: jr2
   separates the identities of the Agents of one Sandbox, also where it does not separate their files (ADR-0028). A coder
   whose code picks `pass` as its reviewer ends a review in which the reviewer said nothing.
-- **Refuse all of `169.254.0.0/16` at the egress.** Rejected: NodeLocal DNSCache answers on `169.254.20.10`, so the pods
-  of a cluster that runs it lose DNS.
-- **An egress policy with `ipBlock` peers only.** Rejected: a CNI that applies an `ipBlock` to the address of a pod
-  (Cilium) then cuts DNS, the Orchestrator and each Service. So the rule also allows every pod of the cluster.
-- **The egress policy on the Sandbox pods only.** Rejected: the check pod of the provider preflight stands for every
-  Harness pod. Without the policy there, a model that only the node's credential reaches passes the check and fails in a
-  Turn.
 
 ## Consequences
 
@@ -382,14 +370,15 @@ another, whatever it writes.
     The Harness names its process `jr2-harness`, so an Agent's `pkill node` does not end it by accident. ABI 6 scopes
     signals and abstract Unix sockets to the domain, and the confiner uses both scopes when the kernel offers them
     (ADR-0077): the Harness is then outside each signal from the domain.
-  - The domain can connect to the Custodian's control socket. The Custodian refuses each request that does not carry the
-    control Stand-in, which no process of the domain holds.
+  - The domain reaches the Custodian by the Harness's path. The Custodian refuses each control request that does not
+    carry the control Stand-in, which no process of the domain holds.
   - The domain can see that a path under `/run/jr2` exists, by its name or by `stat`, and its size. It cannot read what
     is in it.
-  - The node's cloud credential is closed only at the metadata addresses that jr2 knows, and only on a CNI that enforces
-    NetworkPolicy (the decision above).
-- **The pod is ADR-0005's pod**: one Harness, a Custodian, and an optional User Container and Sandbox Effector. The
-  count of Agents does not change it, and the Size splits as before
+  - For each Harness pod, the Fence closes each address that the pod dials itself, and the dial guard refuses a
+    permitted name that resolves to a link-local address. A permitted name that resolves to an address that the guard
+    does not list, such as `100.100.100.200`, reaches it.
+- **The pod is ADR-0005's pod**: one Harness, and an optional User Container and Sandbox Effector. The count of Agents
+  does not change it, and the Size splits as before
   ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
 - **The Instance Harness runs no Workspace code.** A Menu-only Agent has no Working tools (ADR-0031), so the credential
   of the Instance Harness is already where no Workspace code runs.
@@ -400,16 +389,15 @@ another, whatever it writes.
   does not stop normal work: a server that one `bash` call starts is found and ended by a later call; a write to a
   folder of the image that the uid owns, outside `/work`, succeeds; a move of a file into another folder succeeds;
   `ls /` and `ls /run` succeed; and `read` reads the full output of a `bash` call. It proves the metadata block: kind
-  has no metadata service, so the step gives `169.254.169.254` to the node, and a pod that the policy does not select
-  gets the node's refusal there. The Agent's `bash` does not, and it still connects to the model's host and to the
-  Orchestrator's Service. A unit test pins the policy that `jr2 up` composes. The unit and conformance tests refuse the
-  control token on the fetch route, the fetch token on an agent route, a stated slot that is not the registration's, and
-  both tokens at a Gate, and they check the slot on the delivery poll. A test reads the Harness container's mounts from
-  the pod spec. It fails on a mount that is not read-only, not under `/run/jr2`, and not the Workspace's own (`/work`,
-  `HOME`), so a new mount is classified before it ships. Unit tests start node through `effector nocore --harness-env`
-  with a `HOME` that holds a planted `.node_modules`, and check that node looks for no module there; they also retarget
-  a link onto `/run/jr2`, restart the spawner, and check that the new domain reads nothing there. The `@kind` tier reads
-  the Harness process's environ from outside the pod and checks its `HOME`.
+  has no metadata service, so the step gives `169.254.169.254` to each node, and the Agent's `bash` gets the Custodian's
+  refusal. The unit and conformance tests refuse the control token on the fetch route, the fetch token on an agent
+  route, a stated slot that is not the registration's, and both tokens at a Gate, and they check the slot on the
+  delivery poll. A test reads the Harness container's mounts from the pod spec. It fails on a mount that is not
+  read-only, not under `/run/jr2`, and not the Workspace's own (`/work`, `HOME`), so a new mount is classified before it
+  ships. Unit tests start node through `effector nocore --harness-env` with a `HOME` that holds a planted
+  `.node_modules`, and check that node looks for no module there; they also retarget a link onto `/run/jr2`, restart the
+  spawner, and check that the new domain reads nothing there. The `@kind` tier reads the Harness process's environ from
+  outside the pod and checks its `HOME`.
 - **The `@model` tier runs after the build.** The change alters what the Working tools can do and where a notice is
   delivered ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), so it is a `@model`-tier change
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)).

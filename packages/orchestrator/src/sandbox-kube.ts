@@ -8,9 +8,10 @@
 // restarts and last end. The client and the watch are injectable, so the mapping is unit-testable against a
 // fake API server; the kind e2e tier exercises the real thing.
 //
-// Reachability: the orchestrator always runs in-cluster (ADR-0019), so it dials
-// `status.endpoint` (`http://<name>.<ns>.svc:…`) directly — stable across orchestrator
-// restarts by nature, which is what ADR-0012's "same endpoint" re-attach promise rides on.
+// Reachability: the orchestrator always runs in-cluster (ADR-0019). It dials the slot's address
+// that the CR names, through the Custodian pod on the pod's node (ADR-0084) — stable across
+// orchestrator restarts by nature, which is what ADR-0012's "same endpoint" re-attach promise rides
+// on.
 //
 // Every operation is idempotent (SandboxPort contract): apply is create-or-update, the attach is
 // the Harness's own `POST /attach`, which guards every clone and worktree (ADR-0063), delete
@@ -52,28 +53,32 @@
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
 //   container     harness     the Sandbox Image, command overridden, /work + /opt/jr2 mounted
-//   container     custodian   jr2-composed, the pod's only credential holder (below)
 //   container     user        optional, the image's own entrypoint, the checkouts (/work, plus
 //                             /repos and /opt/jr2 read-only) and NOTHING else
 //
 // and SIZES it (ADR-0060): the Workspace's Size, resolved down its chain, is the pod-level ceiling;
-// the Custodian takes a fixed slice, the User Container its split if the Machine states one, and
-// the Harness container the rest as its own limit. Every request equals its limit, so the pod is
-// Guaranteed and the CPU limit is enforced.
+// the User Container takes its split if the Machine states one, and the Harness container the rest
+// as its own limit. Every request equals its limit, so the pod is Guaranteed and the CPU limit is
+// enforced.
 //
-// This is also where the CUSTODIAN is composed (ADR-0013, ADR-0059). The operator needs no change
-// to carry it: ADR-0001 made `Sidecars` generic container fragments it schedules WITHOUT
-// understanding, so the Custodian is exactly that — a container with an image, its mounts, and a
-// readiness probe the pod's Ready waits on. What this module builds is the pod's asymmetry:
+// The pod holds no credential (ADR-0013, ADR-0059, ADR-0084): the Custodian of the Instance holds
+// them, outside every Harness pod, and the pod is on the Fence, with no address on the cluster's
+// network. The Harness container gets the Custodian's URL and a Stand-in for each credential. What
+// the Custodian holds for a Sandbox is `jr2 up`'s placement for THIS Workspace — the Held secrets its
+// `workspace()` lists and its Agents' providers claim (ADR-0059) — read per provision from the
+// `jr2-held` mount. The provision is:
 //
-//   harness container     JR2_CUSTODIAN_URL + the Stand-in of every credential  (no credential)
-//   custodian container   the Sandbox token and the pod's held secrets, as files (the credentials)
+//   slot      the slot allocator gives the Sandbox a slot of the Instance's VLAN range (fence-slots.ts)
+//   CR        `fenceComposition` (sandbox-fence.ts) gives it the slot's attachment and nameserver, and
+//             the Harness container its env and mounts; the Sandbox Effector gets exec probes
+//   objects   the slot Secret, the Stand-in Secret and the trust ConfigMap, with a new CA for the
+//             Sandbox whose key goes with the call, written once for the Sandbox's life
+//   live      each ready Custodian pod makes the slot's rules live (custodian-client.ts)
+//   Ready     the operator's word
+//   attach    `http://<slot address>:8080`, through the Custodian pod on the pod's node (`fenceRouted`)
 //
-// The Agent has code execution in the first and none in the second. The token is minted here — a
-// signed Sandbox name (see tokens.ts), so re-provisioning after a restart yields the SAME token and
-// the Secret re-applies as a no-op. What else the Custodian holds is `jr2 up`'s placement for THIS
-// Workspace — the Held secrets its `workspace()` lists and its Agents' providers claim (ADR-0059) —
-// read per provision from the `jr2-held` mount (custodian.ts builds both placements' pods alike).
+// The Sandbox Effector is reached the same way, at `<slot address>:8082`, the address its requests
+// are signed for (ADR-0068). An Orchestrator with no Custodian (`fence`) refuses each provision.
 
 import { join } from "node:path";
 import {
@@ -83,25 +88,19 @@ import {
   type HarnessEnvVar,
   type SandboxPlacement,
 } from "./config.ts";
-import {
-  custodianBootstrap,
-  custodianComposition,
-  custodianScript,
-  CREDENTIAL_KEYS,
-  heldStandInKey,
-  CUSTODIAN_BOOTSTRAP_KEY,
-  CUSTODIAN_SCRIPT_KEY,
-  type CustodianComposition,
-} from "./custodian.ts";
+import { heldStandInKey } from "./custodian.ts";
 import { dialFetch, neverDelivered, routabilityLine, transportCode, transportDetail } from "./dial.ts";
-import { heldStandIn, readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
+import { fenceRouted, fenceSlotAddress, LIVE_WAIT_MS, type CustodianClient } from "./custodian-client.ts";
+import { httpHostOf, type FenceRanges } from "./egress.ts";
+import { slotAllocator, slotOfAttachment, type SlotAllocator } from "./fence-slots.ts";
+import { fenceComposition, sandboxFenceObjects, withPushTokens, type PushToken } from "./sandbox-fence.ts";
+import { readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
 import { markHarnessEnv } from "./harness-env.ts";
 import {
   effectorManifestKey,
   readSandboxEffectorManifest,
   SANDBOX_EFFECTOR_GIT_DIR,
   sandboxEffectorKeySecret,
-  sandboxEffectorService,
   type SandboxEffectorManifest,
 } from "./sandbox-effector.ts";
 import { GIT_PUSH_MANIFEST_KEY, placedPushRefusal, readGitPushManifest } from "./git-push.ts";
@@ -119,15 +118,14 @@ import {
   USER_CONTEXT_ENV,
   USER_CONTEXT_VOLUME,
   HELD_MOUNT,
-  CA_CONFIGMAP,
+  ANNOTATION_FENCE_OBJECTS,
   heldManifestKey,
   IMAGES_KEY,
   IMAGES_MOUNT,
-  ORCHESTRATOR_PORT,
-  ORCHESTRATOR_SERVICE,
   PRIORITY_CLASS_SANDBOX,
   REPOS_MOUNT,
-  sandboxCustodianConfigMap,
+  sandboxStandInSecret,
+  sandboxTrustConfigMap,
   ANNOTATION_HOLD,
   ANNOTATION_KEEPALIVE,
   ANNOTATION_WORKSPACE_PATH,
@@ -143,7 +141,7 @@ import {
   CONFIGMAPS,
   SANDBOXES,
   SECRETS,
-  SERVICES,
+  isAlreadyExists,
   isNotFound,
   kubeClient,
   type KubeClient,
@@ -159,13 +157,9 @@ import {
   type SandboxObject,
   type SandboxWatch,
 } from "./sandbox-watch.ts";
-import { controlStandIn, controlToken, effectorKey, harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
+import { effectorKey, harnessToken, harnessTokenDigest } from "./tokens.ts";
 import type { AttachError, AttachRequest, AttachResponse } from "./wire.ts";
 import type { Continuity, MemoryKill, PlacingWait, ProvisionedRepo, SandboxLoss, SandboxPort } from "./workspace.ts";
-
-/** A Secret's `data`: each value base64'd. */
-const base64Values = (values: Record<string, string>): Record<string, string> =>
-  Object.fromEntries(Object.entries(values).map(([k, v]) => [k, Buffer.from(v).toString("base64")]));
 
 /** Where jr2's runtime lands in every container that gets it (ADR-0037). `/opt/jr2` and not `/app`
  * because a stranger's base may already use `/app`, and one layout must serve both the stock
@@ -229,11 +223,14 @@ const HARDENED = {
 /** The Sandbox Effector's port in its pod (ADR-0068's default). */
 export const SANDBOX_EFFECTOR_PORT = 8082;
 
+/** The Harness's port in a Sandbox pod (the operator's default, ADR-0001). */
+const HARNESS_PORT = 8080;
+
 export { sandboxEffectorSecret } from "./sandbox-effector.ts";
 
 /**
- * The Sandbox Effector's container (ADR-0067, ADR-0068), for the Sandbox CR's `sidecars` beside the
- * Custodian: the operator schedules it as it does any sidecar, and projects the CR's `gitCredentials`
+ * The Sandbox Effector's container (ADR-0067, ADR-0068), for the Sandbox CR's `sidecars`: the
+ * operator schedules it as it does any sidecar, and projects the CR's `gitCredentials`
  * into it alone, by its name `effector`. The provision adds it for a `workspace()` whose body
  * holds an Effect placed there (`push`, a file-body `http`, a credentialed `command`) — which `jr2 up` read
  * off the Machines and declared in the pod's manifest. Its image is the Sandbox Image unless the
@@ -243,7 +240,7 @@ export { sandboxEffectorSecret } from "./sandbox-effector.ts";
  * its per-pod key (derived from the Sandbox's name, like the Sandbox token) and `effector.json` at
  * `/run/jr2/effector`, and an emptyDir scratch that is its `$HOME`. The push credentials are not
  * the provision's to mount: the operator projects each entry Secret the CR's `gitCredentials`
- * names into `/run/jr2/secrets/@git/<name>/` (ADR-0051). No Custodian, no `harness.env`, and no env
+ * names into `/run/jr2/secrets/@git/<name>/` (ADR-0051). No `harness.env`, and no env
  * beyond where its mounts are and the downward API's name, address and node — the node is what
  * its Landlock refusal names. It says why it ended in its termination message, which the operator
  * publishes on the Sandbox's status (`status.effector`).
@@ -255,8 +252,8 @@ export function sandboxEffectorContainer(opts: {
   secretVolume: string;
   keyVolume: string;
   scratchVolume: string;
-  /** The instance's trust ConfigMap's volume, when it ships a caBundle (ADR-0020). */
-  caVolume?: string;
+  /** The volume of its trust (`sandboxEffectorVolumes`): the Sandbox's `bundle.crt` (ADR-0068). */
+  caVolume: string;
 }) {
   const env = (name: string, value: string) => ({ name, value });
   return {
@@ -273,7 +270,7 @@ export function sandboxEffectorContainer(opts: {
       env("JR2_EFFECTOR_GIT", `/run/jr2/secrets/${SANDBOX_EFFECTOR_GIT_DIR}`),
       env("JR2_EFFECTOR_SCRATCH", "/run/jr2/scratch"),
       env("HOME", "/run/jr2/scratch"),
-      ...(opts.caVolume ? [env("JR2_CA_FILE", `${EFFECTOR_CA_MOUNT}/ca.crt`)] : []),
+      env("JR2_CA_FILE", `${EFFECTOR_CA_MOUNT}/ca.crt`),
       { name: "POD_NAME", valueFrom: { fieldRef: { fieldPath: "metadata.name" } } },
       { name: "POD_IP", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } },
       { name: "NODE_NAME", valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } } },
@@ -281,8 +278,17 @@ export function sandboxEffectorContainer(opts: {
     ports: [{ name: "effector", containerPort: SANDBOX_EFFECTOR_PORT }],
     // Pod Ready waits on it, and the Sandbox's Ready on pod Ready (ADR-0063): no Effect request is
     // signed before the Effector process that verifies it started, which it would refuse, unsigned
-    // (ADR-0068). It answers only once it holds its key and listens. Every second, as the Harness's.
-    readinessProbe: { httpGet: { path: "/healthz", port: SANDBOX_EFFECTOR_PORT }, periodSeconds: 1 },
+    // (ADR-0068). It answers only once it holds its key and listens. The pod is on the Fence, where no
+    // probe of the kubelet reaches it (ADR-0084), so the probes are `effector healthcheck` from inside
+    // the container (ADR-0063): every second until it first answers, then every 10 s, as the operator
+    // probes the Harness.
+    startupProbe: {
+      exec: { command: EFFECTOR_HEALTHCHECK },
+      timeoutSeconds: 2,
+      periodSeconds: 1,
+      failureThreshold: 600,
+    },
+    readinessProbe: { exec: { command: EFFECTOR_HEALTHCHECK }, timeoutSeconds: 2, periodSeconds: 10 },
     terminationMessagePolicy: "FallbackToLogsOnError",
     volumeMounts: [
       { name: "work", mountPath: WORK_ROOT, readOnly: true },
@@ -291,7 +297,7 @@ export function sandboxEffectorContainer(opts: {
       { name: opts.secretVolume, mountPath: "/run/jr2/secrets", readOnly: true },
       { name: opts.keyVolume, mountPath: "/run/jr2/effector", readOnly: true },
       { name: opts.scratchVolume, mountPath: "/run/jr2/scratch" },
-      ...(opts.caVolume ? [{ name: opts.caVolume, mountPath: EFFECTOR_CA_MOUNT, readOnly: true }] : []),
+      { name: opts.caVolume, mountPath: EFFECTOR_CA_MOUNT, readOnly: true },
     ],
     securityContext: opts.securityContext,
   };
@@ -299,14 +305,37 @@ export function sandboxEffectorContainer(opts: {
 
 const EFFECTOR_CA_MOUNT = "/etc/jr2/effector-ca";
 
-/** The Sandbox Effector's volumes, by the names its container mounts. */
-export function sandboxEffectorVolumes(opts: {
-  sandbox: string;
-  manifest: SandboxEffectorManifest;
-  caBundle: boolean;
-}) {
+/** The Sandbox Effector's exec probe: the Effector binary's own GET of its `/healthz`,
+ * bounded at 1 s (`effector healthcheck`, ADR-0063). */
+const EFFECTOR_HEALTHCHECK = [
+  `${RUNTIME_MOUNT}/bin/effector`,
+  "healthcheck",
+  `http://127.0.0.1:${SANDBOX_EFFECTOR_PORT}/healthz`,
+];
+
+/**
+ * The Sandbox Effector's volumes, by the names its container mounts. `/run/jr2/secrets` also holds the Stand-in of each secret the Custodian holds for it, from the
+ * Sandbox's `<sandbox>-standins` (ADR-0068); and its trust is the Sandbox's `bundle.crt` (the
+ * Instance's upstream roots and the Sandbox's CA), because each host whose secret the Custodian
+ * holds is an Intercepted host, whose TLS a leaf of that CA ends.
+ */
+export function sandboxEffectorVolumes(opts: { sandbox: string; manifest: SandboxEffectorManifest }) {
+  const standIns = opts.manifest.standIns ?? [];
+  const sources = [
+    ...opts.manifest.sources,
+    ...(standIns.length
+      ? [
+          {
+            secret: {
+              name: sandboxStandInSecret(opts.sandbox),
+              items: standIns.map((s) => ({ key: heldStandInKey(s.binding), path: s.name })),
+            },
+          },
+        ]
+      : []),
+  ];
   return [
-    { name: "effector-secrets", projected: { defaultMode: 0o400, sources: opts.manifest.sources } },
+    { name: "effector-secrets", projected: { defaultMode: 0o400, sources } },
     {
       name: "effector-own",
       projected: {
@@ -318,7 +347,10 @@ export function sandboxEffectorVolumes(opts: {
       },
     },
     { name: "effector-scratch", emptyDir: {} },
-    ...(opts.caBundle ? [{ name: "effector-ca", configMap: { name: CA_CONFIGMAP } }] : []),
+    {
+      name: "effector-ca",
+      configMap: { name: sandboxTrustConfigMap(opts.sandbox), items: [{ key: "bundle.crt", path: "ca.crt" }] },
+    },
   ];
 }
 
@@ -441,6 +473,260 @@ const PREFLIGHT_SCRIPT = [
   `exit 1`,
 ].join("\n");
 
+/**
+ * The one init step (ADR-0037): `preflight`, the USER'S image with the runtime volume mounted,
+ * running the probe. It is a plain container fragment the operator schedules without
+ * understanding, exactly like a sidecar — the operator stays agent-agnostic (ADR-0001), so "how a
+ * Sandbox proves its image" is composed here, not reconciled there. Nothing populates the volume
+ * first: it is the kit's image, mounted (see `runtimeVolume`).
+ *
+ * It carries jr2's hardened context explicitly, and runs the probe in the SAME seat the Harness
+ * will get — the image's own user, or ADR-0037's fallback — because a probe that proved a
+ * different uid's `$HOME` proved nothing.
+ */
+function initContainersFor(seat: Seat, split: SizeSplit) {
+  return [
+    {
+      name: "preflight",
+      image: seat.image,
+      command: ["/bin/sh", "-c", PREFLIGHT_SCRIPT],
+      ...(seat.env.length ? { env: seat.env } : {}),
+      volumeMounts: [RUNTIME_VOLUME_MOUNT, ...seat.homeMount],
+      // Small and fixed, inside the pod's budget (ADR-0060): it runs before the others start.
+      resources: split.preflight,
+      securityContext: seat.securityContext,
+    },
+  ];
+}
+
+/**
+ * jr2's runtime (ADR-0037): the kit's Harness image as an `image` volume. This is what makes the
+ * runtime's version ride the VOLUME rather than the image: a kit edit moves the harness image's
+ * own tag and re-images future pods without touching a single Sandbox Image tag, which is the
+ * only way a registry-ref image could ever follow a kit update. A live pod keeps the image it
+ * started with — the same create-if-absent stance ADR-0038 takes for images. No `pullPolicy`:
+ * the kubelet's default for a volume is its default for a container, so the ref is pulled
+ * exactly as the cluster already pulls the Harness image, and the volume adds nothing to deliver.
+ */
+function runtimeVolume(harnessImage: string) {
+  return { name: RUNTIME_VOLUME, image: { reference: harnessImage } };
+}
+
+/**
+ * The primary container's seat: which image runs, as whom, and with what home. One value, built
+ * once per provision and shared by the Harness container and the preflight, so the probe cannot
+ * drift from the thing it proves.
+ */
+type Seat = {
+  image: string;
+  env: HarnessEnvVar[];
+  homeVolume: Array<{ name: string; emptyDir: Record<string, never> }>;
+  homeMount: Array<{ name: string; mountPath: string }>;
+  securityContext: typeof HARDENED & { runAsUser?: number };
+  /** The image user's context folder that the pod mounts read-only from the image (ADR-0062). */
+  userContext?: string;
+};
+
+/**
+ * The Fence's place of a Sandbox pod (`fenceComposition`, ADR-0084): the CR's `spec.network`, the
+ * Harness container's env and mounts, and the pod's volumes. The Custodian is outside the pod.
+ */
+export type PodComposition = {
+  harnessEnv: HarnessEnvVar[];
+  harnessMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>;
+  volumes: Array<Record<string, unknown>>;
+  /** The CR's `spec.network` (ADR-0084): the slot's attachment and its nameserver. */
+  network: { attachment: string; nameserver: string };
+};
+
+/** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim), in order:
+ * the User Container when the spec named one, the Sandbox Effector when `jr2 up` placed an Effect
+ * there. */
+export function sandboxSidecars(
+  user?: Record<string, unknown>,
+  effector?: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  return [...(user !== undefined ? [user] : []), ...(effector !== undefined ? [effector] : [])];
+}
+
+/** What `sandboxCr` composes a Sandbox CR from: each part resolved, so the composition is pure. */
+export type SandboxCrInput = {
+  namespace: string;
+  req: { name: string; runId: string; workflow: string; path: string; workGroup?: number };
+  seat: Seat;
+  repos: ReadonlyArray<{ key: string; url: string; base?: string }>;
+  pod: PodComposition;
+  split: SizeSplit;
+  /** The sidecars, in order (ADR-0001): the User Container, the Sandbox Effector. */
+  sidecars: Array<Record<string, unknown>>;
+  effectorVolumes?: Array<Record<string, unknown>>;
+  /** The Harness container's env, marked (`markHarnessEnv`, ADR-0076). */
+  env: HarnessEnvVar[];
+  envFrom: HarnessEnvFromSource[];
+  /** The kit's Harness image, mounted as jr2's runtime (ADR-0037). */
+  harnessImage: string;
+  gitCredentials: readonly string[];
+  placement?: SandboxPlacement;
+  priorityClassName: string;
+  idleTimeout: string;
+};
+
+/** A Sandbox CR (ADR-0001): the operator's input for one Sandbox's pod. Pure. */
+export function sandboxCr(input: SandboxCrInput) {
+  const { req, seat, repos, pod, split, sidecars, gitCredentials, placement } = input;
+  return {
+    apiVersion: "core.jr2.dev/v1alpha1",
+    kind: "Sandbox",
+    metadata: {
+      name: req.name,
+      namespace: input.namespace,
+      // The run↔workspace link the `jr2 workspace` verbs read (ADR-0009/0012), without the host:
+      // the run, the Workflow and a selector form of the path as labels, the exact path as an
+      // annotation. The hold mark is `held` from this first write (ADR-0021); the Lease writes it
+      // again with each renewal, and `released` when it stops for good.
+      labels: {
+        [LABEL_SANDBOX_RUN]: req.runId,
+        [LABEL_SANDBOX_WORKFLOW]: req.workflow,
+        ...(req.path ? { [LABEL_SANDBOX_WORKSPACE]: workspaceLabel(req.path) } : {}),
+      },
+      // The Binding's base of each Repo that has one (ADR-0051): the LFS ask names it, so an Agent
+      // cannot choose the `.lfsconfig` that picks the LFS server. The pod cannot write this CR.
+      annotations: {
+        ...(req.path ? { [ANNOTATION_WORKSPACE_PATH]: req.path } : {}),
+        [ANNOTATION_HOLD]: HOLD_HELD,
+        ...Object.fromEntries(repos.flatMap((r) => (r.base !== undefined ? [[baseAnnotation(r.key), r.base]] : []))),
+      },
+    },
+    spec: {
+      // The Sandbox Image, unmodified (ADR-0037) — the user's tools, its own USER and HOME, and
+      // jr2's runtime arriving beside it on a volume. This container is both the Harness and the
+      // human's `exec` shell.
+      image: seat.image,
+      // The one thing jr2 takes from the image: its command. A container has exactly one, and it
+      // must be the Harness's — a pod whose main process is the user's entrypoint keeps
+      // "Running" through a Harness death, which makes the operator's Ready probe a lie.
+      command: HARNESS_COMMAND,
+      // Hardened, and the ONLY place jr2 ever names a uid: ADR-0037's fallback for an image that
+      // declared none. Stating the whole context here rather than leaving it to the operator's
+      // default is what makes that possible — the operator hardens only what says nothing.
+      securityContext: seat.securityContext,
+      idleTimeout: input.idleTimeout,
+      // The Fence (ADR-0084): the slot's attachment as the pod's only network, and its one
+      // nameserver. The operator gives the pod exec probes.
+      network: pod.network,
+      // Placement (ADR-0052): the Instance's word on which nodes are Sandbox nodes, raw pod-spec
+      // shapes the operator copies verbatim. Absent keys are absent here too — the CR says
+      // nothing, and the pod lands wherever an ordinary pod lands. The operator's own soft
+      // affinity toward nodes holding this Sandbox's caches sits beside these untouched: a
+      // preference never conflicts with a requirement.
+      ...(placement?.nodeSelector ? { nodeSelector: placement.nodeSelector } : {}),
+      ...(placement?.tolerations?.length ? { tolerations: placement.tolerations } : {}),
+      // Priority (ADR-0060): a pod of ordinary priority cannot preempt a live Workspace, and a
+      // waiting Sandbox evicts nobody (the class's preemptionPolicy is Never).
+      priorityClassName: input.priorityClassName,
+      // The Size (ADR-0060). `resources` is the HARNESS container's (the operator's contract):
+      // the rest of the Size after the User Container, requests = limits, plus
+      // the `/work` disk as an ephemeral-storage request with no limit. `podResources` is the
+      // whole Size, pod-level (KEP-2837) — the ceiling the pod never passes.
+      resources: split.harness,
+      podResources: split.pod,
+      // `/dev/shm` (ADR-0060): the operator mounts a memory-backed emptyDir there, in the Harness
+      // container only, with this `sizeLimit` — a quarter of the Harness share, minimum 64Mi.
+      // Charged inside the Harness container's limit, so it reserves nothing extra; full, it is
+      // ENOSPC or SIGBUS — a tool error, never a memory kill.
+      shmSize: split.shmSizeLimit,
+      // The work group (ADR-0005), the ownership half of cross-uid sharing on `/work`.
+      // Kubernetes grants it as a supplemental group to every container, and puts a setgid
+      // group on the volume root that propagates down; the WRITABILITY half is the default ACL
+      // the Harness's attach stamps on each repo root (ADR-0063), without which fsGroup gives
+      // group-READ, which is the trap. Both are inert when the uids match.
+      fsGroup: req.workGroup ?? DEFAULT_WORK_GROUP,
+      // Before any container starts: prove the image on the mounted `/opt/jr2`.
+      initContainers: initContainersFor(seat, split),
+      // Never empty: the Custodian's URL is unconditional. The seat's own vars (the fallback
+      // `HOME`) come FIRST, so the instance's `harness.env` can still override them the way it
+      // overrides anything the image set.
+      // Marked (`harness-env.ts`, ADR-0076): the Harness's start tells jr2's names from the image's.
+      env: input.env,
+      ...(input.envFrom.length ? { envFrom: input.envFrom } : {}),
+      // What the AGENT gets: the Custodian's URL and a Stand-in for every credential, and no
+      // credential anywhere. The Custodian holds them (ADR-0013, ADR-0059), outside the pod
+      // (ADR-0084).
+      sidecars,
+      // The Repos this Sandbox attaches, by cache key (ADR-0051). The operator does the rest: a
+      // `repo-<key>` volume per entry — the node's cache, hostPath, read-only in the primary
+      // container at `/repos/<key>` — a soft affinity toward nodes already holding them, and
+      // `Ready` only once every one is present on the pod's node and fetched since this CR
+      // asked. Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in
+      // a Sandbox can `gc` the object store its `--shared` clones borrow from.
+      repos: repos.map(({ key, url }) => ({ key, url })),
+      // The push Secret of each `git.credentials` entry this Sandbox's pushes spend (ADR-0051), by
+      // name, as a Repo CR's `secretRef` names one: the operator projects each into the Sandbox
+      // Effector alone, at `/run/jr2/secrets/@git/<name>/`. No value passes through here.
+      ...(gitCredentials.length ? { gitCredentials: gitCredentials.map((name) => ({ name })) } : {}),
+      volumes: [
+        // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
+        // both load-bearing: every jr2-owned seat runs as an unprivileged uid, which cannot mkdir
+        // under `/` — so an image-owned `/work` would make every attach fail — and `/work` is
+        // the one thing all three containers share (ADR-0005), so human and Agent see identical
+        // files. An emptyDir lands group-writable under the pod's fsGroup, so it is writable
+        // whatever uid the Sandbox Image runs as: `/work` unclaimed is the only image contract.
+        { name: "work", emptyDir: {} },
+        // jr2's runtime (ADR-0037): the kit's Harness image, mounted.
+        runtimeVolume(input.harnessImage),
+        // The conversations' directory (ADR-0031): a Harness container that restarts inside a
+        // living pod rebuilds its conversations from here. An emptyDir, so it goes with the pod —
+        // that Workspace is `Lost` (ADR-0021) — and mounted below into the Harness container
+        // ALONE: the User Container must not read an Agent's history.
+        { name: CONVERSATIONS_VOLUME, emptyDir: {} },
+        // The shell socket's folder (ADR-0076): the Harness listens there for `jr2 workspace
+        // shell`, in the Harness container ALONE, where no process that it confines makes a file.
+        { name: SHELL_VOLUME, emptyDir: {} },
+        // The Harness's TMPDIR (ADR-0076): pi's `bash` keeps a long command's whole output
+        // there and opens it by its path again. The Harness container ALONE, and its confined
+        // processes read there and write nothing, so none can put a link in a file's place. No
+        // `sizeLimit`: the kubelet would evict the pod past it. The Harness prunes the folder
+        // after each `bash` call (`output-folder.ts`).
+        { name: OUTPUT_VOLUME, emptyDir: {} },
+        // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
+        ...seat.homeVolume,
+        // The image user's context (ADR-0062): the Sandbox Image itself, a second time, for the
+        // read-only mount below. Only when the converge saw that folder in the image.
+        ...(seat.userContext !== undefined ? [{ name: USER_CONTEXT_VOLUME, image: { reference: seat.image } }] : []),
+        // The Stand-ins and the trust files (ADR-0020, ADR-0059).
+        ...pod.volumes,
+        // The Sandbox Effector's (ADR-0068): its secrets, its key and config, its scratch.
+        ...(input.effectorVolumes ?? []),
+      ],
+      // CR-level volumeMounts land on the HARNESS container only (the operator's contract): the
+      // trust bundles and the Stand-ins. The Repo caches are not listed: the
+      // operator mounts each `repo-<key>` into this container itself.
+      volumeMounts: [
+        { name: "work", mountPath: WORK_ROOT },
+        RUNTIME_VOLUME_MOUNT,
+        { name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR },
+        { name: SHELL_VOLUME, mountPath: SHELL_DIR },
+        { name: OUTPUT_VOLUME, mountPath: OUTPUT_DIR },
+        ...seat.homeMount,
+        // Twice, read-only. At its own path (`JR2_USER_CONTEXT`): a program that reads
+        // `~/.pi/agent` reads the image's files, and no Agent writes them. And under /run/jr2: an
+        // Agent can move `~/.pi` in its HOME and put a folder of its own in its place, and under
+        // /run/jr2 it moves nothing. The Harness reads the user context there alone, and the
+        // system prompt names its files there, where the model reads a skill's file (ADR-0062).
+        ...(seat.userContext !== undefined
+          ? [seat.userContext, USER_CONTEXT_DIR].map((mountPath) => ({
+              name: USER_CONTEXT_VOLUME,
+              mountPath,
+              subPath: seat.userContext!.slice(1),
+              readOnly: true,
+            }))
+          : []),
+        ...pod.harnessMounts,
+      ],
+    },
+  };
+}
+
 export type KubeSandboxOptions = {
   /** The mounted image map (ADR-0037/0038) — every ref this port can name, written by `jr2 up`.
    * Default: the `jr2-images` ConfigMap's mount. No image option here: which image a Sandbox runs
@@ -468,8 +754,7 @@ export type KubeSandboxOptions = {
   /** The Sandbox pod's PriorityClass (ADR-0060): `priorityClasses.sandbox`, or the `jr2-sandbox`
    * class `jr2 up` creates. */
   priorityClassName?: string;
-  /** The instance ships a private-CA bundle (ADR-0020): the HARNESS container trusts it, and the
-   * Custodian verifies a bound host with it (custodian.ts). */
+  /** The instance ships a private-CA bundle (ADR-0020): the HARNESS container trusts it. */
   caBundle?: boolean;
   /** The key Sandbox tokens are signed with — from the instance Secret (ADR-0013/0019). */
   signingKey?: Buffer;
@@ -542,6 +827,33 @@ export type KubeSandboxOptions = {
    * hashes, because the map holds the current Assembly's contexts only. Absent → no current
    * Assembly is known, and such a failure names none. */
   currentAssembly?: () => string | undefined;
+  /** The Instance's Custodian (ADR-0084): each Sandbox goes behind the Fence (above). Without it,
+   * each provision is refused: no Sandbox has an address on the cluster's network. */
+  fence?: FenceWiring;
+};
+
+/** What a provision on the Fence needs (ADR-0084): the Instance's VLAN range, its two ranges, its
+ * Custodian, and the trust texts that each Sandbox's trust files start with (ADR-0020). */
+export type FenceWiring = {
+  /** The Instance's VLAN range (`jr2-fence-range-<k>`). */
+  range: number;
+  ranges: FenceRanges;
+  custodian: CustodianClient;
+  /** The text of the Instance's `upstream.crt`, read per provision. */
+  upstream: () => Promise<string>;
+  /** The text of the user's `caBundle`, read per provision; undefined when there is none. */
+  caBundle: () => Promise<string | undefined>;
+  /** How long a provision waits for the Custodian to make the slot's rules live. Default 60 s. */
+  liveTimeoutMs?: number;
+};
+
+/** The port, and on the Fence where its pods are (ADR-0084). */
+export type KubeSandboxPort = SandboxPort & {
+  /** The node of the Sandbox on a Fence slot, or undefined when no Sandbox of the slot has a node. */
+  fenceNode(slot: number): Promise<string | undefined>;
+  /** The Sandbox Effector's address (`<slot address>:8082`, what its requests are signed for), or
+   * undefined when the Sandbox names no Fence slot. */
+  fenceEffector(sandbox: string): Promise<string | undefined>;
 };
 
 /** The options of {@link KubeSandboxOptions} that come from the Instance's config. */
@@ -550,7 +862,7 @@ export type KubeSandboxSettings = Pick<
   "credentials" | "env" | "envFrom" | "caBundle" | "placement" | "defaultSize" | "priorityClassName"
 >;
 
-export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
+export function kubeSandbox(opts: KubeSandboxOptions = {}): KubeSandboxPort {
   // The config-derived options, read per use (ADR-0069): `cfg().credentials`, never a copy.
   const cfg = (): KubeSandboxSettings => (opts.settings ? opts.settings() : opts);
   const ns = opts.namespace ?? "default";
@@ -559,7 +871,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const repoTimeoutMs = opts.repoTimeoutMs ?? 25 * 60_000;
   const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
-  const harnessFetch = opts.harnessFetch ?? dialFetch();
+  // On the Fence, a slot address goes through the Custodian pod on the pod's node.
+  const harnessFetch = opts.harnessFetch ?? fenceRouted(dialFetch());
+  const fence = opts.fence;
   const attachWindowMs = opts.attachWindowMs ?? ATTACH_WINDOW_MS;
   const log = opts.log ?? ((line: string) => console.warn(line));
 
@@ -570,8 +884,103 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   let watch: SandboxWatch | undefined = opts.watch;
   const sandboxes = () => (watch ??= watchSandboxes(kube(), { namespace: ns }));
 
-  /** The Sandbox's token Secret — mounted into the Custodian container, and nothing else in the pod. */
-  const secretName = (name: string) => `${name}-token`;
+  // --- the Fence (ADR-0084) ----------------------------------------------------------------------
+
+  /** The slot allocator, made again from the API on first use: each Sandbox CR keeps the slot it
+   * names. The Orchestrator may not list Secrets, so a slot whose CR went before this process
+   * started waits for the Custodian's word alone (fence-slots.ts, ADR-0084). */
+  let allocator: Promise<SlotAllocator> | undefined;
+  /** The Sandboxes whose CR the watch has shown, so that the watch's word that one is gone frees
+   * its slot. A take before the CR exists hears "absent" first, which is not a deletion. */
+  const watched = new Map<string, { seen: boolean; stop: () => void }>();
+  const watchSlot = (name: string, slots: SlotAllocator): void => {
+    if (watched.has(name)) return;
+    const entry = { seen: false, stop: () => {} };
+    watched.set(name, entry);
+    entry.stop = sandboxes().subscribe(name, (sandbox) => {
+      if (sandbox !== undefined) {
+        entry.seen = true;
+        return;
+      }
+      if (!entry.seen) return;
+      entry.stop();
+      watched.delete(name);
+      slots.release(name);
+    });
+  };
+  const slots = (): Promise<SlotAllocator> => {
+    if (fence === undefined) throw new Error("kubeSandbox: no Fence");
+    allocator ??= (async () => {
+      const list = await kube().list<SandboxObject>(SANDBOXES, ns);
+      const held = list.items.flatMap((sb) => {
+        const name = sb.metadata?.name;
+        const slot = slotOfAttachment(sb.spec?.network?.attachment);
+        return name !== undefined && slot !== undefined ? [{ name, slot }] : [];
+      });
+      const made = slotAllocator({ sandboxes: held, secrets: [], reports: (slot) => fence.custodian.reports(slot) });
+      for (const { name } of held) watchSlot(name, made);
+      return made;
+    })();
+    // A list that failed is not kept: the next provision asks again.
+    allocator.catch(() => (allocator = undefined));
+    return allocator;
+  };
+  /** The slot a Sandbox CR names, if it is on the Fence. */
+  const slotOfCr = (sandbox: SandboxObject | undefined): number | undefined =>
+    slotOfAttachment(sandbox?.spec?.network?.attachment);
+  /** The Harness's address of a Sandbox: its slot's address. */
+  const endpointOf = (sandbox: SandboxObject | undefined): string | undefined => {
+    const slot = slotOfCr(sandbox);
+    return fence === undefined || slot === undefined
+      ? undefined
+      : `http://${fenceSlotAddress(fence.ranges, fence.range, slot)}:${HARNESS_PORT}`;
+  };
+
+  /**
+   * The Sandbox's Fence objects (sandbox-fence.ts): its slot Secret, its Stand-ins and its trust
+   * ConfigMap, owned by the CR. Written once for the Sandbox's life, and the CR is then marked: each
+   * write makes a new CA, and the pod trusts the CA of the write it started with, whose key is gone.
+   * The trust ConfigMap is last, because the pod cannot start without it, and it is a create: a
+   * trust ConfigMap that is there with no mark on the CR is of a write that did not finish, whose CA
+   * the pod may trust already, so the provision fails and names it.
+   */
+  const writeFenceObjects = async (
+    name: string,
+    applied: SandboxObject,
+    slot: number,
+    manifest: HeldManifest,
+    heldPod: string,
+  ): Promise<void> => {
+    if (fence === undefined || !opts.signingKey) throw new Error("kubeSandbox: the Fence needs a signingKey");
+    if (applied.metadata?.annotations?.[ANNOTATION_FENCE_OBJECTS] !== undefined) return;
+    const uid = applied.metadata?.uid;
+    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its Fence objects`);
+    const caBundle = await fence.caBundle();
+    const objects = sandboxFenceObjects({
+      namespace: ns,
+      sandbox: name,
+      uid,
+      slot,
+      manifest,
+      heldPod,
+      ranges: fence.ranges,
+      signingKey: opts.signingKey,
+      upstream: await fence.upstream(),
+      ...(caBundle !== undefined ? { caBundle } : {}),
+    });
+    await kube().apply(SECRETS, ns, objects.slotSecret);
+    await kube().apply(SECRETS, ns, objects.standIns);
+    try {
+      await kube().create(CONFIGMAPS, ns, objects.trust);
+    } catch (err) {
+      if (!isAlreadyExists(err)) throw err;
+      throw new Error(
+        `Sandbox "${name}" cannot be provisioned: its trust ConfigMap is of an earlier provision that did not ` +
+          "finish, and the pod may trust that CA, whose key is gone. The Sandbox must be made again (ADR-0059)",
+      );
+    }
+    await kube().patch(SANDBOXES, ns, name, { metadata: { annotations: { [ANNOTATION_FENCE_OBJECTS]: "written" } } });
+  };
 
   /**
    * The User Container (ADR-0005): the opt-in third seat, composed only when the wrapper's static
@@ -596,9 +1005,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    * Agent, with no credential of their own. Nothing else follows it in: `ext::` names the program
    * by absolute path, so this seat still gets no env, no command, and no probe. The repo volumes
    * are the operator's — it defines `repo-<key>` for every key the CR names — so this seat mounts
-   * them by name. The Custodian is deliberately not given any of the three: it reads no worktree, and it is the
-   * container holding the pod's credentials, so it gets the narrowest mount set that works.
-   * It also carries no `securityContext`, which the operator reads as the exemption — root is
+   * them by name. It also carries no `securityContext`, which the operator reads as the exemption — root is
    * ALLOWED here, because hardening a seat whose identity is "what jr2 does not own" is an opinion,
    * and the standard managed-access shape (a root sshd that setuids sessions down) must run
    * unmodified.
@@ -622,23 +1029,15 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     ...(split.user ? { resources: split.user } : {}),
   });
 
-  /** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim). The
-   * Custodian is ALWAYS here: a Sandbox without one is a pod that comes up Ready and then parks its
-   * Machine forever on a Menu it cannot read (ADR-0013). The User Container joins it only when the
-   * spec named one. */
+  /** The pod's sidecar list (`sandboxSidecars`), with the User Container's image resolved. */
   const sidecarsFor = async (
-    custodian: CustodianComposition,
     refs: ImageRefs,
     keys: string[],
     split: SizeSplit,
     held: HeldImageScope | undefined,
     user?: string,
     effector?: Record<string, unknown>,
-  ) => [
-    custodian.custodianContainer,
-    ...(user !== undefined ? [await userSidecar(refs, user, keys, split, held)] : []),
-    ...(effector !== undefined ? [effector] : []),
-  ];
+  ) => sandboxSidecars(user !== undefined ? await userSidecar(refs, user, keys, split, held) : undefined, effector);
 
   /**
    * The Sandbox Effector (ADR-0068), when `jr2 up` placed an Effect there: its
@@ -676,24 +1075,23 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         secretVolume: "effector-secrets",
         keyVolume: "effector-own",
         scratchVolume: "effector-scratch",
-        ...(cfg().caBundle ? { caVolume: "effector-ca" } : {}),
+        caVolume: "effector-ca",
       }),
-      volumes: sandboxEffectorVolumes({ sandbox: req.name, manifest, caBundle: cfg().caBundle === true }),
+      volumes: sandboxEffectorVolumes({ sandbox: req.name, manifest }),
     };
   };
 
   // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
-  // config) first, then the mechanism-owned vars (the Custodian's address and every Stand-in, the
-  // proxy and the trust bundles — custodian.ts), which win on collision. Note the asymmetry stands
-  // (ADR-0013): user env/envFrom land on the HARNESS container only — never on the Custodian, whose
-  // mounts are composed here and carry the pod's credentials.
+  // config) first, then the mechanism-owned vars (the Custodian's URL, the control Stand-in's file
+  // and the trust bundles — sandbox-fence.ts), which win on collision. User env/envFrom land on the
+  // HARNESS container only (ADR-0013).
   //
   // The gate rides LAST (ADR-0058): the digest of the bearer the Orchestrator derives for THIS
   // Sandbox. A digest because the Agent reads this env; last because a `harness.env` entry of the
   // same name must not be able to choose the Harness's credential.
   const harnessEnv = (
     name: string,
-    custodian: CustodianComposition,
+    pod: PodComposition,
     hints: HarnessEnvVar[],
     projectContext: "worktree" | "workspace",
     userContext: string | undefined,
@@ -701,7 +1099,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     if (!opts.signingKey) throw new Error("kubeSandbox: a Harness needs a signingKey to check its bearer");
     return [
       ...(cfg().env ?? []),
-      ...custodian.harnessEnv,
+      ...pod.harnessEnv,
       // The CPU hints (ADR-0060) are mechanism: they say what the Size gives, so they win over a
       // `harness.env` entry of the same name.
       ...hints,
@@ -716,56 +1114,6 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       { name: CONVERSATIONS_DIR_ENV, value: CONVERSATIONS_DIR },
       { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(opts.signingKey, name) },
     ];
-  };
-
-  /**
-   * The one init step (ADR-0037): `preflight`, the USER'S image with the runtime volume mounted,
-   * running the probe. It is a plain container fragment the operator schedules without
-   * understanding, exactly like a sidecar — the operator stays agent-agnostic (ADR-0001), so "how a
-   * Sandbox proves its image" is composed here, not reconciled there. Nothing populates the volume
-   * first: it is the kit's image, mounted (see `runtimeVolume`).
-   *
-   * It carries jr2's hardened context explicitly, and runs the probe in the SAME seat the Harness
-   * will get — the image's own user, or ADR-0037's fallback — because a probe that proved a
-   * different uid's `$HOME` proved nothing.
-   */
-  const initContainersFor = (seat: Seat, split: SizeSplit) => [
-    {
-      name: "preflight",
-      image: seat.image,
-      command: ["/bin/sh", "-c", PREFLIGHT_SCRIPT],
-      ...(seat.env.length ? { env: seat.env } : {}),
-      volumeMounts: [RUNTIME_VOLUME_MOUNT, ...seat.homeMount],
-      // Small and fixed, inside the pod's budget (ADR-0060): it runs before the others start.
-      resources: split.preflight,
-      securityContext: seat.securityContext,
-    },
-  ];
-
-  /**
-   * jr2's runtime (ADR-0037): the kit's Harness image as an `image` volume. This is what makes the
-   * runtime's version ride the VOLUME rather than the image: a kit edit moves the harness image's
-   * own tag and re-images future pods without touching a single Sandbox Image tag, which is the
-   * only way a registry-ref image could ever follow a kit update. A live pod keeps the image it
-   * started with — the same create-if-absent stance ADR-0038 takes for images. No `pullPolicy`:
-   * the kubelet's default for a volume is its default for a container, so the ref is pulled
-   * exactly as the cluster already pulls the Harness image, and the volume adds nothing to deliver.
-   */
-  const runtimeVolume = (refs: ImageRefs) => ({ name: RUNTIME_VOLUME, image: { reference: refs.harness } });
-
-  /**
-   * The primary container's seat: which image runs, as whom, and with what home. One value, built
-   * once per provision and shared by the Harness container and the preflight, so the probe cannot
-   * drift from the thing it proves.
-   */
-  type Seat = {
-    image: string;
-    env: HarnessEnvVar[];
-    homeVolume: Array<{ name: string; emptyDir: Record<string, never> }>;
-    homeMount: Array<{ name: string; mountPath: string }>;
-    securityContext: typeof HARDENED & { runAsUser?: number };
-    /** The image user's context folder that the pod mounts read-only from the image (ADR-0062). */
-    userContext?: string;
   };
 
   const seatFor = async (
@@ -830,7 +1178,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     },
     refs: ImageRefs,
     repos: FencedRepo[],
-    custodian: CustodianComposition,
+    pod: PodComposition,
     split: SizeSplit,
     effectorManifest?: SandboxEffectorManifest,
     gitCredentials: readonly string[] = [],
@@ -846,218 +1194,32 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     const seat = await seatFor(refs, req.image, held);
     const keys = repos.map((r) => r.key);
     const effector = effectorManifest ? await effectorFor(req, refs, keys, seat, effectorManifest, held) : undefined;
-    const sidecars = await sidecarsFor(custodian, refs, keys, split, held, req.user, effector?.container);
-    return {
-      apiVersion: "core.jr2.dev/v1alpha1",
-      kind: "Sandbox",
-      metadata: {
-        name: req.name,
-        namespace: ns,
-        // The run↔workspace link the `jr2 workspace` verbs read (ADR-0009/0012), without the host:
-        // the run, the Workflow and a selector form of the path as labels, the exact path as an
-        // annotation. The hold mark is `held` from this first write (ADR-0021); the Lease writes it
-        // again with each renewal, and `released` when it stops for good.
-        labels: {
-          [LABEL_SANDBOX_RUN]: req.runId,
-          [LABEL_SANDBOX_WORKFLOW]: req.workflow,
-          ...(req.path ? { [LABEL_SANDBOX_WORKSPACE]: workspaceLabel(req.path) } : {}),
-        },
-        // The Binding's base of each Repo that has one (ADR-0051): the LFS ask names it, so an Agent
-        // cannot choose the `.lfsconfig` that picks the LFS server. The pod cannot write this CR.
-        annotations: {
-          ...(req.path ? { [ANNOTATION_WORKSPACE_PATH]: req.path } : {}),
-          [ANNOTATION_HOLD]: HOLD_HELD,
-          ...Object.fromEntries(repos.flatMap((r) => (r.base !== undefined ? [[baseAnnotation(r.key), r.base]] : []))),
-        },
-      },
-      spec: {
-        // The Sandbox Image, unmodified (ADR-0037) — the user's tools, its own USER and HOME, and
-        // jr2's runtime arriving beside it on a volume. This container is both the Harness and the
-        // human's `exec` shell.
-        image: seat.image,
-        // The one thing jr2 takes from the image: its command. A container has exactly one, and it
-        // must be the Harness's — a pod whose main process is the user's entrypoint keeps
-        // "Running" through a Harness death, which makes the operator's Ready probe a lie.
-        command: HARNESS_COMMAND,
-        // Hardened, and the ONLY place jr2 ever names a uid: ADR-0037's fallback for an image that
-        // declared none. Stating the whole context here rather than leaving it to the operator's
-        // default is what makes that possible — the operator hardens only what says nothing.
-        securityContext: seat.securityContext,
-        idleTimeout: opts.idleTimeout ?? "30m",
-        // Placement (ADR-0052): the Instance's word on which nodes are Sandbox nodes, raw pod-spec
-        // shapes the operator copies verbatim. Absent keys are absent here too — the CR says
-        // nothing, and the pod lands wherever an ordinary pod lands. The operator's own soft
-        // affinity toward nodes holding this Sandbox's caches sits beside these untouched: a
-        // preference never conflicts with a requirement.
-        ...(placement?.nodeSelector ? { nodeSelector: placement.nodeSelector } : {}),
-        ...(placement?.tolerations?.length ? { tolerations: placement.tolerations } : {}),
-        // Priority (ADR-0060): a pod of ordinary priority cannot preempt a live Workspace, and a
-        // waiting Sandbox evicts nobody (the class's preemptionPolicy is Never).
-        priorityClassName: cfg().priorityClassName ?? PRIORITY_CLASS_SANDBOX,
-        // The Size (ADR-0060). `resources` is the HARNESS container's (the operator's contract):
-        // the rest of the Size after the Custodian and the User Container, requests = limits, plus
-        // the `/work` disk as an ephemeral-storage request with no limit. `podResources` is the
-        // whole Size, pod-level (KEP-2837) — the ceiling the pod never passes.
-        resources: split.harness,
-        podResources: split.pod,
-        // `/dev/shm` (ADR-0060): the operator mounts a memory-backed emptyDir there, in the Harness
-        // container only, with this `sizeLimit` — a quarter of the Harness share, minimum 64Mi.
-        // Charged inside the Harness container's limit, so it reserves nothing extra; full, it is
-        // ENOSPC or SIGBUS — a tool error, never a memory kill.
-        shmSize: split.shmSizeLimit,
-        // The work group (ADR-0005), the ownership half of cross-uid sharing on `/work`.
-        // Kubernetes grants it as a supplemental group to every container, and puts a setgid
-        // group on the volume root that propagates down; the WRITABILITY half is the default ACL
-        // the Harness's attach stamps on each repo root (ADR-0063), without which fsGroup gives
-        // group-READ, which is the trap. Both are inert when the uids match.
-        fsGroup: req.workGroup ?? DEFAULT_WORK_GROUP,
-        // Before any container starts: prove the image on the mounted `/opt/jr2`.
-        initContainers: initContainersFor(seat, split),
-        // Never empty: the Custodian's address is unconditional. The seat's own vars (the fallback
-        // `HOME`) come FIRST, so the instance's `harness.env` can still override them the way it
-        // overrides anything the image set.
-        // Marked (`harness-env.ts`, ADR-0076): the Harness's start tells jr2's names from the image's.
-        ...(() => {
-          const marked = markHarnessEnv(
-            [
-              ...seat.env,
-              ...harnessEnv(req.name, custodian, cpuHintEnv(), req.projectContext ?? "worktree", seat.userContext),
-            ],
-            cfg().envFrom ?? [],
-          );
-          return { env: marked.env, ...(marked.envFrom.length ? { envFrom: marked.envFrom } : {}) };
-        })(),
-        // What the AGENT gets: an address on its own loopback and a Stand-in for every credential,
-        // and no credential anywhere. The Custodian beside it holds them (ADR-0013, ADR-0059).
-        sidecars,
-        // The Repos this Sandbox attaches, by cache key (ADR-0051). The operator does the rest: a
-        // `repo-<key>` volume per entry — the node's cache, hostPath, read-only in the primary
-        // container at `/repos/<key>` — a soft affinity toward nodes already holding them, and
-        // `Ready` only once every one is present on the pod's node and fetched since this CR
-        // asked. Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in
-        // a Sandbox can `gc` the object store its `--shared` clones borrow from.
-        repos: repos.map(({ key, url }) => ({ key, url })),
-        // The push Secret of each `git.credentials` entry this Sandbox's pushes spend (ADR-0051), by
-        // name, as a Repo CR's `secretRef` names one: the operator projects each into the Sandbox
-        // Effector alone, at `/run/jr2/secrets/@git/<name>/`. No value passes through here.
-        ...(gitCredentials.length ? { gitCredentials: gitCredentials.map((name) => ({ name })) } : {}),
-        volumes: [
-          // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
-          // both load-bearing: every jr2-owned seat runs as an unprivileged uid, which cannot mkdir
-          // under `/` — so an image-owned `/work` would make every attach fail — and `/work` is
-          // the one thing all three containers share (ADR-0005), so human and Agent see identical
-          // files. An emptyDir lands group-writable under the pod's fsGroup, so it is writable
-          // whatever uid the Sandbox Image runs as: `/work` unclaimed is the only image contract.
-          { name: "work", emptyDir: {} },
-          // jr2's runtime (ADR-0037): the kit's Harness image, mounted.
-          runtimeVolume(refs),
-          // The conversations' directory (ADR-0031): a Harness container that restarts inside a
-          // living pod rebuilds its conversations from here. An emptyDir, so it goes with the pod —
-          // that Workspace is `Lost` (ADR-0021) — and mounted below into the Harness container
-          // ALONE: the User Container must not read an Agent's history.
-          { name: CONVERSATIONS_VOLUME, emptyDir: {} },
-          // The shell socket's folder (ADR-0076): the Harness listens there for `jr2 workspace
-          // shell`, in the Harness container ALONE, where no process that it confines makes a file.
-          { name: SHELL_VOLUME, emptyDir: {} },
-          // The Harness's TMPDIR (ADR-0076): pi's `bash` keeps a long command's whole output
-          // there and opens it by its path again. The Harness container ALONE, and its confined
-          // processes read there and write nothing, so none can put a link in a file's place. No
-          // `sizeLimit`: the kubelet would evict the pod past it. The Harness prunes the folder
-          // after each `bash` call (`output-folder.ts`).
-          { name: OUTPUT_VOLUME, emptyDir: {} },
-          // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
-          ...seat.homeVolume,
-          // The image user's context (ADR-0062): the Sandbox Image itself, a second time, for the
-          // read-only mount below. Only when the converge saw that folder in the image.
-          ...(seat.userContext !== undefined ? [{ name: USER_CONTEXT_VOLUME, image: { reference: seat.image } }] : []),
-          // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
-          ...custodian.volumes,
-          // The Sandbox Effector's (ADR-0068): its secrets, its key and config, its scratch.
-          ...(effector?.volumes ?? []),
-        ],
-        // CR-level volumeMounts land on the HARNESS container only (the operator's contract): the
-        // trust bundles, and none of the Custodian's volumes. The Repo caches are not listed: the
-        // operator mounts each `repo-<key>` into this container itself.
-        volumeMounts: [
-          { name: "work", mountPath: WORK_ROOT },
-          RUNTIME_VOLUME_MOUNT,
-          { name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR },
-          { name: SHELL_VOLUME, mountPath: SHELL_DIR },
-          { name: OUTPUT_VOLUME, mountPath: OUTPUT_DIR },
-          ...seat.homeMount,
-          // Twice, read-only. At its own path (`JR2_USER_CONTEXT`): a program that reads
-          // `~/.pi/agent` reads the image's files, and no Agent writes them. And under /run/jr2: an
-          // Agent can move `~/.pi` in its HOME and put a folder of its own in its place, and under
-          // /run/jr2 it moves nothing. The Harness reads the user context there alone, and the
-          // system prompt names its files there, where the model reads a skill's file (ADR-0062).
-          ...(seat.userContext !== undefined
-            ? [seat.userContext, USER_CONTEXT_DIR].map((mountPath) => ({
-                name: USER_CONTEXT_VOLUME,
-                mountPath,
-                subPath: seat.userContext!.slice(1),
-                readOnly: true,
-              }))
-            : []),
-          ...custodian.harnessMounts,
-        ],
-      },
-    };
+    const sidecars = await sidecarsFor(refs, keys, split, held, req.user, effector?.container);
+    const marked = markHarnessEnv(
+      [...seat.env, ...harnessEnv(req.name, pod, cpuHintEnv(), req.projectContext ?? "worktree", seat.userContext)],
+      cfg().envFrom ?? [],
+    );
+    return sandboxCr({
+      namespace: ns,
+      req,
+      seat,
+      repos,
+      pod,
+      split,
+      sidecars,
+      ...(effector ? { effectorVolumes: effector.volumes } : {}),
+      env: marked.env,
+      envFrom: marked.envFrom,
+      harnessImage: refs.harness,
+      gitCredentials,
+      ...(placement ? { placement } : {}),
+      priorityClassName: cfg().priorityClassName ?? PRIORITY_CLASS_SANDBOX,
+      idleTimeout: opts.idleTimeout ?? "30m",
+    });
   };
 
   const conditionOf = (sandbox: SandboxObject | undefined, type: string): Condition | undefined =>
     sandbox?.status?.conditions?.find((c) => c.type === type);
-
-  /**
-   * Mint this Sandbox's token into a Secret, AFTER the CR exists and owned by it from birth
-   * (ADR-0001): the owner is the uid the CR's apply answered with, so Kubernetes reaps the Secret
-   * whenever the CR goes — the operator's idle-timeout GC, a `kubectl delete sandbox` by hand — and
-   * no path (an owner patch that fails, an Orchestrator that dies between two writes) leaves a
-   * token behind. The operator creates the pod the moment it sees the CR, so the pod may reach its
-   * mount first; kubelet retries the mount, and the Secret lands one API round trip after the CR,
-   * well before the scheduler and kubelet get there. Idempotent by construction: the token is the
-   * Sandbox's name, signed (tokens.ts), so a re-provision after an Orchestrator restart re-applies
-   * the SAME value and owner, and the Custodian that has been holding it all along stays valid.
-   * `data`, not `stringData`: a server-side apply owns the fields it names, and `stringData` is
-   * write-only — it never reads back as the field applied.
-   */
-  const applyTokenSecret = async (name: string, owner: KubeObject, manifest: HeldManifest): Promise<void> => {
-    if (!opts.signingKey) throw new Error("kubeSandbox: a Custodian needs a signingKey to mint its Sandbox token");
-    const uid = owner.metadata?.uid;
-    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its token Secret`);
-    await kube().apply(SECRETS, ns, {
-      apiVersion: "v1",
-      kind: "Secret",
-      metadata: {
-        name: secretName(name),
-        namespace: ns,
-        labels: { "jr2.dev/sandbox": name },
-        ownerReferences: [
-          {
-            apiVersion: "core.jr2.dev/v1alpha1",
-            kind: "Sandbox",
-            name,
-            uid,
-            controller: true,
-            blockOwnerDeletion: false,
-          },
-        ],
-      },
-      type: "Opaque",
-      // The pod's credentials (ADR-0076, C1, C1b): its fetch token and its control token, which the
-      // Custodian alone mounts; its secret control Stand-in; and one secret Stand-in per held secret
-      // the pod's manifest names, which the Custodian (for its swap) and the Harness container (as
-      // files under `/run/jr2/`) mount. Every one a signed name, so a re-provision re-applies the
-      // same values. Never a ConfigMap, the CR, an env, an event or a log line.
-      data: base64Values({
-        [CREDENTIAL_KEYS.fetchToken]: sandboxToken(opts.signingKey, name),
-        [CREDENTIAL_KEYS.controlToken]: controlToken(opts.signingKey, name),
-        [CREDENTIAL_KEYS.controlStandIn]: controlStandIn(opts.signingKey, name),
-        ...Object.fromEntries(
-          manifest.secrets.map((s) => [heldStandInKey(s.name), heldStandIn(opts.signingKey!, name, s.name)]),
-        ),
-      }),
-    });
-  };
 
   /**
    * This Sandbox's Effector key (ADR-0068): `effectorKey(signing key, <Sandbox name>)`,
@@ -1088,80 +1250,6 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       },
       type: "Opaque",
       data: { key: Buffer.from(effectorKey(opts.signingKey, name)).toString("base64") },
-    });
-  };
-
-  /**
-   * This Sandbox's Effector Service (ADR-0068): headless, so its name resolves to the pod's own
-   * address — the one each request is signed for — and publishing an address that is not ready, so
-   * a restore asks the Effector for an Effect while the Harness beside it restarts. Owned by the
-   * CR, so it goes with the pod. Ingress is `jr2-sandbox-ingress`'s: the Orchestrator's alone.
-   */
-  const applyEffectorService = async (name: string, owner: KubeObject): Promise<void> => {
-    const uid = owner.metadata?.uid;
-    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its Effector Service`);
-    await kube().apply(SERVICES, ns, {
-      apiVersion: "v1",
-      kind: "Service",
-      metadata: {
-        name: sandboxEffectorService(name),
-        namespace: ns,
-        labels: { "jr2.dev/sandbox": name },
-        ownerReferences: [
-          {
-            apiVersion: "core.jr2.dev/v1alpha1",
-            kind: "Sandbox",
-            name,
-            uid,
-            controller: true,
-            blockOwnerDeletion: false,
-          },
-        ],
-      },
-      spec: {
-        clusterIP: "None",
-        publishNotReadyAddresses: true,
-        // The operator's label on every Sandbox pod (operator helpers.go `sandboxLabels`).
-        selector: { "sandbox.jr2.dev/name": name },
-        ports: [{ name: "effector", port: SANDBOX_EFFECTOR_PORT, targetPort: SANDBOX_EFFECTOR_PORT }],
-      },
-    });
-  };
-
-  /**
-   * This Sandbox's Custodian files — Envoy's bootstrap and the `HELD` table — rendered HERE, from
-   * the pod's manifest, into a ConfigMap owned by the CR like its token (ADR-0059). Who makes the
-   * pod renders its files: `jr2 up` declares what each pod holds and nothing per Workspace lands in
-   * `jr2-held`, so an Instance with many Workspaces never grows one object toward its 1 MiB limit.
-   * Names, hosts, headers — never a value — so a ConfigMap is the right kind. Same owner, same
-   * idempotence and same race as the token: the kubelet retries the mount until this lands.
-   */
-  const applyCustodianConfig = async (name: string, owner: KubeObject, manifest: HeldManifest): Promise<void> => {
-    const uid = owner.metadata?.uid;
-    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its Custodian ConfigMap`);
-    const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${ns}.svc`, port: ORCHESTRATOR_PORT };
-    await kube().apply(CONFIGMAPS, ns, {
-      apiVersion: "v1",
-      kind: "ConfigMap",
-      metadata: {
-        name: sandboxCustodianConfigMap(name),
-        namespace: ns,
-        labels: { "jr2.dev/sandbox": name },
-        ownerReferences: [
-          {
-            apiVersion: "core.jr2.dev/v1alpha1",
-            kind: "Sandbox",
-            name,
-            uid,
-            controller: true,
-            blockOwnerDeletion: false,
-          },
-        ],
-      },
-      data: {
-        [CUSTODIAN_BOOTSTRAP_KEY]: JSON.stringify(custodianBootstrap(manifest, orchestrator)),
-        [CUSTODIAN_SCRIPT_KEY]: custodianScript(manifest, { fetch: true }),
-      },
     });
   };
 
@@ -1207,10 +1295,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     name: string,
     repos: readonly ProvisionedRepo[],
     pushes: ReadonlyArray<{ slot: string; sign: boolean; squash?: true }>,
-  ): Promise<string[]> => {
-    if (pushes.length === 0) return [];
+  ): Promise<{ names: string[]; tokens: PushToken[] }> => {
+    if (pushes.length === 0) return { names: [], tokens: [] };
     const manifest = await readGitPushManifest(join(heldDir, GIT_PUSH_MANIFEST_KEY));
     const names: string[] = [];
+    const tokens: PushToken[] = [];
     for (const { slot, sign, squash } of pushes) {
       const repo = repos.find((r) => r.slot === slot);
       if (repo === undefined) {
@@ -1227,8 +1316,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       );
       if ("refusal" in out) throw new Error(out.refusal);
       if (!names.includes(out.entry.secret)) names.push(out.entry.secret);
+      // A push over https spends the entry's token, which the Custodian holds (ADR-0068).
+      const https = /^https:\/\//i.test(repo.url) ? httpHostOf(repo.url) : undefined;
+      if (https !== undefined) tokens.push({ secret: out.entry.secret, ...https });
     }
-    return names;
+    return { names, tokens };
   };
 
   /**
@@ -1263,6 +1355,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       authorization: `Bearer ${harnessToken(opts.signingKey, name)}`,
     };
     const startedAt = Date.now();
+    // The routability line's duration is on the monotonic clock: a step of the wall clock must not
+    // make it negative (ADR-0042).
+    const startedMono = performance.now();
     // The window for a Harness that does not answer, counted again after each answer.
     let until = startedAt + attachWindowMs;
     let reached = false;
@@ -1302,7 +1397,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         backoff = Math.min(backoff * 2, 5_000);
         continue;
       }
-      if (!reached && attempts > 1) log(routabilityLine("attach", url, attempts, Date.now() - startedAt, lastCode));
+      if (!reached && attempts > 1)
+        log(routabilityLine("attach", url, attempts, Math.round(performance.now() - startedMono), lastCode));
       reached = true;
       until = Date.now() + attachWindowMs;
       backoff = 250;
@@ -1399,7 +1495,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
 
   return {
     async place(req, { onWait, signal }) {
-      // The fence first: a refused url costs nothing — no map read, no Secret, no CR.
+      // The credentials fence first: a refused url costs nothing — no map read, no Secret, no CR.
       const repos = fencedRepos(req.name, req.repos);
       // The Size next (ADR-0060), for the same price: the Machine's, then the Instance default, then
       // the kit's, split inside the pod — or refused before anything exists. `jr2 up` makes the
@@ -1428,25 +1524,47 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // process reads that pod's manifest, never its own config, whose `.env` values are absent
       // in-cluster. A Workspace `jr2 up` never walked has none, and is refused by name.
       const pod = workspaceHeldPod({ workflow: req.workflow, route: req.route });
-      const manifest = await readHeldManifest(join(heldDir, heldManifestKey(pod)));
-      const custodian = custodianComposition(manifest, {
-        image: refs.custodian,
-        pod,
-        config: sandboxCustodianConfigMap(req.name),
-        credentials: { secret: secretName(req.name) },
-        sandbox: req.name,
-        ...(req.secrets?.length ? { granted: req.secrets } : {}),
-        caBundle: cfg().caBundle === true,
-        resources: split.custodian,
-      });
+      const placed = await readHeldManifest(join(heldDir, heldManifestKey(pod)));
       // The Sandbox Effector (ADR-0068): present when `jr2 up` placed an Effect of this Workspace
       // there, and declared it in the pod's manifest beside the Held one; absent otherwise.
       const effectorManifest = await readSandboxEffectorManifest(join(heldDir, effectorManifestKey(pod)));
       // Its pushes' credentials (ADR-0051): each pushed slot's url, as this run binds it, is
       // matched against the fence, and the entry's push Secret is named on the CR — or the push is
       // refused here, before anything is written, as a per-run url outside the fence is.
-      const gitCredentials = await gitCredentialsFor(req.name, req.repos, effectorManifest?.pushes ?? []);
-      const cr = await crFor(req, refs, repos, custodian, split, effectorManifest, gitCredentials);
+      const { names: gitCredentials, tokens } = await gitCredentialsFor(
+        req.name,
+        req.repos,
+        effectorManifest?.pushes ?? [],
+      );
+      // No Fence: refused here, as the refusals above, before anything is written (ADR-0084).
+      // `jr2 up` claims no range when the current Assembly composes no Harness pod, and deletes the
+      // Custodian when none is left; a held run's next Sandbox then has no slot to go on.
+      if (fence === undefined) {
+        throw new Error(
+          `Sandbox "${req.name}" cannot be provisioned: this Orchestrator has no Fence (ADR-0084), so the ` +
+            "Sandbox would have an address on the cluster's network. `jr2 up` installs the Custodian and " +
+            "claims a VLAN range only while the current Assembly composes a Harness pod: run `jr2 up` " +
+            "again with a config whose workflows compose a Sandbox",
+        );
+      }
+      // The Custodian holds each push's token toward its url's host (ADR-0068).
+      let manifest: HeldManifest;
+      try {
+        manifest = withPushTokens(placed, tokens, fence.ranges);
+      } catch (err) {
+        throw new Error(`Sandbox "${req.name}" cannot be provisioned: ${(err as Error).message}`);
+      }
+      // A slot last (ADR-0084): each refusal above costs no slot. The Sandbox keeps it for its life;
+      // its CR names it, so a provision again takes the same one.
+      const slot = await (await slots()).take(req.name);
+      const composition: PodComposition = fenceComposition(manifest, {
+        sandbox: req.name,
+        slot,
+        ranges: fence.ranges,
+        ...(req.secrets?.length ? { granted: req.secrets } : {}),
+        caBundle: cfg().caBundle === true,
+      });
+      const cr = await crFor(req, refs, repos, composition, split, effectorManifest, gitCredentials);
 
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
       // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
@@ -1465,13 +1583,17 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // be reached fails the apply below at once, rather than hanging on a list.
       sandboxes();
       const applied = await kube().apply(SANDBOXES, ns, cr).catch(noOperator(req.name, "Sandbox"));
-      // After the CR: its uid owns both, so they go when it goes.
-      await applyTokenSecret(req.name, applied, manifest);
-      await applyCustodianConfig(req.name, applied, manifest);
-      if (effectorManifest) {
-        await applyEffectorKey(req.name, applied);
-        await applyEffectorService(req.name, applied);
-      }
+      watchSlot(req.name, await slots());
+      // After the CR: its uid owns them, so they go when it goes. No Service: the Orchestrator
+      // reaches the pod's Harness and Effector at its slot's address, through the Custodian (ADR-0084).
+      await writeFenceObjects(req.name, applied as SandboxObject, slot, manifest, pod);
+      if (effectorManifest) await applyEffectorKey(req.name, applied);
+      // A provision waits until the rules are live on each node (ADR-0084): a Harness pod that
+      // starts before its rules are live is refused by the Custodian.
+      await fence.custodian.makeLive(slot, {
+        ...(signal ? { signal } : {}),
+        timeoutMs: fence.liveTimeoutMs ?? LIVE_WAIT_MS,
+      });
 
       // The wait for a node, with no deadline (ADR-0064): jr2 cannot tell "full now" from "never
       // fits", so a bound is the Machine's `after`. Its reason — the scheduler's, or a quota's
@@ -1540,15 +1662,17 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           if (status?.phase !== "Ready" && effector !== undefined) throw new Error(effectorStartError(name, effector));
           if (ready?.reason !== undefined && REPO_HELD.has(ready.reason)) held = true;
           if (status?.phase !== "Ready") return undefined;
-          // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
-          if (!status.endpoint) throw new Error(`Sandbox "${name}" is Ready but reports no endpoint`);
+          // Only `phase: Ready` means serving (ADR-0001). The address is the slot's, which the CR
+          // names (ADR-0084).
+          const endpoint = endpointOf(sandbox);
+          if (!endpoint) throw new Error(`Sandbox "${name}" is Ready but names no Fence slot`);
           // Freshness degrades, absence does not (ADR-0051): Ready with `ReposFresh=False` is a
           // Sandbox whose caches exist but could not be fetched since it asked. Remembered for the
           // attach, which is where a slot can be named; forgotten when the caches are fresh.
           const fresh = conditionOf(sandbox, "ReposFresh");
           if (fresh?.status === "False" && fresh.message) staleByName.set(name, fresh.message);
           else staleByName.delete(name);
-          return { endpoint: status.endpoint };
+          return { endpoint };
         },
         () => ({
           deadline: at + (held ? repoTimeoutMs : readyTimeoutMs),
@@ -1570,7 +1694,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // own, off the watch — the one provision just waited on, or a restore's first list — or the
       // API server's, for one the watch has not listed yet.
       const sandbox = sandboxes().get(req.name) ?? (await kube().get<SandboxObject>(SANDBOXES, ns, req.name));
-      const endpoint = sandbox?.status?.endpoint;
+      const endpoint = endpointOf(sandbox);
       if (!endpoint) throw new Error(`Sandbox "${req.name}" has no endpoint to attach through — is it gone?`);
       if (req.repos.length === 0) {
         throw new Error(
@@ -1667,10 +1791,32 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           (await kube()
             .get<SandboxObject>(SANDBOXES, ns, name)
             .catch(() => undefined)) === undefined
-        )
+        ) {
+          // The CR and its pod are gone: the slot waits its 2 minutes, then may be given again.
+          if (allocator !== undefined) (await allocator.catch(() => undefined))?.release(name);
+          watched.get(name)?.stop();
+          watched.delete(name);
           return;
+        }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
+    },
+
+    async fenceNode(slot) {
+      if (fence === undefined) return undefined;
+      const name = (await slots()).holder(slot);
+      if (name === undefined) return undefined;
+      const sandbox = sandboxes().get(name) ?? (await kube().get<SandboxObject>(SANDBOXES, ns, name));
+      return slotOfCr(sandbox) === slot ? sandbox?.status?.node : undefined;
+    },
+
+    async fenceEffector(name) {
+      if (fence === undefined) return undefined;
+      const sandbox = sandboxes().get(name) ?? (await kube().get<SandboxObject>(SANDBOXES, ns, name));
+      const slot = slotOfCr(sandbox);
+      return slot === undefined
+        ? undefined
+        : `${fenceSlotAddress(fence.ranges, fence.range, slot)}:${SANDBOX_EFFECTOR_PORT}`;
     },
   };
 }

@@ -36,6 +36,7 @@
 // again: the Orchestrator runs it before each send of the cut's start, and a restored run runs it
 // again with the source that the cut's intent row keeps (ADR-0067).
 
+import { fenceRouted } from "./custodian-client.ts";
 import { dialFetch, neverDelivered, transportDetail } from "./dial.ts";
 import type { HandoffCarrier, HandoffSource } from "./handoff.ts";
 import {
@@ -100,7 +101,7 @@ type Carried = Awaited<ReturnType<HandoffCarrier>>;
 
 /** The Orchestrator's carrier of a Handoff's files: the transport of `worktree()` (ADR-0080). */
 export function handoffCarrier(options: CarryOptions = {}): HandoffCarrier {
-  const fetchImpl = options.fetch ?? (options.dial ?? dialFetch)(HANDOFF_DIAL);
+  const fetchImpl = options.fetch ?? fenceRouted((options.dial ?? dialFetch)(HANDOFF_DIAL));
   const bounds = {
     maxBytes: options.maxBytes ?? HANDOFF_MAX_BYTES,
     maxObjects: options.maxObjects ?? HANDOFF_MAX_OBJECTS,

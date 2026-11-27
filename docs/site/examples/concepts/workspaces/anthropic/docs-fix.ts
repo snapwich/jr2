@@ -106,4 +106,6 @@ export const machine = workspace(body, {
     app: { url: "https://github.com/you/app.git", ref: "main" },
     handbook: "https://github.com/you/handbook.git",
   },
+  // The Egress list of this Sandbox. It replaces the default of the Instance: here, the npm registry only.
+  egress: ["registry.npmjs.org"],
 });

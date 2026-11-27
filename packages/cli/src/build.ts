@@ -746,6 +746,21 @@ function isAlreadyGone(err: unknown): boolean {
   return /no such image/i.test(err instanceof Error ? err.message : String(err));
 }
 
+/** The one line of a failed command that a user can act on: the first line of its own stderr. A
+ * failure of `execFile` starts its message with `Command failed: <command line>`, which says only
+ * what was run, never why: `docker rmi`'s own reason (for example, the container that uses the
+ * image) is on the lines after it. */
+export function failureReason(err: unknown): string {
+  const stderr = (err as { stderr?: unknown } | null)?.stderr;
+  const said = (typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString() : "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find(Boolean);
+  if (said) return said;
+  const lines = (err instanceof Error ? err.message : String(err)).split("\n").map((l) => l.trim());
+  return lines.find((l) => l && !l.startsWith("Command failed:")) ?? lines[0]!;
+}
+
 /** A host-daemon read or delivery that found no image under its tag, in each verb's own words:
  * `docker image inspect`, `docker create`, `kind load docker-image`, `docker push`. The one failure
  * `jr2 up` answers with a rebuild: another converge's sweep can take a tag between this converge's
@@ -782,7 +797,7 @@ export async function sweepHost(
     } catch (err) {
       // Already gone counts as removed but frees nothing: something else took those bytes.
       if (isAlreadyGone(err)) result.removed.push(entry.ref);
-      else result.failed.push(`${entry.ref} (${(err instanceof Error ? err.message : String(err)).split("\n")[0]})`);
+      else result.failed.push(`${entry.ref} (${failureReason(err)})`);
     }
   }
   return result;
@@ -827,7 +842,7 @@ export async function sweepNodes(
       } catch (err) {
         // Already gone counts as removed but frees nothing: something else took those bytes.
         if (isAlreadyGone(err)) attempt.bytes = 0;
-        else attempt.error = (err instanceof Error ? err.message : String(err)).split("\n")[0];
+        else attempt.error = failureReason(err);
       }
       attempted.push(attempt);
     }
@@ -843,7 +858,7 @@ export async function sweepNodes(
     // The removals happened; what cannot be established is whether they took. Unverified goes in
     // `failed`, which is the conservative half of the truth — it costs a re-plan next sweep, where
     // claiming the bytes would cost the user their trust in the one number this prints.
-    const why = (err instanceof Error ? err.message : String(err)).split("\n")[0];
+    const why = failureReason(err);
     for (const a of attempted) result.failed.push(`${a.names[0]} (could not verify the removal: ${why})`);
     return result;
   }

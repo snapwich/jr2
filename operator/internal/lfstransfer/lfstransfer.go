@@ -17,8 +17,9 @@ SPDX-License-Identifier: MIT
 // The cut's checkout starts `transfer --no-ask`, which asks for nothing and
 // refuses each object: the cut's `fetch` asked for them all before.
 //
-// Both ask by the same carrier. The asker sends the oids to the Custodian on
-// the pod's loopback, on the path that a fetch's ask takes. The cache agent
+// Both ask by the same carrier. The asker sends the oids to the Custodian at
+// jr2's own name (`uploadpack.DefaultCustodianURL`, or `JR2_CUSTODIAN_URL`),
+// on the path that a fetch's ask takes. The cache agent
 // downloads the objects into the node cache, and the asker then reads them
 // from the cache's `lfs/objects` through the pod's read-only mount.
 //

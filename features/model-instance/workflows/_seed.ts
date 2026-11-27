@@ -8,7 +8,7 @@
 // `_`-prefixed, so workflow discovery skips it: this module is imported, never registered.
 
 /** The Repo Slot's Binding: the seed's billing project. */
-export const billing = { url: "http://seed.jr2-e2e-seed.svc/billing.git", ref: "main" } as const;
+export const billing = { url: "http://seed.jr2-e2e-seed.svc.cluster.local/billing.git", ref: "main" } as const;
 
 /** The project's real suite, the argv `run_tests` runs in the Worktree. */
 export const suite = ["node", "--test"] as const;

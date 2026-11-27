@@ -19,6 +19,7 @@ import {
   detectKitCheckout,
   formatBytes,
   hostSweepPlan,
+  failureReason,
   isMissingHostImage,
   kitImageBuild,
   kitImageLabels,
@@ -592,6 +593,26 @@ test("a failed removal is reported and the loop goes on; already-gone is success
     assert.deepEqual(result.failed, ["jr2-b:1 (Error response from daemon: conflict: image is in use)"]);
     assert.equal(result.bytes, 40, "an image something else already took gave US no bytes back");
   });
+});
+
+test("a failed removal names docker's own reason, not the command line that failed", async () => {
+  // `execFile` puts `Command failed: docker rmi <ref>` on the first line of its message, and
+  // docker's reason on the lines after it and in `stderr`. A report of the first line alone said
+  // what was run and never why, so a user could not find the container that holds the image.
+  const said =
+    'Error response from daemon: conflict: unable to remove repository reference "jr2-b:1" (must force) - ' +
+    "container 4ee7baf551a3 is using its referenced image c72efeac2d5a";
+  const port: BuildPort = {
+    ...nullPort(),
+    hostImages: async () => [image({ id: "sha256:bbb", tags: ["jr2-b:1"], bytes: 20 })],
+    removeHostImage: async (ref) => {
+      throw Object.assign(new Error(`Command failed: docker rmi ${ref}\n${said}\n`), { code: 1, stderr: `${said}\n` });
+    },
+  };
+  assert.deepEqual((await sweepHost(port, { keep: [] })).failed, [`jr2-b:1 (${said})`]);
+  // With no stderr, the first line after the command line.
+  assert.equal(failureReason(new Error(`Command failed: docker rmi x\n${said}`)), said);
+  assert.equal(failureReason(new Error("Cannot connect to the Docker daemon")), "Cannot connect to the Docker daemon");
 });
 
 /**

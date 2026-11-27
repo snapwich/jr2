@@ -77,9 +77,13 @@ jr2 down
 ```text
 remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance")? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
-swept 2 image(s) (317.0 MB)
+gave back VLAN range 2 of the Fence
+swept 2 image(s) (482.3 MB)
+…
 removed
 ```
+
+The range of VLANs and the image counts and sizes depend on your cluster. Your values can be different.
 
 `jr2 down` asks you to confirm, unless you add `--yes`. Type `y`. Then it deletes the namespace of the Instance and
 waits until the namespace is gone. These things go with the namespace:
@@ -91,7 +95,9 @@ waits until the namespace is gone. These things go with the namespace:
   example for [`harness.envFrom`](../reference/config.md#harness-envfrom), for a `valueFrom` in
   [`secrets`](../reference/config.md#secrets) and for the git ssh key.
 
-Then `jr2 down` removes the images that nothing uses now. The Instance folder does not change.
+When the namespace is gone, `jr2 down` gives back the range of VLANs that the [Fence](../reference/glossary.md#fence) of
+the Instance used, so that another Instance can use it. Then `jr2 down` removes the images that nothing uses now. The
+Instance folder does not change.
 
 To put the Instance on the cluster again, make your Secrets again first. Then run `jr2 up`. When `jr2 up` makes a new
 deploy key for git, it is a new key. Register its public key again. See
@@ -105,25 +111,52 @@ To remove the Instance in CI, add `--yes`. To remove it from a different namespa
 
 ## Remove the operator too
 
-The operator is in the namespace `jr2-system`. All the Instances on a cluster share it. When you remove the last
-Instance, run `jr2 down --all` in place of `jr2 down`:
+The operator is in the namespace `jr2-system`. All the Instances on a cluster share it, and the prerequisites of the
+[Fence](../reference/glossary.md#fence) that `jr2 up` installed: the DaemonSet `jr2-system/jr2-fence-node` and the rule
+table that it loaded into each node, the bridge `jr2fence0` that the bridge plugin made on each node where a pod joined
+the Fence, the two admission policies of the Fence with their bindings, and Multus when the cluster had none. When you
+remove the last Instance, run `jr2 down --all` in place of `jr2 down`:
 
 ```sh
 jr2 down --all
 ```
 
+<!-- output: not run -->
+
 ```text
-remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator)? [y/N] y
+remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator, the Fence's rule table and its bridge jr2fence0 on each node, the DaemonSet jr2-fence-node that loads the table, the Fence's admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments with their bindings, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so)? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
+gave back VLAN range 2 of the Fence
+removing the rule table "inet jr2_fence" and the bridge jr2fence0 from each node
+uninstalling the DaemonSet jr2-system/jr2-fence-node; the CNI plugins bridge, static, tuning stay in /opt/cni/bin on each node
+uninstalling the admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments and their bindings
+uninstalling Multus (kube-system), which jr2 installed, and its CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io
 uninstalling the operator (jr2-system)
-swept 2 image(s) (259.1 MB)
+swept 3 image(s) (532.7 MB)
+…
 removed
 ```
+
+The range of VLANs and the image counts and sizes depend on your cluster. Your values can be different. A Multus that
+jr2 did not install stays, and so do the files of the CNI plugins in `/opt/cni/bin` on each node: jr2 cannot tell them
+from files that a different tool put there. The kernel module `8021q` stays loaded, because a different user of the node
+can need it. A plain `jr2 down` removes none of the rule table, the bridge, the DaemonSet, the policies and Multus.
+
+The DaemonSet deletes the bridge `jr2fence0` only when no pod is on it. When a pod is still on the bridge of a node, the
+bridge stays, and `jr2 down --all` writes a warning that names the node and the ports of the bridge.
+
+The CustomResourceDefinition of Multus goes with jr2's Multus, and each NetworkAttachmentDefinition of the cluster goes
+with it. So when the cluster has a NetworkAttachmentDefinition that is not jr2's, `jr2 down --all` keeps jr2's Multus
+and its CustomResourceDefinition. It writes a warning that names those NetworkAttachmentDefinitions and gives the
+commands that remove Multus when nothing uses them. When jr2 cannot read the DaemonSet `jr2-fence-node`, it writes a
+warning and the commands that remove the rule table and the bridge on a node.
 
 ::: danger
 
 Use `--all` only when no other Instance is on the cluster. `--all` deletes the Sandbox and Repo resource types. Thus the
-Sandboxes and the Repo resources of each Instance on the cluster go with them.
+Sandboxes and the Repo resources of each Instance on the cluster go with them. The namespace `jr2-system` also holds the
+claim of each Instance's range of VLANs, and it goes with the operator. Thus `jr2 down --all` refuses while another
+Instance on the cluster holds a range. It cannot see an Instance that holds no range.
 
 :::
 
@@ -165,6 +198,10 @@ build cache of docker.
   stays.
 - `jr2 down` refuses a namespace that belongs to a different Instance, and exits with the code 1:
   `refusing: namespace "<namespace>" on <context> belongs to another instance ("<owner>")`
+- `jr2 down --all` refuses while the namespace of another Instance is on the cluster and holds a range of VLANs of the
+  Fence. It changes nothing, and exits with the code 1:
+  `refusing --all: the Instances in namespace "<namespace>" still hold a VLAN range of the Fence, …`. Remove those
+  Instances with `jr2 down` first, or run `jr2 down` without `--all`.
 - When you do not type `y` or `yes`, `jr2 down` changes nothing, and exits with the code 1:
   `aborted — nothing was changed`
 - When no terminal is attached, `jr2 down` cannot ask, so it changes nothing. It prints
@@ -189,7 +226,11 @@ build cache of docker.
 - On a kind node, jr2 removes a whole image. Thus it keeps a tag whose image also has a tag that a live root names. It
   prints: `kept <count> tag(s) — their image id also carries a tag a live root names: <tags>`. On your computer, jr2
   removes each tag that no live root names.
-- When docker or a node refuses to remove an image, jr2 prints: `failed to remove <count> image(s): <images>`
+- When docker or a node refuses to remove an image, jr2 prints: `failed to remove <count> image(s): <images>`. Each
+  image is `<tag> (<reason>)`, and the reason is the first line that docker or the node said. A docker
+  `conflict: unable to remove repository reference … container <id> is using its referenced image` names a container
+  that holds the image, also a stopped one. Find it with `docker ps -a --filter ancestor=<tag>`. Remove it if it is
+  yours, then run `jr2 gc`.
 - When `jr2 up` cannot remove the old images, the converge still succeeds. It prints:
   `images: sweep skipped (<error>) — the converge stands`. Run `jr2 gc` later.
 

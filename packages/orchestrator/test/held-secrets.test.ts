@@ -57,6 +57,7 @@ test("a literal is normalized: hosts parsed, the leaf stem derived, default head
   const { manifest, values, warnings } = rules(held({ paths: ["/v1/messages"] }));
   assert.deepEqual(manifest, {
     version: 1,
+    egress: [],
     secrets: [
       {
         name: "GATEWAY_KEY",
@@ -438,7 +439,13 @@ test("R13: the kit's Secrets never reach the Harness, by env or envFrom, whateve
     "ws-run-1-effector",
     // Each pod's own credentials (ADR-0076): the real control token beside the Stand-ins.
     "jr2-instance-harness-token",
+    "jr2-instance-harness-standins",
     "ws-run-1-token",
+    // Each Sandbox's credentials on the Fence (ADR-0084): its slot Secret (the real tokens, the
+    // control Stand-in, the leaf keys) and its Stand-ins, and the Instance's dial token.
+    "jr2-custodian-slot-3",
+    "ws-run-1-standins",
+    "jr2-custodian-dial",
   ]) {
     assert.match(
       refusal({ harness: { env: [{ name: "X", valueFrom: { secretKeyRef: { name: secret, key: "k" } } }] } }),
@@ -451,13 +458,22 @@ test("R13: the kit's Secrets never reach the Harness, by env or envFrom, whateve
   }
 });
 
-test("R11: while a secret is held, harness.env may not set the proxy or the trust variables", () => {
+test("R11: harness.env may not set a proxy or a trust variable, whether or not a secret is held (ADR-0084)", () => {
   assert.match(
     refusal(held({}, { env: [{ name: "HTTPS_PROXY", value: "http://corp-proxy:3128" }] })),
-    /harness\.env\[0\] sets HTTPS_PROXY/,
+    /harness\.env\[0\] sets HTTPS_PROXY, and a Harness pod has no proxy/,
   );
-  // Nothing held: the mechanism is not running, so its names are the user's.
-  assert.equal(rules({ harness: { env: [{ name: "HTTPS_PROXY", value: "http://p" }] } }).manifest.secrets.length, 0);
+  // Nothing held: a Harness pod is on the Fence all the same, so no proxy, and jr2 sets the trust.
+  for (const name of ["HTTPS_PROXY", "all_proxy", "NODE_USE_ENV_PROXY"]) {
+    assert.throws(
+      () => rules({ harness: { env: [{ name, value: "http://p" }] } }),
+      new RegExp(`harness\\.env\\[0\\] sets ${name}, and a Harness pod has no proxy`),
+    );
+  }
+  assert.throws(
+    () => rules({ harness: { env: [{ name: "SSL_CERT_FILE", value: "/etc/ssl/mine.crt" }] } }),
+    /harness\.env\[0\] sets SSL_CERT_FILE, which jr2 sets on each Harness pod.*harness\.caBundle/,
+  );
 });
 
 test("R12: a path prefix nothing can step around", () => {

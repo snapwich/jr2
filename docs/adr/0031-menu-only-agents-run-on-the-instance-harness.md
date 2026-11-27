@@ -13,9 +13,9 @@ built.
 
 ## Decision
 
-- **One Instance Harness per instance, deployed by convention.** `jr2 up` converges a Harness StatefulSet + Service —
-  stock `jr2-harness:<kitversion>` image, same wire — whenever any Agent slot carried by a registered Machine
-  (ADR-0049's walk) declares `workspace: "none"`
+- **One Instance Harness per instance, deployed by convention.** `jr2 up` converges a Harness StatefulSet — stock
+  `jr2-harness:<kitversion>` image, same wire — whenever any Agent slot carried by a registered Machine (ADR-0049's
+  walk) declares `workspace: "none"`
   ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)). The scan is static and
   definition-level, deliberately not workflow-level (workflow internals are not statically recoverable — the same line
   ADR-0018 drew for model preflight); a declared-but-never-invoked `"none"` Agent over-deploys, erring toward "the
@@ -33,14 +33,24 @@ built.
   the backfilled preamble). Instance Harness log = every `"none"` conversation, instance-wide, interleaved (the less
   useful top-to-bottom read, accepted); Workspace log = everything that ran there plus the narrative of the run that
   owns it.
-- **The Instance Harness pod is Harness + Custodian — the one Harness shape, minus the Workspace.** No user container,
-  no `/work` volume, no attach step. The Custodian stays although `"none"` Agents cannot execute code (the
+- **The Instance Harness pod is the Harness alone — the one Harness shape, minus the Workspace.** No user container, no
+  `/work` volume, no attach step, and no container of the Custodian. It runs no Workspace code, and it is behind a Fence
+  as a Sandbox is ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)): each Harness pod has the same
+  network and reaches the Instance's one Custodian the same way, so no Harness has a proxy setting, and a second path
+  for one pod would be a divergence in the component this ADR keeps deliberately uniform. Its Egress list has no entry
+  of the author's: it reaches its bound hosts, the hosts that `jr2 up` requires an entry for, and jr2's control routes.
+  It uses the Custodian although `"none"` Agents cannot execute code (the
   [ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) rationale technically lapses):
-  the Harness has exactly one route to its Menu — the Custodian on `localhost` — and forking that path for one pod buys
-  a divergence in the component this ADR keeps deliberately uniform. The pod is composed by the same function a
-  Sandbox's is ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), so its Custodian
-  carries the Instance Harness's model calls the same way. It holds what the `"none"` Agents it hosts name — the keys
-  their providers read, and the secrets of the remote MCP servers they name
+  the Harness has exactly one route to its Menu — the Custodian — and forking that path for one pod buys the same
+  divergence. Its Harness container is composed by the same function a Sandbox's is
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), so the Custodian carries the
+  Instance Harness's model calls the same way. It is on slot 0 of the Instance's range, and it takes the Sandbox
+  placement (`sandbox.nodeSelector`, `sandbox.tolerations`,
+  [ADR-0052](0052-a-sandbox-lands-where-an-ordinary-pod-lands-and-the-cache-follows-it.md)), so a Custodian pod is on
+  its node. No Service routes to it: the StatefulSet keeps its headless governing Service, and the Orchestrator reads
+  the pod's node from that Service's EndpointSlices, which list the pod also while it drains, and reads no Pod
+  ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)). For this pod it holds what the `"none"` Agents it hosts
+  name — the keys their providers read, and the secrets of the remote MCP servers they name
   ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)) — and
   none of the held secrets a `workspace()` lists: a `"none"` Agent cannot execute code, so it had no way to use the
   rest. A `"none"` Agent names no stdio MCP server, because the Instance Harness has no Landlock domain to start one in.
@@ -54,8 +64,9 @@ built.
   converges it when a registered Machine places an Effect there — an `http`, an `mcp` or a targeted `dispatch` Effect —
   or a Hook needs it (a `mac` verifier, or a kind that declares `posts`), and deletes it otherwise. It runs the same
   `jr2-harness` image with `/opt/jr2/bin/effector` as its command, holds no conversation and runs no Agent, and is a
-  Deployment, not a StatefulSet: it keeps nothing, and a rollout must run the new pod beside the old one. No config key
-  names, sizes, addresses, or enables it.
+  Deployment, not a StatefulSet: it keeps nothing, and a rollout must run the new pod beside the old one. It holds real
+  values and runs no code of an Agent, so it is not behind a Fence: it stays on the cluster's network (ADR-0084). No
+  config key names, sizes, addresses, or enables it.
 - **No image config at all.** The Harness image was once configured as `sandbox.image` because the Sandbox pod was the
   only place a Harness ran — a misnomer once the Instance Harness exists, and config is the wrong seat regardless:
   `jr2 up` builds and resolves every image it deploys ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)), and
@@ -141,14 +152,13 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   restart while the Agent's state is busy (the bullet above): the pick stays outstanding, and once the workflow is back
   at Rest jr2 re-admits the Agent on the same conversation with the answer, and the replacement Harness answers the cut
   call with jr2's text. It refuses an admission with a 503 before it reads or queues anything, and closes that
-  connection, so the Orchestrator re-sends it on ADR-0042's ladder and the re-send dials the Service anew. Readiness
-  stays up (the probe is the Harness's own `/healthz`, which it keeps answering), and the dialed Service is a ClusterIP
-  one, which kube-proxy still routes to a terminating pod that serves while no other is ready — so reads keep answering
-  and a `wait` on the draining pod still reads its Settlement. A headless name would not: DNS stops naming a terminating
-  pod, so the StatefulSet's headless governing Service is a second one, dialed by no one. The Custodian is a native
-  sidecar, stopped only after the Harness exits, so the drain keeps its Menu and its model to the end. A deploy loses no
-  Turn and, with the volume, no conversation — as long as the drain and the replacement's start fit ADR-0042's window; a
-  longer one faults the waiting admission with the Harness's own 503 words.
+  connection, so the Orchestrator re-sends it on ADR-0042's ladder and the re-send dials the pod anew. The Orchestrator
+  dials it through the Custodian's uplink (ADR-0084), which carries the dial to the pod while the pod lives, also while
+  it terminates — so reads keep answering and a `wait` on the draining pod still reads its Settlement. Readiness stays
+  up (the probe is an exec probe of the Harness's own `/healthz`, which it keeps answering). The Custodian is the
+  Instance's, outside the pod, and does not stop with it, so the drain keeps its Menu and its model to the end. A deploy
+  loses no Turn and, with the volume, no conversation — as long as the drain and the replacement's start fit ADR-0042's
+  window; a longer one faults the waiting admission with the Harness's own 503 words.
 - **The Orchestrator states the live set; the Harness frees the rest.** After every restore and every 5 minutes (the
   Lease's cadence) the Orchestrator tells the Instance Harness which conversations its live runs hold — from the
   admission ledgers in memory, never from the store — and the Harness frees memory and files of every other one.
@@ -184,14 +194,16 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
 
 ## Consequences
 
-- **The Agent's resolution grows one arm**: explicit `endpoint` (tests) → `workspace: "none"` → Instance Harness
-  (deterministic Service DNS) → enclosing `workspace()`'s ambient handles → loud error naming the definition's
+- **The Agent's resolution grows one arm**: explicit `endpoint` (tests) → `workspace: "none"` → Instance Harness (dialed
+  through the Custodian's uplink) → enclosing `workspace()`'s ambient handles → loud error naming the definition's
   `workspace` value.
 - **A `"none"` conversation survives the Instance Harness pod's restart**: the StatefulSet restores the endpoint and the
   volume restores the history. A Turn in flight at the restart settles `failed`; nothing is continued silently — a Turn
   whose state is busy is re-admitted with a prompt that says it was cut.
 - **An instance with no `"none"` definitions deploys nothing new.** The feature is invisible until the first
   `agent({ ..., workspace: "none" })` a Machine carries, which is its entire user-facing surface.
+- **An instance with no Workspace needs the Fence too.** Its Instance Harness is behind one, so its first model call
+  needs the Fence's prerequisites on a node (ADR-0084).
 - **The harness conformance suite (ADR-0027) gains the Menu-only shape**: a Turn whose definition withholds every
   Working tool, settled by pick alone — no infra, same scripted provider.
 - **GLOSSARY.md**: Harness's "inside a Sandbox" loosens to name the second placement; **Instance Harness** becomes a

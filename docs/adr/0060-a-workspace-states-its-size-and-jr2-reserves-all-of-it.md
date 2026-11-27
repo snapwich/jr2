@@ -30,8 +30,9 @@ unchanged.
   reports the node, and Playwright sizes its workers from it alone, so a Machine passes `--workers=$JR2_CPUS`; the Agent
   is told its CPU count by the Briefing ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), never
   by the Frame.
-- **jr2 splits the Size inside the pod.** The Custodian takes a fixed kit slice (64Mi, 50m). The User Container takes
-  its split if the Machine states one — `user` widens from a string to
+- **jr2 splits the Size inside the pod.** The Custodian is outside the pod
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), so it takes no part of the Size. The User
+  Container takes its split if the Machine states one — `user` widens from a string to
   `{ image, resources?: { limits: { memory?, cpu? } } }` (ADR-0005 foresaw the widening) — and otherwise shares the pod
   budget with no limit of its own. The Sandbox Effector, in a pod that has one
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), has no split and no limit of its own
@@ -68,7 +69,16 @@ unchanged.
   provisioning burst needs CPU, and no Substrate move applies to them). Orchestrator 500m / 1Gi. Instance Harness 250m /
   1Gi (it frees every conversation no live run holds — ADR-0031). Operator 50m / 256Mi (it caches every Pod in the
   cluster). Instance Effector 50m / 128Mi. Repo cache agent 50m, memory request 128Mi and limit 1Gi — the one exception,
-  since `git index-pack` spikes and its OOM costs only a refetch.
+  since `git index-pack` spikes and its OOM costs only a refetch. The Custodian pod on each Sandbox node
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)): Envoy 50m / 1536Mi, the control process 50m /
+  384Mi, and the uplink, which runs once at the pod's start, 50m / 32Mi. Each pod holds each slot of its Instance, so
+  the sizes are for a full range: 128 slots of 30 entries each, 5 of them Intercepted. Measured on kind as each
+  container's peak memory: Envoy 652 MiB and the control process 260 MiB when a pod starts with each slot or takes them
+  live, and Envoy 1,222 MiB and the control process 293 MiB when each slot's rules change at once (the old rules drain
+  for 60 s beside the new ones). An OOM of either container cuts each connection of the Harness pods on its node.
+  Measured idle: 98 MiB and 6 millicores for the pod with no live slot, and 144 MiB and 7 millicores with 20. Each of
+  the two pods that probe the Fence on a Sandbox node at a converge (ADR-0084): 50m / 96Mi, for a few seconds; one
+  Node.js process, measured at a peak of 47 MiB.
 
 ## Considered options
 
@@ -105,7 +115,7 @@ unchanged.
 - `jr2 up` warns — never refuses — when no current Sandbox node could hold a Workspace's Size (the ADR-0052 stance: the
   node set moves).
 - GLOSSARY.md gains **Size**.
-- The kit-sized control pods ask a node for about 900m a scenario before any Sandbox, so the `@kind` tier on a 4-vCPU
-  hosted runner runs two workers, not the profile's four (`just e2e-kind 2` in the release job). v0.4.0's release run
-  measured the alternative: four workers left every Sandbox Pending on `Insufficient cpu`. The requests are the kit's
-  and are not lowered for a runner.
+- The kit-sized control pods ask a node for 850m a scenario before any Sandbox, the Custodian pod asks each Sandbox node
+  for 100m more, and Multus asks each node for 100m, so the `@kind` tier on a 4-vCPU hosted runner runs two workers, not
+  the profile's four (`just e2e-kind 2` in the release job). v0.4.0's release run measured the alternative: four workers
+  left every Sandbox Pending on `Insufficient cpu`. The requests are the kit's and are not lowered for a runner.

@@ -12,7 +12,7 @@ export default defineConfig({
   },
   // Every secret of the Instance, one list (ADR-0068). Where each goes is read, never declared — a pod gets
   // what something in it names. A model key goes to the pods whose Agents' provider reads it, and a
-  // `workspace()` that lists a name under `secrets` gets that one: its Custodian holds it and the Agent sees
+  // `workspace()` that lists a name under `secrets` gets that one: the Custodian holds it and the Agent sees
   // only a Stand-in (ADR-0059). One an Effect names with `secret("name")` is a file in that Effect's Effector
   // alone. `hosts` says where a held value may go. Read values from .env, never commit them.
   // secrets: [{ name: "ANTHROPIC_API_KEY", value: process.env.ANTHROPIC_API_KEY }],

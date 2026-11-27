@@ -163,7 +163,7 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   too, refused the handshake, or answered the request with the JSON-RPC error `-32700`, `-32600`, `-32601` or `-32602`
   (a request it could not read, an unknown method, an unknown tool, bad arguments), or answered a read with `-32002`
   (the resource does not exist); or the Effector sent nothing because the server or its secret is not in its
-  `effector.json`, the second fence behind the `jr2 up` refusal; `unreachable` — nothing of the request was sent: the
+  `effector.json`, the second match behind the `jr2 up` refusal; `unreachable` — nothing of the request was sent: the
   name did not resolve, or the connection, TLS or the handshake failed otherwise (a 5xx, the timeout, an answer that is
   not MCP's, a handshake that names an MCP revision the client does not speak); `input-required` — the server asked for
   input, which jr2 does not give, so the Machine routes it: the error `-32042` (URL elicitation required), after which
@@ -217,31 +217,33 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   local name equals the remote name, so an Agent, a Gate and a person in the pod all see the real branch. Its credential
   is the push credential of the `git.credentials` entry the Repo Slot's url falls under (ADR-0051): the provision
   matches the url the run binds — static, per-run or `customize()`-bound, one path — and names that entry's push Secret
-  on the Sandbox, and the Effector, which holds only the entries named there, matches the push's url as the fence does.
-  git never runs with the Agent's repository as its repository: each call makes a new bare repository in the Effector's
-  scratch, configured by jr2 under a cleared environment; it reads that branch as data (a loose ref or `packed-refs`,
-  opened beneath with no symlink, bounded); it imports the Agent's objects as data — one `pack-objects` over the Agent's
-  object store with a deadline (a FIFO in place of an object blocks an open forever), `index-pack --strict`, and a
-  connectivity check — borrowing only from the node's Repo cache; and it pushes `<commit>:refs/heads/<branch>` to the
-  Binding url, never to a remote of the Agent's config, and never to a local path (git's local transport runs that
-  repository's config and hooks, and a path in the pod can be the Agent's own repository; only the binary's tests can
-  allow one). So no config, hook, attribute or program of the Agent's runs; a test plants each in the Agent's repository
-  and proves none ran. A token goes Basic over https through a credential helper only — an `http://` url with a token is
-  `rejected` with nothing sent — and the helper is the Effector binary (`effector git-credential`), which reads the
-  token's file when git asks for the Binding's own host over https and answers nothing for any other; the clean
-  repository follows no redirect, so neither the push nor the token reaches an origin outside the entry; an ssh key is
-  copied into the call's directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The
-  commit is pinned when the push starts: the tip of that branch, never HEAD, or with `pin` the commit the input names
-  (`{ sha }`); the Effector's first answer names it, and it is written to the intent row. A pinned commit the Agent
-  pruned fails the import and is never substituted. `squash` makes one commit with the input's `{ message }`, on the
-  published base: the Agent's tree, its author line and date, the Machine's message. It is a new commit, so it needs a
-  committer. With `sign`, the signer is the committer, as for every signed copy. Without it (signing is optional, and
-  `squash` is an option of its own), the matching `git.credentials` entry's `committer: { name, email }` commits it, at
-  the Effector's clock — or, when the entry names no committer, its `sign` field's name and email. `jr2 up` refuses
-  `squash` without `sign` only when the matched entry has neither `sign` nor `committer`, naming both fixes (a
-  `committer`, or a signed push and its `sign` field), and the provision refuses it the same way for a slot the run or a
-  `customize()` binds. `force` replaces what the remote holds. A Workspace with no Repo Slot has no branch to push, so a
-  `push` there is refused, by `jr2 up` and at invoke (ADR-0051).
+  on the Sandbox, and the Effector, which holds only the entries named there, matches the push's url as the provision
+  does. git never runs with the Agent's repository as its repository: each call makes a new bare repository in the
+  Effector's scratch, configured by jr2 under a cleared environment; it reads that branch as data (a loose ref or
+  `packed-refs`, opened beneath with no symlink, bounded); it imports the Agent's objects as data — one `pack-objects`
+  over the Agent's object store with a deadline (a FIFO in place of an object blocks an open forever),
+  `index-pack --strict`, and a connectivity check — borrowing only from the node's Repo cache; and it pushes
+  `<commit>:refs/heads/<branch>` to the Binding url, never to a remote of the Agent's config, and never to a local path
+  (git's local transport runs that repository's config and hooks, and a path in the pod can be the Agent's own
+  repository; only the binary's tests can allow one). So no config, hook, attribute or program of the Agent's runs; a
+  test plants each in the Agent's repository and proves none ran. A token goes Basic over https through a credential
+  helper only — an `http://` url with a token is `rejected` with nothing sent — and the helper is the Effector binary
+  (`effector git-credential`), which reads the token's file when git asks for the Binding's own host over https and
+  answers nothing for any other; that file holds the token's Stand-in, and the Custodian puts the token in its place
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)); the clean repository follows no
+  redirect, so neither the push nor the token reaches an origin outside the entry; an ssh key is copied into the call's
+  directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The commit is pinned when
+  the push starts: the tip of that branch, never HEAD, or with `pin` the commit the input names (`{ sha }`); the
+  Effector's first answer names it, and it is written to the intent row. A pinned commit the Agent pruned fails the
+  import and is never substituted. `squash` makes one commit with the input's `{ message }`, on the published base: the
+  Agent's tree, its author line and date, the Machine's message. It is a new commit, so it needs a committer. With
+  `sign`, the signer is the committer, as for every signed copy. Without it (signing is optional, and `squash` is an
+  option of its own), the matching `git.credentials` entry's `committer: { name, email }` commits it, at the Effector's
+  clock — or, when the entry names no committer, its `sign` field's name and email. `jr2 up` refuses `squash` without
+  `sign` only when the matched entry has neither `sign` nor `committer`, naming both fixes (a `committer`, or a signed
+  push and its `sign` field), and the provision refuses it the same way for a slot the run or a `customize()` binds.
+  `force` replaces what the remote holds. A Workspace with no Repo Slot has no branch to push, so a `push` there is
+  refused, by `jr2 up` and at invoke (ADR-0051).
 - **A push uploads its large files first.** When the commits that a push publishes hold Git LFS pointers, the Effector
   uploads their objects before it updates the branch. It asks the server's batch API first, with a download batch: an
   object that the answer gives a download action and no error, the server holds already, so it is not uploaded and needs
@@ -259,15 +261,20 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   that takes no upload, a mirror; the same scheme and host rule applies to it. The upload spends the push credential and
   follows ADR-0051's LFS rule: an ssh server only on the push url's host; the token, after a 401, only to the push url's
   own origin (scheme, host and port), the batch API and an upload href there included; and an href on any other origin
-  gets only the headers of the batch answer. When a url on another origin asks for a credential, the refusal says that
-  jr2 sends the token only to the push url's origin. An ssh server is asked as git-lfs asks it with
-  `lfs.sshtransfer=negotiate`, git-lfs's default, which the Effector and the cache agent set: over the pure SSH protocol
-  (`git-lfs-transfer`) when the server speaks it, else through `git-lfs-authenticate`. The Effector's own batch
-  questions go in the same order, through the push's ssh command, so a server that speaks only one of the two takes the
-  push. A pointer is each blob that git-lfs reads as one, so a pointer that is not in the canonical form also gets its
-  object uploaded. An upload that fails is `rejected`, and nothing is pushed: the branch does not move, though an object
-  that went up stays on the server. Its output shows no query of a url, because an upload href can carry its credential
-  there. A signed or squashed copy keeps the pointers, so it uploads the same objects.
+  gets only the headers of the batch answer. On a Sandbox Effector the helper answers the token's Stand-in, and the
+  Custodian swaps it toward the push url's host (ADR-0068); a server there that puts the batch request's pair into its
+  upload and verify actions, as Gitea does, hands back the value, and the Custodian carries that pair toward the same
+  host alone (ADR-0059). A server that makes a credential of its own for an action on the push url's host is not served:
+  the Custodian refuses that header with 403, and the push is `rejected` at `upload`; such a server takes the push over
+  ssh. When a url on another origin asks for a credential, the refusal says that jr2 sends the token only to the push
+  url's origin. An ssh server is asked as git-lfs asks it with `lfs.sshtransfer=negotiate`, git-lfs's default, which the
+  Effector and the cache agent set: over the pure SSH protocol (`git-lfs-transfer`) when the server speaks it, else
+  through `git-lfs-authenticate`. The Effector's own batch questions go in the same order, through the push's ssh
+  command, so a server that speaks only one of the two takes the push. A pointer is each blob that git-lfs reads as one,
+  so a pointer that is not in the canonical form also gets its object uploaded. An upload that fails is `rejected`, and
+  nothing is pushed: the branch does not move, though an object that went up stays on the server. Its output shows no
+  query of a url, because an upload href can carry its credential there. A signed or squashed copy keeps the pointers,
+  so it uploads the same objects.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The
@@ -517,11 +524,11 @@ the Orchestrator's own process, the one Effect that does: it starts the run thro
   not for the outside world. The stop is sent once, at the exit: a DELETE that reaches the Effector before the command's
   start (a fast exit while the start is still on the wire) is kept there, and the start that arrives after it runs
   nothing (ADR-0068), as a Harness keeps a kill.
-- The Orchestrator reaches a Sandbox Effector by a headless Service the provision writes beside its key, owned by the
-  Sandbox CR (`fx-` in place of the Sandbox name's `ws-`): its name resolves to the pod's own address, the one each
-  request is signed for (ADR-0068), and it publishes that address while the pod is not ready, so a restore can ask the
-  Effector for an Effect while the Harness beside it restarts. The operator's Service names the Harness's port only and
-  is unchanged.
+- The Orchestrator reaches a Sandbox Effector through the Custodian's uplink, as it reaches the Harness beside it: a
+  Sandbox has no Service ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). The uplink accepts a dial
+  toward a Harness pod from the Orchestrator only, and the Effector's check of the signature is the second control
+  (ADR-0058, ADR-0068). That path stays open while the pod is not ready, so a restore can ask the Effector for an Effect
+  while the Harness beside it restarts.
 - The `@kind` tier pushes to a remote of its own: the seed's sshd serves a push remote, and the tier's scenarios push
   signed over ssh and verify the published commit with the signing key as the one allowed signer, read the Agent's
   branch and Worktree after the sync, and push again after the Agent amended the pushed commit (`diverged`). A token

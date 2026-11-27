@@ -21,7 +21,7 @@ import type {} from "./_chat.ts";
 import { defineEvent, gate, http, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 
 /** The echo server's in-cluster address (`steps/seed.ts`). */
-const ECHO = "http://echo.jr2-e2e-seed.svc";
+const ECHO = "http://echo.jr2-e2e-seed.svc.cluster.local";
 
 const approve = defineEvent({
   name: "approve",

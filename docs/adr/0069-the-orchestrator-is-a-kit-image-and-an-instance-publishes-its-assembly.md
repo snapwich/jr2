@@ -116,7 +116,7 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   `current` pointer names is a root even when this process cannot load it, so an image rolled back finds its Assembly; a
   failed removal is reported and skipped, never allowed to abandon the rest. A held Assembly lends only its Machines:
   the config that applies is always the current Assembly's, because config is reach and credentials, not a Machine, and
-  a held run must meet today's `git.credentials` fence, not the one it started under. The Repo pass binds the Repos of
+  a held run must meet today's `git.credentials` match, not the one it started under. The Repo pass binds the Repos of
   every held Machine, so a held run's Workspace mounts what its own Machine binds. The cluster parts `jr2 up` derives
   from the current walk alone are the current Assembly's too: the `file:` Sandbox Image digests in `jr2-images`, the
   Effector manifests, the held-secret Secrets, and the roots of the image sweep. A held run that still needs one the

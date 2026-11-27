@@ -26,7 +26,7 @@ import {
 } from "@jr2/orchestrator";
 
 /** The seed's GPG push remote (`steps/seed.ts`). */
-const REMOTE = { url: "ssh://git@seed.jr2-e2e-seed.svc/srv/gpg.git", ref: "main" };
+const REMOTE = { url: "ssh://git@seed.jr2-e2e-seed.svc.cluster.local/srv/gpg.git", ref: "main" };
 
 const door = z.object({ mode: z.literal("both"), marker: z.string().regex(/^m-[a-z0-9]+$/) });
 type Door = z.infer<typeof door>;

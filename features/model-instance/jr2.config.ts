@@ -1,5 +1,6 @@
 // The @model tier's instance config (ADR-0066): the @kind instance's shape (ADR-0010) with the
-// last fake removed. Bring-up is the product's own path — one shared vanilla kind cluster, then
+// last fake removed. Bring-up is the product's own path — one shared kind cluster with no image in it
+// (`just e2e-kind-up`), on which `jr2 up` installs the Fence's prerequisites (ADR-0084), then
 // `jr2 up` per scenario into a FRESH namespace; the workflows bind the seed Repo the suite serves
 // in-cluster, and the fence admits that host alone (ADR-0051).
 //
@@ -8,9 +9,10 @@
 // materializes from the selected `features/model-endpoints/<name>.json` before the converge
 // (`workflows/_profile.ts` says why a file and not env). The one deployment-varying value that
 // stays on env is the key (`JR2_MODEL_API_KEY`), never a file of this checkout. It is a literal
-// Held secret (ADR-0059): `jr2 up` writes it into the held Secret of each pod that names it, which
-// only that pod's Custodian mounts, and into the provider check pod's Secret, which `jr2 up`
-// deletes after the check (ADR-0019). The Harness container holds only its Stand-in.
+// Held secret (ADR-0059): `jr2 up` writes it into the held Secret `jr2-held-secrets-<pod>` of each
+// Harness pod that names it, which only the Custodian of the Instance reads, and into the check
+// pod's slot Secret, which `jr2 up` deletes after the check (ADR-0019, ADR-0084). The Harness
+// container holds only its Stand-in.
 //
 // NO IMAGE IS NAMED HERE (ADR-0038): this checkout's `jr2 up` builds and loads every image it
 // deploys, including `images/default` below — the same Sandbox Image the @kind tier runs.
@@ -22,13 +24,13 @@ export default defineConfig({
   name: "jr2-e2e-model",
   git: {
     credentials: [
-      { match: "seed.jr2-e2e-seed.svc/" },
+      { match: "seed.jr2-e2e-seed.svc.cluster.local/" },
       // The seed's push remote over ssh (ADR-0067), as the @kind instance names it: the
       // `continue-after-signed-push` claim's Binding. Its scenario writes both Secrets from the
       // seed's keys before `jr2 up`; any other scenario's `jr2 up` generates a deploy key nothing
       // authorizes, and that namespace's cache of `push.git` fails its probe and serves anyway.
       {
-        match: "seed.jr2-e2e-seed.svc/srv/",
+        match: "seed.jr2-e2e-seed.svc.cluster.local/srv/",
         sshKey: "jr2-e2e-push-key",
         sign: { sshKey: "jr2-e2e-sign-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
       },
@@ -43,6 +45,13 @@ export default defineConfig({
   // the server is plain HTTP and has no secret, which a server with no `secret` may be. In-cluster
   // the url reads empty, which is safe: the Harness reads what `jr2 up` resolved.
   mcp: { orders: { url: process.env.JR2_FAKE_MCP_URL ?? "" } },
+  // The hosts jr2 reaches with no secret (ADR-0084): each needs an entry, else `jr2 up` refuses.
+  // The endpoint of a profile with no key, by its name, and the fake MCP server, by its address and
+  // its port, which it has no name for. In-cluster the url reads empty, and the entry is left out.
+  egress: [
+    ...(profile.key === undefined ? [new URL(profile.baseUrl).host] : []),
+    ...(process.env.JR2_FAKE_MCP_URL ? [new URL(process.env.JR2_FAKE_MCP_URL).host] : []),
+  ],
   // The key is a Held secret either way (ADR-0059). A catalog provider (`profile.key`) reads a known
   // model key, so the key goes in `secrets` under that name, exactly as a user's instance holds it;
   // a custom provider's key is its `apiKey`.

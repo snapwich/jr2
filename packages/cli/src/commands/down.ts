@@ -2,8 +2,14 @@
 // cluster — its namespace and everything `jr2 up` converged into it. Confirms unless `--yes`
 // (deleting a namespace takes the runs, the store PVC, the Instance Harness's conversations PVC
 // (ADR-0031), and every live Sandbox with it). `--all` also uninstalls the
-// per-cluster operator — only sane when this was the cluster's last instance, which is the
-// caller's judgment, not derivable here.
+// per-cluster operator, and what `jr2 up` installed for the Fence (ADR-0084): the rule table and the
+// bridge on each node (the DaemonSet jr2-fence-node removes them, then goes), the admission policies with
+// their bindings, and a Multus that carries jr2's annotation, with its CustomResourceDefinition, unless the cluster has a NetworkAttachmentDefinition
+// of another owner (then both stay, with a warning) — only sane when this was the cluster's
+// last instance. That is the caller's judgment, except for an Instance that holds a VLAN range of
+// the Fence: its claim is in `jr2-system`, so `--all` refuses while another namespace that is still
+// there holds one. Each Instance that needs the Fence holds a range, so past that refusal no
+// Instance needs what `--all` removes. The plugin files and the kernel module 8021q stay on the nodes.
 //
 // It also sweeps IMAGES — on the host daemon that built them and, on kind, on every node (ADR-0039).
 // Content addressing means ten Dockerfile iterations leave ten full images per store — invisible to
@@ -24,6 +30,8 @@
 import { basename } from "node:path";
 import { loadConfig } from "@jr2/orchestrator/internal";
 import { pnpmDockerBuild } from "../build.ts";
+import { otherHolders, releaseRanges } from "../fence.ts";
+import { uninstallFence } from "../fence-install.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import { kubectlAdmin } from "../kube.ts";
@@ -54,7 +62,31 @@ export async function down(args: string[], io: Io): Promise<number> {
     return 1;
   }
 
-  const scope = values.all ? " AND the per-cluster operator" : "";
+  // The Fence's range claims are in `jr2-system`, and `--all` deletes it with the operator. Another
+  // Instance that holds a range would keep its Custodian and its pods on that range, and the next
+  // `jr2 up` of a third could claim it (ADR-0084). An Instance with no claim is the caller's
+  // judgment, as before: nothing here can see it.
+  if (values.all) {
+    const holders = await otherHolders(kube, { namespace, ...ctx });
+    if (holders.length > 0) {
+      activity(
+        io,
+        `refusing --all: the Instances in namespace${holders.length === 1 ? "" : "s"} ` +
+          `${holders.map((h) => `"${h}"`).join(", ")} still hold a VLAN range of the Fence, and its claim in ` +
+          `jr2-system would go with the operator (ADR-0084). Remove ${holders.length === 1 ? "it" : "them"} ` +
+          "with `jr2 down` first, or run `jr2 down` without --all",
+      );
+      return 1;
+    }
+  }
+
+  const scope = values.all
+    ? " AND the per-cluster operator, the Fence's rule table and its bridge jr2fence0 on each node, the DaemonSet " +
+      "jr2-fence-node that loads the table, the Fence's admission policies jr2-fence-guard-pods and " +
+      "jr2-fence-guard-attachments with their bindings, and a Multus that jr2 installed with its " +
+      "CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has " +
+      "a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so"
+    : "";
   const ok =
     values.yes === true ||
     (await confirmOrBail(
@@ -68,10 +100,16 @@ export async function down(args: string[], io: Io): Promise<number> {
 
   activity(io, `deleting namespace "${namespace}" (runs, store, and Sandboxes go with it)`);
   await kube.deleteObject({ kind: "Namespace", name: namespace, ...ctx });
+  // After the namespace is gone (the delete waits), so that no pod of it is still on a VLAN of its
+  // range when another Instance claims the range (ADR-0084).
+  for (const range of await releaseRanges(kube, { namespace, ...ctx })) {
+    activity(io, `gave back VLAN range ${range} of the Fence`);
+  }
 
   // BEFORE the sweep, not after: while the operator Deployment stands, its pod is a live root and
   // the operator image would survive its own uninstall.
   if (values.all) {
+    await uninstallFence(kube, { ...ctx, log: (line) => activity(io, line) });
     activity(io, "uninstalling the operator (jr2-system)");
     // The image ref doesn't matter for a delete-by-manifest; the object names do.
     await kube.deleteManifest({ manifest: await operatorManifest(`jr2-operator:${KIT_VERSION}`), ...ctx });

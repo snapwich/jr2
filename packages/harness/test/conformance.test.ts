@@ -35,7 +35,6 @@ import type { HistoryView, MemoryKillsResponse, Notice, Settlement, StreamEvent 
 import { startAnthropicGateway, type AnthropicGateway } from "./support/anthropic-gateway.ts";
 import { deniedDir, testChildren } from "./support/children.ts";
 import type { ChildPolicy } from "../src/children.ts";
-import { unixFetch } from "../src/unix-fetch.ts";
 import {
   CONTROL_STAND_IN,
   severKeepAliveSockets,
@@ -224,12 +223,15 @@ before(async () => {
         const { retries, guard, sweepWaitMs: _sweepWaitMs, ...turnSeams } = seams ?? {};
         return runSubmissionFor({
           models: registry,
-          // Over the control socket, as in a pod (ADR-0076).
+          // Over HTTPS at jr2's own name, under the pod's CA, as on the Fence (ADR-0059, ADR-0084).
           menu: {
-            url: "http://jr2-custodian",
+            url: sandbox.https.url,
             token: CONTROL_STAND_IN,
-            fetch: unixFetch(sandbox.socket),
-            retryWindowMs: 50,
+            fetch: sandbox.https.fetch,
+            // Each read is a new HTTPS connection (control-fetch.ts), and a loaded host can take longer
+            // than a short window to make one: the retries of a stopping Orchestrator's 503 then run out
+            // before its answer. The window bounds time only; the count of reads stays exact.
+            retryWindowMs: 5_000,
             retryInitialMs: 1,
           },
           // Each Working tool's child is confined by the real confiner (ADR-0076); the run's tmpdir,

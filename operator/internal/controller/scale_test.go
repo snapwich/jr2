@@ -129,22 +129,20 @@ func TestRepoEventsWakeOnlyChangedNodes(t *testing.T) {
 }
 
 // TestCacheOptionsSeeWhatTheOperatorCreates pins that the label-scoped cache
-// (ADR-0001) still holds every Pod and Service the operator creates: an object
+// (ADR-0001) still holds every Pod the operator creates: an object
 // the selector missed would be invisible to its own Sandbox's reconcile.
 func TestCacheOptionsSeeWhatTheOperatorCreates(t *testing.T) {
-	var pods, services labels.Selector
+	var pods labels.Selector
 	for obj, by := range CacheOptions().ByObject {
 		switch obj.(type) {
 		case *corev1.Pod:
 			pods = by.Label
-		case *corev1.Service:
-			services = by.Label
 		default:
-			t.Fatalf("want Pods and Services scoped and nothing else, got %T", obj)
+			t.Fatalf("want Pods scoped and nothing else (the operator makes no Service), got %T", obj)
 		}
 	}
-	if pods == nil || services == nil {
-		t.Fatal("want both Pods and Services scoped")
+	if pods == nil {
+		t.Fatal("want Pods scoped")
 	}
 
 	sandbox := &corev1alpha1.Sandbox{
@@ -154,9 +152,6 @@ func TestCacheOptionsSeeWhatTheOperatorCreates(t *testing.T) {
 	pod := (&SandboxReconciler{}).buildPod(sandbox, nil)
 	if !pods.Matches(labels.Set(pod.Labels)) {
 		t.Fatalf("the Pod the operator builds is outside its cache: %v", pod.Labels)
-	}
-	if !services.Matches(labels.Set(sandboxLabels(sandbox))) {
-		t.Fatalf("the Service the operator builds is outside its cache: %v", sandboxLabels(sandbox))
 	}
 	if pods.Matches(labels.Set{"app": "someone-else"}) {
 		t.Fatal("the cache admits a Pod the operator did not create")

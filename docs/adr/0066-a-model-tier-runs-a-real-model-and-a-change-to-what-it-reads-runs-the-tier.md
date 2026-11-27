@@ -15,9 +15,9 @@ recover, finish — are exercised only one scripted tool call at a time.
 
 ## Decision
 
-- **An opt-in `@model` tier: the `@kind` tier with the last fake removed.** Same shared vanilla kind cluster, same
-  bring-up (`just e2e-kind-up`), same `jr2 up` per scenario into a fresh namespace, same seed Repo, same Custodian path
-  — the endpoint's key is a Held secret bound to its host, and the Harness container holds a Stand-in
+- **An opt-in `@model` tier: the `@kind` tier with the last fake removed.** Same shared kind cluster, same bring-up
+  (`just e2e-kind-up`), same `jr2 up` per scenario into a fresh namespace, same seed Repo, same Custodian path — the
+  endpoint's key is a Held secret bound to its host, and the Harness container holds a Stand-in
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). What changes is the provider the
   Custodian swaps toward: a real model endpoint instead of the World's scripted one. The pod runs the stock Harness, the
   model originates every tool call, and the wire, the container boundary, the git transport and the Machine are all the
@@ -55,8 +55,10 @@ recover, finish — are exercised only one scripted tool call at a time.
   at the floor can hold: 9 of 10 where the ADR measured 10/10. Every run writes a scorecard,
   `features/.tmp/model-scorecard.json`, keyed by model id and cell; a committed baseline per model id sits in
   `features/model-baselines/`, and a cell that fell below its baseline while still above its floor is **reported**, not
-  failed. Drift is a signal to read; a floor is a defect. Each cell also records what its trials spent: the tokens and
-  the cost summed off each trial's Settlements
+  failed. Drift is a signal to read; a floor is a defect, but for one cell: unchanged code reads below the floor of
+  `chart-refusal` in some single runs, so one such run is not by itself a defect
+  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)). Each cell also records what its trials spent: the tokens
+  and the cost summed off each trial's Settlements
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)), in the scorecard and as one line of
   `features/.tmp/model-usage.jsonl`, and the tier prints the cell's cost beside the cost of the month so far. A trial
   whose usage cannot be read records that, and never fails.
@@ -65,14 +67,16 @@ recover, finish — are exercised only one scripted tool call at a time.
   model obeys either placement and hides the regression. A model qualifies when the known regressions, put back, take
   their cells below the floor: (a) ADR-0029's, the Allowed picks stated ahead of the prompt (`obedience`; Qwen obeyed 0
   of 10), and (b) a draft's Chart briefing text that Qwen admitted 5 of 10 times (`chart-refusal`, floor 7; a snapshot
-  kept outside the repo). On 2026-10-25 Claude Haiku 5.5 caught neither: with the picks ahead of the prompt its first
-  call was the allowed `hold` in 20 of 20 trials, and on the draft's text it admitted 10 of 10. So a Haiku run checks
-  the tier's machinery, cheaply, and never a change to what the model reads. The same model served another way is
-  another instrument: NVIDIA's NVFP4 checkpoint on vLLM 0.32 with MTP, about twice the throughput, took `answered` from
-  10 of 10 to 6 of 10 (4 trials fixed the failing test and shipped) and `chart-refusal` to 4 of 10, so the home lab
-  serves the FP8 weights on the image the baselines were measured on. Any other model must clear the same floors and
-  cannot lower them; adding a model adds a baseline row, never a floor. The run is measured once per invocation, on
-  whichever endpoint is selected, because it costs minutes and its failure is a defect to read, not a rate.
+  kept outside the repo). Unchanged code reads about 0.69 on that cell, and 5 of 10 in some single runs (ADR-0070). So
+  one run at or below the floor does not tell regression (b) from the cell's noise: a pattern over runs, or over cells,
+  does. On 2026-10-25 Claude Haiku 5.5 caught neither: with the picks ahead of the prompt its first call was the allowed
+  `hold` in 20 of 20 trials, and on the draft's text it admitted 10 of 10. So a Haiku run checks the tier's machinery,
+  cheaply, and never a change to what the model reads. The same model served another way is another instrument: NVIDIA's
+  NVFP4 checkpoint on vLLM 0.32 with MTP, about twice the throughput, took `answered` from 10 of 10 to 6 of 10 (4 trials
+  fixed the failing test and shipped) and `chart-refusal` to 4 of 10, so the home lab serves the FP8 weights on the
+  image the baselines were measured on. Any other model must clear the same floors and cannot lower them; adding a model
+  adds a baseline row, never a floor. The run is measured once per invocation, on whichever endpoint is selected,
+  because it costs minutes and its failure is a defect to read, not a rate.
 - **The endpoint is a profile, selected by env, and the key never enters a file.**
   `features/model-endpoints/<name>.json` carries `id`, `api`, `baseUrl` and `model`, plus the tier's own `thinking`
   cells, `trials`, `parallel` and `workers` (below), and optionally a `caBundle` path for a private CA
@@ -91,9 +95,9 @@ recover, finish — are exercised only one scripted tool call at a time.
   the lock names one owner, so a later suite with another profile could take it over while the second still converges,
   and two suites put twice `workers` × `parallel` runs in flight. A lock whose owner is gone is taken over. Nothing in
   the product learns the tier exists. Reachability from the pods is `jr2 up`'s provider preflight, for both kinds of
-  profile. It checks each model from a check pod with a Custodian before it writes anything
-  ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). So a pod with no egress to the provider
-  fails the converge at the check pod.
+  profile. It checks each model from a check pod, which reaches the Custodian as a pod of its class does, before it
+  writes anything ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). So a pod with no egress to
+  the provider fails the converge at the check pod.
 - **Not in CI. Run by whoever changed what the model reads, before calling the change done.** Not in `pnpm -r test`, not
   in the release job: it needs a cluster and an endpoint, it is nondeterministic by nature, and a gate that flakes is a
   gate everyone re-runs. `just e2e-model` probes the profile's endpoint first and, when nothing answers, exits 0 with
@@ -298,26 +302,31 @@ recover, finish — are exercised only one scripted tool call at a time.
   publishes again, and finishes. The first push's answer carries the paragraph after a signed push. The measure is the
   Machine's record of the second push: `pushed`; an Agent that rewrites the pushed commits after their ids changed makes
   it `diverged`. A trial whose first push did not publish a signed copy is void, and so is a trial whose only push
-  already carried two or more commits from `main` (below). Its floor is `push-follow`'s, 9 of 10: the answer is the
-  newest thing the model read. Its first run (home-lab vLLM, 2026-10-11) read 9 of 10, none void, at its floor: now a
-  baseline (4316bdb). For it the tier's shared instance gained a push credentials entry
-  (`features/model-instance/jr2.config.ts`) and its Effector image a passwd entry for uid 1000 (9cd3935). The user
-  approved this on 2026-10-11 as not a setup change: the rule guards what the model is put in front of, and a credential
-  entry and a passwd line change nothing the model reads. No existing claim's prompt, workflow or floor changed, and
-  every existing cell held its baseline after the change. Its next run (2026-10-11) read 8 of 10, below its floor and
-  its baseline, and a diagnostic run read 6 of 10. Each of the four misses whose log was read had one shape: the model
-  made both commits before its first `publish`, published once, and finished. The claim measures the paragraph after a
-  signed push, which the model reads only after a push; in such a trial the model chose its order before it read any
-  post-push text and had no work left to continue, so the measured moment never occurred — the shape of the `noticed`
-  and `push-follow` voids. The setup changed for it (decided under the user's deferral on 2026-10-11, confirmed by the
-  user on 2026-10-12): when the setup holds and there is one push, the step counts the commits from `main` to that
-  push's published commit on `push.git`, and two or more make the trial void ("void: the first push carried <n> commits
-  …"). It decides from the push's content, never from the push count, so "published once, committed, finished" and
-  "published, reset, finished" stay misses. The prompt, the floor and the pass did not change, and the 8 of 10 stands:
-  the claim passes only on a new run. The void shares the claim's one bound of replacements (half the trials, rounded
-  up) with the setup void, and a void past it counts against the floor and prints as a void. At the diagnostic run's
-  rate, 4 of 10, the bound is often spent; the claim is then open, not passed. Rejected: counting the batched trial a
-  miss (it measures the model's reading of the claim's own prompt), raising the bound, or lowering the floor.
+  already held the second change (below). Its floor is `push-follow`'s, 9 of 10: the answer is the newest thing the
+  model read. Its first run (home-lab vLLM, 2026-10-11) read 9 of 10, none void, at its floor: now a baseline (4316bdb).
+  For it the tier's shared instance gained a push credentials entry (`features/model-instance/jr2.config.ts`) and its
+  Effector image a passwd entry for uid 1000 (9cd3935). The user approved this on 2026-10-11 as not a setup change: the
+  rule guards what the model is put in front of, and a credential entry and a passwd line change nothing the model
+  reads. No existing claim's prompt, workflow or floor changed, and every existing cell held its baseline after the
+  change. Its next run (2026-10-11) read 8 of 10, below its floor and its baseline, and a diagnostic run read 6 of 10.
+  Each of the four misses whose log was read had one shape: the model made both commits before its first `publish`,
+  published once, and finished. The claim measures the paragraph after a signed push, which the model reads only after a
+  push; in such a trial the model chose its order before it read any post-push text and had no work left to continue, so
+  the measured moment never occurred — the shape of the `noticed` and `push-follow` voids. The setup changed for it
+  (decided under the user's deferral on 2026-10-11, confirmed by the user on 2026-10-12): when the setup holds and there
+  is one push, the step counts the commits from `main` to that push's published commit on `push.git`, and two or more
+  make the trial void ("void: the first push carried <n> commits …"). The build of ADR-0084 added a second void on
+  2026-11-19, and the user has not confirmed it yet: one commit whose `greet.js` already has the comment above `greet()`
+  makes the trial void too ("void: the first push already held the comment above greet() …"). The model put the fix and
+  the comment in one commit before it read any post-push text, which is the same shape (a run of 2026-11-19 read 8 of 10
+  with one such miss; the next run read 10 of 10 with one such void). The step decides from the push's content, never
+  from the push count, so "published once, committed, finished" and "published, reset, finished" stay misses, and a
+  trial with a second push is measured whatever its first push held. The prompt, the floor and the pass did not change,
+  and the 8 of 10 stands: the claim passes only on a new run. The void shares the claim's one bound of replacements
+  (half the trials, rounded up) with the setup void, and a void past it counts against the floor and prints as a void.
+  At the diagnostic run's rate, 4 of 10, the bound is often spent; the claim is then open, not passed. Rejected:
+  counting the batched trial a miss (it measures the model's reading of the claim's own prompt), raising the bound, or
+  lowering the floor.
 - The steering claims of ADR-0002 — `steer-follow` (a Caller's Steering message in an open Turn is followed) and
   `peer-not-order` (a peer's word that the workflow relays is not obeyed as an order) — are Menu-only. In `steer-follow`
   the step sends the message with `jr2 steer` while `run_checks` is outstanding, then answers the Gate: every check
@@ -381,6 +390,14 @@ recover, finish — are exercised only one scripted tool call at a time.
     in place of the plain receipt's "The workflow is still in the state that asked for this turn." The user approved
     this change on 2026-10-23 (question 21: give the review a real answer). In the claim-setups run (below) it gave 10
     of 10 on the home lab, on Haiku 5.5 and on Sonnet 5.5, and every trial finished.
+
+    The timer opens the picks 120 s after `reviewing`'s entry. The timer must be longer than the model's slow tail under
+    the tier's load, or it measures the endpoint's load, not the claim: a model still working when the picks open hears
+    them at a step boundary, and the trial is void. With 30 s, a full home-lab run on 2026-11-19 (16 streams on the
+    endpoint) had 7 voids, more than the bound of replacements, and the cell fell to 8 of 10. From the `ask_review`
+    answer to the model's next output, the median was 24 s and the longest 106.8 s; with the scenario alone, the median
+    was 8 s and no trial was void. The prompt, the floor (9) and the bound of replacements are unchanged. The user
+    approved this change on 2026-11-19.
 
   - `push-wake`, since replaced by `wake`. It measured a Menu-only Turn that started with nothing allowed and picked
     inside the same Submission once a Gate's answer was restated at a step boundary. The step first answered the board

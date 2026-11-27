@@ -12,6 +12,7 @@ import {
   type GitPushManifest,
 } from "../src/git-push.ts";
 import { gitTokenSecretName, type GitCredential } from "../src/config.ts";
+import { gitPushStandIn } from "../src/held-secrets.ts";
 
 const LIST: GitCredential[] = [
   { match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" },
@@ -24,7 +25,12 @@ const LIST: GitCredential[] = [
 ];
 
 test("each entry's push Secret: what it pushes and signs with, in Flux's key names, apart from the clone token's Secret", () => {
-  const { plans, skipped } = gitPushPlansOf(LIST, (n) => (n === "JR2_GIT_TOKEN" ? "ghp_0123456789abcdef" : undefined));
+  const key = Buffer.from("signing-key");
+  const { plans, skipped } = gitPushPlansOf(
+    LIST,
+    (n) => (n === "JR2_GIT_TOKEN" ? "ghp_0123456789abcdef" : undefined),
+    key,
+  );
   assert.equal(plans.length, 2, "an entry with nothing it can push with is not written");
   const [wild, ours] = plans;
   assert.deepEqual(wild!.entry, { match: "*", order: 0, secret: gitPushSecretName("*"), push: ["ssh", "token"] });
@@ -37,9 +43,17 @@ test("each entry's push Secret: what it pushes and signs with, in Flux's key nam
       ["identity.pub", "jr2-git-ssh/identity.pub"],
       ["known_hosts", "jr2-git-ssh/known_hosts"],
       ["username", "x-access-token"],
-      ["password", "ghp_0123456789abcdef"],
+      // The Effector's helper answers the Stand-in; the Custodian holds the token (ADR-0068).
+      ["password", gitPushStandIn(key, gitPushSecretName("*"))],
     ],
   );
+  // The token is not a key of the push Secret, which holds the ssh push key: it goes into the
+  // entry's token Secret, the one Secret of the entry that the Custodian reads (ADR-0068).
+  assert.ok(!wild!.sources.some((s) => s.key === "token" || ("literal" in s && s.literal.includes("ghp_"))));
+  assert.equal(wild!.token, "ghp_0123456789abcdef");
+  assert.equal(ours!.token, undefined, "an entry with no token has no token Secret");
+  assert.match(gitPushStandIn(key, gitPushSecretName("*")), /^jr2-held-password\./);
+  assert.notEqual(gitPushStandIn(key, gitPushSecretName("*")), gitPushStandIn(key, gitPushSecretName("github.com/")));
   // A `push` field is the push credential alone; the signing key rides the same Secret.
   assert.deepEqual(ours!.entry.push, ["ssh"]);
   assert.equal(ours!.entry.sign, "gpg");

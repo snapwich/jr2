@@ -6,8 +6,11 @@
 //     `jr2-git-push-<hash of match>`, never per Workspace: Flux's key names where Flux has them
 //     (`username`/`password` for a token, `identity`/`identity.pub`/`known_hosts` for an ssh key),
 //     `sign.identity` or `sign.private.asc` for the signing key, and `entry.json` — what the entry
-//     is, names only. A token is the `.env` value; a key is copied as data from the Secret the entry
-//     names, never decoded. And it writes the manifest `git-push.json` in `jr2-held`: which entries
+//     is, names only. A token's `password` is its Stand-in (`gitPushStandIn`). The `.env` value goes
+//     into the entry's token Secret, `jr2-git-push-<hash>-token`, alone: the Custodian holds it and
+//     swaps it into the push's Basic pair, and its Role names that Secret and never the push Secret,
+//     which holds the keys (ADR-0068). A key is copied as data from the Secret the entry names, never
+//     decoded. And it writes the manifest `git-push.json` in `jr2-held`: which entries
 //     it wrote and what each can spend, names only.
 //   - At provision the Orchestrator resolves each pushed slot's url against the fence and names the
 //     matched entry's Secret on the Sandbox CR (`gitCredentials`, the Repo CR's `secretRef` shape);
@@ -20,11 +23,12 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { matchCredential, type GitCredential } from "./config.ts";
+import { gitPushStandIn } from "./held-secrets.ts";
 import { repoIdentity } from "./repo-identity.ts";
 
 /** The `jr2-held` key of the push manifest. */
 export const GIT_PUSH_MANIFEST_KEY = "git-push.json";
-/** The label every entry's push Secret carries, so a stale one is found. */
+/** The label every entry's push Secret and token Secret carries, so a stale one is found. */
 export const LABEL_GIT_PUSH = "jr2.dev/git-push";
 
 /** One entry's push Secret: deterministic in `match`, so a redeploy finds its own and two entries
@@ -34,7 +38,19 @@ export function gitPushSecretName(match: string): string {
   return `jr2-git-push-${createHash("sha256").update(match).digest("hex").slice(0, 8)}`;
 }
 
-/** The keys of an entry's push Secret — the operator projects exactly these, each when present. */
+/** An entry's token Secret: the push token alone, under `GIT_PUSH_TOKEN_KEY`. Only the
+ * Custodian reads it, toward the push's host (ADR-0068). The entry's push Secret holds the ssh push
+ * key and the signing key, so the Custodian's Role never names that one, and no Sandbox Effector
+ * mounts this one. */
+export function gitPushTokenSecretName(pushSecret: string): string {
+  return `${pushSecret}-token`;
+}
+
+/** The one key of an entry's token Secret (`gitPushTokenSecretName`). */
+export const GIT_PUSH_TOKEN_KEY = "token";
+
+/** The keys of an entry's push Secret — the operator projects each when present. The token is not
+ * one: it is in the entry's token Secret (`gitPushTokenSecretName`, ADR-0068). */
 export const GIT_PUSH_KEYS = {
   entry: "entry.json",
   username: "username",
@@ -248,10 +264,12 @@ export type GitPushSource =
   | { key: string; literal: string }
   | { key: string; from: { secret: string; key: string }; optional?: boolean };
 
-/** One entry's push Secret, as `jr2 up` plans it before it reads the cluster. */
+/** One entry's push Secret, as `jr2 up` plans it before it reads the cluster. `token`: the value
+ * of its push token, which goes into the entry's token Secret (`gitPushTokenSecretName`). */
 export type GitPushPlan = {
   entry: GitPushEntry;
   sources: GitPushSource[];
+  token?: string;
 };
 
 /**
@@ -262,12 +280,14 @@ export type GitPushPlan = {
 export function gitPushPlansOf(
   list: readonly GitCredential[],
   env: (name: string) => string | undefined,
+  signingKey: Buffer,
 ): { plans: GitPushPlan[]; skipped: Map<string, string> } {
   const plans: GitPushPlan[] = [];
   const skipped = new Map<string, string>();
   list.forEach((entry, order) => {
     const sources: GitPushSource[] = [];
     const push: PushKind[] = [];
+    let tokenValue: string | undefined;
     const token = entry.push ? ("token" in entry.push ? entry.push.token : undefined) : entry.token;
     const sshKey = entry.push ? ("sshKey" in entry.push ? entry.push.sshKey : undefined) : entry.sshKey;
     if (sshKey !== undefined) {
@@ -282,10 +302,13 @@ export function gitPushPlansOf(
       const value = env(token);
       if (value) {
         push.push("token");
+        // The Effector's helper answers the Stand-in; the Custodian swaps the token in from the
+        // entry's token Secret (ADR-0068).
         sources.push(
           { key: GIT_PUSH_KEYS.username, literal: "x-access-token" },
-          { key: GIT_PUSH_KEYS.password, literal: value },
+          { key: GIT_PUSH_KEYS.password, literal: gitPushStandIn(signingKey, gitPushSecretName(entry.match)) },
         );
+        tokenValue = value;
       } else {
         skipped.set(entry.match, `its token's variable ${token} is not set — set it in .env`);
       }
@@ -314,7 +337,7 @@ export function gitPushPlansOf(
       ...(entry.committer ? { committer: { name: entry.committer.name, email: entry.committer.email } } : {}),
     };
     sources.unshift({ key: GIT_PUSH_KEYS.entry, literal: JSON.stringify(entryJson) });
-    plans.push({ entry: placed, sources });
+    plans.push({ entry: placed, sources, ...(tokenValue !== undefined ? { token: tokenValue } : {}) });
   });
   return { plans, skipped };
 }

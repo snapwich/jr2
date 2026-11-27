@@ -12,8 +12,8 @@
 //   - `resolveSize` walks the chain, most specific first, one field at a time: the Machine's Size
 //     (a `customize()` layered over the `workspace()`), then the Instance's `sandbox.resources` — a
 //     default for a Workspace that states none, never an override of one it states — then the kit.
-//   - `splitSize` divides the Size inside the pod: the Custodian's fixed slice, the User
-//     Container's split if the Machine states one, and the Harness gets the rest as its own limit,
+//   - `splitSize` divides the Size inside the pod: the User Container's split if the Machine
+//     states one, and the Harness gets the rest as its own limit,
 //     so an OOM stays per container where it can. It refuses a split that leaves the Harness below
 //     its floor, naming where each number came from, because the fix is an edit of one of them.
 //
@@ -95,9 +95,6 @@ export type Size = {
  * container limit, and `tsc` on a mid-size repo aborted below about 1.1Gi, so 1Gi fails a common
  * task; 2Gi covers `tsc` + vitest, `cargo build` and Playwright at 2 workers. */
 export const KIT_SIZE = { memory: "2Gi", cpu: "1" } as const;
-
-/** The Custodian's fixed slice of every Sandbox's Size (ADR-0060). */
-export const CUSTODIAN_SLICE = { memory: "64Mi", cpu: "50m" } as const;
 
 /** The Harness container's floor: a split that leaves it less memory than this is refused. */
 export const HARNESS_FLOOR = "256Mi";
@@ -276,9 +273,8 @@ export function resolveSize(machine: Size | undefined, instance: Size | undefine
 export type SizeSplit = {
   /** The whole Size, pod-level (KEP-2837): the ceiling the pod never passes. */
   pod: ResourceRequirements;
-  /** The rest of the Size, after the Custodian and the User Container. */
+  /** The rest of the Size, after the User Container. */
   harness: ResourceRequirements;
-  custodian: ResourceRequirements;
   /** Only when the Machine states a split for the User Container; otherwise it has no limit of its
    * own and shares the pod's budget. */
   user?: ResourceRequirements;
@@ -302,18 +298,16 @@ const SOURCE_TEXT: Record<SizeSource, (field: "memory" | "cpu") => string> = {
  * is one of them: a larger Size, or a smaller split.
  */
 export function splitSize(size: ResolvedSize, user?: Size): SizeSplit {
-  const custodian = { memory: memoryBytes(CUSTODIAN_SLICE.memory), cpu: cpuMillis(CUSTODIAN_SLICE.cpu) };
   const userMemory = user?.limits.memory !== undefined ? memoryBytes(user.limits.memory) : undefined;
   const userCpu = user?.limits.cpu !== undefined ? cpuMillis(user.limits.cpu) : undefined;
-  const harnessMemory = size.memory.bytes - custodian.memory - (userMemory ?? 0);
-  const harnessCpu = size.cpu.millis - custodian.cpu - (userCpu ?? 0);
+  const harnessMemory = size.memory.bytes - (userMemory ?? 0);
+  const harnessCpu = size.cpu.millis - (userCpu ?? 0);
 
   const floor = memoryBytes(HARNESS_FLOOR);
   if (harnessMemory < floor) {
     throw new Error(
       `the Size leaves the Harness container ${harnessMemory > 0 ? formatMemory(harnessMemory) : "no"} memory, below its ` +
-        `${HARNESS_FLOOR} floor: memory ${formatMemory(size.memory.bytes)} (${SOURCE_TEXT[size.memory.from]("memory")}) ` +
-        `− the Custodian's ${CUSTODIAN_SLICE.memory}` +
+        `${HARNESS_FLOOR} floor: memory ${formatMemory(size.memory.bytes)} (${SOURCE_TEXT[size.memory.from]("memory")})` +
         (userMemory !== undefined
           ? ` − the User Container's ${formatMemory(userMemory)} (its user.resources.limits.memory)`
           : "") +
@@ -323,7 +317,7 @@ export function splitSize(size: ResolvedSize, user?: Size): SizeSplit {
   if (harnessCpu <= 0) {
     throw new Error(
       `the Size leaves the Harness container no cpu: cpu ${formatCpu(size.cpu.millis)} ` +
-        `(${SOURCE_TEXT[size.cpu.from]("cpu")}) − the Custodian's ${CUSTODIAN_SLICE.cpu}` +
+        `(${SOURCE_TEXT[size.cpu.from]("cpu")})` +
         (userCpu !== undefined ? ` − the User Container's ${formatCpu(userCpu)} (its user.resources.limits.cpu)` : "") +
         " — raise the Size's limits.cpu, or shrink the User Container's split (ADR-0060)",
     );
@@ -348,7 +342,6 @@ export function splitSize(size: ResolvedSize, user?: Size): SizeSplit {
   return {
     pod: exact(size.memory.bytes, size.cpu.millis),
     harness,
-    custodian: exact(custodian.memory, custodian.cpu),
     ...(userResources ? { user: userResources } : {}),
     preflight: {
       requests: { ...PREFLIGHT_RESOURCES.requests },

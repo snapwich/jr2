@@ -136,7 +136,11 @@ relative to that Worktree. In a Workspace with no Repo Slot, the input has no `w
 An `http` Effect runs in the [Instance Effector](../reference/glossary.md#instance-effector). The
 [Effector](../reference/glossary.md#effector) puts the value of each Effect secret into the call. The Agent never reads
 the value. You can invoke an `http` Effect in a Machine with no Workspace. An `http` Effect with a file body runs in the
-Sandbox Effector, so invoke it in the body of a `workspace()`.
+Sandbox Effector, so invoke it in the body of a `workspace()`. Its call goes out through the
+[Custodian](../reference/glossary.md#custodian), so the [Egress list](../reference/glossary.md#egress-list) of the
+Workspace must permit the host of its `url`. For a `url` with no secret, `jr2 up` refuses to converge while the list has
+no entry for its host, and it prints the entry to add. See
+[Workspaces](../concepts/workspaces.md#the-network-of-a-sandbox).
 
 Each outcome is output for `onDone`. Route on `outcome`
 ([`HttpOutput`](../reference/authoring-surface/type-httpoutput.md)):
@@ -302,6 +306,19 @@ When you call `secret()`, `bearer()` or `text`, they refuse:
 - an Effect secret with no value, for example when `HOOK_TOKEN` is not in `.env`. `<name>` is the `name` of the entry,
   such as `hook-token`. Set the variable that `process.env` reads, such as `HOOK_TOKEN`:
   `secrets[<i>] needs exactly one of value or valueFrom — <name> has neither, which is what an unset .env variable reads as: set <name> in .env, or reference a Secret with valueFrom: { secretKeyRef: { name, key } } (ADR-0059)`
+- in an `http` whose body is a Worktree file, a header that holds a secret in a form that the Custodian cannot swap (a
+  Basic user from a secret, or text on both sides of the secret):
+  `workflow "<workflow>": the http Effect "<slot>" runs in Workspace of workflow "<workflow>", and its <header> header holds secret("<name>") in a form the Custodian cannot swap: the Custodian holds a Sandbox Effector's header secret, and swaps its Stand-in when the header is the secret alone, one scheme and the secret ("Token " + secret), or a Basic pair whose user is text and whose password is the secret (ADR-0068, ADR-0059)`
+- in an `http` whose body is a Worktree file, a header secret toward `http://` on a port other than 80, or toward
+  `https://` on port 80:
+  `workflow "<workflow>": the http Effect "<slot>" runs in Workspace of workflow "<workflow>", and its <header> header holds secret("<name>"), which the Custodian holds, toward <scheme>://<host>:<port>: the Custodian reads plain HTTP on port 80 alone and ends TLS on each other port of a host it holds a secret for, so this call cannot work. Use https on a port other than 80, or http on port 80 (ADR-0068, ADR-0084)`
+- in an `http` whose body is a Worktree file, a header secret that a credentialed `command` or a url's path of the same
+  Workspace also names. Name two secrets:
+  `workflow "<workflow>": the http Effect "<slot>" runs in Workspace of workflow "<workflow>", and secret("<name>") rides its <header> header, where the Custodian holds it, and the command "<slot>", where the Sandbox Effector holds its value: one file cannot hold both. Name two secrets (ADR-0068)`.
+  When a url's path holds the secret, the text says `the url of "<slot>"` in place of `the command "<slot>"`.
+- in an `http` whose body is a Worktree file, a header secret whose name is too long for the Custodian. Use a shorter
+  name:
+  `workflow "<workflow>": the http Effect "<slot>" runs in Workspace of workflow "<workflow>", and the name of secret("<name>") is too long for the Custodian, which holds it: the binding name "effector_" + the name, where each character other than a letter or a digit takes three, may have at most 128 characters. Use a shorter name (ADR-0068)`
 - an Effect secret with a value shorter than 8 characters:
   `secrets[<i>] (<name>) is an Effect secret shorter than 8 characters — the Effector replaces every match of a secret in what it returns, and a value this short would match ordinary text. Use the whole credential; the value itself is not shown (ADR-0068)`
 

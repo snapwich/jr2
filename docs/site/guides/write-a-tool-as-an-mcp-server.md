@@ -109,6 +109,9 @@ A stdio server is [Workspace code](../reference/glossary.md#workspace-code), as 
   [Held secrets](../reference/glossary.md#held-secret) that the
   [`workspace()`](../reference/authoring-surface/workspace.md) lists under `secrets`. A server that calls an API sends
   the Stand-in, and the [Custodian](../reference/glossary.md#custodian) puts the value in its place.
+- It reaches only the names that the [Egress list](../reference/glossary.md#egress-list) of its Workspace permits, and
+  the hosts of the Held secrets that the `workspace()` lists. All its traffic goes through the Custodian. See
+  [Workspaces](../concepts/workspaces.md#the-network-of-a-sandbox).
 - It runs as one process for each conversation of the Agent, from the first Turn to the end of the conversation. When it
   stops, its call fails, and the next call starts it again.
 

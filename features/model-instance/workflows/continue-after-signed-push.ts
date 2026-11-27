@@ -9,9 +9,10 @@
 // asks for two commits, each published, then `finish`. The measurement is the Machine's own record
 // of the SECOND push: `pushed`. An Agent that "repairs" its branch after the ids changed — a reset to
 // the old commits, an amend, a rebase — makes it `diverged`. A trial whose first push was not a
-// signed push that published (the setup) is void; so is one whose only push already carried two or
-// more commits from `main`, which the step reads on the push remote: the model chose its order
-// before it read any post-push text (ADR-0066).
+// signed push that published (the setup) is void; so is one whose only push already held the second
+// change (two or more commits from `main`, or a `greet.js` with the comment above `greet()`), which
+// the step reads on the push remote: the model chose its order before it read any post-push text
+// (ADR-0066).
 //
 // The Effector runs in this module's own image (`images/effector`: git and ssh); its Repo Slot binds
 // the seed's push remote over ssh, whose keys the scenario writes into its namespace (`jr2.config.ts`).
@@ -152,6 +153,6 @@ const body = jr2Setup({
 
 export const machine = workspace(body, {
   input: door,
-  repos: { app: { url: "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git", ref: "main" } },
+  repos: { app: { url: "ssh://git@seed.jr2-e2e-seed.svc.cluster.local/srv/push.git", ref: "main" } },
   effector: { image: import.meta.resolve("../images/effector") },
 });

@@ -27,6 +27,8 @@ export type SandboxObject = KubeObject & {
     repos?: Array<{ key?: string; url?: string }>;
     /** The Harness container's share of the Size (ADR-0060): what a memory kill hit. */
     resources?: { limits?: { memory?: string; cpu?: string } };
+    /** The pod's place on the Fence (ADR-0084): its slot's attachment, `jr2-fence-<i>`. */
+    network?: { attachment?: string; nameserver?: string };
   };
   status?: SandboxStatus;
 };
@@ -38,10 +40,12 @@ export type SandboxStatus = {
    * terminal, and the operator never creates another. Terminal: a Lost Sandbox is never Pending or
    * Ready again. */
   phase?: SandboxPhase;
-  endpoint?: string;
   /** The pod the operator created for this Sandbox — its once-only record that it did. The
    * Orchestrator judges no identity from it: Lost is the operator's verdict (ADR-0021). */
   podUID?: string;
+  /** The node of the Sandbox's pod, once the scheduler placed it: on the Fence, where the
+   * Orchestrator's dial to the pod goes through that node's Custodian pod (ADR-0084). */
+  node?: string;
   /** `Ready`, `ReposFresh`; `Scheduled` — the pod's scheduling restated, `False` with the
    * scheduler's reason (`Unschedulable`) or a quota's refusal of the create (`QuotaExceeded`) and
    * their own words (ADR-0063, ADR-0064); and `Lost`, `True` once the phase is Lost, with the pod's

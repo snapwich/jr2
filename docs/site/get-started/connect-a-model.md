@@ -47,13 +47,18 @@ that names an `anthropic/` model uses this key.
 == Local
 
 Open `jr2.config.ts`. Add the `harness` entry after the `git` entry. Keep the other lines and their comments. This is
-the result. Its comments are shorter than the comments in your file:
+the result, before the `egress` entry that you add below. Its comments are shorter than the comments in your file:
 
 <<< @/examples/shared/local/jr2.config.ts
 
 The entry adds a custom provider with the id `local`. An [Agent](../reference/glossary.md#agent) names a model of this
 provider as `local/<model>`, such as `local/qwen3.6-35b-a3b`. `<model>` is the name that the endpoint gives for
 `GET /v1/models`.
+
+Also add this entry after the `harness` entry: `egress: ["<address>:8000"],`. `<address>` is the address of
+`LOCAL_MODEL_URL` (the next step). The endpoint has no key, so a [Harness](../reference/glossary.md#harness) reaches it
+only by an entry on the [Egress list](../reference/glossary.md#egress-list). Without the entry, `jr2 up` refuses to
+converge when an Agent names the model, and it prints the entry to add.
 
 :::
 
@@ -173,8 +178,8 @@ The warning is correct for now. No [Workflow](../reference/glossary.md#workflow)
 model, so no pod gets the key.
 
 The next page adds a Workflow with an Agent that names the model. On the next page, `jr2 up` gives the key to the
-[Custodian](../reference/glossary.md#custodian) of the pod where the Agent works. Then it asks the model for one tool
-call through a Custodian that holds the key, before it converges. It is the first `jr2 up` that reaches the model.
+[Custodian](../reference/glossary.md#custodian). Then it asks the model for one tool call through the Custodian, before
+it converges. It is the first `jr2 up` that reaches the model.
 
 == Local
 
@@ -206,9 +211,9 @@ it converges. It is the first `jr2 up` that reaches the model.
 == Anthropic
 
 The API key is a [Held secret](../reference/glossary.md#held-secret). In this Instance, `jr2 up` gives its value only to
-the Custodian of each pod whose Agents use an `anthropic/` model. The Custodian is a container next to the
-[Harness](../reference/glossary.md#harness) container, where the Agent works. The Harness container holds only a
-[Stand-in](../reference/glossary.md#stand-in): a value that is worth nothing outside the pod. The Custodian puts the
+the Custodian. The Custodian is a part of the Instance in which no Agent executes code. The
+[Harness](../reference/glossary.md#harness), where the Agent works, holds only a
+[Stand-in](../reference/glossary.md#stand-in): a value that is worth nothing to a different host. The Custodian puts the
 real key into each request to the Anthropic API. Thus the Agent never holds the key
 ([ADR-0059](../reference/decisions/0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
 
@@ -224,7 +229,10 @@ names a `local/` model, `jr2 up` checks the endpoint from a pod in the cluster b
 of models, and then for one tool call. If the check fails, `jr2 up` stops and says why.
 
 This endpoint has no key, so jr2 permits plain `http://`. To add TLS and a key, read
-[Use a local model](../guides/use-a-local-model.md).
+[Use a local model](../guides/use-a-local-model.md). With no key, the endpoint is not the host of a
+[Held secret](../reference/glossary.md#held-secret). Thus each Harness reaches it only by the entry on the Egress list,
+the Harness of a [Sandbox](../reference/glossary.md#sandbox) and the
+[Instance Harness](../reference/glossary.md#instance-harness) alike.
 
 :::
 

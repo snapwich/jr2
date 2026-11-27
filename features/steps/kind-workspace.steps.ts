@@ -138,6 +138,18 @@ Then(
       .filter((l) => l.startsWith("JR2_"))
       .map((l) => l.split("=")[0]);
     assert.deepEqual(jr2, ["JR2_CUSTODIAN_URL"], "no JR2_ name but the Custodian's address reaches the shell");
+    // The Custodian is at jr2's own name, outside the pod, and the Fence takes each connection to
+    // it, so no proxy setting reaches the shell (ADR-0084, ADR-0076).
+    assert.match(
+      env,
+      /^JR2_CUSTODIAN_URL=https:\/\/custodian\.jr2\.internal$/m,
+      "the Custodian's address is jr2's name",
+    );
+    const proxies = env
+      .split("\n")
+      .map((l) => l.split("=")[0]!.toUpperCase())
+      .filter((n) => ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY"].includes(n));
+    assert.deepEqual(proxies, [], "no proxy setting reaches the shell");
     for (const standIn of await podStandIns(this)) {
       assert.ok(!env.includes(standIn), "no Stand-in of the pod is in the shell's env");
     }

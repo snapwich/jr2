@@ -181,7 +181,7 @@ gives jr2 a way to know a Caller with no kube credentials, a scope for each act,
     `secret` that is not a named secret.
   - **A follow-up is data.** A kind's answer to a person can give one POST for the door to make after the answer, with
     its url and its JSON (the reply to a Slack click). The kind declares the hosts of its posts, and `jr2 up` adds them
-    to the Instance Effector's fence (ADR-0068).
+    to the hosts that the Instance Effector's `effector.json` matches (ADR-0068).
   - **The interface is a public surface of v1.** A kind states `api: 1`, and a kind's package has a peer dependency on
     `@jr2/orchestrator`. The `api` is the contract, not the package version: the door refuses a kind whose `api` it does
     not know. Within `api: 1`, a new field of the interface is optional. A change that breaks a kind is `api: 2`.

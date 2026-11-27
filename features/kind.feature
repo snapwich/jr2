@@ -8,15 +8,17 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   It is also the only tier where the AGENT is real in the way that matters (ADR-0013): the pod
   originates its own tool calls. Since ADR-0038 the pod runs the STOCK Harness — pi, the real Menu
-  read through the Custodian on localhost, the real Working tools — and the ONLY thing still faked
-  is the model: a scripted OpenAI-compatible endpoint the World serves from the host, over HTTPS,
-  behind a key only the Custodian holds (ADR-0059). "The Agent calls X" means that model now
+  read through the Custodian, the real Working tools — and the ONLY thing still faked is the model:
+  a scripted OpenAI-compatible endpoint the World serves from the host, over HTTPS, by the name of a
+  Service of the scenario's namespace, behind a key only the Custodian holds (ADR-0059). Since
+  ADR-0084 a Sandbox's only network is the Fence: each connection and each lookup of the pod goes
+  to the Custodian, outside the pod, and the instance's Egress list says what it may reach. "The Agent calls X" means that model now
   answers with a tool call; the wire, the container boundary, the Custodian and the tool call are
   all real. Which makes this tier a SECOND pi canary beside the conformance suite (ADR-0027): a pi
   bump can break it.
 
   This tier is opt-in (`@kind`, excluded from the default suite) because it needs infrastructure:
-    just e2e-kind-up      # a VANILLA kind cluster; nothing is built or loaded here
+    just e2e-kind-up      # a kind cluster with no image in it; `jr2 up` installs the Fence's prerequisites
     just e2e-kind
   Bring-up is the product's own path (ADR-0010/0019/0038): each scenario runs `jr2 up` into a fresh
   namespace of the shared cluster, and that converge builds and loads every image it builds — the
@@ -54,19 +56,19 @@ Feature: a workspace() run drives a real Sandbox on kind
 
     Scenario: an admitted url is cloned onto the node the Sandbox lands on, and jr2 status says so
       Given the kind instance is serving
-      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc/app.git" detached
+      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc.cluster.local/app.git" detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
       # The cache agent's own account, read the way a human reads it — the Sandbox went Ready only
       # once the Repo was present and fetched on its node (ADR-0048/0051).
-      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc/app.git" present on the node
+      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc.cluster.local/app.git" present on the node
 
   Rule: a fetch inside the pod reaches the remote's now
     ADR-0053. `origin`'s fetch url is a COMMAND, not a path: git runs the program on the runtime
-    volume, which asks the Custodian on localhost, waits for the landing, and only then execs
-    `git upload-pack` against the node cache. So the ask crosses a loopback route, a Sandbox-token
-    route, an annotation on the CR, the operator's copy of it onto the pod, a DaemonSet, and a real
-    remote — and every one of those is real only here. What it buys is the case the grill took: a
+    volume, which asks the Custodian at jr2's own name (`custodian.jr2.internal`, ADR-0084), waits
+    for the landing, and only then execs `git upload-pack` against the node cache. So the ask
+    crosses the Fence, a Sandbox-token route, an annotation on the CR, the operator's copy of it
+    onto the pod, a DaemonSet, and a real remote — and every one of those is real only here. What it buys is the case the grill took: a
     human pushes a fix, and the Agent's next `git fetch` has it, in seconds rather than at the
     5-minute interval or the next attach.
 
@@ -89,7 +91,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # The mark and the landing, read off the CR the way a human reads it: the Orchestrator wrote
       # one annotation per Repo key, and the operator's standing entry says which fetch answered it
       # — a fetch that STARTED before the ask does not (ADR-0053).
-      And the Sandbox's ask for repo "http://seed.jr2-e2e-seed.svc/app.git" is answered by the fetch its status reports
+      And the Sandbox's ask for repo "http://seed.jr2-e2e-seed.svc.cluster.local/app.git" is answered by the fetch its status reports
 
     Scenario: origin fetches through the program and pushes to the remote itself
       Given the kind instance is serving
@@ -100,7 +102,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # IDENTITY as its argument — never the cache key, which is a derived directory name (ADR-0004)
       # — and, on the push line, the Binding's own spelling, unchanged. A push still goes to the
       # remote with the caller's own credential, never the Agent's (ADR-0005).
-      Then origin in repo "app" fetches through the program and pushes to "http://seed.jr2-e2e-seed.svc/app.git"
+      Then origin in repo "app" fetches through the program and pushes to "http://seed.jr2-e2e-seed.svc.cluster.local/app.git"
 
     Scenario: the human's seat fetches the same way, from a read-only runtime
       Given the kind instance is serving
@@ -236,7 +238,9 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: an Agent's MCP tools and an mcp Effect reach the server with the value, and the Harness holds only Stand-ins
     ADR-0079, ADR-0059. The fake MCP server runs on the host, over HTTPS under the tier's CA, and
-    the kind config declares it two times, as `lookup-a` and `lookup-b`, each with its own key.
+    the kind config declares it two times, as `lookup-a` and `lookup-b`, each with its own key. It
+    has no name: its url names the host's address and port, so a Sandbox's Custodian intercepts an
+    address, with a leaf for that address, and the bound host needs no entry (ADR-0084).
     Both keys are bound to one host in one header, so the Custodian chooses each value by the
     Stand-in that a request carries. Every converge lists the tools from a check pod, through its
     Custodian, and holds each Agent's allowlist to the live list (ADR-0019). The `tooled` Agent, in a
@@ -368,18 +372,21 @@ Feature: a workspace() run drives a real Sandbox on kind
   Rule: a file-body http and a credentialed command run in the Workspace's Sandbox Effector, which the Agent cannot read
     ADR-0067, ADR-0068. The `effected` workflow's body commits a file in the Harness container, then
     runs an Effect that `jr2 up` placed in this Workspace's Sandbox Effector: an `http` whose body is the
-    file to the echo with `bearer(secret("echo-token"))`, or a credentialed `command` whose env names
-    the token by value and by `.path`. The provision adds the `effector` container to the pod; the
-    Harness container mounts none of its volumes. A credentialed command runs against the pinned
-    commit in a scratch of its own, so an uncommitted edit is never seen and the answer says
-    `dirty`; its child is confined with Landlock, so the Effector's key is no file it can read.
-    Every string that comes back is scrubbed. The Orchestrator reaches the Effector by the headless
-    Service the provision writes beside it, which resolves to the pod's own address.
+    file to the echo with `bearer(secret("echo-bearer"))`, or a credentialed `command` whose env names
+    `echo-token` by value and by `.path`. The provision adds the `effector` container to the pod; the
+    Harness container mounts none of its volumes. The Custodian holds the bearer: the Effector's
+    file of it is its Stand-in, and the Custodian puts the value in its place toward the echo. A
+    credentialed command runs against the pinned commit in a scratch of its own, so an uncommitted
+    edit is never seen and the answer says `dirty`; its child is confined with Landlock, so the
+    Effector's key is no file it can read. Every string that comes back is scrubbed of each value
+    the Effector holds. The Orchestrator reaches the Effector through the Custodian's uplink, at its
+    slot's address.
 
-    Scenario: an http whose body is a committed Worktree file sends it, and the answer names the secret
+    Scenario: an http whose body is a committed Worktree file sends it, and the Custodian puts the bearer in
       Given the kind instance is serving
       When I start the "effected" workflow in mode "file-body" detached
       Then the run's Sandbox pod has a Sandbox Effector beside the Agent
+      And the Sandbox Effector holds the bearer's Stand-in, and no file or env of its container holds the value
       When the held Effect is released
       Then the file-body http's answer is a response from the echo, whose body is the committed file
 
@@ -528,17 +535,19 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run failed with reason "the Sandbox was lost"
       And no Sandbox was re-provisioned for the run
 
-  Rule: the Agent's only control-plane peer is the Custodian on localhost
-    ADR-0013, ADR-0059. The Agent reaches its Machine through a container it can talk to but whose
-    credential it cannot read: the Harness holds the control token's Stand-in, and the Custodian
-    puts the token on its own routes and no other. Nothing else in the pod can deliver — which is
-    what makes "the Agent never steers the workflow" enforced rather than advertised.
+  Rule: the Agent's only control-plane peer is the Custodian
+    ADR-0013, ADR-0059, ADR-0084. The Agent reaches its Machine through a Custodian that it can
+    talk to but whose credential it cannot read: the Harness holds the control token's Stand-in,
+    and the Custodian puts the token on its own routes and no other. The Custodian is outside the
+    pod, and the Fence is the pod's only network, so nothing in the pod can reach the Orchestrator
+    at all — which is what makes "the Agent never steers the workflow" enforced rather than
+    advertised.
 
     Scenario: the tool call originates inside the pod and drives the Machine
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      And the run's Sandbox runs the Custodian beside the Harness
+      And the run's Sandbox is on the Fence, and its Custodian is outside the pod
       # The pod dialed out and read its Menu before the model ever spoke — visible here as the tool
       # set the Harness put on the provider request (ADR-0015/0028/0029).
       And the model was offered "finish" from the Menu and its Working tools
@@ -552,11 +561,11 @@ Feature: a workspace() run drives a real Sandbox on kind
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      # The Harness container shares the pod's network namespace — so it CAN reach the
-      # Orchestrator, address and all. Even the control Stand-in, which no confined child reads,
-      # is worth nothing there: the control token is the Custodian's alone.
-      When the Harness container posts "finish" straight to the Orchestrator
-      Then the delivery is refused as unauthorized
+      # The Harness container is outside the Agents' domain, so it can read the control Stand-in.
+      # It is worth nothing there: the Orchestrator's name gets the resolver's refusal, and its
+      # address gets the Custodian's, because no entry of the Egress list names it.
+      When the Harness container posts "finish" straight to the Orchestrator, by its name and by its address
+      Then the Orchestrator never answered, and the Fence refused both with jr2's reason
       And the run has not settled
 
   Rule: no Workspace code can act as an Agent
@@ -710,11 +719,12 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's Sandbox is destroyed
 
   Rule: a Harness holds stand-ins, and only the Custodian puts the key on the wire
-    ADR-0059, ADR-0076. Workspace code runs in the Harness container, so a key there is a key it can
-    take away. The Harness holds a secret Stand-in, as a file under /run/jr2 that no confined child
-    reads and in no env; the Custodian, a container the Agent executes nothing in, swaps it for the
-    key toward the provider's host alone. What the Agent can take out of the pod is worth nothing
-    outside it.
+    ADR-0059, ADR-0076, ADR-0084. Workspace code runs in the Harness container, so a key there is a
+    key it can take away. The Harness holds a secret Stand-in, as a file under /run/jr2 that no
+    confined child reads and in no env; the Custodian, outside the pod on the Sandbox's node, swaps
+    it for the key toward the provider's host alone. What the Agent can take out of the pod is worth
+    nothing outside it. The unbound echo is at an address with no name, and the instance's Egress
+    list names that address and its port, so the Custodian carries its TLS untouched.
 
     Scenario: the provider receives the key, and the Harness container holds only the stand-in
       Given the kind instance is serving
@@ -742,26 +752,27 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the model provider received no request without the key
 
   Rule: no Harness pod reaches a cloud metadata address
-    ADR-0076. Where a node's metadata service answers pods, it gives the node's cloud credential,
-    which no workspace() grants. So `jr2 up` converges an egress NetworkPolicy for each Harness pod:
-    every address, except the metadata addresses. kindnet enforces it. kind has no metadata service,
-    so the step gives the address to the node, and a pod that the policy does not select is the
-    control.
+    ADR-0076, ADR-0084, ADR-0059. Where a node's metadata service answers pods, it gives the node's
+    cloud credential, which no workspace() grants. A Harness pod reaches no address but the
+    Custodian, and an address that no entry of the Egress list names is refused, so the metadata
+    address is refused like any other; and no entry can name it, because the Custodian's dial guard
+    never dials a link-local address. kind has no metadata service, so the step gives the address
+    to each node, and a pod on the cluster's network is the control: the node answers it.
 
-    Scenario: an Agent's bash cannot connect to the metadata address, and still reaches the model's host and the Orchestrator
+    Scenario: an Agent's bash gets the Custodian's refusal from the metadata address, and still reaches a host of its Egress list
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      When the Agent's bash connects to the cloud metadata address, the model's host and the Orchestrator
-      Then the metadata address did not answer the Agent's bash, and the model's host and the Orchestrator did
+      When the Agent's bash asks the cloud metadata address and the unbound echo
+      Then the metadata address gave the Agent's bash the Custodian's refusal and no byte of the node's, and the echo answered it
 
   Rule: a Harness answers the Orchestrator alone
     ADR-0058. The Harness wire drives conversations — admit a Turn, read its history, abort it — and
     its iids are derivable (ADR-0013/0057), so a caller that can reach a Harness must also hold the
     bearer the Orchestrator derives for that pod, which no pod holds (the Harness keeps only its
-    digest). And no pod but the Orchestrator reaches a Harness pod at all: an ingress NetworkPolicy
-    per placement, which kindnet enforces. The bearer is the control; the policy bounds where a pod
-    may talk.
+    digest). And a Sandbox reaches no other pod at all: its only network is the Fence (ADR-0084), so
+    the Instance Harness's name gets the resolver's refusal, and its address, slot 0's on the
+    segment, no answer. The bearer is the control; the Fence bounds where a Sandbox may talk.
 
     Scenario: the Agent cannot drive its own Harness's wire
       Given the kind instance is serving
@@ -779,7 +790,103 @@ Feature: a workspace() run drives a real Sandbox on kind
       # The Instance Harness holds every Menu-only conversation in the Instance (ADR-0031), and the
       # kind instance's advisor converges one in every scenario's namespace.
       When the Harness container dials the Instance Harness
-      Then the connection never completes
+      Then the Instance Harness never answered: its name is refused, and its address gets no answer
+
+  Rule: a Sandbox's only peer is the Custodian, and each refusal names the Sandbox and the reason
+    ADR-0084. Workspace code can be root in its pod, so the Fence is outside the pod, and each
+    probe here is a regular client in a posture of the product: the Harness container (the image's
+    uid, no capability) and the User Container (root, with the runtime's default capabilities,
+    NET_RAW among them). A name that no entry names gets the resolver's refusal, also from a DNS
+    server that the client names. A connection to an address that no entry names (the node, the API
+    server, a public address) gets the Custodian's refusal and no byte of the target. A placeholder
+    that another slot holds does not carry its name here. Another Harness pod gets no answer, and
+    ICMP gets nothing. The Custodian logs each refusal with the Sandbox and the reason. From the
+    cluster's network, only the Custodian pod's published ports answer, and a plain pod reaches no
+    slot. The checks that forge an identity (a spoofed address, a VLAN of the pod's own, a PROXY
+    preamble, a header of jr2's) are not here: they are an open item.
+
+    Scenario: the Harness container and the User Container reach the Custodian alone, and get jr2's reason
+      Given the kind instance is serving
+      When I start the "seated" workflow detached
+      Then the run's Sandbox becomes Ready
+      When another run's Sandbox becomes Ready beside it
+      And the Harness container dials past the Egress list
+      Then the probe ran as a uid other than 0, with no capability
+      And each name that no entry names got the resolver's refusal, also from a DNS server that the client named, and a listed name got its placeholder
+      And the node, the API server and a public address each got the Custodian's refusal and no byte of their own
+      And another slot's placeholder got no connection to the name it stands for
+      And another Sandbox and the Instance Harness got no answer
+      And the Custodian logged each refusal with the Sandbox and the reason
+      When the User Container dials past the Egress list
+      Then the probe ran as root, with NET_RAW
+      And each name that no entry names got the resolver's refusal, also from a DNS server that the client named, and a listed name got its placeholder
+      And the node, the API server and a public address each got the Custodian's refusal and no byte of their own
+      And another slot's placeholder got no connection to the name it stands for
+      And another Sandbox and the Instance Harness got no answer
+      And an ICMP echo to the node and to a public address got no answer
+      And the Custodian logged each refusal with the Sandbox and the reason
+
+    Scenario: a plain pod on the cluster's network reaches only the Custodian's published ports
+      Given the kind instance is serving
+      When a plain pod on the cluster's network dials each port of a Custodian pod
+      Then only the Custodian's health port answered it, and no slot listener, resolver, inbound or control port did
+
+  Rule: only an Instance's own pods name its attachments of the Fence
+    ADR-0084. Multus gives a pod each attachment that its annotations name, of any namespace, and
+    its namespaceIsolation guards neither v1.multus-cni.io/default-network nor the namespace
+    default. So jr2's two admission policies are the guard, with any Multus: a pod whose annotation
+    holds the reserved prefix jr2-fence-, or a JSON escape, must be in an Instance's namespace and
+    name each network as <its namespace>/<name>[@<interface>]; and an attachment on the bridge
+    jr2fence0 must be in an Instance's namespace, with the reserved prefix. `own` is the scenario's
+    Instance namespace and `peer` another Instance's. A Binding's annotations are merged into its
+    pod, so the pods' policy judges a Binding too. Each check is a server-side dry run, which makes
+    nothing: an update is a dry-run patch of a pod that is there (`change`: of the pod that has the
+    annotation already), and `binding` and `bindings` are dry-run Bindings of a pod that no node
+    can take. The rule in TypeScript that `jr2 up` audits the cluster with must give each row's
+    answer too.
+
+    Scenario: the policies admit the Instance's own forms, and deny each other way to name an attachment of the Fence
+      Given the kind instance is serving
+      And a namespace that carries the label of an Instance and holds no Instance
+      Then the API server answers each server-side dry run of a pod as the table says
+        | namespace   | request | annotation      | value                                                | answer |
+        | own         | create  | default-network | {own}/jr2-fence-3                                    | admit  |
+        | own         | create  | networks        | {own}/jr2-fence-uplink@net1                          | admit  |
+        | own         | create  | networks        | {own}/jr2-fence-1,{own}/jr2-fence-2@net2             | admit  |
+        | own         | create  | default-network | jr2-fence-3                                          | deny   |
+        | own         | create  | networks        | jr2-fence-3                                          | deny   |
+        | own         | create  | networks        | [{"name":"jr2-fence-3","namespace":"{own}"}]         | deny   |
+        | own         | create  | networks        | {own}/jr2-fence-1, {own}/jr2-fence-2                 | deny   |
+        | own         | create  | default-network | {peer}/jr2-fence-3                                   | deny   |
+        | own         | create  | networks        | {own}/jr2-fence-1,{peer}/jr2-fence-1                 | deny   |
+        | peer        | create  | default-network | {own}/jr2-fence-3                                    | deny   |
+        | peer        | create  | networks        | {own}/jr2-fence-uplink@net1                          | deny   |
+        | default     | create  | default-network | {own}/jr2-fence-3                                    | deny   |
+        | default     | create  | networks        | {own}/jr2-fence-3                                    | deny   |
+        | default     | create  | default-network | [{"name":"jr2-fence-3","namespace":"{own}"}]         | deny   |
+        | default     | create  | networks        | [{"name":"jr2\\u002dfence-3","namespace":"{own}"}] | deny   |
+        | kube-system | create  | default-network | jr2-fence-3                                          | deny   |
+        | default     | create  | networks        | default/macvlan                                      | admit  |
+        | own         | update  | default-network | {own}/jr2-fence-3                                    | admit  |
+        | own         | update  | default-network | {peer}/jr2-fence-3                                   | deny   |
+        | kube-system | update  | default-network | {own}/jr2-fence-3                                    | deny   |
+        | kube-system | status  | networks        | {own}/jr2-fence-3                                    | deny   |
+        | own         | change  | networks        | {peer}/jr2-fence-uplink@net1                         | deny   |
+        | default     | binding  | default-network | {own}/jr2-fence-3                                   | deny   |
+        | default     | binding  | networks        | {own}/jr2-fence-3                                   | deny   |
+        | default     | bindings | default-network | {own}/jr2-fence-3                                   | deny   |
+        | own         | bindings | networks        | {peer}/jr2-fence-3                                  | deny   |
+        | own         | binding  | default-network | {own}/jr2-fence-3                                   | admit  |
+        | default     | binding  | none            |                                                     | admit  |
+        | default     | bindings | none            |                                                     | admit  |
+      And the API server answers each server-side dry run of a NetworkAttachmentDefinition as the table says
+        | namespace   | name            | config                            | answer |
+        | own         | jr2-fence-check | bridge jr2fence0                  | admit  |
+        | own         | check           | bridge jr2fence0                  | deny   |
+        | default     | jr2-fence-check | bridge jr2fence0                  | deny   |
+        | kube-system | check           | macvlan on jr2fence0              | deny   |
+        | default     | check           | bridge jr2fence0 through an escape | deny   |
+        | default     | check           | bridge br0                        | admit  |
 
   Rule: an Agent's turn ends when the state that asked for it stops waiting
     ADR-0024. Leaving an Agent invoke means "I am no longer interested in this answer", so the
@@ -916,15 +1023,19 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: a Menu-only Agent's Turn runs on the Instance Harness, and needs no Sandbox
     ADR-0031. An Agent whose definition declares `workspace: "none"` (ADR-0028) has no worktree to
-    run in, so `jr2 up` converges an Instance Harness — a Harness + Custodian pod with no Workspace —
-    whenever a registered Machine carries such a definition, and the Turn is admitted THERE. No
-    config names or enables it: the kind instance's `advisor` definition is the whole reason the
-    Deployment exists in every scenario's namespace. Placement is definition-wins: even invoked
-    inside a `workspace()`, the advisor's conversation lives on the Instance Harness and never on
-    the run's Sandbox, because a conversation is an Instance ID on ONE server.
+    run in, so `jr2 up` converges an Instance Harness — a pod with the Harness alone and no
+    Workspace — whenever a registered Machine carries such a definition, and the Turn is admitted
+    THERE. No config names or enables it: the kind instance's `advisor` definition is the whole
+    reason the StatefulSet exists in every scenario's namespace. It is behind the Fence as a
+    Sandbox is (ADR-0084): on slot 0 of the Instance's range, its model and its Menu through the
+    Instance's Custodian, and the Orchestrator dials it through the Custodian pod on its node, which
+    it finds in the EndpointSlices of the pod's headless Service. Placement is definition-wins: even
+    invoked inside a `workspace()`, the advisor's conversation lives on the Instance Harness and
+    never on the run's Sandbox, because a conversation is an Instance ID on ONE server.
 
     Scenario: a workflow with no Workspace runs its Agent on the Instance Harness
       Given the kind instance is serving
+      Then the Instance Harness is on slot 0 of the Fence, and its Custodian is outside the pod
       When I start the "advised" workflow detached
       Then the model was offered "advise" from the Menu and no Working tools
       And the Instance Harness holds the "advisor" conversation of the run's root Machine
@@ -954,9 +1065,9 @@ Feature: a workspace() run drives a real Sandbox on kind
 
     Scenario: the instance serves, status names git's error, and the run that needs the Repo faults by name
       Given the kind instance is serving
-      Then jr2 status reports repo "http://seed.jr2-e2e-seed.svc/missing.git" absent with git's error
+      Then jr2 status reports repo "http://seed.jr2-e2e-seed.svc.cluster.local/missing.git" absent with git's error
       When I start the "unsynced" workflow detached
-      Then the run faults naming repo "http://seed.jr2-e2e-seed.svc/missing.git" and git's error
+      Then the run faults naming repo "http://seed.jr2-e2e-seed.svc.cluster.local/missing.git" and git's error
 
   Rule: the Repo sweep takes a Repo nothing binds and no run attached lately, resource and node copy both
     ADR-0051. Eviction is reachability plus age: `jr2 gc --repo-ttl` deletes a `Repo` resource no
@@ -968,17 +1079,17 @@ Feature: a workspace() run drives a real Sandbox on kind
 
     Scenario: a per-run Repo outlives its run until the sweep, and the sweep clears it off the node
       Given the kind instance is serving
-      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc/other.git" detached
+      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git" detached
       Then the run's Sandbox becomes Ready
-      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc/other.git" present on the node
+      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git" present on the node
       When the Agent in the Sandbox calls "finish" with summary "done"
       Then the run's body settled as "finished"
       And the run's Sandbox is destroyed
-      And a node still holds the cache of repo "http://seed.jr2-e2e-seed.svc/other.git"
-      When I sweep Repos no run attached within "1m", once repo "http://seed.jr2-e2e-seed.svc/other.git" is that old
-      Then jr2 status no longer lists repo "http://seed.jr2-e2e-seed.svc/other.git"
-      And jr2 status still lists repo "http://seed.jr2-e2e-seed.svc/app.git" as bound
-      And no node holds the cache of repo "http://seed.jr2-e2e-seed.svc/other.git" any more
+      And a node still holds the cache of repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git"
+      When I sweep Repos no run attached within "1m", once repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git" is that old
+      Then jr2 status no longer lists repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git"
+      And jr2 status still lists repo "http://seed.jr2-e2e-seed.svc.cluster.local/app.git" as bound
+      And no node holds the cache of repo "http://seed.jr2-e2e-seed.svc.cluster.local/other.git" any more
 
   Rule: a shipped Machine runs as a consumer registers it
     ADR-0054. `@jr2/machines` ships Machines for END USERS, and an example nobody can import is not

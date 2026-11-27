@@ -17,7 +17,7 @@ export const machine = customize(task, {
   // The same Repo the tier's other workflows bind (ADR-0051). `task` leaves its slot map Open, so
   // the slot name is ours too — `target` is the word this file chooses, and being the first (and
   // only) slot, it is where the coder works.
-  repos: { target: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { target: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" } },
   // The one model this instance has (`jr2.config.ts`'s `fake` provider): a real Agent definition at
   // a real model id, so `jr2 up`'s provider preflight checks it like any other.
   agents: { coder: { model: "fake/model-x" } },

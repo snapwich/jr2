@@ -8,7 +8,6 @@ package controller
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 	"github.com/snapwich/jr2/operator/internal/repocache"
@@ -20,9 +19,8 @@ const (
 	reposMount = "/repos"
 )
 
-// sandboxLabels are the pod labels the Sandbox's Service selects on, and the
-// Pod's and Service's own: the managed-by label is what the manager caches
-// them by (CacheOptions).
+// sandboxLabels are the Pod's own labels: the managed-by label is what the
+// manager caches it by (CacheOptions).
 func sandboxLabels(sandbox *corev1alpha1.Sandbox) map[string]string {
 	return map[string]string{
 		ManagedByLabel:         ManagedByValue,
@@ -37,10 +35,6 @@ func portFor(sandbox *corev1alpha1.Sandbox) int32 {
 		return sandbox.Spec.Port
 	}
 	return defaultPort
-}
-
-func intstrFromInt32(v int32) intstr.IntOrString {
-	return intstr.FromInt32(v)
 }
 
 // podReady reports whether the Pod has the Ready condition set to True.

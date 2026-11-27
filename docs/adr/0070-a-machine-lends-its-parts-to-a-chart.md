@@ -334,5 +334,11 @@ their own maintainers, and the escapes shipped in systems that used them were in
   floor, and it answers the question: the misses are knowledge. With the worked fragment in the narrowed grammar, 9 of
   10 with no void trial, in 15 minutes against 23: the one miss was a malformed string, the first reports fell to a
   median of two lines, and the ten second Charts kept their own state and event names (two of ten reused the fragment's
-  `finished`). The baseline is that run's. What the next Chart gets wrong is in the trial evidence.
+  `finished`). That 9 of 10 was not the rate. Over all kept runs from 2026-10-25 to 2026-11-19, 103 of 150 trials
+  passed, about 0.69: single runs read 6, 7 and 7 of 10 on 2026-10-25, and 5, 5, 5, 9, 7, 8 and 6 of 10 on 2026-11-19 on
+  unchanged code. The misses were of the same kinds in each period: the next Chart sent as a string of malformed JSON,
+  and a second Chart that the door refused for a state `output` beside the Chart's or for an optional field written to
+  context. No change of what the planner reads explains a difference. So the baseline is 7 of 10 and the floor stays 7:
+  a run below the floor is expected about two times in five (the binomial at 0.69; 5 of the 10 runs above were below
+  it), and one such run is not a regression. What the next Chart gets wrong is in the trial evidence.
 - Deferred, named: a spend ceiling; a CEL-class reference kind; `publishChart`.

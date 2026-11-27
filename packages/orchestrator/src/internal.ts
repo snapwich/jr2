@@ -33,6 +33,7 @@ export * from "./size.ts";
 export * from "./customize.ts";
 export * from "./ambient.ts";
 export * from "./config.ts";
+export * from "./egress.ts";
 export * from "./repo-identity.ts";
 export * from "./pool.ts";
 export * from "./setup.ts";
@@ -66,8 +67,16 @@ export * from "./secret-placement.ts";
 export * from "./git-push.ts";
 export * from "./git-clone.ts";
 export * from "./custodian.ts";
+export * from "./custodian-rules.ts";
+export * from "./custodian-slot.ts";
+export * from "./custodian-control.ts";
+export * from "./custodian-resolver.ts";
+export * from "./pki.ts";
+export * from "./placeholders.ts";
 export * from "./harness-env.ts";
 export * from "./sandbox-kube.ts";
+export * from "./sandbox-fence.ts";
+export * from "./fence-slots.ts";
 export {
   effectorManifestKey,
   LABEL_EFFECTOR_POD,

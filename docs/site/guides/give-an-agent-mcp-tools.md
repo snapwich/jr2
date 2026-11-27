@@ -74,6 +74,12 @@ the [Stand-in](../reference/glossary.md#stand-in). The model and the
 the entry of the `secrets` list, jr2 binds the token to the host of the server's URL, in the header `authorization`.
 When you set them, they must let the Stand-in through to the URL.
 
+The call of a Harness goes through the Custodian, in a [Sandbox](../reference/glossary.md#sandbox) and on the Instance
+Harness alike. The host of a server with a `secret` needs no entry on the
+[Egress list](../reference/glossary.md#egress-list). A server with no `secret` needs an entry for its host, also for a
+Menu-only Agent. `jr2 up` refuses to converge while it has none, and it prints the entry to add. See
+[Workspaces](../concepts/workspaces.md#the-network-of-a-sandbox).
+
 ## Name the servers in the Agent
 
 The `mcp` field of the definition is a list. Each entry names one server, and `tools` is the allowlist for a remote
@@ -97,8 +103,7 @@ The allowlist guards the token of the server. For a remote server, it is a guara
 those tools, and it runs only those tools. The Harness holds the Stand-in of the token in a file that no Workspace code
 can read. Thus only a call of the Harness gets the token from the Custodian.
 
-Workspace code in the Agent's [Sandbox](../reference/glossary.md#sandbox) can spend the token in three cases. In each
-case, jr2 takes only `tools: "*"`:
+Workspace code in the Agent's Sandbox can spend the token in three cases. In each case, jr2 takes only `tools: "*"`:
 
 - The [`workspace()`](../reference/authoring-surface/workspace.md) of the Sandbox lists the secret under `secrets`.
 - A `command` Effect of that Workspace names the secret in its `env`.
@@ -133,13 +138,13 @@ Sandbox Image.
 
 ## The tools of a conversation
 
-`jr2 up` asks each remote server for its tools before it converges, from the check pod and through its Custodian. Each
+`jr2 up` asks each remote server for its tools before it converges, from the check pod and through the Custodian. Each
 name in an allowlist must be a tool of the server:
 
 ```text
 …
-mcp: listing the tools of "slack-acme" at <your MCP URL> on the Instance Harness, through a Custodian that holds SLACK_ACME_TOKEN, with its Stand-in
-mcp: listing the tools of "slack-partner" at <your MCP URL> on the Instance Harness, through a Custodian that holds SLACK_PARTNER_TOKEN, with its Stand-in
+mcp: listing the tools of "slack-acme" at <your MCP URL> on the Instance Harness, through the Custodian, which holds SLACK_ACME_TOKEN, with its Stand-in
+mcp: listing the tools of "slack-partner" at <your MCP URL> on the Instance Harness, through the Custodian, which holds SLACK_PARTNER_TOKEN, with its Stand-in
 provider: the check pod has up to 5 min to start, then up to 6 min for its model and 1 min for each of its 2 MCP servers
 …
 mcp: "slack-acme" lists 2 tool(s); every allowlisted name is there

@@ -1,7 +1,6 @@
-// Bearer tokens (ADR-0013), because the Sandbox boundary is otherwise theater. The Harness
-// container shares the pod's network namespace, so an Agent can reach the Orchestrator directly;
-// a per-pod NetworkPolicy cannot distinguish its packets from the Custodian's. Only authentication
-// closes this, and only the token bounds what a caller may DO (as opposed to where it may talk).
+// Bearer tokens (ADR-0013), because the Sandbox boundary is otherwise theater. An Agent's `curl`
+// reaches the Custodian by the same path as the Harness, from the same Sandbox, so no network
+// control can tell the two apart. Only authentication closes this, and only the token bounds what a caller may DO (as opposed to where it may talk).
 //
 // Three principals. The asymmetry between the first two is the whole design; the third is a door
 // key, not a seat:
@@ -319,6 +318,16 @@ export function controlToken(key: Buffer, pod: string): string {
  */
 export function controlStandIn(key: Buffer, pod: string): string {
   return sign(key, `control-standin:${pod}`);
+}
+
+/**
+ * The dial token of an Instance (ADR-0084): what the Orchestrator sends in `x-jr2-dial` when it
+ * dials a Harness pod through a Custodian pod, and when it calls a Custodian pod's control process.
+ * `jr2 up` writes it in `jr2-custodian-dial`, which the Custodian reads; the Orchestrator derives it
+ * again from the kept key. Its own `custodian-dial:` domain keeps it apart from every other token.
+ */
+export function custodianDialToken(key: Buffer): string {
+  return sign(key, "custodian-dial:");
 }
 
 /**

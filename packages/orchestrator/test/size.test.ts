@@ -71,19 +71,16 @@ test("the chain resolves whole Sizes: the Machine's, else the Instance default, 
   });
 });
 
-test("the split: Custodian slice fixed, Harness the rest, requests = limits, pod-level = the whole Size", () => {
+test("the split: the Harness takes the whole Size with no User Container split, requests = limits, pod-level = the whole Size", () => {
   const split = splitSize(resolveSize(undefined, undefined));
   assert.deepEqual(split.pod, { requests: { cpu: "1", memory: "2Gi" }, limits: { cpu: "1", memory: "2Gi" } });
-  assert.deepEqual(split.custodian, {
-    requests: { cpu: "50m", memory: "64Mi" },
-    limits: { cpu: "50m", memory: "64Mi" },
-  });
+  assert.equal("custodian" in split, false, "the Custodian is outside the pod (ADR-0084): no slice");
   assert.deepEqual(split.harness, {
-    requests: { cpu: "950m", memory: "1984Mi", "ephemeral-storage": "10Gi" },
-    limits: { cpu: "950m", memory: "1984Mi" },
+    requests: { cpu: "1", memory: "2Gi", "ephemeral-storage": "10Gi" },
+    limits: { cpu: "1", memory: "2Gi" },
   });
   assert.equal(split.user, undefined, "no split stated → no per-container limit on the User Container");
-  assert.equal(split.shmSizeLimit, "496Mi", "25% of the Harness share");
+  assert.equal(split.shmSizeLimit, "512Mi", "25% of the Harness share");
   assert.deepEqual(split.preflight, { requests: { cpu: "10m", memory: "32Mi" }, limits: { memory: "128Mi" } });
 });
 
@@ -92,24 +89,24 @@ test("a stated User Container split comes out of the Harness share; requests = l
     limits: { memory: "1Gi" },
   });
   assert.deepEqual(split.user, { requests: { memory: "1Gi" }, limits: { memory: "1Gi" } });
-  assert.equal(split.harness.limits!.memory, "1984Mi");
-  assert.equal(split.harness.limits!.cpu, "1950m", "no cpu split → the User Container shares the Harness cpu");
+  assert.equal(split.harness.limits!.memory, "2Gi");
+  assert.equal(split.harness.limits!.cpu, "2", "no cpu split → the User Container shares the Harness cpu");
 });
 
 test("a split that leaves the Harness below 256Mi is refused, naming each number and its source", () => {
   assert.throws(
     () => splitSize(resolveSize({ limits: { memory: "1Gi" } }, undefined), { limits: { memory: "800Mi" } }),
     (err: Error) =>
-      /leaves the Harness container 160Mi memory, below its 256Mi floor/.test(err.message) &&
+      /leaves the Harness container 224Mi memory, below its 256Mi floor/.test(err.message) &&
       /memory 1Gi \(the Machine's Size/.test(err.message) &&
       /the User Container's 800Mi \(its user\.resources\.limits\.memory\)/.test(err.message),
   );
   assert.throws(
-    () => splitSize(resolveSize(undefined, { limits: { memory: "300Mi" } })),
+    () => splitSize(resolveSize(undefined, { limits: { memory: "200Mi" } })),
     /sandbox\.resources\.limits\.memory in jr2\.config\.ts/,
   );
   assert.throws(
-    () => splitSize(resolveSize({ limits: { cpu: "50m" } }, undefined)),
+    () => splitSize(resolveSize({ limits: { cpu: "500m" } }, undefined), { limits: { cpu: "500m" } }),
     /leaves the Harness container no cpu/,
   );
 });

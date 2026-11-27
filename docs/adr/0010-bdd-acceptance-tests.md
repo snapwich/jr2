@@ -43,11 +43,16 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   pi, the real Menu through the Custodian, real Working tools — and the substitution moved to the provider: a scripted
   OpenAI-compatible endpoint the World serves from the host. Which is what makes this tier a second pi canary.) They are
   tagged `@kind` and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is the
-  product's own path (ADR-0019): one shared VANILLA kind cluster and nothing else, then **`jr2 up` per scenario into a
-  fresh namespace** — which since ADR-0038 builds and loads every image it deploys, so no image is pre-loaded by hand.
+  product's own path (ADR-0019): one shared kind cluster with no image in it and nothing on its nodes, then **`jr2 up`
+  per scenario into a fresh namespace** — which since ADR-0038 builds and loads every image it deploys, so no image is
+  pre-loaded by hand, and which installs the Fence's prerequisites, jr2's admission policies, Multus and the DaemonSet
+  that loads the rule table and puts the CNI plugins on each node
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), so no recipe prepares the nodes.
   Namespace-as-identity makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster.
-  **The host address the pods dial back on is discovered, not assumed.** The scripted provider runs host-side, so the
-  tier needs the one address that routes from a pod back to this process — and it is not the same on every machine. On
+  **The host address behind the provider's name is discovered, not assumed.** The scripted provider runs host-side. A
+  Harness pod reaches it through the Custodian, by a name or by an exact address with a port that the Egress list
+  permits ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)), and the Custodian dials it. So the tier
+  needs the one address that routes from the cluster back to this process — and it is not the same on every machine. On
   Linux the daemon IS the host, so the kind bridge's gateway is the answer. Under a VM-backed daemon (colima, Docker
   Desktop) that gateway is the VM: measured on colima, `172.18.0.1` reaches nothing while `host.docker.internal`,
   `host.lima.internal` and `192.168.5.2` all answer — and on Linux those names mean nothing. So the candidates are
@@ -62,8 +67,8 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   content tag, with no intermediate, because the Harness arrives by volume at pod time
   ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) — while
   [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) makes a warm scenario's converge build nothing
-  (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the seats that dial a Service
-  before anything else ever has — [ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md) has the
+  (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the seats that dial a path before
+  anything else ever has — [ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md) has the
   diagnosis (a Sandbox CR at `phase: Ready` is not yet ROUTABLE, so an unretried first dial is a lost turn; the Menu
   read was a second instance of the same defect). Parallelism does not create those windows, it only samples them more
   often — which is why any tier flake that vanishes at `--parallel 1` should be read as a routability-class defect
@@ -105,12 +110,17 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
 - **The Custodian suite, opt-in, against the real engine**
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Custodian's claims — the swap on
   the wire, the strip, the refusals, the dial guard, TLS verification upstream, SSE timing, abort, and a real SDK
-  through `HTTPS_PROXY` — are Envoy's behaviour under jr2's configuration, so only the pinned Envoy image can prove
-  them. `just custodian-test` runs `node --test` (`packages/cli/test/custodian.docker.ts`) against it under docker, on
-  the host network with free ports, with local HTTPS upstreams under their own CA; about 23 seconds. Opt-in for the
-  `@kind` reason — it needs docker — and NOT part of `pnpm -r test`. What the default gate keeps is the rendering:
-  `custodian.test.ts` pins the bootstrap and script a pod's maker writes, socket-free. The `@kind` tier then proves the
-  Custodian in a real pod, in both placements, against a model provider that refuses any request without the key.
+  through the Custodian — are Envoy's behaviour under jr2's configuration, so only the pinned Envoy image can prove
+  them. `just custodian-test` runs `node --test` (`packages/cli/test/custodian.docker.ts`, `custodian-rules.docker.ts`
+  and `custodian-control.docker.ts`) against it under docker, with local HTTPS upstreams under their own CA (ADR-0059
+  says how the suite stands in for the uplink); about two and a half minutes. Opt-in for the `@kind` reason — it needs
+  docker — and NOT part of `pnpm -r test`. What the default gate keeps is the rendering: `custodian-rules.test.ts` and
+  `custodian.test.ts` pin what jr2 writes for the Custodian, socket-free, and `custodian-control.test.ts` runs the
+  Custodian's control process against a fake API and a fake Envoy admin. `custodian-resolver.test.ts` asks the
+  Custodian's resolver at the packet level, and on the loopback with Node's own stub resolver: the resolver is jr2's
+  code, not Envoy's, so no pinned image is needed. The `@kind` tier then proves the Custodian in a real cluster, for a
+  Sandbox and for the Instance Harness, each behind its Fence, against a model provider that refuses any request without
+  the key.
 - **An opt-in `@model` tier, against a real model**
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). Every tier above
   fakes the model, so none can see a change in what a model DOES with what jr2 shows it — and ADR-0029/0062 measured

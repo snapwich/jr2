@@ -67,7 +67,6 @@ The pod has the Size as one limit. Inside the pod, jr2 divides it among the cont
 
 | Container                                                         | Its part                                                                                                         |
 | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| The [Custodian](../reference/glossary.md#custodian)               | A fixed part: memory `64Mi`, cpu `50m`.                                                                          |
 | The [User Container](../reference/glossary.md#user-container)     | The part that `user.resources` gives. With no part, it shares the rest.                                          |
 | The [Sandbox Effector](../reference/glossary.md#sandbox-effector) | No part of its own. It shares the rest.                                                                          |
 | The `harness` container                                           | The rest, as its own limit. The [Agent](../reference/glossary.md#agent)'s processes and the `command`s run here. |
@@ -139,7 +138,7 @@ Agent whose Turn the kill cut. When you see either text again and again, state a
 - `jr2 up` refuses a Size that leaves the `harness` container less than `256Mi` of memory. The text names each number
   and where it came from. The part `− the User Container's <memory> (its user.resources.limits.memory)` is there only
   when `user.resources` gives a memory:
-  `refusing: workflow "<workflow>": the Size leaves the Harness container <memory> memory, below its 256Mi floor: memory <size> (<source>) − the Custodian's 64Mi − the User Container's <memory> (its user.resources.limits.memory) — raise the Size's limits.memory, or shrink the User Container's split (ADR-0060)`.
+  `refusing: workflow "<workflow>": the Size leaves the Harness container <memory> memory, below its 256Mi floor: memory <size> (<source>) − the User Container's <memory> (its user.resources.limits.memory) — raise the Size's limits.memory, or shrink the User Container's split (ADR-0060)`.
   The text can also name the Machine that states the Size, and it can end with the `customize()` line that changes the
   Size. For cpu, the text holds `the Size leaves the Harness container no cpu:`.
 - `jr2 up` refuses a cluster that drops pod-level resources:

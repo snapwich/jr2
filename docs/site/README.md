@@ -130,9 +130,11 @@ solves, so that a reader sees what jr2 does for them before they read a Concept.
    the Sandbox, and the world outside. A bracket labelled `jr2 up` holds the Orchestrator and the Sandbox: it is the
    cluster, and `jr2 up` sets it up. The Orchestrator band holds the example Machine, in the state `review`. The Menu of
    the reviewer shows the events out of `review`, so that the reader sees where a Menu comes from. Two lines join
-   `approval` and You: a Gate asks you, and you answer. The Agents are in the Harness, in the Sandbox. The lines to the
-   world outside start at the Custodian and the Effector, because they hold the credentials. Each of the two holds any
-   key: the model key and a git credential are examples only.
+   `approval` and You: a Gate asks you, and you answer. The Agents are in the Harness, in the Sandbox. The Custodian is
+   a band of its own in the bracket, under the Sandbox, because it is outside every Sandbox. The lines out of the
+   Sandbox, from the Harness and the Effector, go to the Custodian: the Fence. The lines to the world outside start at
+   the Held secrets and the Egress list of the Custodian. The Custodian and the Effector each hold any key: the model
+   key and a git credential are examples only.
 3. One section for each problem, in the order of the diagram from top to bottom. A section states the problem, then says
    how jr2 answers it, then links to the Concept. The answer starts with the part of the diagram that solves the
    problem. The problems are:
@@ -147,11 +149,13 @@ solves, so that a reader sees what jr2 does for them before they read a Concept.
       Turn, so that an Agent does one thing at a time.
    4. **Isolation.** The Sandbox band. A filesystem sandbox is not isolation. An Agent that works on a Repo works in a
       Sandbox: a pod with its own filesystem, network and processes, one for each Workspace. A Menu-only Agent has no
-      Sandbox. Then the keys: the Custodian holds the Held secrets, and the Effector holds the Effect secrets. Tell when
-      a key goes in the Custodian, when it goes in the Effector, and that one key can be in both. When a Lease lapses,
-      the operator removes what the Agents left behind.
-   5. **Model agnostic.** The line from the Custodian to the model provider. One Harness, jr2's own, speaks to each
-      provider. An Agent is a model and its instructions.
+      Sandbox. Then the Fence: all that a Sandbox sends arrives at the Custodian, which carries only what the Egress
+      list permits. Then the keys: the Custodian holds the Held secrets. The Effector uses the Effect secrets: the
+      Instance Effector holds their values, and for a Sandbox Effector the Custodian holds the value of each secret that
+      goes in a header, the token of a push over https too. Tell when a key is a Held secret, when it is an Effect
+      secret, and that one key can be both. When a Lease lapses, the operator removes what the Agents left behind.
+   5. **Model agnostic.** The line from the Held secrets of the Custodian to the model provider. One Harness, jr2's own,
+      speaks to each provider. An Agent is a model and its instructions.
    6. **Distribution.** The bracket: the compute is in your cluster. The Orchestrator holds only the Actor, and the
       Harness runs where the cluster puts it.
    7. **One converging command.** The label of the bracket. `jr2 up` converges the same Instance folder into kind on a
@@ -169,14 +173,14 @@ The sources are the talk (`docs/intro/slides/index.html`) and "The problems" in 
 
 The six pages are one tutorial. The reader does each page in order, and each page adds one idea:
 
-| Page                                | The reader                                                                     | The new idea                   |
-| ----------------------------------- | ------------------------------------------------------------------------------ | ------------------------------ |
-| Install                             | installs the tools and the jr2 CLI, and makes the kind cluster                 | none                           |
-| Create an Instance                  | runs `jr2 init`, reads the folder, runs `jr2 up` and `ping`, opens the Console | Instance, Workflow, converge   |
-| Connect a model                     | adds the model to `jr2.config.ts` and `.env`, and runs `jr2 up` again          | Held secret, custom provider   |
-| A model decides                     | writes `triage.ts`, runs it, and answers the `clarify` Gate                    | Agent, Menu, Gate              |
-| An Agent in a Sandbox               | forks jr2, binds `task`, runs it, sends `request_changes`, pushes, approves    | Workspace, Sandbox, Open parts |
-| Have your Assistant write a Machine | asks the Assistant for `fix`, reads its graph, runs it, approves               | Assistant, `AGENTS.md`, Effect |
+| Page                                | The reader                                                                                        | The new idea                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Install                             | installs the tools and the jr2 CLI, and makes the kind cluster                                    | none                                        |
+| Create an Instance                  | runs `jr2 init`, reads the folder, runs `jr2 up` and `ping`, opens the Console                    | Instance, Workflow, converge                |
+| Connect a model                     | adds the model to `jr2.config.ts` and `.env`, and runs `jr2 up` again                             | Held secret, custom provider                |
+| A model decides                     | writes `triage.ts`, runs it, and answers the `clarify` Gate                                       | Agent, Menu, Gate                           |
+| An Agent in a Sandbox               | forks jr2, binds `task`, permits `github.com`, runs it, sends `request_changes`, pushes, approves | Workspace, Sandbox, Egress list, Open parts |
+| Have your Assistant write a Machine | asks the Assistant for `fix`, reads its graph, runs it, approves                                  | Assistant, `AGENTS.md`, Effect              |
 
 Each page has these parts, in this order:
 
@@ -205,22 +209,22 @@ shows its idea better than the text. See [When to draw a diagram](#when-to-draw-
 Each term has one Concept page that explains it. The table gives the terms that each page owns (from grill Q7). Another
 page that uses a term links to the page that owns it, and does not explain the term again.
 
-| Concept                           | The terms that it owns                                                                                                         |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `concepts/machines-and-workflows` | Machine, Workflow, the door (the run input), Vocabulary, Emit                                                                  |
-| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, Conversation, `continue`, Briefing, Working tools, MCP tools, Runaway, Compaction, Steering message |
-| `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                                 |
-| `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a Hook; Gate slot, look, `reply`                                 |
-| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, `mcp`, dispatched by, at-most-once, `fromPick`                                  |
-| `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, cut, Handoff, Size, Placing, Lease, Continuity, Sandbox Image, User Container   |
-| `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                                       |
-| `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                                |
-| `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set, push Source, Pool of runs, standing Pool                                                 |
-| `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                                     |
-| `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                                         |
-| `concepts/callers-and-hooks`      | Caller, scope, on behalf of, JWT issuer, the record of each act, Hook, Hook kind, the door of a Hook, hook log                 |
-| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Forward, Kit image, Pinned image, Sandbox Image as an image to build, `gc`                    |
-| `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, `runs.retain`, the space guard                   |
+| Concept                           | The terms that it owns                                                                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `concepts/machines-and-workflows` | Machine, Workflow, the door (the run input), Vocabulary, Emit                                                                                    |
+| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, Conversation, `continue`, Briefing, Working tools, MCP tools, Runaway, Compaction, Steering message                   |
+| `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                                                   |
+| `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a Hook; Gate slot, look, `reply`                                                   |
+| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, `mcp`, dispatched by, at-most-once, `fromPick`                                                    |
+| `concepts/workspaces`             | Workspace, Sandbox, Fence, Egress list, Repo, Repo Slot, Worktree, cut, Handoff, Size, Placing, Lease, Continuity, Sandbox Image, User Container |
+| `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                                                         |
+| `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                                                  |
+| `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set, push Source, Pool of runs, standing Pool                                                                   |
+| `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                                                       |
+| `concepts/secrets-and-trust`      | Held secret, Stand-in, Intercepted host, Tunneled host, Effect secret, the tokens, open observation and guarded control                          |
+| `concepts/callers-and-hooks`      | Caller, scope, on behalf of, JWT issuer, the record of each act, Hook, Hook kind, the door of a Hook, hook log                                   |
+| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Forward, Kit image, Pinned image, Sandbox Image as an image to build, `gc`                                      |
+| `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, `runs.retain`, the space guard                                     |
 
 Workspaces owns the Sandbox Image as a part of the Sandbox. Converge owns only how `jr2 up` builds and loads it.
 
@@ -569,6 +573,8 @@ one tight list of the kind of its layout.
 - **Sandbox**: one pod for each Workspace
   - **Harness**: runs each Turn
     - **reviewer**: its Menu: `approved` `changes`
+- ↓ Harness → Custodian: the Fence
+- **Instance**
   - **Custodian**: holds the model key
 - ↓ Custodian → Outside
 - **Outside**
@@ -767,26 +773,32 @@ The user must decide these items. Until then, obey the rule for each item.
   each command, replaces the output, and removes the comment. `scripts/release.sh` refuses to make a release commit, and
   `scripts/publish.sh` refuses a release, while a page has this comment. Thus do the manual check before `just release`,
   in these steps:
-  1. Run `just dist-up`. Use the `jr2` that it installs, because the reader uses the installed CLI, not a checkout.
+  1. Make the kind cluster `jr2` as page 1 tells the reader (`kind create cluster --name jr2`), with no other step: the
+     first `jr2 up` of an Instance with a Harness pod installs the prerequisites of the Fence (jr2's admission policies,
+     Multus, and the DaemonSet that puts the CNI plugins on each node and loads the rule table), as it does for the
+     reader. Then run `just dist-up`. Use the `jr2` that it installs, because the reader uses the installed CLI, not a
+     checkout.
   2. Make the Instance as the pages tell the reader: `jr2 init my-instance`, with the model of the Local tab. When a
      page needs a fork, use a public GitHub repo that has the `main` and the release tags of jr2, and show it as
      `<you>/jr2`. When a page needs a remote MCP server, serve the fake of `features/steps/fake-mcp.ts` on the host with
      the tools of the page, over HTTPS under a CA of its own (`issueCa` and `issueLeaf` of `@jr2/cli`) that the
-     Instance's `harness.caBundle` names, and show its URL as `<your MCP URL>`.
+     Instance's `harness.caBundle` names, and show its URL as `<your MCP URL>`. The URL names a host name, not an IP
+     address, because the leaf names that host name.
   3. Run each command, copy what it prints, and remove the comment. When the run of a block also gives other blocks on
      the same page, walk them again from that run, so that the page shows one run.
   4. When the commands cannot give the output that the page needs, stop and ask. Do not write the output.
 
 ### The tools and the cluster
 
-| Fact                | Value                                                                                    |
-| ------------------- | ---------------------------------------------------------------------------------------- |
-| The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                           |
-| The kernel (page 1) | Linux 6.2 or later with Landlock: the kernel of the computer, or of Docker's VM.         |
-| The jr2 CLI         | `npm i -g @jr2/cli`                                                                      |
-| The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                     |
-| The package manager | npm.                                                                                     |
-| The Sandbox Image   | The `images/default/Dockerfile` that `jr2 init` writes. The tutorial does not change it. |
+| Fact                | Value                                                                                                                                                                                                                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                                                                                                                                                                                                                   |
+| The kernel (page 1) | Linux 6.2 or later with Landlock: the kernel of the computer, or of Docker's VM.                                                                                                                                                                                                 |
+| The Fence on kind   | The first `jr2 up` of an Instance with a Harness pod (page 4) installs jr2's admission policies, Multus, and the DaemonSet that puts the CNI plugins `bridge`, `static` and `tuning` on each node and loads the rule table, after a question. The tutorial has no step for them. |
+| The jr2 CLI         | `npm i -g @jr2/cli`                                                                                                                                                                                                                                                              |
+| The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                                                                                                                                                                                                             |
+| The package manager | npm.                                                                                                                                                                                                                                                                             |
+| The Sandbox Image   | The `images/default/Dockerfile` that `jr2 init` writes. The tutorial does not change it.                                                                                                                                                                                         |
 
 `jr2 up` converges into the current kubectl context. `kind create cluster` makes `kind-jr2` the current context.
 
@@ -826,7 +838,7 @@ terminal. The pages do not use `--detach`.
   Local, page 3 tells the reader to add the `harness` entry. Neither tab replaces the whole file.
 - For Local, `local` is the provider id in `jr2.config.ts`. The part after `local/` is the name that the endpoint gives
   for `GET /v1/models`.
-- `<address>` is an address that a pod can reach, such as the LAN address of your computer. `localhost` does not work
+- `<address>` is an address of your computer that a pod can reach, such as its LAN address. `localhost` does not work
   from a pod. Thus the server listens on `0.0.0.0`. llama.cpp listens on its loopback address by default.
 - The server serves the model as `qwen3.6-35b-a3b`, on port 8000, with a context window of 65536 tokens. It must
   complete a tool call: `jr2 up` sends one tool call to the endpoint before it converges, and stops when it fails.
@@ -845,9 +857,8 @@ terminal. The pages do not use `--detach`.
   starts with `warning: secrets[0] (ANTHROPIC_API_KEY) is named by nothing; goes nowhere`. For Local, it prints
   `provider: <url> configured, but no carried Agent names a "local/…" model — skipped`. Page 3 shows this line and says
   that page 4 uses the model. In each tab, page 4's `jr2 up` is the first `jr2 up` that reaches the model:
-  - Anthropic: page 4's `jr2 up` gives the key to the Custodian of the pod where the Agent works. Then it asks the model
-    for one tool call through a Custodian that holds the key, before it converges. It is the first `jr2 up` that reaches
-    the model.
+  - Anthropic: page 4's `jr2 up` gives the key to the Custodian. Then it asks the model for one tool call through the
+    Custodian, before it converges. It is the first `jr2 up` that reaches the model.
   - Local: page 4's `jr2 up` checks the endpoint before it converges. It is the first `jr2 up` that reaches the model.
 - Page 3's `jr2 up` publishes `jr2.config.ts` in the Assembly, and the Orchestrator loads it with no restart. Thus the
   port forward stays open. Each page whose `jr2 up` changes only the Instance folder says the same.
@@ -884,18 +895,19 @@ jr2 run triage --input '{"request":"The greeting looks wrong sometimes."}'
 
 ### Page 5: An Agent in a Sandbox
 
-| Fact          | Value                                                                                                     |
-| ------------- | --------------------------------------------------------------------------------------------------------- |
-| The fork      | The reader's fork of `snapwich/jr2`: `https://github.com/<you>/jr2.git`. `<you>` is the GitHub user name. |
-| The ref       | `v<version>`: the release tag of the Kit that the reader installed.                                       |
-| The file      | `workflows/task.ts`, so the Workflow is `task`. It binds the shipped Machine `task`.                      |
-| The Repo Slot | `target`.                                                                                                 |
-| The fixture   | `docs/site/tutorial/greet/` in the fork. Its failing test is `trims the name`.                            |
-| The branch    | `jr2/task-<instance id>`, which `task` makes when the input has no `branch`. See below.                   |
-| The Gate      | `review`, with the id `body.review`, because `workspace()` runs the body as `body`.                       |
-| The events    | `request_changes`, with `{ "notes": "<text>" }`, and `approve`, with no input.                            |
-| The notes     | `{"notes":"Also add a test that trims the name when you pass --shout."}`                                  |
-| The token     | A GitHub fine-grained personal access token for the fork only, with "Contents: Read and write".           |
+| Fact          | Value                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------------------------------------------- |
+| The fork      | The reader's fork of `snapwich/jr2`: `https://github.com/<you>/jr2.git`. `<you>` is the GitHub user name.             |
+| The ref       | `v<version>`: the release tag of the Kit that the reader installed.                                                   |
+| The file      | `workflows/task.ts`, so the Workflow is `task`. It binds the shipped Machine `task`.                                  |
+| The Repo Slot | `target`.                                                                                                             |
+| The fixture   | `docs/site/tutorial/greet/` in the fork. Its failing test is `trims the name`.                                        |
+| The branch    | `jr2/task-<instance id>`, which `task` makes when the input has no `branch`. See below.                               |
+| The Gate      | `review`, with the id `body.review`, because `workspace()` runs the body as `body`.                                   |
+| The events    | `request_changes`, with `{ "notes": "<text>" }`, and `approve`, with no input.                                        |
+| The notes     | `{"notes":"Also add a test that trims the name when you pass --shout."}`                                              |
+| The token     | A GitHub fine-grained personal access token for the fork only, with "Contents: Read and write".                       |
+| The egress    | `egress: ["github.com"]` in `jr2.config.ts`. The Local tab has `"<address>:8000"` from page 3, because it has no key. |
 
 - To fork, clear "Copy the main branch only" on GitHub, so that the fork has the release tags.
 - The Agent's branch starts from the ref. Thus each reader of a release starts from the same fixture.
@@ -915,7 +927,9 @@ jr2 run triage --input '{"request":"The greeting looks wrong sometimes."}'
 - The fixture's bug: `greet([" ada "])` gives `hello,  ada `, not `hello, ada`. Only the tutorial owns this bug, and
   `test/tutorial-fixture.test.ts` keeps it.
 - The clone needs no token, because the fork is public. The reader pushes the branch by hand, from the Sandbox, while
-  the run waits at `review`. `git push` asks for a user name and a password: give `<you>` and the token.
+  the run waits at `review`. The push goes through the Custodian, so `github.com` must be on the Egress list. The
+  Anthropic API needs no entry, because the model key is a Held secret. `git push` asks for a user name and a password:
+  give `<you>` and the token.
 - The branch is named after the seed Instance ID of the run, not after the run id. These are two different ids. Do not
   tell the reader to make the branch name or the Worktree path from the run id. The `review` Gate gives both in its
   `meta`, as `branch` and `worktree`. `jr2 status <run id>` prints them under `gates`, and the drawer of the Console

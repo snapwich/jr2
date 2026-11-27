@@ -27,7 +27,7 @@ const advise = defineEvent({ name: "advise", input: z.object({ summary: z.string
 
 const echo = http({
   method: "POST",
-  url: "http://echo.jr2-e2e-seed.svc/echo",
+  url: "http://echo.jr2-e2e-seed.svc.cluster.local/echo",
   auth: bearer(secret("echo-token")),
   input: z.object({ marker: z.string() }),
   request: ({ marker }) => ({ path: [marker], text: "asked by the advisor" }),

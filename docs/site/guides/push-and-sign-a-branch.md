@@ -51,6 +51,13 @@ JR2_GIT_TOKEN=<token>
 [Give the cluster git credentials](give-the-cluster-git-credentials.md) tells how to use an ssh key, and how an entry
 matches a URL.
 
+The push goes out of the [Sandbox](../reference/glossary.md#sandbox) through the
+[Custodian](../reference/glossary.md#custodian), as all traffic of a Sandbox does. For a push over ssh, jr2 permits port
+22 of the host of each ssh Repo that the Workspace binds. The Custodian carries the bytes, so `ssh` sees the host key of
+the real host, and the ssh key stays in the Sandbox Effector. For a push over `https://`, the Custodian holds the token.
+The Sandbox Effector holds only its [Stand-in](../reference/glossary.md#stand-in), and the Custodian puts the token in
+place of the Stand-in. See [Workspaces](../concepts/workspaces.md#the-network-of-a-sandbox).
+
 ## Make a signing key
 
 jr2 never signs with the clone key or the push key. Make a key for signing only. Run this command outside the Instance
@@ -167,8 +174,8 @@ the id of the new run, and your run id is different. Give your run id to the nex
 
 The Machine is the body of a `workspace()`, so the id of the Gate of the state `review` is `body.review`.
 [`jr2 status <run id>`](../reference/cli.md#status) shows it under `gates`. When the run waits at this Gate, read the
-branch in the [Sandbox](../reference/glossary.md#sandbox). The branch is not on the remote yet.
-[Look inside a Sandbox](look-inside-a-sandbox.md) tells how. Then send `approve`:
+branch in the Sandbox. The branch is not on the remote yet. [Look inside a Sandbox](look-inside-a-sandbox.md) tells how.
+Then send `approve`:
 
 ```sh
 jr2 send <run id> --gate body.review --event approve
@@ -237,7 +244,11 @@ server does not speak it, they use `git-lfs-authenticate`. Thus a server that sp
 
 The upload uses the push credential. The token goes only to the origin of the push URL: its scheme, its host and its
 port. A URL on a different origin in the batch answer, such as the object store of GitHub, gets only the batch answer's
-headers. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the same rule for the clone.
+headers. The [Custodian](../reference/glossary.md#custodian) holds the token of a push over https. An LFS server on the
+push URL's host that puts the push's own credential into its upload actions, as Gitea does, takes the upload: the
+Custodian sends that credential back to the same host only. An LFS server that makes a different credential for its
+upload actions does not take the upload over https. The push is `rejected` with `stage` `upload`. Push to such a server
+over ssh. [Architecture](../concepts/architecture.md#large-files-in-the-repo-cache) gives the same rule for the clone.
 
 When an upload fails, the push is `rejected` with `stage` `upload`, and jr2 pushes nothing. The branch does not move,
 but an object that went up stays on the server. See [Rules](#rules).

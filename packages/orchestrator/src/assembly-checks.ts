@@ -783,7 +783,9 @@ export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<str
   // channel in the publish's answer, and are dropped: `jr2 up` printed them before the publish.
   lines.push(...dispatchRefusals(input.workflows, input.charts ?? [], input.runtimeCharts ?? []).errors);
   try {
-    refuseEffectSecrets(input.config ?? {}, placementWalkOf(input.workflows));
+    // The door has no `.env`: a key the host reads there is absent here, so the Egress refusals
+    // are the host's alone (ADR-0084), as the `mcp` block's urls are.
+    refuseEffectSecrets(input.config ?? {}, placementWalkOf(input.workflows), { egress: false });
   } catch (err) {
     lines.push(err instanceof Error ? err.message : String(err));
   }

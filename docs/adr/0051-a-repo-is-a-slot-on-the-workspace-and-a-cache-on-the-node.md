@@ -134,13 +134,13 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   user reuses the Secret they have. With a token, the cache agent's helper answers for the Repo's own origin alone
   (scheme, host and port), and its clone, probe and fetch follow no redirect, so the token never reaches an origin
   outside the entry. A repository that moved, and that its old url redirects to, is cloned by its new url. **The list is
-  also the fence.** A per-run url — a run input, a ticket field — is otherwise a way to spend the cluster's credential
+  also the match.** A per-run url — a run input, a ticket field — is otherwise a way to spend the cluster's credential
   against any host: one that matches no entry is refused at attach, naming the list. A static binding is code the
   Instance typechecked and deployed, so it is admitted without a match and cloned anonymously; a private one then fails
   at the cache with git's error. `jr2 init` scaffolds one wildcard entry —
   `{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }`, today's two implicit defaults made visible, with a
   comment saying to narrow it before anything untrusted can start a run, and that it also pushes: a `push()` whose Repo
-  Slot url it matches, a per-run url included, spends the same token or key — so the open fence is in the user's file
+  Slot url it matches, a per-run url included, spends the same token or key — so the open match is in the user's file
   and commit, never implied.
 - **A Repo's LFS objects live in its cache, and its token stays on its own origin.** A Repo that stores files with Git
   LFS needs no declaration: the commit's `.gitattributes` says so. The cache keeps the LFS objects beside the bare
@@ -160,29 +160,34 @@ decision: **what a Machine says about a repository, and what the cluster does wi
 - **An entry may carry a push credential and a signing key** (ADR-0067), checked by shape when the config loads:
   `push?: { sshKey } | { token }`, the credential a `push()` to a Binding under the entry spends — absent, the clone
   credential pushes, and an entry with no credential admits a clone, never a push; a token goes Basic over https through
-  a credential helper only, which answers for the Binding's own host alone, and the push follows no redirect, so the
-  token never reaches an origin outside the entry. `sign?: { sshKey, name, email } | { gpgKey, name, email }`, the key a
-  `push({ sign: true })` signs with and the committer it signs as — explicit, so an auth key is never reused as a
-  signing key; an ssh key is the default format, a GPG key is a Secret with `private.asc` and no passphrase. `name` and
-  `email` are required: the Effector re-creates the commits, and a forge verifies a signature only when the committer
-  email belongs to the account that holds the key. The author line stays the Agent's. `committer?: { name, email }`, who
-  an unsigned `push({ squash: true })` is committed by, at the Effector's clock (ADR-0067): a squash is a new commit,
-  and without `sign` no signer names its committer; `jr2 up` refuses an unsigned squash whose entry has neither `sign`
-  nor `committer`.
+  a credential helper only, which answers for the Binding's own host alone with the token's Stand-in, and the Custodian
+  puts the token in its place (ADR-0068); the push follows no redirect, so the token never reaches an origin outside the
+  entry. `sign?: { sshKey, name, email } | { gpgKey, name, email }`, the key a `push({ sign: true })` signs with and the
+  committer it signs as — explicit, so an auth key is never reused as a signing key; an ssh key is the default format, a
+  GPG key is a Secret with `private.asc` and no passphrase. `name` and `email` are required: the Effector re-creates the
+  commits, and a forge verifies a signature only when the committer email belongs to the account that holds the key. The
+  author line stays the Agent's. `committer?: { name, email }`, who an unsigned `push({ squash: true })` is committed
+  by, at the Effector's clock (ADR-0067): a squash is a new commit, and without `sign` no signer names its committer;
+  `jr2 up` refuses an unsigned squash whose entry has neither `sign` nor `committer`.
 - **The pod's maker places the push credential, by reference, when the url is known.** When a registered Machine pushes,
   `jr2 up` writes each entry's push and sign credentials into that entry's own Secret, `jr2-git-push-<hash of match>`
-  (labelled, and deleted when the entry no longer has one), never per Workspace: the token from `.env` in Flux's key
-  names (`username`, `password`); the keys of the Secret its ssh key names, copied as data and never decoded
-  (`identity`, `identity.pub`, `known_hosts`); the signing key as `sign.identity` or `sign.private.asc`; and
-  `entry.json`, what the entry is (its match, what it pushes with, the committer it signs as). An entry with no `push`
-  field pushes with its clone credentials, each over its own scheme, so the scaffold's wildcard holds both. An entry
-  with nothing it can place — its token unset, its key's Secret absent — gets no Secret, and `jr2 up` says why. It
+  (labelled, and deleted when the entry no longer has one), never per Workspace: a token in Flux's key names
+  (`username`, and `password`, which holds the entry's Stand-in); the keys of the Secret its ssh key names, copied as
+  data and never decoded (`identity`, `identity.pub`, `known_hosts`); the signing key as `sign.identity` or
+  `sign.private.asc`; and `entry.json`, what the entry is (its match, what it pushes with, the committer it signs as).
+  The token from `.env` goes into a second Secret of the entry, `jr2-git-push-<hash>-token`, which holds it alone, has
+  the same label and goes with the entry: the operator does not project it, and the Custodian reads it and swaps the
+  token into the push ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). The Custodian's
+  Role names that Secret and never the push Secret, which holds the ssh push key and the signing key. An entry with no
+  `push` field pushes with its clone credentials, each over its own scheme, so the scaffold's wildcard holds both. An
+  entry with nothing it can place — its token unset, its key's Secret absent — gets no Secret, and `jr2 up` says why. It
   writes `git-push.json` in `jr2-held` beside them: which entries have a Secret and what each can spend, names only. At
   provision the Orchestrator matches each pushed slot's url — static, per-run or `customize()`-bound, one path — against
-  the fence (longest prefix, the attach match), and the Sandbox CR carries the matched entry's Secret name
+  the list (longest prefix, the attach match), and the Sandbox CR carries the matched entry's Secret name
   (`gitCredentials`, the `secretRef` shape); the operator projects it into the Sandbox Effector alone (ADR-0005). The
-  Orchestrator reads no value. The Effector holds only the entries named there and matches a push's url as the fence
-  does, longest match first, and refuses a url outside the entry.
+  Custodian holds the value of a push token, and the Effector holds its Stand-in (ADR-0068). The Orchestrator reads no
+  value. The Effector holds only the entries named there and matches a push's url as the provision does, longest match
+  first, and refuses a url outside the entry.
 - **A push is refused with a fix that works, at `jr2 up` for a static Binding and at provision for any url.** One rule
   (`pushRefusal`), and the fix each refusal names is one the same rule then accepts: a url no entry matches (the entry
   to add, its `match` the url's host and directories, so always a prefix of the url); a local path (git's local
@@ -197,9 +202,9 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   is unset. A key's Secret, or a signing key's, that is absent at `jr2 up` is a warning, not a refusal: it may be
   written after (ADR-0047's prompt, a human); the entry's Secret is written without that key, and the provision refuses
   the push that needs it, naming the Secret to create and `jr2 up` to run again. The provision reads the same entry as
-  `jr2 up` placed it, so a per-run url is refused at attach for the same reasons, as a url outside the fence is, before
-  anything is written. Accepted costs: `jr2 up`'s report is exact for a static Binding and says "the entry its url
-  matches" for a per-run slot; a wildcard entry gives a per-run push the catch-all credential, the fence's existing
+  `jr2 up` placed it, so a per-run url is refused at attach for the same reasons, as a url that matches no entry is,
+  before anything is written. Accepted costs: `jr2 up`'s report is exact for a static Binding and says "the entry its
+  url matches" for a per-run slot; a wildcard entry gives a per-run push the catch-all credential, the list's existing
   choice.
 - **Freshness degrades, absence does not.** A fetch that fails on a warm cache lets the attach proceed on the objects it
   has, announced as stale with git's own error. A stale attach is stale until the next fetch anyone inside the pod runs:

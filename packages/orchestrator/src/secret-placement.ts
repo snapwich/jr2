@@ -11,12 +11,20 @@
 //   - an Effector: what its Effects name with `secret("name")` — the Instance Effector what its
 //     `http` Effects name and the token of each `dispatch` with a target (ADR-0071; a dispatch with
 //     no target runs in the Orchestrator's own process and names nothing); a Workspace's Sandbox Effector what its file-body `http`s and
-//     credentialed `command`s name. The push credential its `push`es spend is not placed here: the provision
-//     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, ADR-0051);
+//     credentialed `command`s name. Of these, the Custodian holds each bearer, Basic or header secret
+//     of a file-body `http` for it: the secret is a binding of the Workspace's held manifest, toward
+//     the Effect's target, and the Effector's file holds its Stand-in. The push credential its
+//     `push`es spend is not placed here: the provision names the entry the slot's url matches on the
+//     Sandbox, by reference, and binds its token in the Custodian (git-push.ts, ADR-0051);
 //   - the Instance Effector also holds the secret of each Hook with a `mac` verifier, and its fence
 //     takes each host that a Hook's kind declares in `posts`, with no secret (ADR-0068, ADR-0078);
 //   - the Orchestrator gets only the sha-256 digest of the secret of each Hook with a `token`
 //     verifier, in `jr2-hook-digests`, and never the value (ADR-0078).
+//
+// Each Harness pod's Egress list is read here too (ADR-0084), from the same walk: its own or the
+// Instance's `egress`, the hosts its Sandbox Effector sends a secret to, and its SSH Repos. A host
+// that jr2 reaches from the pod with no secret and that the list does not permit is refused here,
+// with the entry to add. The hosts of its Held secrets join the list in `egressRulesOf`.
 //
 // `hosts`, `headers` and `paths` are an entry's BINDING — where a Custodian may put the value — and
 // never its placement. Both is both, and `jr2 up` reports it per pod; an entry nothing names goes
@@ -27,7 +35,11 @@
 // replaces every match of a secret in what it returns, and a short one would match ordinary text.
 
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import {
+  effectorBindingName,
+  leafStem,
+  parseTarget,
   providerClaims,
   sourceOf,
   workspaceHeldPod,
@@ -40,6 +52,19 @@ import { hookParts } from "./hook-kinds/door.ts";
 import { needsASlot } from "./effect.ts";
 import { declaredPushKinds, pushRefusal } from "./git-push.ts";
 import { INSTANCE_HARNESS_HELD_POD } from "./names.ts";
+import { MODEL_KEYS } from "./model-keys.ts";
+import {
+  egressWarnings,
+  fenceRangesOf,
+  httpHostOf,
+  missingEntry,
+  parseEgressList,
+  permits,
+  sshHostOf,
+  type EgressItem,
+  type HostPort,
+  type RequiredHost,
+} from "./egress.ts";
 import { routeText, type CarriedEffect, type WorkspacePod } from "./parts.ts";
 
 /** The shortest Effect secret jr2 accepts (ADR-0068) — the Effector refuses a shorter file at start. */
@@ -108,7 +133,30 @@ export type HeldPodPlan = {
   /** Of `names`, the secrets of the MCP servers its Agents name (ADR-0079), each with those
    * servers. Absent when there is none. */
   byServer?: Record<string, string[]>;
+  /** What its Egress list is made of (ADR-0084), beside the hosts its Held secrets are bound to,
+   * which `heldSecretsOf` resolves: `egressRulesOf` joins the two. */
+  egress: PodEgress;
+  /** The secrets the Custodian holds for its Sandbox Effector (ADR-0068), as bindings of its held
+   * manifest, and the literal values among them by binding name. Absent when there is none. */
+  effector?: { bindings: HeldBinding[]; values: Record<string, string> };
 };
+
+/**
+ * One Harness pod's Egress list before its Held secrets are resolved (ADR-0084):
+ *
+ * - `list`: the entries it may reach. A Workspace's own `egress`, else the Instance's. The Instance
+ *   Harness has no entry of the author's: it gets the Instance's entries for the hosts that `jr2 up`
+ *   requires, narrowed to each one.
+ * - `effector`: the hosts to which its Sandbox Effector sends a secret: each `http` Effect's target
+ *   that names one, and the host of each HTTPS push. Each is an Intercepted host and needs no entry.
+ * - `repos`: the host and port of each SSH Repo that its Workspace binds, a Tunneled host.
+ */
+export type PodEgress = { list: EgressItem[]; effector: HostPort[]; repos: HostPort[] };
+
+/** The Egress parts of a pod in the door's walk, which does not derive them (`refuseEffectSecrets`). */
+const NO_EGRESS: PodEgress = { list: [], effector: [], repos: [] };
+/** The config path of the Instance's Egress list, as a refusal and a warning name it. */
+const INSTANCE_EGRESS_AT = "jr2.config.ts at egress";
 
 /** One push of a Workspace (ADR-0067, ADR-0051): its Repo Slot, whether it signs, and — for a slot the
  * Machine binds to a url — that url and the `git.credentials` entry it matches. A slot the run or a
@@ -126,10 +174,18 @@ export type SandboxEffectorPlan = {
   /** The `workspace()`'s Sandbox Image, as written; absent → `images/default`, then the stock
    * Harness. What the Effector runs in when it names no image of its own. */
   sandboxImage?: string;
-  /** Every Effect secret its Effects name, in list order. */
+  /** Every Effect secret its Effects name that it holds as a value, in list order: a credentialed
+   * command's, and one in a url's path. */
   secrets: EffectSecret[];
-  /** The literal values, by name — host-side only. */
+  /** The literal values of `secrets`, by name — host-side only. */
   values: Record<string, string>;
+  /** Every Effect secret that rides a header of its file-body `http`s (a bearer, a Basic password, a
+   * header secret), in list order: the Custodian holds its value toward the Effect's target, and its
+   * file holds its Stand-in (ADR-0068). `binding` is its name in the held manifest. */
+  custodian: Array<{ name: string; binding: HeldBinding }>;
+  /** The literal values of `custodian`, by binding name — host-side only, for the pod's
+   * `jr2-held-secrets-<pod>`. */
+  custodianValues: Record<string, string>;
   /** The targets its file-body `http`s name, with their secrets. */
   targets: EffectorTargetConfig[];
   /** Its pushes, by Repo Slot: what the provision resolves to an entry's push Secret. */
@@ -161,12 +217,18 @@ export type SecretPlacements = {
 /**
  * The refusals that need only the config and the walk, never the cluster: a name listed twice, a
  * name an Effect or a `workspace()` names that the list does not hold, a literal Effect secret
- * shorter than 8 characters. `jr2 up` runs it right after the walk, before anything is built or
- * applied.
+ * shorter than 8 characters, and a host that a pod reaches with no secret and that its Egress list
+ * does not permit (ADR-0084). `jr2 up` and `jr2 check` run it right after the walk, before anything
+ * is built or applied.
+ *
+ * The Orchestrator's door runs it with `egress: false`. The door loads `jr2.config.ts` with no
+ * `.env`, so a key that the host reads from `.env` (a provider's `apiKey`) is absent there, and the
+ * provider's host would read as one with no secret. The Egress refusals are the host's alone, as
+ * the urls of the `mcp` block are.
  */
-export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): void {
+export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk, opts: { egress?: boolean } = {}): void {
   const { entries, namedBy } = namesOf(config, walk);
-  heldPodsOf(config, walk, new Set(entries.map((e) => e.name)));
+  heldPodsOf(config, walk, new Set(entries.map((e) => e.name)), opts.egress ?? true);
   for (const e of entries) {
     // An empty value is refused later with the list's own rule (`sourceOf`): it is an unset variable.
     if (namedBy.has(e.name) && e.value) shortRefusal(e, e.value.length);
@@ -174,6 +236,7 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
   for (const ws of walk.workspaces) {
     refuseWithNoSlot(ws);
     pushesOf(config, ws);
+    custodianHeldOf(ws);
   }
 }
 
@@ -214,7 +277,7 @@ export function secretPlacementsOf(
   lookups: Pick<HeldLookups, "secretKeys" | "valueLength"> = {},
 ): SecretPlacements {
   const { entries, namedBy, instancePlaced, hooks, tokenHooks } = namesOf(config, walk);
-  const { pods, redundant } = heldPodsOf(config, walk, new Set(entries.map((e) => e.name)));
+  const { pods, redundant } = heldPodsOf(config, walk, new Set(entries.map((e) => e.name)), true);
   const claimed = new Set(pods.flatMap((p) => p.names));
 
   const report: string[] = [];
@@ -284,6 +347,7 @@ export function secretPlacementsOf(
   for (const { label, name } of redundant) {
     report.push(`${label}: secrets lists ${name}, which its Agents' provider claims already — redundant`);
   }
+  warnings.push(...egressWarningsOf(pods, config));
 
   const instanceSecrets = new Set([
     ...instancePlaced.flatMap((p) => effectSecretsOf(config, p.effect)),
@@ -311,7 +375,13 @@ export function secretPlacementsOf(
     // Two plans of one pod key would give a Workspace's Effector another's secrets (ADR-0059).
     if (sandbox.some((p) => p.pod === plan.pod)) throw sharedPodKey(plan.pod, plan.label);
     sandbox.push(plan);
+    // The Custodian of the Workspace's pod holds the Effector's header secrets (ADR-0068).
+    const held = pods.find((p) => p.pod === plan.pod);
+    if (held !== undefined && plan.custodian.length > 0) {
+      held.effector = { bindings: plan.custodian.map((c) => c.binding), values: plan.custodianValues };
+    }
     const holds = plan.secrets.map((s) => s.name);
+    const forIt = plan.custodian.map((c) => c.name);
     // Exact for a slot the Machine binds; for one the run or a customize() binds, the entry is
     // the one its url matches at provision (ADR-0051).
     const pushes = plan.pushes.map(
@@ -324,6 +394,7 @@ export function secretPlacementsOf(
     report.push(
       `${plan.label}: Sandbox Effector (image ${plan.image ?? "the Sandbox Image"}) holds ` +
         `${holds.length ? holds.join(", ") : "no Effect secret"}` +
+        `${forIt.length ? `; the Custodian holds ${forIt.join(", ")} for it` : ""}` +
         `${pushes.length ? `; pushes ${pushes.join(", ")}` : ""}`,
     );
   }
@@ -339,7 +410,24 @@ function sandboxPlanOf(
   values: Record<string, string>,
 ): SandboxEffectorPlan {
   const named = new Set(ws.pod.effects.flatMap((e) => e.secrets ?? []));
-  const own = secrets.filter((s) => named.has(s.name));
+  const custodian = custodianHeldOf(ws);
+  const own = secrets.filter((s) => named.has(s.name) && !custodian.has(s.name));
+  const bindings: Array<{ name: string; binding: HeldBinding }> = [];
+  const custodianValues: Record<string, string> = {};
+  for (const s of secrets) {
+    const held = custodian.get(s.name);
+    if (held === undefined) continue;
+    const binding: HeldBinding = {
+      name: effectorBindingName(s.name),
+      source: s.source,
+      hosts: held.hosts.map((h) => ({ ...h, leaf: leafStem(h.host, h.port) })),
+      headers: held.headers,
+      holder: "effector",
+      ...(held.basic ? { basic: true as const } : {}),
+    };
+    bindings.push({ name: s.name, binding });
+    if (s.source.kind === "literal" && values[s.name] !== undefined) custodianValues[binding.name] = values[s.name]!;
+  }
   const targets: EffectorTargetConfig[] = [];
   for (const effect of ws.pod.effects) {
     if (effect.kind !== "http") continue;
@@ -360,12 +448,81 @@ function sandboxPlanOf(
     ...(ws.pod.effector ? { image: ws.pod.effector.image } : {}),
     ...(ws.pod.image !== undefined ? { sandboxImage: ws.pod.image } : {}),
     secrets: own,
-    values: Object.fromEntries(Object.entries(values).filter(([name]) => named.has(name))),
+    values: Object.fromEntries(Object.entries(values).filter(([name]) => own.some((s) => s.name === name))),
+    custodian: bindings,
+    custodianValues,
     targets,
     pushes,
     commands,
     effects: ws.pod.effects.map((e) => `${ws.workflow}/${e.name}`),
   };
+}
+
+/** The longest binding name the Custodian's control process takes (an env name, ADR-0059). */
+const BINDING_NAME_MAX = 128;
+
+type CustodianHeld = { hosts: Array<{ host: string; port: number }>; headers: string[]; basic: boolean };
+
+/**
+ * The secrets that ride a header of the Workspace's file-body `http`s (ADR-0068), by name: the
+ * targets and headers the Custodian binds each to, and whether it rides Basic. Throws, with the fix,
+ * on a form the Custodian cannot swap (ADR-0059: the Stand-in alone, one scheme and the Stand-in, or
+ * a Basic pair whose password is the Stand-in), on a target whose scheme does not agree with its
+ * port (the Custodian reads plain HTTP on port 80 alone, ADR-0084), on a secret that the Effector
+ * must also hold as a value (in a url's path, or in a credentialed command's env: its file holds one
+ * of the two), and on a name too long for a binding.
+ */
+function custodianHeldOf(ws: PlacedWorkspace): Map<string, CustodianHeld> {
+  const out = new Map<string, CustodianHeld>();
+  const asValue = new Map<string, string>();
+  for (const effect of ws.pod.effects) {
+    if (effect.kind === "command") for (const s of effect.secrets ?? []) asValue.set(s, `the command "${effect.name}"`);
+    if (effect.kind === "http") for (const s of effect.urlSecrets ?? []) asValue.set(s, `the url of "${effect.name}"`);
+  }
+  for (const effect of ws.pod.effects) {
+    if (effect.kind !== "http" || effect.target === undefined) continue;
+    const t = effect.target;
+    for (const h of effect.headerSecrets ?? []) {
+      const at = `workflow "${ws.workflow}": the http Effect "${effect.name}" runs in ${workspaceLabel(ws)}`;
+      if (h.form === "other") {
+        throw new Error(
+          `${at}, and its ${h.header} header holds secret("${h.secret}") in a form the Custodian cannot swap: ` +
+            "the Custodian holds a Sandbox Effector's header secret, and swaps its Stand-in when the header is the " +
+            'secret alone, one scheme and the secret ("Token " + secret), or a Basic pair whose user is text and ' +
+            "whose password is the secret (ADR-0068, ADR-0059)",
+        );
+      }
+      if ((t.scheme === "http") !== (t.port === 80)) {
+        throw new Error(
+          `${at}, and its ${h.header} header holds secret("${h.secret}"), which the Custodian holds, toward ` +
+            `${t.scheme}://${t.host}:${t.port}: the Custodian reads plain HTTP on port 80 alone and ends TLS on each ` +
+            "other port of a host it holds a secret for, so this call cannot work. Use https on a port other than 80, " +
+            "or http on port 80 (ADR-0068, ADR-0084)",
+        );
+      }
+      const also = h.url ? `the url of "${effect.name}"` : asValue.get(h.secret);
+      if (also !== undefined) {
+        throw new Error(
+          `${at}, and secret("${h.secret}") rides its ${h.header} header, where the Custodian holds it, and ${also}, ` +
+            "where the Sandbox Effector holds its value: one file cannot hold both. Name two secrets (ADR-0068)",
+        );
+      }
+      if (effectorBindingName(h.secret).length > BINDING_NAME_MAX) {
+        throw new Error(
+          `${at}, and the name of secret("${h.secret}") is too long for the Custodian, which holds it: the binding ` +
+            `name "effector_" + the name, where each character other than a letter or a digit takes three, may have ` +
+            `at most ${BINDING_NAME_MAX} characters. Use a shorter name (ADR-0068)`,
+        );
+      }
+      const known = out.get(h.secret) ?? { hosts: [], headers: [], basic: false };
+      if (!known.hosts.some((x) => x.host === t.host && x.port === t.port))
+        known.hosts.push({ host: t.host, port: t.port });
+      if (!known.headers.includes(h.header)) known.headers.push(h.header);
+      known.basic ||= h.form === "basic";
+      out.set(h.secret, known);
+    }
+  }
+  return out;
 }
 
 /**
@@ -551,12 +708,14 @@ function sharedPodKey(pod: string, label: string): Error {
  * Each Harness pod and the Held secrets it gets: a Workspace's `secrets` plus its Agents' providers'
  * claims, the Instance Harness's `"none"` Agents' claims. A `workspace()` that lists a name the list
  * does not hold is refused with the line to add. Two pods of one key are refused
- * ({@link sharedPodKey}).
+ * ({@link sharedPodKey}). With `egress` false, each pod's Egress list is empty and its refusals do
+ * not run: the door's walk, which has no `.env` (`refuseEffectSecrets`).
  */
 function heldPodsOf(
   config: JR2Config,
   walk: PlacementWalk,
   listed: ReadonlySet<string>,
+  egress: boolean,
 ): { pods: HeldPodPlan[]; redundant: Array<{ label: string; name: string }> } {
   const order = (config.secrets ?? []).map((s) => s.name);
   const ordered = (names: Iterable<string>): string[] => {
@@ -565,6 +724,10 @@ function heldPodsOf(
   };
   const pods: HeldPodPlan[] = [];
   const redundant: Array<{ label: string; name: string }> = [];
+  const ranges = fenceRangesOf(config.fence);
+  // Parsed here, host-side, and not at the config load: in-cluster an entry that reads `.env` is
+  // empty (ADR-0084). The door (`egress` false) does not parse it.
+  const instanceList = egress ? parseEgressList(INSTANCE_EGRESS_AT, config.egress ?? [], ranges) : [];
   // The secret of each remote MCP server that the pod's Agents name (ADR-0079), with the servers:
   // the Agent claims it by naming the server, as it claims a model key by naming a model. A name
   // the `mcp` block does not declare is refused by the walk's own check (`mcpRefusals`), not here.
@@ -590,12 +753,14 @@ function heldPodsOf(
     const byProvider = providerClaims(config, ws.pod.models);
     for (const name of ws.pod.secrets) if (byProvider.includes(name)) redundant.push({ label, name });
     const byServer = serverClaims((ws.pod.mcp ?? []).map((m) => m.entry.server));
+    const names = ordered([...ws.pod.secrets, ...byProvider, ...Object.keys(byServer)]);
     const plan: HeldPodPlan = {
       pod: workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route }),
       label,
-      names: ordered([...ws.pod.secrets, ...byProvider, ...Object.keys(byServer)]),
+      names,
       byProvider: ordered(byProvider),
       ...(Object.keys(byServer).length ? { byServer } : {}),
+      egress: egress ? workspaceEgressOf(config, ws, label, names, instanceList, ranges) : NO_EGRESS,
     };
     if (pods.some((p) => p.pod === plan.pod)) throw sharedPodKey(plan.pod, label);
     pods.push(plan);
@@ -603,15 +768,170 @@ function heldPodsOf(
   if (walk.instanceHarness) {
     const byProvider = ordered(providerClaims(config, walk.instanceHarness.models));
     const byServer = serverClaims(walk.instanceHarness.servers ?? []);
+    const names = ordered([...byProvider, ...Object.keys(byServer)]);
+    const label = "the Instance Harness";
+    // No entry of the author's (ADR-0084): only the hosts it must reach with no secret, each
+    // narrowed from the Instance's entry that permits it.
+    const required = egress
+      ? requiredHostsOf(config, walk.instanceHarness.models, walk.instanceHarness.servers ?? [], names)
+      : [];
+    const refusal = missingEntry(
+      label,
+      required,
+      instanceList,
+      "the Instance's egress (jr2.config.ts)",
+      ranges,
+      boundHostsOf(config, names),
+    );
+    if (refusal) throw new Error(refusal);
+    const list: EgressItem[] = required.map((r) => {
+      const entry = instanceList.find((i) => permits(i, r.host, r.port))!;
+      const exact = entry.match === "name" || entry.match === "address";
+      const match = isIP(r.host) === 0 ? ("name" as const) : ("address" as const);
+      return { at: entry.at, host: r.host, match, ports: [r.port], intercept: exact && entry.intercept };
+    });
     pods.push({
       pod: INSTANCE_HARNESS_HELD_POD,
-      label: "the Instance Harness",
-      names: ordered([...byProvider, ...Object.keys(byServer)]),
+      label,
+      names,
       byProvider,
       ...(Object.keys(byServer).length ? { byServer } : {}),
+      egress: { list, effector: [], repos: [] },
     });
   }
   return { pods, redundant };
+}
+
+/**
+ * A Workspace's Egress list before its Held secrets are resolved (ADR-0084), or the refusal of a
+ * host that it must reach with no secret and that the list does not permit. Its own `egress`
+ * replaces the Instance's whole; it is checked here against the Instance's `fence`.
+ */
+function workspaceEgressOf(
+  config: JR2Config,
+  ws: PlacedWorkspace,
+  label: string,
+  names: readonly string[],
+  instanceList: readonly EgressItem[],
+  ranges: ReturnType<typeof fenceRangesOf>,
+): PodEgress {
+  const own = ws.pod.egress;
+  const list =
+    own === undefined
+      ? [...instanceList]
+      : parseEgressList(`workflow "${ws.workflow}": workspace() egress`, own, ranges);
+  const required = requiredHostsOf(
+    config,
+    ws.pod.models,
+    (ws.pod.mcp ?? []).map((m) => m.entry.server),
+    names,
+  );
+  const effector: HostPort[] = [];
+  const add = (into: HostPort[], h: HostPort) => {
+    if (!into.some((x) => x.host === h.host && x.port === h.port)) into.push(h);
+  };
+  const slots = Object.keys(ws.pod.bindings);
+  for (const effect of ws.pod.effects) {
+    if (effect.kind === "http" && effect.target !== undefined) {
+      const target = { host: effect.target.host, port: effect.target.port };
+      // A target whose Effect names a secret in a header or its auth is a bound host of the Sandbox
+      // Effector: the Custodian holds that secret. A secret in the url's path stays in the Effector
+      // (ADR-0068), so a target with no other secret is a host jr2 uses with none, and needs an entry.
+      const inUrl = effect.urlSecrets ?? [];
+      if (effect.secrets.some((s) => !inUrl.includes(s))) add(effector, target);
+      else {
+        const what = inUrl.length ? "a secret in its url alone" : "no secret";
+        required.push({ ...target, what: `the http Effect "${effect.name}" (${what})` });
+      }
+    }
+    if (effect.kind === "push") {
+      const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
+      const url = slot === undefined ? undefined : ws.pod.bindings[slot];
+      const https = url !== undefined && /^https:\/\//i.test(url) ? httpHostOf(url) : undefined;
+      if (https) add(effector, https);
+    }
+  }
+  const refusal = missingEntry(
+    label,
+    required,
+    list,
+    own === undefined
+      ? "the Instance's egress (jr2.config.ts)"
+      : "its workspace()'s egress, which replaces the Instance's,",
+    ranges,
+    boundHostsOf(config, names),
+  );
+  if (refusal) throw new Error(refusal);
+  // Each SSH Repo it binds, on the port of its url (22 by default), with no entry: the push of its
+  // Sandbox Effector over SSH is a Tunneled host, and the push key stays in the Effector (ADR-0068,
+  // ADR-0084). A slot the run or a `customize()` binds has no url here.
+  const repos: HostPort[] = [];
+  for (const url of Object.values(ws.pod.bindings)) {
+    const ssh = url === undefined ? undefined : sshHostOf(url);
+    if (ssh) add(repos, ssh);
+  }
+  return { list, effector, repos };
+}
+
+/** The hosts that the `hosts` of each Held secret in `names` states, for the text of a refusal. An
+ * entry that does not parse is left out: the rules of the list refuse it (`heldSecretsOf`). */
+function boundHostsOf(config: JR2Config, names: readonly string[]): HostPort[] {
+  const out: HostPort[] = [];
+  for (const e of config.secrets ?? []) {
+    if (!names.includes(e.name)) continue;
+    for (const entry of e.hosts ?? []) {
+      try {
+        out.push(parseTarget(`${e.name}.hosts`, entry));
+      } catch {
+        // Refused later, by its own rule.
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The hosts that jr2 itself reaches from a pod with no secret (ADR-0084): the custom provider's
+ * endpoint when it has no `apiKey`, a `harness.catalog` endpoint when the pod holds no key of that
+ * provider, for a provider that an Agent there names; and the url of each remote MCP server with no
+ * `secret` that an Agent there names. Each needs an entry.
+ */
+function requiredHostsOf(
+  config: JR2Config,
+  models: readonly string[],
+  servers: readonly string[],
+  names: readonly string[],
+): RequiredHost[] {
+  const out: RequiredHost[] = [];
+  const providers = new Set(models.map((m) => m.split("/")[0] ?? ""));
+  const custom = config.harness?.provider;
+  if (custom && providers.has(custom.id) && !custom.apiKey) {
+    const h = httpHostOf(custom.baseUrl);
+    if (h) out.push({ ...h, what: `the "${custom.id}/…" models (harness.provider.baseUrl, with no apiKey)` });
+  }
+  for (const [id, reach] of Object.entries(config.harness?.catalog ?? {})) {
+    if (!providers.has(id) || names.some((n) => MODEL_KEYS[n]?.providers.includes(id))) continue;
+    const h = httpHostOf(reach.baseUrl);
+    if (h) out.push({ ...h, what: `the "${id}/…" models (harness.catalog.${id}.baseUrl, with no key held)` });
+  }
+  for (const server of [...new Set(servers)].sort()) {
+    const declared = config.mcp?.[server];
+    if (declared === undefined || isStdioServer(declared) || declared.secret !== undefined) continue;
+    const h = httpHostOf(declared.url);
+    if (h) out.push({ ...h, what: `the MCP server "${server}" (mcp.${server}.url, with no secret)` });
+  }
+  return out;
+}
+
+/** The warnings of each `"*"` and `*.` entry (ADR-0084): the Instance's list, then each
+ * `workspace()`'s own. */
+function egressWarningsOf(pods: readonly HeldPodPlan[], config: JR2Config): string[] {
+  const out = egressWarnings(parseEgressList(INSTANCE_EGRESS_AT, config.egress ?? [], fenceRangesOf(config.fence)));
+  for (const p of pods) {
+    const own = p.egress.list.filter((i) => !i.at.startsWith(`${INSTANCE_EGRESS_AT}[`));
+    for (const w of egressWarnings(own)) if (!out.includes(w)) out.push(w);
+  }
+  return out;
 }
 
 /** The list by name, refused when a name is listed twice; which Effects name which secret, refused

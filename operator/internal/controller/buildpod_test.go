@@ -177,23 +177,22 @@ func TestBuildPodCarriesFSGroupRuntimeVolumeAndInitContainers(t *testing.T) {
 	}
 }
 
-// TestBuildPodReadinessProbe checks the default /healthz probe on the serving
-// port, and that an explicit spec.readinessProbe is honored verbatim.
+// TestBuildPodReadinessProbe checks the default probe, an exec of `effector
+// healthcheck` of the Harness's /healthz on the serving port (ADR-0063,
+// ADR-0084), and that an explicit spec.readinessProbe is honored verbatim.
 func TestBuildPodReadinessProbe(t *testing.T) {
 	r := &SandboxReconciler{}
 
 	def := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 9000}), nil)
 	probe := def.Spec.Containers[0].ReadinessProbe
-	if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/healthz" {
-		t.Fatalf("expected a default /healthz readiness probe (ADR-0063), got %+v", probe)
+	want := []string{"/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:9000/healthz"}
+	if probe == nil || probe.Exec == nil || !reflect.DeepEqual(probe.Exec.Command, want) {
+		t.Fatalf("expected a default exec probe of /healthz on port 9000 (ADR-0063), got %+v", probe)
 	}
-	if probe.HTTPGet.Port.IntValue() != 9000 {
-		t.Fatalf("default probe should target the serving port 9000, got %v", probe.HTTPGet.Port)
-	}
-	// The kubelet's 10s default adds up to 10s to every provision for nothing
-	// (the scaling review's R12): a TCP connect each second is free.
-	if probe.PeriodSeconds != 1 {
-		t.Fatalf("default probe periodSeconds = %d, want 1", probe.PeriodSeconds)
+	// The startup probe gives the 1 s cadence until the Harness first answers
+	// (the scaling review's R12); readiness then runs every 10 s.
+	if start := def.Spec.Containers[0].StartupProbe; start == nil || start.PeriodSeconds != 1 {
+		t.Fatalf("default startup probe: want every second, got %+v", start)
 	}
 
 	custom := &corev1.Probe{
@@ -210,6 +209,140 @@ func TestBuildPodReadinessProbe(t *testing.T) {
 	got := honored.Spec.Containers[0].ReadinessProbe
 	if got == nil || got.HTTPGet == nil || got.HTTPGet.Path != "/healthz" {
 		t.Fatalf("expected spec.readinessProbe to be honored, got %+v", got)
+	}
+}
+
+// TestBuildPodOnTheFence checks spec.network (ADR-0084): the attachment is the
+// Pod's default network, the nameserver its only DNS server, and the default
+// readiness probe an exec probe of the Harness's own /healthz, because no HTTP
+// or TCP probe of the kubelet reaches a pod on the Fence.
+func TestBuildPodOnTheFence(t *testing.T) {
+	r := &SandboxReconciler{}
+	network := &corev1alpha1.SandboxFence{Attachment: "jr2-fence-3", Nameserver: "198.19.0.1"}
+	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 9000, Network: network}), nil)
+
+	if got := pod.Annotations[defaultNetworkAnnotation]; got != nsDefault+"/jr2-fence-3" {
+		t.Fatalf("default-network annotation = %q, want %q", got, nsDefault+"/jr2-fence-3")
+	}
+	if _, ok := pod.Annotations["k8s.v1.cni.cncf.io/networks"]; ok {
+		t.Fatalf("a pod on the Fence has no second interface, got %v", pod.Annotations)
+	}
+	for k, v := range noDisruption {
+		if pod.Annotations[k] != v {
+			t.Fatalf("annotation %s = %q, want %q beside the network", k, pod.Annotations[k], v)
+		}
+	}
+	if len(noDisruption) != 2 {
+		t.Fatalf("the shared default was written through: %v", noDisruption)
+	}
+	if pod.Spec.DNSPolicy != corev1.DNSNone {
+		t.Fatalf("dnsPolicy = %q, want None", pod.Spec.DNSPolicy)
+	}
+	wantDNS := &corev1.PodDNSConfig{
+		Nameservers: []string{"198.19.0.1"},
+		Searches:    []string{},
+		Options:     []corev1.PodDNSConfigOption{{Name: "ndots", Value: ptr.To("1")}},
+	}
+	if !reflect.DeepEqual(pod.Spec.DNSConfig, wantDNS) {
+		t.Fatalf("dnsConfig = %+v, want %+v", pod.Spec.DNSConfig, wantDNS)
+	}
+
+	// The startup probe asks every second until the Harness first answers,
+	// so a provision waits at most a second for Ready (R12); after it, the
+	// readiness probe asks every 10 s, because each exec probe is a process
+	// in the container. A failed startup probe restarts the container, so it
+	// allows 10 minutes: not shorter than the Orchestrator's 120 s Ready wait.
+	wantCmd := []string{"/opt/jr2/bin/effector", "healthcheck", "http://127.0.0.1:9000/healthz"}
+	for _, tc := range []struct {
+		name     string
+		probe    *corev1.Probe
+		period   int32
+		failures int32
+	}{
+		{"startup", pod.Spec.Containers[0].StartupProbe, 1, 600},
+		{"readiness", pod.Spec.Containers[0].ReadinessProbe, 10, 0},
+	} {
+		probe := tc.probe
+		if probe == nil || probe.HTTPGet != nil || probe.TCPSocket != nil || probe.Exec == nil {
+			t.Fatalf("%s: want an exec probe and no HTTP or TCP probe, got %+v", tc.name, probe)
+		}
+		if !reflect.DeepEqual(probe.Exec.Command, wantCmd) {
+			t.Fatalf("%s: probe command = %q, want %q", tc.name, probe.Exec.Command, wantCmd)
+		}
+		if probe.PeriodSeconds != tc.period || probe.TimeoutSeconds != 2 || probe.FailureThreshold != tc.failures {
+			t.Fatalf("%s: period %d timeout %d failures %d, want %d, 2 and %d", tc.name,
+				probe.PeriodSeconds, probe.TimeoutSeconds, probe.FailureThreshold, tc.period, tc.failures)
+		}
+	}
+	if pod.Spec.Containers[0].LivenessProbe != nil {
+		t.Fatalf("no liveness probe on the Fence, got %+v", pod.Spec.Containers[0].LivenessProbe)
+	}
+
+	// An explicit spec.readinessProbe still wins on the Fence, and the
+	// operator then adds no startup probe: the override states its own timing.
+	custom := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
+	honored := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
+		Image: testHarnessImage, Port: 9000, Network: network, ReadinessProbe: custom,
+	}), nil)
+	if got := honored.Spec.Containers[0].ReadinessProbe; got != custom {
+		t.Fatalf("expected spec.readinessProbe to be honored on the Fence, got %+v", got)
+	}
+	if got := honored.Spec.Containers[0].StartupProbe; got != nil {
+		t.Fatalf("spec.readinessProbe is set, but a startup probe was added: %+v", got)
+	}
+}
+
+// TestOnTheFence checks the read of Multus's network-status (ADR-0084): only
+// a report that names the attachment as the default network passes, and an
+// absent or unreadable report fails closed.
+func TestOnTheFence(t *testing.T) {
+	onFence := sandboxFor(corev1alpha1.SandboxSpec{
+		Image: testHarnessImage, Network: &corev1alpha1.SandboxFence{Attachment: "jr2-fence-3", Nameserver: "198.19.0.1"},
+	})
+	want := nsDefault + "/jr2-fence-3"
+	for _, tc := range []struct {
+		name   string
+		status *string
+		want   bool
+	}{
+		{"the attachment is the default", ptr.To(`[{"name":"` + want + `","interface":"eth0","default":true}]`), true},
+		{"no report", nil, false},
+		{"an unreadable report", ptr.To(`{`), false},
+		{"the cluster's network is the default", ptr.To(`[{"name":"kindnet","default":true}]`), false},
+		{"the attachment is a second network", ptr.To(
+			`[{"name":"kindnet","default":true},{"name":"` + want + `","interface":"net1"}]`), false},
+		{"another namespace's attachment", ptr.To(`[{"name":"other/jr2-fence-3","default":true}]`), false},
+		{"another slot", ptr.To(`[{"name":"` + nsDefault + `/jr2-fence-4","default":true}]`), false},
+		{"no network is the default", ptr.To(`[{"name":"` + want + `"}]`), false},
+	} {
+		pod := &corev1.Pod{}
+		if tc.status != nil {
+			pod.Annotations = map[string]string{networkStatusAnnotation: *tc.status}
+		}
+		if got := onTheFence(onFence, pod); got != tc.want {
+			t.Fatalf("%s: onTheFence = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if !onTheFence(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage}), &corev1.Pod{}) {
+		t.Fatalf("a Sandbox without spec.network needs no report")
+	}
+}
+
+// TestBuildPodOffTheFence checks that a Sandbox without spec.network keeps the
+// cluster's DNS and no Multus annotation, and still gets the exec probes: the
+// operator makes no Service, so no probe of the kubelet is the default.
+func TestBuildPodOffTheFence(t *testing.T) {
+	r := &SandboxReconciler{}
+	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
+	if _, ok := pod.Annotations[defaultNetworkAnnotation]; ok {
+		t.Fatalf("no spec.network, but a default-network annotation: %v", pod.Annotations)
+	}
+	if pod.Spec.DNSPolicy != "" || pod.Spec.DNSConfig != nil {
+		t.Fatalf("no spec.network, but DNS %q %+v", pod.Spec.DNSPolicy, pod.Spec.DNSConfig)
+	}
+	probe := pod.Spec.Containers[0].ReadinessProbe
+	if probe == nil || probe.Exec == nil || probe.HTTPGet != nil {
+		t.Fatalf("no spec.network: want the exec probe, got %+v", probe)
 	}
 }
 

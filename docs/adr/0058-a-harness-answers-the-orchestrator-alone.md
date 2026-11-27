@@ -10,7 +10,7 @@ to another Sandbox, or to the Instance Harness, which holds every Menu-only conv
 review also found that the echo ([ADR-0023](0023-the-harness-prints-the-conversation.md)) sent the raw Instance token to
 every Sandbox Harness on each push. The env held only its digest, but the token itself passed through the process that
 the Agent executes code beside. So we authenticate the wire with a bearer that each Harness can verify and cannot mint,
-and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harness pod.
+and only the Orchestrator can dial a Harness pod.
 
 ## Decision
 
@@ -19,7 +19,8 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   long-poll, abort, and echo. `placement` is the name of the pod that hosts the Turn: the Sandbox's name, or
   `jr2-instance-harness`. This is the same name the registration records as its delivery scope
   ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)), so one name scopes both
-  directions. The Custodian there may speak for the Turn's picks, and only this bearer may drive the conversation there.
+  directions. Only the Custodian, with that pod's control token, may speak for the Turn's picks, and only this bearer
+  may drive the conversation there.
 - **A key per Effector placement, derived the same way**
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
   `effectorKey(key, placement) = HMAC(signing key, "effector:" + placement)` signs every request the Orchestrator sends
@@ -41,22 +42,23 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
 - **Every route is gated, and the gate runs first.** Admit, stream, history, abort and echo answer 401 without the
   bearer. A 401 comes before a 404, so a refused caller does not learn which conversations exist. A refused admission
   creates no conversation. The Harness requires `JR2_HARNESS_TOKEN_SHA256` at boot and fails loudly without it.
-- **The echo uses the same bearer.** `JR2_ECHO_TOKEN_SHA256` is removed. The Instance token no longer enters any pod,
-  which is what [ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md) and
+- **The echo uses the same bearer.** `JR2_ECHO_TOKEN_SHA256` is removed. The Instance token enters no pod, which is what
+  [ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md) and
   [Secrets and trust](../site/concepts/secrets-and-trust.md) say.
 - **A refused stream is a fault, not a reconnect.** The bearer is derived, so a Harness that refuses it once refuses it
   on every retry. `wait` settles a 401 or 403 as a `SettlementFault` and does not park the Turn forever.
-- **Ingress to every Harness pod comes from the Orchestrator alone.** `jr2 up` converges two NetworkPolicies in the
-  instance namespace. `jr2-sandbox-ingress` selects every pod that has the operator's `sandbox.jr2.dev/name` label.
-  `jr2-instance-harness-ingress` selects `app: jr2-instance-harness`. Both admit ingress only from this instance's
-  Orchestrator pods (`app: jr2-orchestrator`, `jr2.dev/instance: <name>`). They are converged unconditionally, so a
-  Harness pod is never created before its policy exists. The Instance Effector gets a third of the same form,
-  `jr2-instance-effector`, applied with it in one List (ADR-0068).
+- **A dial toward a Harness pod comes from the Orchestrator alone.** Each Harness pod, a Sandbox or the Instance
+  Harness, is behind a Fence and on no network of the cluster, so no NetworkPolicy applies to it. The Orchestrator's
+  dial reaches it through the Custodian's uplink ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)).
+  The uplink accepts a dial toward a Harness pod from the Orchestrator only, and the bearer check is the second control.
+  The Instance Effector stays on the cluster's network: `jr2 up` converges the NetworkPolicy `jr2-instance-effector`,
+  which admits ingress to it only from this instance's Orchestrator pods (`app: jr2-orchestrator`,
+  `jr2.dev/instance: <name>`), with its other objects (ADR-0068).
 - **Starting a run needs a Caller with `start`.** `POST /workflows/:name/runs` moves from `authenticated` to the guarded
   band, where a Caller's `start` scope opens it
   ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). A Sandbox token is no
-  Caller: its scope is its own agent surface. The Custodian's route allowlist does not forward this route, but that is
-  not a control.
+  Caller: its scope is its own agent surface. The Custodian's route list does not forward this route, but that is not a
+  control.
 
 ## Considered options
 
@@ -71,8 +73,8 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   Harness process on every call. A per-placement bearer that leaks from one pod opens only that pod, which the Agent
   there already controls.
 - **NetworkPolicy alone.** Rejected, for the reason ADR-0013 gives: a policy bounds where a pod may talk, and only a
-  token bounds what it may do. The policy cannot separate the Harness from the Custodian in one pod, and a cluster whose
-  CNI does not enforce policy gets nothing from it.
+  token bounds what it may do. No policy applies on a pod's loopback, where Workspace code reaches its own Harness, and
+  a cluster whose CNI does not enforce policy gets nothing from it.
 
 ## Consequences
 
@@ -80,13 +82,13 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   run on the stub path names no placement, so it sends no bearer. This is the second documented divergence from the
   normative model ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)). Conformance tests
   inject the check (`checkBearer`), and `auth.test.ts` in `@jr2/harness` pins the routing of the gate.
-- **kindnet enforces NetworkPolicy.** On the kind version this repo pins, a deny-ingress policy blocks pod-to-pod
-  traffic, so the `@kind` tier proves both controls. A Sandbox's own Harness refuses an unauthenticated admission over
-  loopback, where no policy applies. A Sandbox cannot connect to the Instance Harness at all. The second test asserts a
-  transport failure, not a status, because a 401 would mean the bearer stopped it and the policy did not.
+- **The `@kind` tier proves both controls.** A Sandbox's own Harness refuses an unauthenticated admission over loopback,
+  where no network control applies. A Sandbox cannot connect to the Instance Harness at all: the Fence carries each of
+  its connections to the Custodian alone (ADR-0084). The second test asserts that no answer comes from the Instance
+  Harness, because a 401 would mean the bearer stopped it and the network did not.
 - **Port-forward and probes are not affected.** `kubectl port-forward` enters the pod's network namespace through the
-  kubelet, and the kubelet's probes come from the node. On kind, neither is filtered by an ingress policy. So the CLI,
-  the Console, `jr2 workspace forward` and `jr2 workspace shell --user` into the User Container
+  kubelet, and the Fence does not filter it. The kubelet probes the containers of each Harness pod by exec (ADR-0084).
+  So the CLI, the Console, `jr2 workspace forward` and `jr2 workspace shell --user` into the User Container
   ([ADR-0005](0005-sandbox-pod-composition.md), [ADR-0009](0009-cli-and-instance-interface.md)) keep working: they reach
   the pod by port-forward and exec through the kube API, and no Service routes to the User Container. If routable access
   to the User Container is added later (ADR-0005 leaves it open), it must add its own ingress rule.
@@ -95,15 +97,9 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   Orchestrator's record with `jr2 logs`, behind `read` ([ADR-0023](0023-the-harness-prints-the-conversation.md)), and
   needs no bearer of a Harness.
 - **Model keys are not in the Harness container.** `JR2_PROVIDER_API_KEY` and every other held secret live in the
-  Custodian, and the Harness container's env holds their Stand-ins (ADR-0059). `jr2 up` refuses a known model key in
-  `harness.env` or in an `envFrom` Secret.
+  Custodian, outside every Sandbox, and the Harness process holds their Stand-ins as files (ADR-0059). `jr2 up` refuses
+  a known model key in `harness.env` or in an `envFrom` Secret.
 - **Open gaps, recorded here and not fixed:**
-  - **Sandbox egress.** An Agent with bash can reach the internet and send out anything it can read — which no longer
-    includes a held key: a client that goes around the Custodian carries only Stand-ins. One exception: no Harness pod
-    reaches a cloud metadata address
-    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). A default-deny egress
-    policy needs an allowlist: DNS, the Orchestrator, the model provider, and whatever the work needs (package
-    registries, for example). That needs a config surface and cluster CIDRs, so it is a separate decision.
   - **A held key can be spent.** The Agent can use a key through the Custodian while its pod lives, and a SigV4 or ADC
     credential cannot be held at all ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
   - **The Orchestrator's Secret writes are namespace-wide.** Its Role may create and patch every Secret, and may not get

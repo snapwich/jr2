@@ -30,7 +30,7 @@ import {
 
 /** The echo server's in-cluster address (`steps/seed.ts`). Plain HTTP: the Effector holds no
  * Custodian, and a pod-local echo needs no TLS to prove what comes back. */
-const ECHO = "http://echo.jr2-e2e-seed.svc";
+const ECHO = "http://echo.jr2-e2e-seed.svc.cluster.local";
 
 const door = z.object({ mode: z.enum(["bearer", "inpath", "slow"]), marker: z.string().regex(/^m-[a-z0-9]+$/) });
 type Door = z.infer<typeof door>;

@@ -9,13 +9,18 @@ export const ORCHESTRATOR_PORT = 4000;
 /** The instance-owned Secret: Instance token + signing key (+ orchestrator-side creds). */
 export const INSTANCE_SECRET = "jr2-instance";
 
-/** The Instance Harness's StatefulSet + Service name (ADR-0031): converged by `jr2 up` whenever any
- * Agent definition declares `workspace: "none"`, and the deterministic Service DNS the Agent actor
- * resolves such a Turn to. Doubles as the delivery scope a Menu-only registration records — the
- * name the placement's Sandbox token is signed for (tokens.ts, ADR-0013), which its Custodian holds. The port is the
- * Harness's own listen port (`PORT` default). */
+/** The Instance Harness's StatefulSet name (ADR-0031): converged by `jr2 up` whenever any Agent
+ * definition declares `workspace: "none"`. Doubles as the delivery scope a Menu-only registration
+ * records — the name the placement's tokens are signed for (tokens.ts, ADR-0013), which the
+ * Custodian holds. The port is the Harness's own listen port (`PORT` default). The pod is on slot 0
+ * of the Fence (ADR-0084), and the Orchestrator dials it there, through the Custodian. */
 export const INSTANCE_HARNESS_SERVICE = "jr2-instance-harness";
 export const INSTANCE_HARNESS_PORT = 8080;
+
+/** The Instance Harness StatefulSet's governing Service (ADR-0031, ADR-0084): headless, and no
+ * address routes to it. Its EndpointSlices name the pod's node, which is how the Orchestrator finds
+ * the Custodian pod that carries a dial to it. */
+export const INSTANCE_HARNESS_PODS_SERVICE = `${INSTANCE_HARNESS_SERVICE}-pods`;
 
 /** The Instance Effector (ADR-0068): its Deployment, headless Service, NetworkPolicy and Secret all
  * carry this name. `jr2 up` converges them when a registered Machine places an Effect there, or a
@@ -112,16 +117,16 @@ export function callerTokenSecret(name: string): string {
  * (ADR-0013) and never a model key (ADR-0059: those are held). */
 export const HARNESS_ENV_SECRET = "jr2-harness-env";
 
-/** The instance's trust ConfigMap (ADR-0020, ADR-0059): the user's `harness.caBundle` as `ca.crt`
- * and, while a held secret exists, the three bundles the held-secret path needs — `extra.crt` and
- * `bundle.crt` for the Harness, `upstream.crt` for the Custodian. Public data by nature. */
+/** The instance's trust ConfigMap (ADR-0020): the user's `harness.caBundle` as `ca.crt`, and
+ * nothing else. It exists only while a `caBundle` is set. Each Harness pod's own bundles are in its
+ * own trust ConfigMap, and the Custodian's `upstream.crt` in its own. Public data by nature. */
 export const CA_CONFIGMAP = "jr2-ca";
 
 /** Held secrets (ADR-0059). The per-Instance CA — its key included — that `jr2 up` alone reads over
  * the kube API, and that NO pod mounts: every leaf is issued before a pod starts. */
 export const HELD_CA_SECRET = "jr2-held-ca";
 /** The prefix of each pod's literal held values (`heldSecretsSecret`): one Secret per pod, one key
- * per name it holds — mounted into that pod's Custodian and nothing else. */
+ * per name it holds — which only the Custodian reads. */
 export const HELD_SECRETS_SECRET = "jr2-held-secrets";
 /** The literal held values of one pod (ADR-0059): `jr2-held-secrets-<pod>`. */
 export function heldSecretsSecret(pod: string): string {
@@ -130,11 +135,9 @@ export function heldSecretsSecret(pod: string): string {
 /** One leaf per bound `host:port` (`<stem>.crt`, `<stem>.key`) — the Custodians' alone. */
 export const HELD_TLS_SECRET = "jr2-held-tls";
 /** What `jr2 up` DECLARES about held secrets: each pod's held manifest (`heldManifestKey` — names,
- * bindings, headers; never a value) and the Custodian's program once (`CUSTODIAN_PROGRAM_KEY`).
- * Nothing rendered per pod lives here: a shared object stops at 1 MiB, and Envoy's files are a
- * pod's own, rendered where the pod is made (`sandboxCustodianConfigMap`,
- * `INSTANCE_CUSTODIAN_CONFIGMAP`). Always applied, possibly holding no secret: every Harness pod
- * runs a Custodian. */
+ * bindings, headers; never a value), and each Sandbox Effector's and the push manifest. Nothing
+ * rendered per pod lives here: a shared object stops at 1 MiB. Always applied, possibly holding no
+ * secret. */
 export const HELD_CONFIGMAP = "jr2-held";
 /** Where the Orchestrator reads a Workspace's held manifest, per provision — a mount, so a
  * held-secret edit reaches future Sandboxes without rolling the Orchestrator (the `jr2-images`
@@ -142,36 +145,64 @@ export const HELD_CONFIGMAP = "jr2-held";
 export const HELD_MOUNT = "/etc/jr2/held";
 /** The `jr2-held` key of one pod's manifest. */
 export const heldManifestKey = (pod: string): string => `held-${pod}.json`;
-/** The `jr2-held` key of the Custodian's fixed Lua — `custodian.lua` as written, once per Instance;
- * each pod's own script loads it by this name from its config mount. */
+/** The key of the Custodian's fixed Lua in the Custodian's ConfigMap — `custodian.lua` as written,
+ * once per Instance; each slot's own table loads it by this name. */
 export const CUSTODIAN_PROGRAM_KEY = "program.lua";
-/** The ConfigMap with the Instance Harness's Custodian's two rendered files (`envoy.json`,
- * `custodian.lua`), written by `jr2 up`: the one pod it makes. */
-export const INSTANCE_CUSTODIAN_CONFIGMAP = "jr2-held-custodian";
-/** The ConfigMap with one Sandbox's Custodian's two rendered files, written by the Orchestrator at
- * provision and owned by the Sandbox CR — the `<name>-token` family: it goes with the pod. */
-export const sandboxCustodianConfigMap = (sandbox: string): string => `${sandbox}-custodian`;
+/** The Secret of one slot of the Custodian of an Instance (ADR-0084): what its control process reads
+ * to render the slot's rules (`custodian-slot.ts`). The Orchestrator writes it (for slots 0–2, `jr2
+ * up`) and never reads it; the Custodian may get each of these names, and no other Secret. */
+export function custodianSlotSecret(slot: number): string {
+  return `jr2-custodian-slot-${slot}`;
+}
+/** The label of a slot Secret: its slot (ADR-0084). */
+export const LABEL_FENCE_SLOT = "jr2.dev/fence-slot";
+/** A Sandbox's trust ConfigMap on the Fence (ADR-0059, ADR-0084), owned by its CR: `extra.crt` and
+ * `bundle.crt`, each with the Sandbox's own CA. Its Harness container mounts it at `/etc/jr2/ca`. */
+export const sandboxTrustConfigMap = (sandbox: string): string => `${sandbox}-trust`;
+/** A Sandbox's Stand-ins on the Fence (ADR-0059, ADR-0076), owned by its CR: the secret control
+ * Stand-in and one secret Stand-in per held secret, which its Harness container mounts as files. No
+ * token and no value: those are in its slot Secret, which no Harness pod mounts. */
+export const sandboxStandInSecret = (sandbox: string): string => `${sandbox}-standins`;
+/** The Secret of the Instance's dial token (ADR-0084): the token of the Orchestrator's dial through a
+ * Custodian pod, and of the API of its control process. One key, `CUSTODIAN_DIAL_KEY`. */
+export const CUSTODIAN_DIAL_SECRET = "jr2-custodian-dial";
+export const CUSTODIAN_DIAL_KEY = "token";
+/** The Custodian of an Instance (ADR-0084): the name of its DaemonSet (one pod on each Sandbox node),
+ * of the headless Service whose EndpointSlices name each pod and its node, and of its
+ * ServiceAccount, Role, ConfigMap and NetworkPolicy. */
+export const CUSTODIAN_SERVICE = "jr2-custodian";
+/** The start of the name of each attachment of the Fence (ADR-0084). It is reserved: jr2's admission
+ * policies refuse a pod that names an attachment with it outside its Instance's namespace, and an
+ * attachment on the bridge of the Fence whose name does not start with it. */
+export const FENCE_ATTACHMENT_PREFIX = "jr2-fence-";
+/** The attachment of slot i (ADR-0084): a NetworkAttachmentDefinition in the Instance's namespace
+ * that puts a pod on the slot's VLAN with the slot's address. A Harness pod's only network. */
+export function fenceSlotAttachment(slot: number): string {
+  return `${FENCE_ATTACHMENT_PREFIX}${slot}`;
+}
+/** The attachment of the Custodian pod's trunk (ADR-0084): each VLAN of the Instance's range. */
+export const FENCE_TRUNK_ATTACHMENT = `${FENCE_ATTACHMENT_PREFIX}uplink`;
+/** The claim of VLAN range k on the cluster (ADR-0084): a Kubernetes Lease object in `jr2-system`
+ * whose holder is the namespace of the Instance that uses the range. */
+export function fenceRangeClaim(range: number): string {
+  return `jr2-fence-range-${range}`;
+}
+/** The ConfigMap of what the Orchestrator needs of the Fence (ADR-0084, ADR-0020), written by `jr2 up`
+ * when the Instance has a Custodian: `upstream.crt` (the roots of the Node that ran `jr2 up`, and the
+ * user's `caBundle`) and, when the Instance ships one, `ca.crt` (the `caBundle` alone). The
+ * Orchestrator reads both per provision for a Sandbox's trust files. Certificates only. */
+export const FENCE_CONFIGMAP = "jr2-fence";
+/** Where the Orchestrator mounts {@link FENCE_CONFIGMAP}. */
+export const FENCE_MOUNT = "/etc/jr2/fence";
+/** The mark on a Sandbox CR that its Fence objects are written (ADR-0059): the pod trusts the CA of
+ * that write, and the CA's key is gone, so no later provision of the Sandbox writes them again. */
+export const ANNOTATION_FENCE_OBJECTS = "jr2.dev/fence-objects";
 /** The Instance Harness's pod, as its held objects are keyed. A Workspace's is `ws-<digest>`
  * (`workspaceHeldPod`), so the two cannot collide. */
 export const INSTANCE_HARNESS_HELD_POD = "instance";
 
-/** The Custodian's ports (ADR-0059), all taken on every Harness pod (ADR-0005): the Harness's
- * HTTPS proxy on loopback, the kubelet's probe, and the fetch listener that the ask rides to the
- * Orchestrator, at the address `jr2-upload-pack` defaults to (ADR-0053). The agent routes are not
- * on a port: they are on the control socket ({@link CUSTODIAN_CONTROL_SOCKET}, ADR-0076). */
-export const CUSTODIAN_PORT = 15001;
+/** The Custodian pod's health port (ADR-0084): the kubelet's probe, on the cluster's network. */
 export const CUSTODIAN_HEALTH_PORT = 15021;
-export const CUSTODIAN_FETCH_PORT = 8081;
-
-/** The folder of the Custodian's control socket (ADR-0076): an emptyDir that the Harness container
- * and the Custodian container alone mount, at this path in both. It is under `/run/jr2`, so no
- * process that the Harness confines can make a socket here, and none can take the control
- * listener's place while the Custodian restarts. The Custodian writes it; the Harness mounts it
- * read-only, which still lets it connect to the socket. */
-export const CUSTODIAN_SOCKET_DIR = "/run/jr2/custodian";
-/** The control socket: the Custodian's listener for the five agent routes, which carry the control
- * Stand-in (ADR-0059, ADR-0076). */
-export const CUSTODIAN_CONTROL_SOCKET = `${CUSTODIAN_SOCKET_DIR}/control.sock`;
 
 /** The scaffold's default deploy-key Secret name (ADR-0047/0051): what `jr2 init`'s wildcard
  * `git.credentials` entry names as its `sshKey`, and what `jr2 up`'s ssh offer generates into when

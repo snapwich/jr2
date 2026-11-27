@@ -35,9 +35,9 @@ each conversation for as long as it keeps its run.
   run ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), so the runs in flight print into one log, and
   a reader keeps one run's lines by the prefix `<runId>/` (a run's Agents sit at more than one Machine path, and a Turn
   that does not continue, the conversation after one jr2 faulted, and a reroll each add a part to the iid). An iid
-  always holds a `/`, and a label never does, so a reader can tell the two apart. Nothing else in the pod knows both:
-  the Custodian sees routes and names, never a conversation, and working-tool execution happens inside the Harness,
-  invisible to every other jr2 process there.
+  always holds a `/`, and a label never does, so a reader can tell the two apart. Nothing else in the pod or at the
+  Custodian knows both: the Custodian sees routes and names, never a conversation, and working-tool execution happens
+  inside the Harness, invisible to every other jr2 process in the pod.
 - **Reasoning prints, and so does each pick's answer; a Working tool's result does not.** Prompts, assistant text,
   thinking, tool calls with truncated inputs, and the answer to each Menu pick. The file contents, command output, and
   API responses a Working tool returns never print, and neither does the result of an MCP tool
@@ -111,7 +111,7 @@ each conversation for as long as it keeps its run.
   that the Harness lost with its pod starts again under the same iid, and its new entries must come after the old ones.
   An entry is made when it is complete (at `message_end` for the model's words), so text and thinking deltas are not in
   it. The Harness writes each entry locally first, and then sends the entries in batches to the Orchestrator while the
-  Turn runs, on `POST /agents/<iid>/conversation`, through its Custodian, with its pod's control token
+  Turn runs, on `POST /agents/<iid>/conversation`, through the Custodian, with its pod's control token
   ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md),
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): a Sandbox's control token, or the
   Instance Harness's own control token, which is signed for its placement. The Instance token is never one of them. The
@@ -121,14 +121,12 @@ each conversation for as long as it keeps its run.
   the live registration: the ledger outlives the Turn and the run's end, so a batch that comes after the Turn's sweep or
   after the run ended is still kept, and those are the entries that tell how a run ended. The Harness starts a send of
   its pending entries when the model's answer ends (before its picks run) and at a Turn's end, and does not wait for it.
-  On SIGTERM it tries again for a few seconds. In a Sandbox the Custodian can exit first
-  ([ADR-0001](0001-operator-owned-generic-sandbox.md)), so the entries since the last send (about one second) can be
-  lost. While a live run's ledger does not name the iid yet (the batch came before the admission's save), the route
-  answers 409 and the Harness sends the batch again. The Instance-token door of ADR-0013 does not open it: a holder of
-  the Instance token can speak as an Agent, but it cannot write an Agent's kept conversation. Each entry's `seq` makes a
-  send idempotent: the Orchestrator keeps each `seq` of a conversation once, so a batch that the Harness sends again
-  after a failure or a restart adds nothing twice. A batch that fails stays in the local copy and goes with the next
-  batch. Menu-only Agents send the same way, from the Instance Harness
+  On SIGTERM it tries again for a few seconds. While a live run's ledger does not name the iid yet (the batch came
+  before the admission's save), the route answers 409 and the Harness sends the batch again. The Instance-token door of
+  ADR-0013 does not open it: a holder of the Instance token can speak as an Agent, but it cannot write an Agent's kept
+  conversation. Each entry's `seq` makes a send idempotent: the Orchestrator keeps each `seq` of a conversation once, so
+  a batch that the Harness sends again after a failure or a restart adds nothing twice. A batch that fails stays in the
+  local copy and goes with the next batch. Menu-only Agents send the same way, from the Instance Harness
   ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)). The kept conversation holds what the print holds:
   no Working tool's result and no MCP tool's result, but the residual of a pick's answer stated above (a Held value that
   an upstream echoed into a `command` Effect's output, an Effect secret in a form that the scrub does not catch). The
@@ -195,8 +193,8 @@ each conversation for as long as it keeps its run.
 - **A trace from the Custodian.** Tempting, and wrong on the facts. The Custodian carries the Menu's reads and the
   Agent's picks — a handful of deliveries per turn — and the model calls, and it logs names only, never a body
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Agent's working tools execute in
-  the Harness, never touching it. A Custodian trace shows `action=intercept … method=POST` and none of the four things
-  worth watching.
+  the Harness, and only the traffic that they send out reaches it. A Custodian trace shows
+  `action=intercept … method=POST` and none of the four things worth watching.
 - **Keep no conversation past its pod.** The Harness serves the stream from any offset for the life of the pod
   (ADR-0027), and a copy costs growth, a retention policy and a redaction surface. Rejected: a conversation that goes
   with its pod is gone when a person needs it most, after a run failed. What a copy costs is bounded: `runs.retain` sets

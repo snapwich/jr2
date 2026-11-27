@@ -1,0 +1,18 @@
+# Local kind cluster for jr2 with three nodes (`just fence-kind-up`), so that a test can put two Sandboxes of one
+# Instance on two nodes. `jr2 up` installs the Fence's prerequisites (ADR-0084). As in deploy/kind.yaml,
+# nothing here is bound to an Instance (ADR-0019). deploy/kind.yaml (one node) stays for CI.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: jr2
+networking:
+  ipFamily: ipv4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+# The same containerd patch as deploy/kind.yaml, for the same reason (ADR-0044): it only tells containerd that
+# per-registry configuration exists, so the @dist tier can resolve its local registry.
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"

@@ -38,6 +38,7 @@
 // observability, though jr2 never reads it (the actor is stopped by then; see actor.ts).
 
 import { agentActorWith } from "./actor.ts";
+import { fenceRouted, routedFetch } from "./custodian-client.ts";
 import { dialFetch, neverDelivered, routabilityLine, transportCode, transportDetail } from "./dial.ts";
 import type {
   AgentAdmission,
@@ -164,9 +165,9 @@ export type HarnessClientOptions = {
    * every call, the long-poll included. Absent only where no placement exists: an explicit-
    * `endpoint` run against the stub Harness, which checks nothing. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`, and `dialFetch()` for the
-   * admission, whose connect is bounded (ADR-0042) because it can be the first call to reach a
-   * Service. */
+  /** Injectable for socket-free tests. Default: `routedFetch`, and `fenceRouted(dialFetch())` for
+   * the admission, whose connect is bounded (ADR-0042) because it can be the first call to reach a
+   * Harness pod. Each goes to a slot address through the Custodian pod on its node (ADR-0084). */
   fetch?: typeof fetch;
   /** Reconnect backoff floor/ceiling (capped exponential, jittered per rung — see `jittered`;
    * network failures only, an answered long-poll re-polls immediately). Defaults 250ms → 5s; tests
@@ -288,8 +289,8 @@ function isTimeout(reason: unknown): boolean {
 /** Build the real wire client from connection options. */
 export function createHarnessClient(options: HarnessClientOptions): HarnessClient {
   const { baseUrl } = options;
-  const fetchImpl = options.fetch ?? fetch;
-  const admitFetch = options.fetch ?? dialFetch();
+  const fetchImpl = options.fetch ?? routedFetch;
+  const admitFetch = options.fetch ?? fenceRouted(dialFetch());
   const backoffInitialMs = options.backoffInitialMs ?? 250;
   const backoffMaxMs = options.backoffMaxMs ?? 5_000;
   const admitWindowMs = options.admitWindowMs ?? 90_000;
@@ -333,6 +334,9 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   const postAdmission = async (url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> => {
     const startedAt = Date.now();
     const deadline = startedAt + admitWindowMs;
+    // The routability line's duration is on the monotonic clock: a step of the wall clock must not
+    // make it negative (ADR-0042).
+    const startedMono = performance.now();
     let backoffMs = backoffInitialMs;
     let attempts = 0;
     let lastCode = "?";
@@ -367,7 +371,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
       }
       // Only when it actually cost something. A window that is never approached should be silent,
       // so that a line appearing at all is already the signal (see `routabilityLine`).
-      if (attempts > 1) log(routabilityLine("admission", url, attempts, Date.now() - startedAt, lastCode));
+      if (attempts > 1)
+        log(routabilityLine("admission", url, attempts, Math.round(performance.now() - startedMono), lastCode));
       return res;
     }
   };
@@ -701,10 +706,11 @@ export function createEchoPush(options: {
   baseUrl: string;
   /** The Workspace's Harness bearer (ADR-0058). Absent only against the stub Harness. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: `routedFetch` (through the Custodian to a slot
+   * address, ADR-0084). */
   fetch?: typeof fetch;
 }): (events: EchoEvent[]) => Promise<void> {
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchImpl = options.fetch ?? routedFetch;
   return async (events) => {
     const url = new URL("/echo", options.baseUrl).toString();
     // The echo is log-only, un-retried, and fires at workspace attach — which makes it the FIRST
@@ -739,10 +745,11 @@ export function createLiveSetPush(options: {
   baseUrl: string;
   /** The Instance Harness's bearer (ADR-0058). Absent only against the stub Harness. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: `routedFetch` (through the Custodian to a slot
+   * address, ADR-0084). */
   fetch?: typeof fetch;
 }): (live: LiveConversation[]) => Promise<LiveSetResponse> {
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchImpl = options.fetch ?? routedFetch;
   return async (live) => {
     const url = new URL("/agents", options.baseUrl).toString();
     const res = await fetchImpl(url, {
@@ -929,10 +936,11 @@ export function createExecPort(options: {
   baseUrl: string;
   /** The Workspace's Harness bearer (ADR-0058). Absent only against a Harness that checks nothing. */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: `routedFetch` (through the Custodian to a slot
+   * address, ADR-0084). */
   fetch?: typeof fetch;
 }): ExecPort {
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchImpl = options.fetch ?? routedFetch;
   const headers = {
     "content-type": "application/json",
     ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),

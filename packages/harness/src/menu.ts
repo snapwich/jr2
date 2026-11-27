@@ -5,9 +5,9 @@
 // Allowed-picks text, each receipt, each refusal — so a presenter only maps items to its tool API
 // and places the text it is handed, and a second presenter reuses it (ADR-0029).
 //
-// The Harness reads the surface from the Orchestrator itself, through the Custodian's control
-// socket under `/run/jr2` (`unix-fetch.ts`, ADR-0059, ADR-0076), never a loopback port: no process of
-// the domain can make a socket there. It sends `Authorization: Bearer <control Stand-in>`:
+// The Harness reads the surface from the Orchestrator itself, through the Custodian: over HTTPS at
+// jr2's own name, which only the Custodian holds a leaf for (`control-fetch.ts`, ADR-0059,
+// ADR-0084). It sends `Authorization: Bearer <control Stand-in>`:
 // the Harness PROCESS alone holds that Stand-in, read once from its file (`children.ts`), and no
 // process it confines can read it (ADR-0076). The Custodian — a container the Agent executes
 // nothing in — puts the control token in its place on the agent routes and on no other. So no
@@ -157,12 +157,12 @@ export type DeliveryReceipt = {
 /** Where the Menu is: the Custodian's control listener and the control Stand-in — the pod's, the
  * same for each conversation. */
 export type MenuReach = {
-  /** The base of each control request's URL. Its host is a name: `fetch` names the socket. */
+  /** The base of each control request's URL: jr2's own name over HTTPS. */
   url: string;
   /** The control Stand-in, which the Harness process alone holds (ADR-0076): read from its file. */
   token: string;
-  /** How a request reaches the Custodian's control socket (`unixFetch`). Tests inject one. Default:
-   * global `fetch`. */
+  /** How a request reaches the Custodian (`controlFetch`). Tests inject one. Default: global
+   * `fetch`. */
   fetch?: typeof globalThis.fetch;
 };
 
@@ -1016,8 +1016,7 @@ class PickNotice extends Error {}
  * failed. Every other failure — a reset, a socket the other side closed, a headers timeout — can
  * come after the request left. */
 const NEVER_LEFT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]);
-// ENOENT: no socket at the control socket's path (the Custodian has not bound it yet).
-const NEVER_LEFT_ON_CONNECT = new Set(["ENETUNREACH", "EHOSTUNREACH", "ENOENT"]);
+const NEVER_LEFT_ON_CONNECT = new Set(["ENETUNREACH", "EHOSTUNREACH"]);
 
 /** True when a transport failure proves the request never left (`NEVER_LEFT`). */
 function neverLeft(err: unknown, depth = 0): boolean {
@@ -1047,7 +1046,7 @@ function neverLeft(err: unknown, depth = 0): boolean {
 const NEVER_FORWARDED = new Set(["UF", "UH", "DF", "URX"]);
 
 /** The most specific thing a transport rejection says about itself: `fetch failed` diagnoses
- * nothing, the errno one level down (`connect ECONNREFUSED 127.0.0.1:8081`) is the answer. */
+ * nothing, the errno one level down (`connect ECONNREFUSED custodian.jr2.internal:443`) is the answer. */
 function transportDetail(err: unknown, depth = 0): string {
   if (depth > 4 || typeof err !== "object" || err === null) return String(err);
   const { message, cause, errors } = err as { message?: unknown; cause?: unknown; errors?: unknown };

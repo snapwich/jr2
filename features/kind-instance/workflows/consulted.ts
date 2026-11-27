@@ -78,5 +78,5 @@ const body = jr2Setup({
 });
 
 export const machine = workspace(body, {
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" } },
 });

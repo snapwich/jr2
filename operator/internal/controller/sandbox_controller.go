@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -90,6 +91,10 @@ const (
 	reasonRepoCloneFailed = "RepoCloneFailed"
 	reasonFetched         = "Fetched"
 	reasonFetchFailed     = "FetchFailed"
+	// reasonNotOnTheFence holds a Sandbox with spec.network whose Pod is
+	// Ready while Multus does not report the attachment as its default
+	// network (ADR-0084).
+	reasonNotOnTheFence = "NotOnTheFence"
 	// keepaliveAnnotation carries the owning Orchestrator's heartbeat lease
 	// (ADR-0001): an RFC3339 timestamp it PATCHes periodically. Idle GC fires
 	// only once spec.idleTimeout has elapsed since max(creation, last keepalive).
@@ -111,6 +116,20 @@ const (
 	// effectorGitVolume is the volume the operator makes for them when that
 	// container mounts no projected volume at effectorSecretsPath.
 	effectorGitVolume = "effector-git"
+
+	// defaultNetworkAnnotation is Multus's name for a Pod's default network
+	// (ADR-0084): with spec.network, the attachment takes the place of the
+	// cluster's network, so the Pod's one interface is on the Fence.
+	defaultNetworkAnnotation = "v1.multus-cni.io/default-network"
+	// networkStatusAnnotation is where Multus reports the networks it gave
+	// the Pod. The operator reads it back, because only Multus acts on
+	// defaultNetworkAnnotation.
+	networkStatusAnnotation = "k8s.v1.cni.cncf.io/network-status"
+	// healthcheckBinary is the Effector binary in the Harness image (and in
+	// each image that mounts /opt/jr2): its `healthcheck` subcommand is the
+	// exec readiness probe of a container on the Fence, which no HTTP or TCP
+	// probe of the kubelet reaches (ADR-0084, ADR-0063).
+	healthcheckBinary = "/opt/jr2/bin/effector"
 )
 
 // gitCredentialKeys are the keys of an entry's push Secret jr2 writes
@@ -147,13 +166,12 @@ type SandboxReconciler struct {
 // +kubebuilder:rbac:groups=core.jr2.dev,resources=sandboxes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.jr2.dev,resources=sandboxes/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core.jr2.dev,resources=repos,verbs=get;list;watch
 
 // Reconcile drives a Sandbox toward its desired state: a Pod (primary container
-// plus any sidecars) and a Service, with status.phase / status.endpoint
-// reported back. The Pod and Service are owned by the Sandbox so deleting the CR
-// garbage-collects them; a Sandbox whose keepalive lease has lapsed past
+// plus any sidecars), with status.phase reported back, and no Service: the
+// Orchestrator reaches a Pod on the Fence at its slot's address (ADR-0084).
+// The Pod is owned by the Sandbox so deleting the CR garbage-collects it; a Sandbox whose keepalive lease has lapsed past
 // spec.idleTimeout deletes itself (ADR-0001). The Repos the spec names are read
 // (never written) to place the Pod near their caches, to hold Ready until every
 // one is present on its node and fetched (ADR-0051), and to report per key what
@@ -165,11 +183,11 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	var sandbox corev1alpha1.Sandbox
 	if err := r.Get(ctx, req.NamespacedName, &sandbox); err != nil {
-		// Not found: owner-reference GC already handled the Pod/Service.
+		// Not found: owner-reference GC already handled the Pod.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Being deleted: surface Terminating; owner refs GC the Pod + Service.
+	// Being deleted: surface Terminating; owner refs GC the Pod.
 	if !sandbox.DeletionTimestamp.IsZero() {
 		if sandbox.Status.Phase != corev1alpha1.SandboxTerminating {
 			sandbox.Status.Phase = corev1alpha1.SandboxTerminating
@@ -193,10 +211,6 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// wrote. The idle GC above still reaps the CR once the lease lapses.
 	if sandbox.Status.Phase == corev1alpha1.SandboxLost {
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
-	}
-
-	if err := r.reconcileService(ctx, &sandbox); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile service: %w", err)
 	}
 
 	repos, err := r.reposFor(ctx, &sandbox)
@@ -234,7 +248,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("reconcile status: %w", err)
 	}
 
-	log.V(1).Info("reconciled", "phase", sandbox.Status.Phase, "endpoint", sandbox.Status.Endpoint)
+	log.V(1).Info("reconciled", "phase", sandbox.Status.Phase)
 	// requeueAfter re-checks the idle deadline without relying on an external
 	// event; zero means no idle re-check is pending.
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -281,27 +295,6 @@ func lastKeepalive(ctx context.Context, sandbox *corev1alpha1.Sandbox) time.Time
 		return ts
 	}
 	return created
-}
-
-// reconcileService ensures the headed Service fronting the Sandbox exists and
-// targets the primary container's port.
-func (r *SandboxReconciler) reconcileService(ctx context.Context, sandbox *corev1alpha1.Sandbox) error {
-	port := portFor(sandbox)
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: sandbox.Name, Namespace: sandbox.Namespace},
-	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
-		svc.Labels = sandboxLabels(sandbox)
-		svc.Spec.Selector = sandboxLabels(sandbox)
-		svc.Spec.Ports = []corev1.ServicePort{{
-			Name:       "http",
-			Port:       port,
-			TargetPort: intstrFromInt32(port),
-			Protocol:   corev1.ProtocolTCP,
-		}}
-		return controllerutil.SetControllerReference(sandbox, svc, r.Scheme)
-	})
-	return err
 }
 
 // reposFor reads the Repo resource behind every key the Sandbox names. A key
@@ -674,8 +667,6 @@ func (r *SandboxReconciler) markLost(ctx context.Context, sandbox *corev1alpha1.
 func (r *SandboxReconciler) reconcileRefused(ctx context.Context, sandbox *corev1alpha1.Sandbox, message string) (time.Duration, error) {
 	observed := sandbox.Status.DeepCopy()
 	sandbox.Status.Phase = corev1alpha1.SandboxPending
-	sandbox.Status.Endpoint = endpointFor(sandbox)
-	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
 	for _, t := range []string{conditionScheduled, conditionReady} {
 		meta.SetStatusCondition(&sandbox.Status.Conditions, metav1.Condition{
 			Type:               t,
@@ -712,6 +703,7 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 		EnvFrom:         sandbox.Spec.EnvFrom,
 		VolumeMounts:    append(append(append([]corev1.VolumeMount{}, sandbox.Spec.VolumeMounts...), repoMounts...), shmMounts...),
 		ReadinessProbe:  readinessProbeFor(sandbox),
+		StartupProbe:    startupProbeFor(sandbox),
 		SecurityContext: containerSecurityContextFor(sandbox),
 		// A Harness that dies says why in its log, not in a termination-log
 		// file it never writes (ADR-0063): the kubelet takes the last log
@@ -739,14 +731,19 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 	volumes := append(append(append([]corev1.Volume{}, sandbox.Spec.Volumes...), repoVolumes...), shmVolumes...)
 	volumes, sidecars = projectGitCredentials(sandbox.Spec.GitCredentials, volumes, sidecars)
 	containers := append([]corev1.Container{primary}, sidecars...)
+	// Copied, so reconcileAsks' merge into the Pod's own map never writes
+	// through to the shared default.
+	annotations := maps.Clone(noDisruption)
+	dnsPolicy, dnsConfig := fenceDNSFor(sandbox)
+	if sandbox.Spec.Network != nil {
+		annotations[defaultNetworkAnnotation] = sandbox.Namespace + "/" + sandbox.Spec.Network.Attachment
+	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      sandbox.Name,
-			Namespace: sandbox.Namespace,
-			Labels:    sandboxLabels(sandbox),
-			// Copied, so reconcileAsks' merge into the Pod's own map never
-			// writes through to the shared default.
-			Annotations: maps.Clone(noDisruption),
+			Name:        sandbox.Name,
+			Namespace:   sandbox.Namespace,
+			Labels:      sandboxLabels(sandbox),
+			Annotations: annotations,
 		},
 		Spec: corev1.PodSpec{
 			// Bare pod, long-lived and interactive: no Deployment-style
@@ -776,13 +773,33 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			// preference and these are requirements, so they never meet.
 			NodeSelector: sandbox.Spec.NodeSelector,
 			Tolerations:  sandbox.Spec.Tolerations,
-			// Isolation north star: an untrusted Agent must not reach the
-			// Kubernetes API. Don't mount the SA token, and run every jr2-owned
-			// container non-root under the default seccomp profile. (Egress
-			// NetworkPolicy is the next isolation layer — see ADR-0001.)
+			// An untrusted Agent must not reach the Kubernetes API: the SA
+			// token is not mounted, and every jr2-owned container runs non-root
+			// under the default seccomp profile. The Pod's network boundary is
+			// the Fence (spec.network, ADR-0084).
 			AutomountServiceAccountToken: ptr.To(false),
 			SecurityContext:              podSecurityContextFor(sandbox),
+			// On the Fence, the uplink's nameserver alone (fenceDNSFor);
+			// otherwise the cluster's default.
+			DNSPolicy: dnsPolicy,
+			DNSConfig: dnsConfig,
 		},
+	}
+}
+
+// fenceDNSFor is the Pod's DNS on the Fence (ADR-0084): `dnsPolicy: None`
+// and one nameserver, spec.network's, with no search domain, because the Pod
+// has no cluster DNS and a search domain would only add refused names to each
+// lookup. `ndots:1` makes a name with a dot an absolute name at once. Without
+// spec.network it is the empty policy and no config: the cluster's default.
+func fenceDNSFor(sandbox *corev1alpha1.Sandbox) (corev1.DNSPolicy, *corev1.PodDNSConfig) {
+	if sandbox.Spec.Network == nil {
+		return "", nil
+	}
+	return corev1.DNSNone, &corev1.PodDNSConfig{
+		Nameservers: []string{sandbox.Spec.Network.Nameserver},
+		Searches:    []string{},
+		Options:     []corev1.PodDNSConfigOption{{Name: "ndots", Value: ptr.To("1")}},
 	}
 }
 
@@ -945,23 +962,55 @@ func shmVolumeFor(sandbox *corev1alpha1.Sandbox) ([]corev1.Volume, []corev1.Volu
 }
 
 // readinessProbeFor returns the primary container's readiness probe: the
-// Sandbox's override when set, otherwise a GET of the Harness's own `/healthz` on the serving port
-// so phase Ready means the Harness accepts connections (not just "started").
+// Sandbox's override when set, otherwise an exec probe, `effector healthcheck`
+// of the Harness's own /healthz on the serving port, so phase Ready means the
+// Harness accepts connections (not just "started"). It is an exec probe,
+// because no HTTP or TCP probe of the kubelet reaches a pod on the Fence
+// (ADR-0084), and it asks the Harness's own route, not the port (ADR-0063).
 func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 	if sandbox.Spec.ReadinessProbe != nil {
 		return sandbox.Spec.ReadinessProbe
 	}
-	return &corev1.Probe{
-		// The Harness's own route, not the port (ADR-0063): the pod has one
-		// network namespace, so a sidecar that takes the port would answer
-		// a socket probe and the pod would go Ready with no Harness in it.
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstrFromInt32(portFor(sandbox))},
-		},
-		// Every second, not the kubelet's 10: the default period adds up to
-		// 10s to every provision (the scaling review's R12).
-		PeriodSeconds: 1,
+	// Each exec probe is a process the runtime starts in the container,
+	// about ten times the CPU of an HTTP probe. The startup probe
+	// (startupProbeFor) gives the 1 s cadence until the Harness first
+	// answers; after that, readiness is checked every 10 s.
+	return &corev1.Probe{ProbeHandler: fenceHealthcheck(sandbox), TimeoutSeconds: 2, PeriodSeconds: 10}
+}
+
+// fenceStartupFailures is how many failed startup probes, one each second,
+// the kubelet allows before it restarts the Harness container: 10 minutes.
+// It must not be shorter than the Orchestrator's wait for a Ready pod
+// (readyTimeoutMs, 120 s by default), because a restart there counts toward
+// the crash loop that ends the provision.
+const fenceStartupFailures = 600
+
+// startupProbeFor returns the primary container's startup probe: with no
+// readiness override, the same exec probe as readiness every second, so that
+// the pod is Ready within a second of the Harness's first answer (R12) while
+// the 10 s readiness period bounds the probes' CPU for the rest of the pod's
+// life. With an override, none: an override states its own timing.
+func startupProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
+	if sandbox.Spec.ReadinessProbe != nil {
+		return nil
 	}
+	return &corev1.Probe{
+		ProbeHandler:     fenceHealthcheck(sandbox),
+		TimeoutSeconds:   2,
+		PeriodSeconds:    1,
+		FailureThreshold: fenceStartupFailures,
+	}
+}
+
+// fenceHealthcheck is the exec handler of a pod on the Fence: `effector
+// healthcheck` of the Harness's own /healthz from inside the container. The
+// command bounds its GET at 1 s and must start first, so each probe that uses
+// it has a timeout of 2 s; the kubelet's own 1 s would count a slow start as
+// a failure.
+func fenceHealthcheck(sandbox *corev1alpha1.Sandbox) corev1.ProbeHandler {
+	return corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+		healthcheckBinary, "healthcheck", fmt.Sprintf("http://127.0.0.1:%d/healthz", portFor(sandbox)),
+	}}}
 }
 
 // podSecurityContextFor is the pod-level context: the default seccomp profile
@@ -1015,7 +1064,7 @@ func hardenedContainerSecurityContext() *corev1.SecurityContext {
 	}
 }
 
-// reconcileStatus computes phase/endpoint/refs and the pod facts from the live
+// reconcileStatus computes phase/refs and the pod facts from the live
 // Pod and the Repo resources it depends on, and writes status when it changed —
 // only then, because every write is a watch event at the Orchestrator
 // (ADR-0063), and a lease renewal that changes nothing must not cost one. Phase reaches Ready only when the
@@ -1030,12 +1079,10 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// Pod the last status named.
 	admitted := reposAdmitted(sandbox, pod)
 	observed := sandbox.Status.DeepCopy()
-	sandbox.Status.Endpoint = endpointFor(sandbox)
 	sandbox.Status.PodRef = &corev1.LocalObjectReference{Name: pod.Name}
 	// The Pod this Sandbox has for its life (ADR-0021), recorded when it was
 	// created; restated here for a Pod created before the operator recorded it.
 	sandbox.Status.PodUID = pod.UID
-	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
 	// The node whose caches this Sandbox mounts — published for whoever reads
 	// the Sandbox, as the key into each Repo's status.nodes[]. The operator
 	// itself gates on the Pod's nodeName below, and the cache agent reads
@@ -1078,6 +1125,17 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 			cond.Message = unscheduled.Message
 		}
 	}
+	// Only Multus acts on the default-network annotation. On a node where
+	// Multus did not act on the Pod, the Pod has the cluster's network and
+	// its exec probe of 127.0.0.1 still passes, so the Pod's Ready alone does
+	// not show that it is on the Fence (ADR-0084). Multus's own report does.
+	if ready && !onTheFence(sandbox, pod) {
+		ready = false
+		cond.Reason = reasonNotOnTheFence
+		cond.Message = fmt.Sprintf("pod reports Ready, but Multus does not report %s/%s as its default network "+
+			"(annotation %s): the pod is not on the Fence; check Multus on node %s",
+			sandbox.Namespace, sandbox.Spec.Network.Attachment, networkStatusAnnotation, pod.Spec.NodeName)
+	}
 	if ready && !admitted {
 		var reason, message string
 		ready, reason, message, fresh = reposReadiness(sandbox, pod.Spec.NodeName, repos)
@@ -1118,10 +1176,28 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	return r.Status().Update(ctx, sandbox)
 }
 
-// endpointFor is the in-cluster Service address the Orchestrator reaches the
-// Harness at.
-func endpointFor(sandbox *corev1alpha1.Sandbox) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
+// onTheFence reports whether the Pod is where spec.network puts it: true
+// without spec.network, and otherwise only when Multus's network-status
+// annotation names `<namespace>/<attachment>` as the default network. An
+// absent or unreadable annotation is false: the check fails closed.
+func onTheFence(sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) bool {
+	if sandbox.Spec.Network == nil {
+		return true
+	}
+	var networks []struct {
+		Name    string `json:"name"`
+		Default bool   `json:"default"`
+	}
+	if err := json.Unmarshal([]byte(pod.Annotations[networkStatusAnnotation]), &networks); err != nil {
+		return false
+	}
+	want := sandbox.Namespace + "/" + sandbox.Spec.Network.Attachment
+	for _, n := range networks {
+		if n.Default {
+			return n.Name == want
+		}
+	}
+	return false
 }
 
 // containerStatus copies one container's restarts and last end off the Pod
@@ -1380,7 +1456,6 @@ func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.Sandbox{}).
 		Owns(&corev1.Pod{}).
-		Owns(&corev1.Service{}).
 		Watches(&corev1alpha1.Repo{}, r.repoEvents()).
 		WithOptions(controller.Options{MaxConcurrentReconciles: SandboxWorkers}).
 		Named("sandbox").

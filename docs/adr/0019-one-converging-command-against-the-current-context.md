@@ -12,9 +12,11 @@ the interface has failed.
 ## Decision
 
 **The Orchestrator always runs in-cluster.** There is no host dev mode. `jr2` targets whatever cluster the current
-`kubectl` context points at (the argo/cilium model) — which may be a local kind cluster, but nothing is kind-special: no
-baked mounts, no recorded pod→host route, no `.jr2/dev.json` / `.jr2/cluster.json`. `jr2 dev`, `jr2 cluster up|down`,
-and `jr2 harness build` are removed.
+`kubectl` context points at (the argo/cilium model) — which may be a local kind cluster. No baked mounts, no recorded
+pod→host route, no `.jr2/dev.json` / `.jr2/cluster.json`. A kind cluster is special in one way only, because its nodes
+are containers on the user's own host that jr2 reaches through docker: `up` delivers images with `kind load`
+([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)). The Fence's prerequisites are installed in the same way on
+each cluster (below). `jr2 dev`, `jr2 cluster up|down`, and `jr2 harness build` are removed.
 
 **`jr2 up` is the one command.** It idempotently converges the target namespace to match the instance — every layer,
 loudly narrated, safe to re-run:
@@ -34,9 +36,9 @@ loudly narrated, safe to re-run:
   image; a Machine edit publishes an Assembly and rolls nothing. Hashing the instance _folder_ instead — where deps
   appear only as version ranges — is what let `up` skip work it needed. `--force` publishes against an unchanged hash.
 - **Harness**: no per-instance Harness image (ADR-0018). The Harness is a Kit image, resolved like the operator's
-  (checkout-built or published, ADR-0038/0044), and the Custodian beside it in every Harness pod runs a Pinned image
-  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); the Harness reaches each Sandbox as
-  an `/opt/jr2` volume injected at pod time, over a Sandbox Image the instance builds or brings
+  (checkout-built or published, ADR-0038/0044), and the Custodian, one for the Instance outside every Harness pod, runs
+  a Pinned image ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); the Harness reaches
+  each Sandbox as an `/opt/jr2` volume injected at pod time, over a Sandbox Image the instance builds or brings
   ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). Each Turn carries its Agent's
   definition to the Harness in the admission (ADR-0049); `up` delivers no roster.
 - **Secrets**: values declared in config (which may read `process.env`, populated from the uncommitted `.env`) are
@@ -49,9 +51,10 @@ loudly narrated, safe to re-run:
   secret's name that is a key of an `envFrom` Secret, and names the Secret, the key and the held secret (ADR-0059, R14).
   A credential the Harness uses is a held secret
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): `up` writes a literal value into
-  `jr2-held-secrets-<pod>` for each pod that names it, which only that pod's Custodian mounts, and checks that a
-  referenced Secret and key exist. Like the signing key, the held-secret CA (`jr2-held-ca`) is kept across converges —
-  minted on first need, never rotated by `up` — because a live pod trusts it.
+  `jr2-held-secrets-<pod>` for each pod that names it, which only the Custodian reads, and checks that a referenced
+  Secret and key exist. Like the signing key, the held-secret CA that `up` mints (`jr2-held-ca`) is kept across
+  converges — minted on first need, never rotated by `up` — because a live pod trusts it. A Sandbox has a CA of its own
+  (ADR-0059).
 - **Repos**: `up`'s walk of the registered Machines collects every bound Repo Slot (ADR-0049, ADR-0051) — to refuse an
   open slot nobody bound, and to see which urls need a key. The Orchestrator creates one `Repo` resource per url at
   boot, and the operator's cache agent clones each onto the nodes that need it (ADR-0004). There is no `repos` config
@@ -61,6 +64,32 @@ loudly narrated, safe to re-run:
   in-cluster deploy keypair (the recommended default, public key printed to register), a local key, or one pasted on
   stdin ([ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)) — declining bails. A personal key never enters
   a cluster silently: only by that explicit, warned choice.
+- **The Fence**: `up` installs the Custodian's uplink, the Custodian and its resolver
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)). It also installs the Fence's three cluster
+  prerequisites when the cluster lacks one, on any cluster, with kubectl: jr2's two admission policies with their
+  bindings, which keep a pod of another namespace off the Instance's attachments; Multus, from the manifest that the CLI
+  ships, when the cluster has no Multus (a Multus of another owner is used as it is, and never changed); and the
+  DaemonSet `jr2-fence-node`, which runs as root on each node's network, puts the stock CNI plugins `bridge`, `static`
+  and `tuning` on each node that has no file of that name, and loads the Fence's rule table into the node with the
+  capability `NET_ADMIN` at each start of its pod. The first time it installs something, it writes a list of each part
+  (the namespace `jr2-system`; the DaemonSet and what its pod does on a node; the policies and what they refuse; Multus
+  and its cluster-wide and privileged objects), and asks under the first-contact confirmation (`--yes` answers it); a
+  converge that finds each part asks nothing. A later converge of a newer Kit changes the DaemonSet and the policies
+  with no question, as it does the operator, and asks before it changes the Multus that it installed. Where an install
+  is not safe, it refuses. Before it applies anything, for what it reads in the API: a Cilium with
+  `cni-exclusive: "true"`, or a read that fails. Right after the Instance's namespace: policies that the cluster
+  refuses. After it applies the namespace `jr2-system` and the DaemonSet, and before Multus, for what the DaemonSet's
+  pod finds on a node: CNI folders that are not the default ones, a `bridge` plugin older than v1.8.0, that prints no
+  version or that is a link that the pod cannot run, a folder that it cannot write, a rule table that does not load, or
+  no pod. Those refusals keep what was applied, and say so. It still creates no cluster. Then it probes the Fence: it
+  refuses to converge while a Sandbox node fails, and names the node, the part and the likely causes. Before it applies
+  the Custodian, it reads Multus from the API, checks the policies with server-side dry runs, which must be denied, and
+  refuses while the cluster has a pod or an attachment that the policies refuse now; after the Custodian is Ready, it
+  probes the attachment, the bridge and the rule table with a one-shot pod on each Sandbox node that has no privilege; a
+  node with no rule table is a refusal too. ADR-0084 states what it checks and what it cannot see. `jr2 down --all`
+  removes the rule table and the bridge `jr2fence0` from each node, the DaemonSet, the policies with their bindings, and
+  a Multus that jr2 installed, with its definition, unless the cluster has a NetworkAttachmentDefinition of another
+  owner; the plugin files and the kernel module `8021q` stay.
 - **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
   agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
   It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep
@@ -70,55 +99,58 @@ loudly narrated, safe to re-run:
   server that an Agent names (below). It checks from inside the cluster, with one trivial tool-call completion for a
   model. An endpoint that the pods cannot reach, a wrong or missing key, or a vLLM without `--enable-auto-tool-choice`
   then fails at converge time, not as `agent.fault` in a run. Reachability is the user's concern (`localhost` never
-  works from a pod; a LAN address does on kind). The check must take the path that the Harness takes. If it does not, a
-  pass means nothing.
+  works from a pod). A Harness pod reaches an endpoint only when a Held secret is bound to its host or its Egress list
+  permits it: by its name, or by an exact address with a port that the author wrote as an entry (ADR-0084). A host with
+  no secret needs an entry, also when jr2 itself uses it, such as a model endpoint with no key or a remote MCP server
+  with no token: `up` refuses to converge while such a host has no entry, and prints the entry to add. The check must
+  take the path that the Harness takes. If it does not, a pass means nothing.
   - **One path for every provider.** `up` checks the custom provider (`harness.provider`, ADR-0018) and a provider of
-    pi's catalog (for example `anthropic/…`) in the same way. A key of either is a held secret, and only a Custodian can
-    use it ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). So no key enters a pod
+    pi's catalog (for example `anthropic/…`) in the same way. A key of either is a held secret, and only the Custodian
+    can use it ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). So no key enters a pod
     spec, an argv or a script. The check calls the custom provider as a Turn calls it: it does not force the tool,
     because a vLLM without a tool parser answers a forced tool and then fails every Turn. When the custom provider
     answers twice with no tool call, the check fails. `up` refuses a `harness.provider.api` that the Harness does not
     speak before it builds or applies anything: the list is the Harness's own (`CUSTOM_APIS`, held equal to
     `CUSTOM_PROVIDER_APIS` in `@jr2/orchestrator` by a test). When the check container cannot build its registry from
     the config, each model's result says why, in words.
-  - **The check pod.** It is a Harness pod with no Harness in it. It has a Custodian and the stock Harness image's
-    `provider-preflight.ts`. The function that composes the Custodian of every Harness pod composes this Custodian too.
-    Its token is a value that the Orchestrator never signed. Its Stand-ins are secret and its own: `jr2 up` mints them
-    with the signing key, as it does for the Instance Harness
+  - **The check pod.** It is a Harness pod with no Harness in it. It has the stock Harness image's
+    `provider-preflight.ts`, and it reaches the Instance's Custodian as a pod of its class does: it is behind a Fence,
+    as each Harness pod is (ADR-0084). The function that gives the Custodian the rules of every Harness pod gives it the
+    check pod's too. Its token is a value that the Orchestrator never signed. Its Stand-ins are secret and its own:
+    `jr2 up` mints them with the signing key, as it does for the Instance Harness
     ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The check pod runs no Workspace
-    code, so it may hold them in env. `provider-preflight.ts` gets the env of the Harness container, with the Stand-ins
-    in it: the harness config, `harness.env`, `harness.envFrom`, the Stand-ins, the proxy and the trust. pi resolves
-    each model and uses its api, as in a Turn. The `harness.catalog` gateway applies. The key never enters the check
-    container, its argv or its log.
+    code, so it may hold them in env. `provider-preflight.ts` gets the env of the Harness container of its class, with
+    the Stand-ins in it: the harness config, `harness.env`, `harness.envFrom`, the Stand-ins, and the rest of that
+    container's env, the trust included. pi resolves each model and uses its api, as in a Turn. The `harness.catalog`
+    gateway applies. The key never enters the check container, its argv or its log.
   - **Its own objects.** The check pod reads no object of the Instance. `up` writes copies from the values on the host:
-    - a ConfigMap with the Custodian's files, the program and the harness config;
+    - a ConfigMap with the harness config;
     - a ConfigMap with the trust bundles;
-    - a Secret with the token, the check pod's Stand-ins and the literal values of the held secrets;
-    - a Secret with the leaves;
+    - a Secret with the check pod's Stand-ins;
     - a Secret with the literal `harness.env` values.
 
-    A held secret from `valueFrom` stays a reference to the user's Secret. A literal value is thus in a second Secret
-    while the check pod lives. `up` deletes that Secret after the check.
+    The Custodian gets the check pod's rules, its token, the literal values of its held secrets and its leaves of the
+    Instance's CA in the Secret of slot 1 of the Instance's range, as it gets a Sandbox's in the Sandbox's slot
+    (ADR-0059, ADR-0084). `up` writes it before the pod, and starts the pod only after each Custodian pod says that the
+    slot's rules are live. A held secret from `valueFrom` stays a reference to the user's Secret. A literal value is
+    thus held twice while the check pod lives. `up` deletes slot 1's Secret after the check.
 
-  - **What it checks.** It checks every carried model that a Harness pod runs. A typo, a retired model and a model that
-    the key cannot use are each per model. One check pod stands for one class of Harness pod. A class is a placement and
-    a held set:
-    - The placement: a Workspace's model runs on the Sandbox nodes (`config.sandbox`, ADR-0052). A `"none"` Agent's
-      model runs where the Instance Harness runs.
-    - The held set: a pod that holds a secret sends its HTTPS through its Custodian, and a tunnel carries a host that no
-      secret is bound to. A pod that holds no secret sends its HTTPS direct. So the check pod holds the held set of the
-      first pod of its class, and the keys and the MCP server secrets that the other pods of the class hold. A class
-      that holds nothing gets a check pod that holds nothing.
+  - **What it checks.** It checks every carried model that a Harness pod runs, in one check pod. A typo, a retired model
+    and a model that the key cannot use are each per model. Every Harness pod, a Sandbox or the Instance Harness, is on
+    a Sandbox node (`config.sandbox`, ADR-0052) behind the Fence, and reaches a provider through the Custodian
+    (ADR-0084). So one check pod with the Sandbox placement stands for all of them. For each provider, it holds the keys
+    that the first pod that runs one of its models holds, with that pod's binding, and it holds the secret of each MCP
+    server that an Agent names. Its Egress list is each rule of each Harness pod.
 
-    When no pod of the class holds a key of the provider, the check pod holds none. Then pi refuses the call
-    (`not configured`), and the converge fails. A signing credential in `harness.env` reaches the check pod, as it
-    reaches a Turn. An id that pi does not know (a typo) fails, because pi resolves no model for it. An id that pi
-    knows, and for which jr2 knows no key name, is checked with no held key, as a Turn runs it. The check pod has the
-    priority class of the Sandbox tier, as the Harness pods have (ADR-0060).
+    When no pod holds a key of the provider, the check pod holds none. Then pi refuses the call (`not configured`), and
+    the converge fails. A signing credential in `harness.env` reaches the check pod, as it reaches a Turn. An id that pi
+    does not know (a typo) fails, because pi resolves no model for it. An id that pi knows, and for which jr2 knows no
+    key name, is checked with no held key, as a Turn runs it. The check pod has the priority class of the Sandbox tier,
+    as the Harness pods have (ADR-0060).
 
-  - **MCP servers.** The check pod also checks each remote MCP server that an Agent of its class names
+  - **MCP servers.** The check pod also checks each remote MCP server that an Agent names
     ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). It
-    reads the server's `tools/list` through its Custodian, with the Stand-in of the server's secret, as a Turn reads it.
+    reads the server's `tools/list` through the Custodian, with the Stand-in of the server's secret, as a Turn reads it.
     An allowlisted tool name that the list does not have fails the converge, and the result names the server and the
     tool. A server that refuses the request (a 401 or a 403: a wrong or expired token) fails the converge, as a model
     key that the provider refuses does. A server that does not answer is a warning: the first Turn of a conversation
@@ -169,33 +201,35 @@ loudly narrated, safe to re-run:
     final error counts: a 429 followed by a retry that never answers fails the check, where for the other apis it is
     busy. A second call that runs out does not change the verdict of the first.
   - **The order.** The checks run before `up` writes an object that the Instance or the operator reads. Only these come
-    before them, because the check pod needs them: the namespace and its label, the PriorityClasses, and the images that
-    `up` builds and delivers. The operator (its CRDs, RBAC and Deployment, its label and its rollout), a deploy key and
-    the wait for its registration (ADR-0047), the trust bundles, the held objects and the instance List come after every
+    before them, because the check pod needs them: the namespace and its label, the PriorityClasses, the images that
+    `up` builds and delivers, the Fence's prerequisites (the namespace `jr2-system`, the admission policies, the
+    DaemonSet `jr2-fence-node` and Multus, ADR-0084), and the Custodian, its uplink and its resolver, which the check
+    pod's calls cross. The operator (its CRDs, RBAC and Deployment, its label and its rollout), a deploy key and the
+    wait for its registration (ADR-0047), the trust bundles, the held objects and the instance List come after every
     check passes.
-  - **When a check fails.** The converge stops. `up` applied only the items above and the check pods with their own
-    objects, and it deleted the check pods and their objects. It also deleted the leftovers of earlier runs (below). The
-    operator, the Orchestrator, its Assembly and every pod of the Instance continue to run as before. Nothing else is
-    deleted, and no Assembly is published.
-  - **The pods.** `up` runs the check pods in series, one at a time, and reports every failure in one error. When the
-    cluster refuses a check pod (a quota, a Pod Security level, a webhook), that check fails, and the other checks still
-    run. In a new namespace, `up` waits up to 10 s for the `default` ServiceAccount before it calls a refusal a refusal.
-    The check container writes a start line and a result line for each model. `up` reads its log while it runs, and
-    writes each result as it comes. When the pod stops before the end, the error names the model that the check was on,
-    and each model that it never reached. The name of each pod is unique to the run
-    (`jr2-provider-preflight-<run>-<n>`), so two runs in one namespace do not touch each other's pods. `up` deletes the
-    objects of each check after it. `up` waits up to 300 s for the check container to start (two cold image pulls), and
+  - **When a check fails.** The converge stops. `up` applied only the items above and the check pod with its own
+    objects, and it deleted the check pod and its objects. It also deleted the leftovers of earlier runs (below). The
+    Fence's prerequisites stay, as when the DaemonSet refuses a node (above). The operator, the Orchestrator, its
+    Assembly and every pod of the Instance continue to run as before. Nothing else is deleted, and no Assembly is
+    published.
+  - **The pod.** `up` reports every failure of the check pod in one error. When the cluster refuses the check pod (a
+    quota, a Pod Security level, a webhook), the check of each of its models fails. In a new namespace, `up` waits up to
+    10 s for the `default` ServiceAccount before it calls a refusal a refusal. The check container writes a start line
+    and a result line for each model. `up` reads its log while it runs, and writes each result as it comes. When the pod
+    stops before the end, the error names the model that the check was on, and each model that it never reached. The
+    name of the pod is unique to the run (`jr2-provider-preflight-<run>-<n>`), so two runs in one namespace do not touch
+    each other's pods; they share slot 1, so two runs at once in one namespace are not supported. `up` deletes the
+    objects of the check after it. `up` waits up to 300 s for the check container to start (two cold image pulls), and
     it writes each new reason that the pod gives for the wait. Then it waits 360 s for each model (the model's own
     budget in the check), and 30 s more for the Node.js process, which runs under tini as the Harness does, to start. It
     stops at once in these cases:
     - A container cannot start: a crash loop, a missing Secret or key in the env (`CreateContainerConfigError`), or a
       pull that the registry refuses (not found, manifest unknown, unauthorized, denied). A slow or limited pull, and a
       `CreateContainerError`, can pass by themselves, so the wait goes on.
-    - A volume cannot mount: the Secret or the key of a held secret's `valueFrom` is missing. The kubelet says so in a
-      `FailedMount` event. It counts when the kubelet says it again (its count or its last time goes up), because the
-      first can be a race with the objects of the same apply.
-    - The Custodian restarts. The error then quotes the Custodian's refusal line, or the reason of its last end
-      (`OOMKilled`).
+    - A volume cannot mount: the trust ConfigMap or the Stand-in Secret of the check pod is missing. This is a jr2
+      defect, and the error says to run `up` again. The kubelet says so in a `FailedMount` event. It counts when the
+      kubelet says it again (its count or its last time goes up), because the first can be a race with the objects of
+      the same apply.
   - **Leftovers.** `up` has no signal handler. If `up` stops (Ctrl-C), the kubelet stops a running pod at its
     `activeDeadlineSeconds`. A pod that no node took has no start time, and that deadline never applies to it. So a
     later `up` of the same Instance deletes these objects:
@@ -212,12 +246,9 @@ loudly narrated, safe to re-run:
     which names each model and each MCP server that it did not check. `up` still deletes the leftovers of earlier runs,
     because their Secrets can hold a key. The flag has no config key, because no flag of `up` has one (CI gives `--yes`
     as a flag). A model that does not work then fails in a run, as `agent.fault`.
-  - **A limit.** The check pod has labels of its own. It does not get the labels of a Harness pod: the Instance Harness
-    Service selects its pods by label, and would send Turns to the check pod. So a NetworkPolicy that selects Harness
-    pods by label does not select the check pod. When such a policy closes the egress of the Harness pods, the check can
-    pass while a Turn fails. jr2's own egress policy, which closes the cloud metadata addresses
-    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), gives the check pod one
-    of its own, so it does not have this limit.
+  - **Its labels.** The check pod has labels of its own, which no Harness pod has. No NetworkPolicy applies to a check
+    pod or to a Harness pod, because each is behind a Fence (ADR-0084). So no policy that selects a Harness pod by label
+    can let a check pass while a Turn of that pod fails.
 
 **`jr2 down`** removes the instance from the cluster. It asks for confirmation unless `--yes` is given (for CI). `--all`
 takes the operator too.
@@ -279,9 +310,10 @@ from env.
   which `up` would have to detect anyway — at which point it may as well fix it.
 - **A committed or locally-cached deployment target.** Rejected twice: committed addresses break repo reuse; a local
   cache (`.jr2/target.json`) is derived state that can lie. The cluster itself is the record.
-- **`jr2` creating clusters** (`jr2 cluster up`, or an interactive offer). Rejected: with no baked mounts, any vanilla
-  cluster works; creating one is infrastructure provisioning, like installing docker. The no-context error message says
-  `kind create cluster` and that is the whole story.
+- **`jr2` creating clusters** (`jr2 cluster up`, or an interactive offer). Rejected: with no baked mounts, a cluster
+  needs nothing of jr2 beyond the Fence's prerequisites, which `jr2 up` installs on any cluster after it asks
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)); creating a cluster is infrastructure
+  provisioning, like installing docker.
 
 ## Consequences
 

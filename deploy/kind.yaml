@@ -1,12 +1,12 @@
-# Local kind cluster for jr2 (`just kind-up` / `just e2e-kind-up`). Deliberately vanilla
-# (ADR-0019): nothing is baked for any instance — no mounts, no instance binding. Any cluster
-# `kubectl` can reach works the same way; `jr2 up` converges everything an instance needs into it.
+# Local kind cluster for jr2 (`just kind-up` / `just e2e-kind-up` / `just e2e-dist-up`). Nothing is
+# baked for any instance (ADR-0019): no mounts, no instance binding. `jr2 up` converges everything an
+# instance needs into it, the Fence's prerequisites too, which it installs on any cluster (ADR-0084).
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: jr2
 nodes:
   - role: control-plane
-# The one exception to "vanilla", and it converges nothing and names nobody: it only tells
+# The one setting of this file, and it converges nothing and names nobody: it only tells
 # containerd that per-registry configuration EXISTS, at the path the upstream kind local-registry
 # pattern uses. Without it a `hosts.toml` written onto a node is read by nothing, and the @dist
 # tier's nodes would resolve `localhost:5001/jr2-harness:<ver>` against themselves (ADR-0044). With

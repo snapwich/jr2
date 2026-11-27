@@ -47,12 +47,16 @@ folder holds only what a Machine cannot carry (ADR-0049/0050: the definition is 
 - **Credentials are held, not handed over**
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Agent executes code in the
   Harness container, so a key there is a key it can take away. The top-level `secrets` list declares each credential
-  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A model key is a Held secret in the
-  pods whose Agents name a model of a provider that reads it; `jr2 up` gives its value to the Custodian of those pods —
-  and, where an Effect also names it, to that Effect's Effector — and the Harness container's env holds the key's
-  Stand-in. `harness.provider.apiKey` is one implicitly: the held secret `JR2_PROVIDER_API_KEY`, bound to `baseUrl`'s
-  host, so it leaves the `jr2-harness-env` Secret and `baseUrl` must be `https://` when a key is set. A known model key
-  in `harness.env`, or in an `envFrom` Secret, is refused.
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A model key is a Held secret for the
+  pods whose Agents name a model of a provider that reads it; `jr2 up` gives its value to the Custodian, which holds it
+  for those pods — and, where an Effect also names it, to that Effect's Effector — and the Harness holds the key's
+  Stand-in, in a file under `/run/jr2/`, never in its env. `harness.provider.apiKey` is one implicitly: the held secret
+  `JR2_PROVIDER_API_KEY`, bound to `baseUrl`'s host, so it leaves the `jr2-harness-env` Secret and `baseUrl` must be
+  `https://` when a key is set. A known model key in `harness.env`, or in an `envFrom` Secret, is refused. The host of a
+  key is permitted for the pods that hold the key. A model endpoint with no key needs an entry on the Egress list,
+  because the Custodian permits a host with no secret only by an entry
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)): `jr2 up` refuses to converge while it has none,
+  and prints the entry to add.
 - **MCP is the one extension contract for tools.** Beyond its Working tools and its Menu, an Agent gets tools only from
   the MCP servers that its definition names (`mcp`), and jr2 has no tool API of its own
   ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)). The

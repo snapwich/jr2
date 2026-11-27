@@ -211,8 +211,12 @@ function lfsPins(paths: CutPaths, clone: string): string[] {
 type Git = { code: number; out: string; err: string };
 type Runner = (cwd: string, args: readonly string[], maxBuffer?: number) => Promise<Git>;
 
-/** The cleared environment of each program that the cut starts. */
-function cutEnv(paths: CutPaths, home: string): NodeJS.ProcessEnv {
+/** The cleared environment of each program that the cut starts. It keeps `JR2_CUSTODIAN_URL` for
+ * jr2-lfs and jr2-upload-pack and, when that URL is HTTPS, `SSL_CERT_FILE` beside it: the Custodian's
+ * leaf is of the pod's CA, which the system roots do not hold (ADR-0084). */
+export function cutEnv(paths: CutPaths, home: string, from: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const custodian = from.JR2_CUSTODIAN_URL;
+  const trust = custodian?.startsWith("https:") && from.SSL_CERT_FILE ? { SSL_CERT_FILE: from.SSL_CERT_FILE } : {};
   return {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: home,
@@ -221,7 +225,8 @@ function cutEnv(paths: CutPaths, home: string): NodeJS.ProcessEnv {
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_TERMINAL_PROMPT: "0",
-    ...(process.env.JR2_CUSTODIAN_URL ? { JR2_CUSTODIAN_URL: process.env.JR2_CUSTODIAN_URL } : {}),
+    ...(custodian ? { JR2_CUSTODIAN_URL: custodian } : {}),
+    ...trust,
     ...paths.env,
   };
 }

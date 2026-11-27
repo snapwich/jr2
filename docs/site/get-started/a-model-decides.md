@@ -77,11 +77,23 @@ jr2 up
 
 `jr2 up` prints who can send each event, in each state of `triage`. Then it converges the cluster.
 
+This `jr2 up` is the first that converges the [Instance Harness](../reference/glossary.md#instance-harness), which runs
+the Turns of `triager`. The Instance Harness is behind a [Fence](../reference/glossary.md#fence), as a Sandbox is. The
+Fence needs three parts on the cluster, which `kind create cluster` does not give: two admission policies of jr2,
+Multus, and a DaemonSet of jr2 on each node. The policies keep a pod of another namespace off the network of your
+Instance. The DaemonSet puts the CNI plugins `bridge`, `static` and `tuning` on the node, and loads a rule table into
+it. It runs as root on the node's network, and loads the table with the capability `NET_ADMIN`. So this `jr2 up` writes
+a list of each part, and asks before it installs them. Type `y`. The lines that start with `fence:` are the install and
+then a check of the Fence on each node. Each next `jr2 up` finds the parts, asks nothing, and prints one
+`fence: prerequisites in place` line.
+
 ::: tabs key:provider
 
 == Anthropic
 
 The output shows where the model key goes. Then `jr2 up` asks your model for one tool call, from inside the cluster:
+
+<!-- output: not run -->
 
 ```text
 → .env: ANTHROPIC_API_KEY
@@ -92,29 +104,59 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
   triage.clarify gate: [answer]
 agents: triager (carried by 2 workflow machine(s))
 …
+fence: this converge installs the Fence's prerequisites (ADR-0084):
+  - the namespace jr2-system.
+  - the DaemonSet jr2-system/jr2-fence-node, on each Linux node. Its pod runs as root on the node's network. At each start, it:
+      - loads the rule table "inet jr2_fence" into the node's nftables, with the capability NET_ADMIN alone;
+      - runs the node's /opt/cni/bin/bridge, if the node has one, to read its version;
+      - writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin where the node has no file of that name (it never replaces a file).
+  - the ValidatingAdmissionPolicies jr2-fence-guard-pods and jr2-fence-guard-attachments, each with a ValidatingAdmissionPolicyBinding of the same name: cluster-wide objects. They refuse a pod that names an attachment of the Fence (the prefix jr2-fence-) from outside its Instance's namespace, through v1.multus-cni.io/default-network or k8s.v1.cni.cncf.io/networks, and a NetworkAttachmentDefinition on the bridge jr2fence0 outside an Instance's namespace.
+  - Multus v4.3.2 (thick), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system/kube-multus-ds. Multus writes the first CNI configuration of each node, so the cluster makes each new pod through Multus.
+  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node and the policies to its version, and does not ask. It asks before it changes the Multus that jr2 installs.
+  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet, the policies with their bindings, and the Multus that jr2 installs. It keeps that Multus while the cluster has a NetworkAttachmentDefinition of another owner. The plugin files and the kernel module 8021q stay on the nodes.
+first setup of the Fence on context kind-jr2: install the Fence's prerequisites in the list above? [y/N] y
+fence: applying the admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments, each with its binding
+…
+fence: applying the DaemonSet jr2-system/jr2-fence-node (ghcr.io/snapwich/jr2-operator:<version>)
+fence: jr2-control-plane: rules=loaded wrote=bridge static tuning kept= bridge=v1.10.0 cni=10-kindnet.conflist type=ptp
+fence: applying Multus v4.3.2 (thick) to kube-system
+fence: Multus is ready on each node
+…
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
+the Instance Harness: Egress list Intercepted api.anthropic.com:443
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
 held secrets: minted the Instance's CA into jr2-held-ca
-provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for api.anthropic.com
-provider: the check pod has up to 5 min to start, then up to 6 min for its model
 …
+custodian: converging on each Sandbox node (VLAN range 0)
+custodian: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+fence: probing the bridge on 1 Sandbox node(s): jr2-control-plane
+fence: verified on each Sandbox node — a pod on the Fence has its slot's address, the Custodian answers its DNS query, and only the Custodian answers its dials to the API Service's address and to the node's kubelet port
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through the Custodian, which holds ANTHROPIC_API_KEY for api.anthropic.com
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: the check pod is not running yet — check: ContainerCreating
 provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 instance harness: converging (triager declares workspace: "none")
+instance harness: Fence slot 0 live at version 9811e83677fe38d7
 instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<version>
 …
 converged — `jr2 run <workflow>` when ready
 ```
 
+The range of VLANs, the number of Custodian pods, the names of the nodes and the version of the slot depend on your
+cluster. Your values can be different.
+
 The warning of Connect a model, `secrets[0] (ANTHROPIC_API_KEY) is named by nothing; goes nowhere`, is gone. `triager`
-names an Anthropic model, so `jr2 up` gives the key to the [Custodian](../reference/glossary.md#custodian) of the pod
-that runs its Turns. Then it checks the model through a Custodian that holds the key. If the check fails, `jr2 up` stops
-and prints what to examine.
+names an Anthropic model, so `jr2 up` gives the key to the [Custodian](../reference/glossary.md#custodian), for the
+Harness that runs its Turns. Then it checks the model through the Custodian. If the check fails, `jr2 up` stops and
+prints what to examine.
 
 == Local
 
 `jr2 up` asks your model for one tool call, from inside the cluster:
+
+<!-- output: not run -->
 
 ```text
 → .env: LOCAL_MODEL_URL
@@ -125,17 +167,46 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
   triage.clarify gate: [answer]
 agents: triager (carried by 2 workflow machine(s))
 …
-the Instance Harness: Custodian holds nothing
-provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), direct, as a pod that holds no secret calls it
-provider: the check pod has up to 5 min to start, then up to 6 min for its model
+fence: this converge installs the Fence's prerequisites (ADR-0084):
+  - the namespace jr2-system.
+  - the DaemonSet jr2-system/jr2-fence-node, on each Linux node. Its pod runs as root on the node's network. At each start, it:
+      - loads the rule table "inet jr2_fence" into the node's nftables, with the capability NET_ADMIN alone;
+      - runs the node's /opt/cni/bin/bridge, if the node has one, to read its version;
+      - writes the CNI plugins bridge, static, tuning v1.10.0 into /opt/cni/bin where the node has no file of that name (it never replaces a file).
+  - the ValidatingAdmissionPolicies jr2-fence-guard-pods and jr2-fence-guard-attachments, each with a ValidatingAdmissionPolicyBinding of the same name: cluster-wide objects. They refuse a pod that names an attachment of the Fence (the prefix jr2-fence-) from outside its Instance's namespace, through v1.multus-cni.io/default-network or k8s.v1.cni.cncf.io/networks, and a NetworkAttachmentDefinition on the bridge jr2fence0 outside an Instance's namespace.
+  - Multus v4.3.2 (thick), from the manifest that the CLI ships: a cluster-wide CustomResourceDefinition and ClusterRole, and a privileged DaemonSet kube-system/kube-multus-ds. Multus writes the first CNI configuration of each node, so the cluster makes each new pod through Multus.
+  A later jr2 up of a newer Kit changes the DaemonSet jr2-fence-node and the policies to its version, and does not ask. It asks before it changes the Multus that jr2 installs.
+  jr2 down --all removes the rule table, the bridge jr2fence0 that the bridge plugin makes, the DaemonSet, the policies with their bindings, and the Multus that jr2 installs. It keeps that Multus while the cluster has a NetworkAttachmentDefinition of another owner. The plugin files and the kernel module 8021q stay on the nodes.
+first setup of the Fence on context kind-jr2: install the Fence's prerequisites in the list above? [y/N] y
+fence: applying the admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments, each with its binding
 …
+fence: applying the DaemonSet jr2-system/jr2-fence-node (ghcr.io/snapwich/jr2-operator:<version>)
+fence: jr2-control-plane: rules=loaded wrote=bridge static tuning kept= bridge=v1.10.0 cni=10-kindnet.conflist type=ptp
+fence: applying Multus v4.3.2 (thick) to kube-system
+fence: Multus is ready on each node
+…
+the Instance Harness: Custodian holds nothing
+the Instance Harness: Egress list Tunneled <address>:8000
+held secrets: minted the Instance's CA into jr2-held-ca
+…
+custodian: converging on each Sandbox node (VLAN range 0)
+custodian: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+fence: probing the bridge on 1 Sandbox node(s): jr2-control-plane
+fence: verified on each Sandbox node — a pod on the Fence has its slot's address, the Custodian answers its DNS query, and only the Custodian answers its dials to the API Service's address and to the node's kubelet port
+provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), through the Custodian, as a Turn calls it
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: the check pod is not running yet — check: ContainerCreating
 provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 instance harness: converging (triager declares workspace: "none")
+instance harness: Fence slot 0 live at version 165a46e89c2d426e
 instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<version>
 …
 converged — `jr2 run <workflow>` when ready
 ```
+
+The range of VLANs, the number of Custodian pods, the names of the nodes and the version of the slot depend on your
+cluster. Your values can be different.
 
 The line of Connect a model, `provider: <url> configured, but no carried Agent names a "local/…" model — skipped`, is
 gone. `triager` names a `local/…` model, so `jr2 up` checks that the endpoint completes a tool call. If the check fails,

@@ -62,6 +62,8 @@ import { refuseUnroutedAgentFault } from "./mechanism-routes.ts";
 import { refuseSlotActiveTwice } from "./party.ts";
 import { refuseLostOutput } from "./run-output.ts";
 import { userSeatOf, type Size, type UserContainer } from "./size.ts";
+import type { EgressEntry } from "./egress.ts";
+import type { TextPart } from "./effector-wire.ts";
 
 // --- Repo Slots (ADR-0051) ---------------------------------------------------------------------
 // A `workspace()` names each Repo it attaches under a SLOT — the Machine's own word for it, the
@@ -265,6 +267,8 @@ export type SandboxParts = {
   /** The Held secrets this Workspace's pod gets beside its Agents' model keys (ADR-0059): names of
    * the `secrets` list. Naming is placement — no other pod gets a name for being listed here. */
   secrets?: string[];
+  /** The Egress list the `workspace()` states (ADR-0084), as written. Absent → the Instance's. */
+  egress?: EgressEntry[];
   /** The Sandbox Effector's image (ADR-0068). Absent → the Sandbox Image. */
   effector?: { image: string };
   /** How far up an Agent's context files are read (ADR-0062). Absent → `"worktree"`. */
@@ -582,6 +586,12 @@ export type CarriedEffect = {
         method: string;
         target?: { scheme: "http" | "https"; host: string; port: number };
         secrets: string[];
+        /** The secrets that sit in its url's path alone, never in a header or its auth. The
+         * Effector holds each, so they bind no host of the Custodian's (ADR-0068, ADR-0084). */
+        urlSecrets?: string[];
+        /** Each secret that rides a header (its auth: `authorization`), by the header's lowercase
+         * name, and the form it rides in: what the Custodian swaps for a Sandbox Effector (ADR-0068). */
+        headerSecrets?: HeaderSecret[];
         idempotent: boolean;
         file?: true;
         open?: Array<"url" | "secret">;
@@ -981,6 +991,77 @@ export function placedEffectsOf(root: AnyStateMachine): CarriedEffect[] {
   return effects;
 }
 
+/**
+ * One secret in one header of an http Effect, and its form (ADR-0059's swap): `value` (the secret
+ * alone), `scheme` (one auth scheme, a space, the secret), `basic` (the password of a `basic` auth
+ * whose user is text), or `other` (any other mix of text and secrets, which the Custodian cannot
+ * swap: a Sandbox Effector refuses it). `url`: the url's path of the same Effect also names the
+ * secret, so a Sandbox Effector must hold its value too, and refuses it (ADR-0068).
+ */
+export type HeaderSecret = {
+  secret: string;
+  header: string;
+  form: "value" | "scheme" | "basic" | "other";
+  url?: true;
+};
+
+/** The form a header's parts give a secret in it (`HeaderSecret`). */
+function headerForms(header: string, text: readonly TextPart[]): HeaderSecret[] {
+  const secrets = [...new Set(text.flatMap((p) => ("secret" in p ? [p.secret] : [])))];
+  const one = secrets.length === 1 ? secrets[0]! : undefined;
+  const last = text.at(-1);
+  const lead = text.length === 2 && "text" in text[0]! ? text[0].text : undefined;
+  const form: HeaderSecret["form"] =
+    one === undefined
+      ? "other"
+      : text.length === 1
+        ? "value"
+        : lead !== undefined && last !== undefined && "secret" in last && /^[A-Za-z][A-Za-z0-9._~+/-]* $/.test(lead)
+          ? "scheme"
+          : "other";
+  return secrets.map((secret) => ({ secret, header, form }));
+}
+
+/** Each secret that rides a header of an http Effect, with its form (`CarriedEffect.headerSecrets`). */
+function headerSecretsOf(parts: Extract<EffectParts, { kind: "http" }>): { headerSecrets?: HeaderSecret[] } {
+  const out: HeaderSecret[] = [];
+  for (const [name, text] of Object.entries(parts.headers)) out.push(...headerForms(name.toLowerCase(), text));
+  const auth = parts.auth;
+  if (auth !== undefined) {
+    if ("bearer" in auth) out.push({ secret: auth.bearer.secret, header: "authorization", form: "scheme" });
+    else if ("basic" in auth) {
+      const user = auth.basic.user.flatMap((p) => ("secret" in p ? [p.secret] : []));
+      const password = headerForms("authorization", auth.basic.password);
+      for (const s of user) out.push({ secret: s, header: "authorization", form: "other" });
+      for (const p of password) {
+        out.push({ ...p, form: p.form === "value" && user.length === 0 ? "basic" : "other" });
+      }
+    } else out.push(...headerForms("authorization", auth.text));
+  }
+  if (out.length === 0) return {};
+  const inUrl = new Set(parts.url === open ? [] : parts.url.flatMap((p) => ("secret" in p ? [p.secret] : [])));
+  return { headerSecrets: out.map((h) => (inUrl.has(h.secret) ? { ...h, url: true as const } : h)) };
+}
+
+/** The secrets of an http Effect that sit in its url alone (`CarriedEffect.urlSecrets`), when any. */
+function urlSecretsOf(parts: Extract<EffectParts, { kind: "http" }>): { urlSecrets?: string[] } {
+  if (parts.url === open) return {};
+  const named = (text: readonly TextPart[]) => text.flatMap((p) => ("secret" in p ? [p.secret] : []));
+  const auth = parts.auth;
+  const elsewhere = new Set([
+    ...Object.values(parts.headers).flatMap(named),
+    ...(auth === undefined
+      ? []
+      : "bearer" in auth
+        ? [auth.bearer.secret]
+        : "basic" in auth
+          ? [...named(auth.basic.user), ...named(auth.basic.password)]
+          : named(auth.text)),
+  ]);
+  const inUrl = [...new Set(named(parts.url))].filter((s) => !elsewhere.has(s));
+  return inUrl.length ? { urlSecrets: inUrl } : {};
+}
+
 /** One Effect slot's plain data, as `jr2 up` and the placement read it. */
 export function carriedEffectOf(
   name: string,
@@ -1018,6 +1099,9 @@ export function carriedEffectOf(
       ...(parts.target === open ? {} : { target: { ...parts.target } }),
       ...(openParts.length ? { open: openParts as Array<"url" | "secret"> } : {}),
       secrets: [...parts.secrets],
+      ...urlSecretsOf(parts),
+      // Only a Sandbox Effector needs it: the Custodian holds its header secrets (ADR-0068).
+      ...(parts.file ? headerSecretsOf(parts) : {}),
       idempotent: parts.idempotent,
       timeoutMs: parts.timeoutMs,
       ...(parts.file ? { file: true as const } : {}),
@@ -1098,6 +1182,8 @@ export type WorkspacePod = {
   route: PlacementRoute;
   /** The `workspace()`'s own `secrets: [...]`, as written. */
   secrets: string[];
+  /** The `workspace()`'s own `egress`, as written (ADR-0084). Absent → the Instance's list. */
+  egress?: EgressEntry[];
   /** The model of every bound Agent whose Turn runs in this pod: each Agent below the
    * `workspace()` that is not `workspace: "none"` (those run at the Instance Harness, ADR-0031),
    * down to the next `workspace()`, which is a pod of its own, and every model an Open body below
@@ -1207,6 +1293,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
         path,
         route,
         secrets: [...(parts.secrets ?? [])],
+        ...(parts.egress !== undefined ? { egress: [...parts.egress] } : {}),
         models: [...models].sort(),
         effects: [...effects.values()],
         ...(cuts.size ? { cuts: [...cuts] } : {}),

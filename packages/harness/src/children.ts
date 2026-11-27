@@ -11,14 +11,15 @@
 // The rules are `confine.ForHarness`'s, which `effector harness-rules --deny /run/jr2 --read
 // /run/jr2/output` writes once at start: every right on every path except `/run/jr2`, and read alone
 // in `/run/jr2/output` (and in `/run/jr2/user-context`, when the pod mounts the image user's context
-// there, ADR-0062). That folder holds the control Stand-in, each held secret's Stand-in, the
-// Custodian's control socket's folder, and the Harness's conversations; its `output` folder holds
-// the whole output of a long `bash` call, which the model reads (`OUTPUT_DIR`). A confined process cannot ptrace one outside its domain, so `/proc/<harness>/environ`
-// and `/mem` stay closed.
+// there, ADR-0062). That folder holds the control Stand-in, each held secret's Stand-in and the
+// Harness's conversations; its `output` folder holds the whole output of a long `bash` call, which
+// the model reads (`OUTPUT_DIR`). A confined process cannot ptrace one outside its domain, so
+// `/proc/<harness>/environ` and `/mem` stay closed.
 //
 // The domain's env is the env that the container STARTED with — the image's `ENV`, `harness.env`,
-// `envFrom`, the proxy and CA variables — with startup.ts's PATH, HOME and git identity, without
-// jr2's own `JR2_*` names (except `JR2_CUSTODIAN_URL`), and with HOME, TMPDIR, the Stand-ins of
+// `envFrom`, the CA variables — with startup.ts's PATH, HOME and git identity, without jr2's own
+// `JR2_*` names (except `JR2_CUSTODIAN_URL`) and without a proxy variable (the Fence takes each
+// connection to the Custodian, ADR-0084), and with HOME, TMPDIR, the Stand-ins of
 // the secrets that the `workspace()` grants (`JR2_GRANTED_SECRETS`), and `safe.bareRepository=explicit`
 // for git after the start env's own `GIT_CONFIG_*` entries (ADR-0080). It never holds what the Harness
 // put in its own env after the start: the control Stand-in, a model key's Stand-in that no grant
@@ -51,8 +52,6 @@ export const RUNTIME_SECRETS = "/run/jr2";
 export const CONTROL_STANDIN_FILE = `${RUNTIME_SECRETS}/control/standin`;
 /** Where each held secret's Stand-in is mounted, one file a name (ADR-0059). */
 export const STANDINS_DIR = `${RUNTIME_SECRETS}/standins`;
-/** The Custodian's control socket (ADR-0076): the agent routes, never on a port. */
-export const CONTROL_SOCKET = `${RUNTIME_SECRETS}/custodian/control.sock`;
 /** Where a Harness keeps its conversations (ADR-0031): under `/run/jr2`, so no process of the
  * domain reads another Agent's conversation (ADR-0076). */
 export const CONVERSATIONS_DIR = `${RUNTIME_SECRETS}/conversations`;
@@ -134,6 +133,23 @@ export function takeStartEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 
 /** The one `JR2_*` name that the domain keeps: `jr2-upload-pack` reads it for a fetch (ADR-0053). */
 const KEPT_JR2 = "JR2_CUSTODIAN_URL";
+
+/**
+ * The proxy variables (ADR-0084): no process of the domain gets one, whatever the start env holds.
+ * In a Sandbox each connection goes through the Fence to the Custodian, so a proxy variable could
+ * only send a program's requests to another host.
+ */
+export const PROXY_ENV: readonly string[] = [
+  "HTTPS_PROXY",
+  "https_proxy",
+  "HTTP_PROXY",
+  "http_proxy",
+  "ALL_PROXY",
+  "all_proxy",
+  "NO_PROXY",
+  "no_proxy",
+  "NODE_USE_ENV_PROXY",
+];
 
 /** Names that no held secret may take: the domain's env is made of them (PATH, HOME, the proxy). */
 export const RESERVED_ENV: readonly string[] = [
@@ -268,7 +284,8 @@ export function withGitConfig(
 
 /**
  * The domain's env (ADR-0076): `start` — the container's env at the start, with startup.ts's PATH,
- * HOME and git identity — without `JR2_*` but `JR2_CUSTODIAN_URL`; then HOME and TMPDIR; then the
+ * HOME and git identity — without `JR2_*` but `JR2_CUSTODIAN_URL`, and without each name of
+ * {@link PROXY_ENV}, said once in `log`; then HOME and TMPDIR; then the
  * Stand-in of each granted secret under its own name; then {@link AGENT_GIT_CONFIG} after the start
  * env's own git config entries. A granted name with no Stand-in is a fault of the pod's maker, said
  * loudly. A value equal to the control Stand-in, or to the Stand-in of a held secret that no grant
@@ -283,10 +300,21 @@ export function childEnv(
   log: (line: string) => void = (line) => console.error(line),
 ): Record<string, string> {
   const out: Record<string, string> = {};
+  const dropped: string[] = [];
   for (const [name, value] of Object.entries(start)) {
     if (value === undefined) continue;
     if (name.startsWith("JR2_") && name !== KEPT_JR2) continue;
+    if (PROXY_ENV.includes(name)) {
+      dropped.push(name);
+      continue;
+    }
     out[name] = value;
+  }
+  if (dropped.length > 0) {
+    log(
+      `the start env's ${dropped.join(", ")}: no process of the domain gets them, because each connection of a ` +
+        "Sandbox goes through the Fence to the Custodian, so a program needs no proxy setting (ADR-0084)",
+    );
   }
   out.HOME = dirs.home;
   out.TMPDIR = dirs.tmp;

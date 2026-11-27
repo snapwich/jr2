@@ -191,9 +191,57 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `jr2.config.ts`, or add `-n <namespace>`.
 - Before `jr2 up` uses a namespace for the first time, it asks:
   `first contact: deploy instance "<instance>" to context <context> (create namespace "<namespace>")? [y/N]`. For a
-  namespace that exists but holds no Instance, it asks to `adopt existing namespace "<namespace>"`. When you do not type
-  `y`, it prints `aborted — nothing was changed`. When no terminal is attached, it prints
+  namespace that exists but holds no Instance, it asks to `adopt existing namespace "<namespace>"`. When a Machine has a
+  Sandbox or a Menu-only Agent and the cluster lacks a prerequisite of the Fence, `jr2 up` first writes a list of each
+  part that it will apply, under the line `fence: this converge installs the Fence's prerequisites (ADR-0084):`, and the
+  question adds `; install the Fence's prerequisites in the list above`. When the namespace is the Instance's already,
+  the question starts with `first setup of the Fence on context <context>:`. When you do not type `y`, it prints
+  `aborted — nothing was changed`. When no terminal is attached, it prints
   `<question> — not a tty; pass --yes to proceed non-interactively` first. In CI, add `--yes`.
+- When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` installs the prerequisites of the Fence that the cluster
+  lacks (see [Converge](../concepts/converge.md#what-jr2-up-does)). It does not install when that is not safe. The
+  refusal of the read comes before `jr2 up` applies anything, and ends with `Nothing was applied.`. A read of the
+  cluster that fails stops the converge too, with the error of kubectl. `jr2 up` uses a Multus that it did not install
+  as it is: it reads none of its settings. The probe after the Custodian shows whether that Multus works on each node.
+  - `fence: Cilium has cni-exclusive: "true" in the ConfigMap <namespace>/cilium-config, …`. With it, Cilium removes the
+    configuration of Multus on each node. Set `cni-exclusive: "false"` (with Helm: `--set cni.exclusive=false`), restart
+    the Cilium agents, and run `jr2 up` again. When a `CiliumNodeConfig` sets it for a Sandbox node, the error names
+    that object: set `"cni-exclusive": "false"` in its `spec.defaults`. When jr2 cannot read these objects, it writes
+    `fence: jr2 cannot read … so it cannot tell whether Cilium has cni-exclusive: "true" …` and goes on.
+- Right after the namespace of the Instance, `jr2 up` applies its two admission policies of the Fence, with their
+  bindings. When the cluster refuses them, the error starts with
+  `fence: jr2 cannot apply its admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments with their bindings (<reason>).`
+  The policies keep a pod of another namespace off the attachments of the Instance, and no attachment of the Fence may
+  exist without them. Give the user of your kubectl context the right to create and update ValidatingAdmissionPolicies
+  and ValidatingAdmissionPolicyBindings, which are cluster-wide, or ask the owner of the cluster to run `jr2 up` once.
+  Then run `jr2 up` again.
+- The refusals below come after `jr2 up` applied the namespace `jr2-system` and the DaemonSet `jr2-fence-node`, and
+  before it applies Multus. The namespace and the DaemonSet stay, with the plugins that the DaemonSet wrote and the rule
+  table on each node where it loaded. The table loads before the checks of a node, so a node that they refuse has the
+  table too. `jr2 down --all` removes the DaemonSet and the table. Each error says so:
+  - `fence: the DaemonSet jr2-system/jr2-fence-node failed on a Sandbox node (ADR-0084):`, then one line for each node,
+    and what to do. The pod of the DaemonSet on the node found one of these:
+    - The node has no CNI configuration in `/etc/cni/net.d`, or its `/opt/cni/bin` is empty, after 180 s, or the kubelet
+      cannot mount one of the two folders in that time
+      (`the kubelet cannot mount a CNI folder of the node after 180 s: <reason>`). Its container runtime uses other
+      folders: keep the node out of the Sandbox nodes, as above.
+    - `/opt/cni/bin/bridge is v<version>, older than v1.8.0`, or `prints no version`. jr2 never replaces a plugin file.
+      Replace the file with the stock plugin of v1.8.0 or later, or delete it so that jr2 writes v1.10.0. Then delete
+      the node's pod of `jr2-fence-node`, and run `jr2 up` again.
+    - `/opt/cni/bin/bridge is a link to <target>, which this pod cannot run …`. The pod sees only `/opt/cni/bin` of the
+      node, so jr2 cannot read the version of that plugin. Put the stock plugin of v1.8.0 or later in `/opt/cni/bin` as
+      a file, not a link, or delete the link so that jr2 writes v1.10.0. Then delete the node's pod of `jr2-fence-node`,
+      and run `jr2 up` again.
+    - `cannot write <plugin> into /opt/cni/bin on the node: <reason>`, for example a read-only folder. Put the stock
+      plugins there with the tools of the node, or keep the node out of the Sandbox nodes.
+    - `nft could not load the table inet jr2_fence: <reason>`. The node needs nftables with the inet family.
+    - `no pod: <reason>`. The cluster refused the pod, for example Pod Security admission. Permit the node's network,
+      root, `NET_ADMIN` and the two hostPath volumes in `jr2-system`.
+  - `fence: no Ready pod of the DaemonSet jr2-system/jr2-fence-node on the Sandbox node <node> in 300 s, …`. Read
+    `kubectl -n jr2-system describe pod -l app=jr2-fence-node`, for example for an image that the node cannot pull, or a
+    policy of the cluster that refuses a pod with a hostPath volume, the node's network or the capability `NET_ADMIN` in
+    `jr2-system`.
+
 - The cluster must keep pod-level resources. `jr2 up` makes the namespace, and then it stops:
   `refusing: <context> (Kubernetes <version>) drops pod-level resources — the PodLevelResources feature gate is off, and a Workspace's Size cannot hold (ADR-0060). Enable the gate on the API server and kubelets. The namespace was created; nothing else was applied.`
 - When `jr2 up` cannot confirm pod-level resources, it warns and continues:
@@ -270,11 +318,10 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   See [Use a local model](use-a-local-model.md).
 
 - When an Agent uses a model of pi's catalog (for example `anthropic/claude-haiku-5-5`), a pod in the cluster asks the
-  provider for one tool call for each model. The pod has the placement of the Harness pods that run the model, and a
-  Custodian that holds the secrets of those pods. When a call fails:
+  provider for one tool call for each model. The pod has the placement of the Harness pods that run the model, and it
+  reaches the [Custodian](../reference/glossary.md#custodian) as those pods do. When a call fails:
   `error: provider preflight failed for model "<model>" toward <host> (from a pod on <where>, through a Custodian, as a Turn calls it): <error>`.
-  When the pods hold no secret, the error says `direct` in place of `through a Custodian`. Each failed model has its own
-  error. Lines with the usual causes follow:
+  Each failed model has its own error. Lines with the usual causes follow:
 
   ```text
     - the pods may have no egress to <host> (a NetworkPolicy, a firewall, no route out of the cluster)
@@ -282,17 +329,26 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
     - a private CA on that path must be in harness.caBundle
   ```
 
-  When the provider refused the key (a 401 or a 403), the line about the held secret comes first, and the line about
-  egress is left out, because the provider answered. When no Harness pod holds a key of the provider, the line about the
-  key says which key to add to `secrets`. With a [`harness.catalog`](../reference/config.md#harness-catalog) gateway for
-  the provider, a line also says that the gateway may not answer, or may not serve the model. A 503 is an error: a
-  gateway with no backend, or a server that still loads its model, answers 503.
+  Each check pod is behind a [Fence](../reference/glossary.md#fence), as each Harness pod is, also the check pod for the
+  [Instance Harness](../reference/glossary.md#instance-harness). The Custodian refuses a host that the
+  [Egress list](../reference/glossary.md#egress-list) does not permit and that no Held secret is bound to, such as a
+  local model with no key. `jr2 up` refuses to converge while such a host that jr2 uses has no entry, and it prints the
+  entry to add. Add the host to `egress`.
+
+  When the Custodian says that the TLS handshake failed, a line about TLS comes first. For a certificate, it says that a
+  private CA must be in `harness.caBundle`. Otherwise, it says that the host may not accept TLS 1.2 with an ECDHE cipher
+  suite and AES-GCM or ChaCha20-Poly1305, which is all that the Custodian offers. Then put a TLS terminator, such as
+  nginx, in front of the host. When the provider refused the key (a 401 or a 403), the line about the held secret comes
+  first, and the line about egress is left out, because the provider answered. When no Harness pod holds a key of the
+  provider, the line about the key says which key to add to `secrets`. With a
+  [`harness.catalog`](../reference/config.md#harness-catalog) gateway for the provider, a line also says that the
+  gateway may not answer, or may not serve the model. A 503 is an error: a gateway with no backend, or a server that
+  still loads its model, answers 503.
 
   When the check pod cannot start, the error says why:
   - a node cannot pull an image;
   - a Secret or a key that `harness.envFrom` or a `harness.env` valueFrom names is missing;
-  - a Secret or a key that a `secrets` valueFrom names is missing (the volume does not mount);
-  - the Custodian refused a held value;
+  - the trust ConfigMap or the Stand-in Secret of the check pod is missing (a jr2 defect: run `jr2 up` again);
   - a container ran out of memory.
 
   While the check pod waits to start, `jr2 up` writes why, for example
@@ -304,9 +360,8 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   error, because their tries are not seen. When the check pod stops before the end, the error says which model the check
   was on, and `not checked` for each model that it never reached.
 
-  The check has a limit. The check pod has labels of its own, so a NetworkPolicy that selects the Harness pods by label
-  does not select the check pod. When such a policy closes the egress of the Harness pods, the check can pass while a
-  Turn fails. The egress policy of jr2, which closes the cloud metadata addresses, selects the check pod too.
+  No NetworkPolicy applies to a check pod or to a Harness pod. The Fence and the Egress list decide their traffic, so
+  the check and a Turn take the same path.
 
   A check can fail when the model works, for example a model that loads for longer than the check waits. When you know
   that the models work, run `jr2 up --skip-provider-preflight`. No check pod runs, and the converge goes on. `jr2 up`
@@ -316,7 +371,7 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `; these MCP servers' tool lists were not checked: <server>, …`. A model that does not work then fails in a run, as
   `agent.fault`, and not at the converge. Remove the flag when the check works again.
 
-- When an Agent names a remote MCP server, the check pod also asks the server for its tools, through its Custodian. Each
+- When an Agent names a remote MCP server, the check pod also asks the server for its tools, through the Custodian. Each
   name in an allowlist must be a tool of the server:
   `error: mcp: workflow "<workflow>": Agent "<slot>" allowlists the tool "<tool>", which "<server>" does not list — it lists: <tools> (ADR-0079)`.
   A server that refuses the token (a 401 or a 403) is an error too:
@@ -324,14 +379,54 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   A server that does not answer is a warning. [Give an Agent MCP tools](give-an-agent-mcp-tools.md#rules) gives each
   text.
 
+- Before the Custodian, `jr2 up` checks its admission policies with server-side dry runs, which make nothing. When the
+  cluster admits one, the error says
+  `fence: the cluster admits <what> (a server-side dry run, which makes nothing), so jr2's admission policy <name> is not in force, …`.
+  Look at `kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding <name>`, and run `jr2 up` again. When
+  something else refuses a dry run, for example Pod Security admission, the error starts with
+  `fence: jr2 cannot see its admission policy <name> in force:` and gives the reason. Then `jr2 up` lists the pods and
+  the NetworkAttachmentDefinitions of the cluster. When one exists that the policies refuse now, the error starts with
+  `fence: the cluster has objects that jr2's admission policies refuse now.` and names each one. It was made while the
+  policies were absent. Delete each one, and run `jr2 up` again. When jr2 cannot list them, the error starts with
+  `fence: jr2 cannot list the namespaces, the pods and the NetworkAttachmentDefinitions of the cluster (<reason>)`. When
+  the reason is a refused read, give the user of your kubectl context the right to list them in each namespace. When the
+  reason names `maxBuffer`, the list of all pods of the cluster is larger than the 64 MiB that jr2 reads: the cluster is
+  too large for this check.
+
+- When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` checks the Fence on each Sandbox node, after it installed
+  or found its prerequisites. While a node fails, `jr2 up` refuses to converge. The error starts with
+  `error: fence: a Sandbox node fails the check of the Fence (ADR-0084):`, and each next line names a node, the part and
+  what the check saw: `Multus`, `Multus or the attachment`,
+  `the bridge, its VLAN filtering, or the Custodian pod of this node`, `the node's firewall on the bridge`,
+  `the rule table inet jr2_fence`, `the dial to a Service address` or `the VLANs of the bridge`. When the probe pod on
+  the Fence got no answer from the Custodian on the bridge, `jr2 up` also replaces the Custodian pod of that node, so
+  that the pod joins the bridge again. When the SYN of its dial to the address of the API Service got no answer, the
+  node has no rule table: `jr2 up` replaces the node's pod of `jr2-system/jr2-fence-node`, which loads the table again
+  when it starts. The line of the node says each pod that `jr2 up` replaced. Run `jr2 up` again. When a peer that is not
+  the Custodian took that dial and said nothing, the part is `the dial to a Service address`, and `jr2 up` replaces no
+  pod. When the cluster has no Multus, the error says
+  `fence: the cluster has no CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io`. Run `jr2 up`
+  again: it installs Multus when the cluster has none. When the part is `Multus or the attachment` and the probe pod's
+  address is not its slot's address, Multus did not give the pod the Fence: look at the Multus pod of that node (it must
+  be Ready) and at the first CNI configuration of the node in `/etc/cni/net.d` (it must be Multus's). When the cluster
+  has the CustomResourceDefinition of Multus with no annotation `jr2.dev/multus`, `jr2 up` uses it as a Multus of
+  another owner. When no Multus runs, the error also says
+  `jr2 found the CustomResourceDefinition network-attachment-definitions.k8s.cni.cncf.io with no annotation jr2.dev/multus, …`,
+  and a rollout of the Custodian that fails says it too. Look for a Multus DaemonSet. When the cluster has none, delete
+  the CustomResourceDefinition, and run `jr2 up` again: it installs Multus. The delete also deletes each
+  NetworkAttachmentDefinition of the cluster. The last line of the error names the likely causes: a container runtime
+  that reads its CNI plugins or configuration from other folders; a file `bridge`, `static` or `tuning` in
+  `/opt/cni/bin` that is not a recent stock CNI plugin (jr2 never replaces one); a primary CNI that removes the
+  configuration of Multus; a node firewall that changes bridged VLAN frames; or a node with no rule table
+  `inet jr2_fence`. It also gives the page of the prerequisites:
+  [Move from kind to a shared cluster](move-from-kind-to-a-shared-cluster.md#prerequisites-of-the-fence).
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See
   [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). Every rollout comes after the provider
   check, the rollout of the operator (`jr2-controller-manager`) too.
 - When the rollout made no pod, the error says:
   `no pod matches <selector> — the ReplicaSet made none (check quota, node taints, and the selector)`. For the Repo
-  cache and the [Instance Harness](../reference/glossary.md#instance-harness), it names the DaemonSet or the
-  StatefulSet.
+  cache and the Instance Harness, it names the DaemonSet or the StatefulSet.
 - After each rollout, the pods must run the image that `jr2 up` expected. `<layer>` is `operator`, `orchestrator`,
   `repo cache`, `instance harness` or `instance effector`:
   ``error: <layer>: rollout reported success, but the running pod carries <images> — expected <image>. The cluster is serving code this converge did not deploy; `kubectl -n <namespace> rollout restart deploy` and re-run `jr2 up` to resolve it.``

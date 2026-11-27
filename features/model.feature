@@ -13,7 +13,7 @@ Feature: a real model drives the kit
   what the model reads — the Briefing, the Menu's rendering or its refusal, the nudge, the Working
   tools, Compaction, the admit body's notices, the pi pin, a provider adapter — runs it before
   calling the change done, and reports the scorecard or the skip:
-    just e2e-kind-up                          # the same vanilla kind cluster @kind uses
+    just e2e-kind-up                          # the same kind cluster @kind uses
     JR2_MODEL_ENDPOINT=homelab just e2e-model # probes the endpoint; `skipped:` and exit 0 if none
   The endpoint is a profile (`model-endpoints/<name>.json`); the key rides `JR2_MODEL_API_KEY`
   alone. The instrument is a model shown to catch the known regressions — today the home-lab vLLM
@@ -38,9 +38,10 @@ Feature: a real model drives the kit
     then the summarizer, and is told no slot name; its Open body lends `summarizer` alone. The
     first Chart is expected to name `linter`, and the next `run_chart` is the measurement: the door
     admits it. A trial whose first Chart admits saw no refusal, and is void. The floor, 7 of 10, was
-    set ahead of a measured run; the `off` cell cleared it on 2026-10-19 and set its baseline. A
-    thinking-on cell was measured once and not kept: 5 of 10, the same misses, a third more wall
-    time (ADR-0070).
+    set ahead of a measured run. The `off` cell's rate is about 0.69 (103 of 150 trials, 2026-10-25
+    to 2026-11-19), so its baseline is 7 of 10, and a run below the floor is not by itself a
+    regression. A thinking-on cell was measured once and not kept: 5 of 10, the same misses, a
+    third more wall time (ADR-0070).
 
     Scenario: after the door refuses its Chart, the planner's next Chart admits
       Given the model instance is serving
@@ -72,7 +73,7 @@ Feature: a real model drives the kit
       ADR-0016's ask-again rule. The `mode-stop` workflow's prompt asks for a review and to wait;
       `ask_review` enters a mode whose picks are closed, and its answer is the reviewer's approval,
       which comes while they are closed, so it allows nothing and the model stops; a timer with no
-      target then opens `revise` and `submit`, and the wake asks the model with the nudge's text and
+      target then opens `revise` and `submit`, 120 s after `ask_review`, and the wake asks the model with the nudge's text and
       a Turn part that states the Allowed picks last. The first Menu call after the ask is the
       measurement. A model still working when the picks opened heard them at a step boundary and was
       never asked: void.
@@ -116,8 +117,9 @@ Feature: a real model drives the kit
       — a signed push over ssh to the seed's push remote — then commits a comment and publishes
       again, then finishes. The second push's outcome, from the Machine's own record, is the
       measurement: `pushed`. A trial whose first push did not publish a signed copy is void, and so
-      is one whose only push already carried two or more commits from `main` (read on the push
-      remote): the model chose its order before it read any post-push text (ADR-0066).
+      is one whose only push already held the second change — two or more commits from `main`, or
+      a `greet.js` with the comment above `greet()` (read on the push remote): the model chose its
+      order before it read any post-push text (ADR-0066).
       Given the seed's push remote trusts this scenario's keys
       And the model instance is serving
       When I run the "continue-after-signed-push" workflow 10 times with thinking off

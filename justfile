@@ -2,6 +2,8 @@
 set shell := ["bash", "-uc"]
 
 cluster := "jr2"
+# The @dist tier's own kind cluster: a stock one, which no recipe prepares (see `e2e-dist-up`).
+dist_cluster := "jr2-dist"
 
 # install JS deps
 install:
@@ -37,6 +39,24 @@ kind-up:
 kind-down:
     kind delete cluster --name {{ cluster }}
 
+# --- the Fence on kind (ADR-0084; requires docker + kind) ---
+#
+# A kind cluster with three nodes, so that a test can put two Sandboxes of one Instance on two nodes.
+# It is a stock cluster: the Fence's prerequisites (jr2's admission policies, Multus, and the DaemonSet
+# jr2-fence-node that puts the CNI plugins bridge, static and tuning on each node and loads the rule table) are not this
+# recipe's, because `jr2 up` installs each one that the cluster lacks (packages/cli/src/fence-install.ts). The command names the cluster's own kubeconfig file, never the
+# shell's current context.
+
+# create the three-node kind cluster for the Fence (a second run changes nothing)
+fence-kind-up:
+    mkdir -p features/.tmp
+    kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind-fence.yaml --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+    kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+
+# delete the Fence's kind cluster
+fence-kind-down:
+    kind delete cluster --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+
 # --- kit images (docker) — SHORTCUTS for building one image by hand (ADR-0038) ---
 #
 # None of these is a prerequisite of anything. `jr2 up` run from this checkout builds every image it
@@ -58,9 +78,11 @@ orchestrator-image:
 # --- the Custodian suite (ADR-0059; requires docker) ---
 #
 # The Custodian's claims that only real sockets can check, against the REAL engine: the pinned Envoy
-# image running the bootstrap and script `jr2 up` renders, local upstreams standing in for model
-# providers and the Orchestrator. Opt-in, like @kind: the default gate needs no docker (ADR-0010).
-# The container runs on the host network, on free ports, so it can share the host with anything.
+# image running the bootstrap of a Custodian pod and the rules of its slots as jr2 renders them,
+# local upstreams standing in for model providers, Harness pods and the Orchestrator. Opt-in, like
+# @kind: the default gate needs no docker (ADR-0010). The container runs on the host network, on
+# free ports and loopback addresses, or on docker networks of its own, so it can share the host with
+# anything.
 
 # run the Custodian suite against the pinned Envoy image
 custodian-test:
@@ -68,15 +90,17 @@ custodian-test:
 
 # --- kind e2e tier (ADR-0010; requires docker + kind) ---
 
-# A VANILLA cluster, and nothing else (ADR-0038): `jr2 up` from this checkout builds and `kind load`s
-# every image it deploys — Harness, operator, Orchestrator, and the Instance's Sandbox Images. The one
-# image it deploys and never builds — the Custodian's pinned Envoy (ADR-0059) — a kind node pulls
-# from its registry itself, so the cluster needs network to docker.io (or a `kitRegistry` mirror).
-# Pre-loading a `:local` tag here would be exactly the invisible-stale-image bug that deletes.
-# Nothing is instance-bound to the cluster (ADR-0019): each @kind scenario `jr2 up`s into a fresh
-# namespace, operator included.
+# A kind cluster with no image and no Instance in it (ADR-0038): `jr2 up` from this checkout builds
+# and `kind load`s every image it deploys — Harness, operator, Orchestrator, and the Instance's
+# Sandbox Images. The one image it deploys and never builds — the Custodian's pinned Envoy
+# (ADR-0059) — a kind node pulls from its registry itself, so the cluster needs network to docker.io
+# (or a `kitRegistry` mirror). Pre-loading a `:local` tag here would be exactly the
+# invisible-stale-image bug that deletes. Nothing is added to the cluster either: the first `jr2 up`
+# of the tier installs the Fence's prerequisites, jr2's admission policies, Multus and the DaemonSet
+# jr2-fence-node (the CNI plugins and the rule table), as it does on any cluster (ADR-0084), and a later one finds them. An existing cluster of this name is kept. Nothing is instance-bound to the cluster (ADR-0019): each @kind
+# scenario `jr2 up`s into a fresh namespace, operator included.
 e2e-kind-up:
-    kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
+    kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml --name {{ cluster }}
     @echo "now: \`just e2e-kind\`"
 
 # run the kind e2e tier (needs `just e2e-kind-up`). The tier addresses the kind cluster by its own
@@ -90,12 +114,14 @@ e2e-kind-up:
 #
 # `parallel` is the worker count, and it is a property of the HOST, not the tier: the profile's
 # default (4, features/cucumber.json) is measured on a dev box, and a scenario's pods ask their
-# node for about 1.4 cpu of requests — the kit-sized control pods (ADR-0060: Orchestrator 500m,
-# Instance Harness 250m, its Custodian, the Repo cache and the Instance Effector 50m each) and a
-# 500m Sandbox (features/kind-instance/jr2.config.ts) — so four at once ask a node for 5.6 cpu. A
-# 4-vCPU hosted runner allocates 4, of which kube-system holds about 1 (v0.4.0's run: every
-# Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.8, which fits;
-# the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
+# node for 1.45 cpu of requests — the kit-sized control pods (ADR-0060: Orchestrator 500m,
+# Instance Harness 250m, the Repo cache and the Instance Effector 50m each), the Custodian pod
+# (ADR-0084: 100m and 1,920Mi) and a 500m Sandbox (features/kind-instance/jr2.config.ts) — so four
+# at once ask a node for 5.8 cpu. A 4-vCPU hosted runner allocates 4, of which the system pods ask
+# 1,050m with Multus (100m and 300Mi on each node; measured on jr2-control-plane), and the pod of
+# jr2-fence-node asks 10m (v0.4.0's run:
+# every Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.9, which
+# fits and leaves about 50m; the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
 # of 47, 2 pass 47 of 47. Requests are the kit's, sized for a real cluster, and are not lowered for a runner.
 #
 # `shard` (`<i>/<n>`, from 1) runs every n-th scenario of the tier, starting at the i-th: cucumber's
@@ -295,24 +321,33 @@ dist-down:
 # default to the same two: the tier refuses to start while a manual loop holds them
 # (`just dist-down`).
 #
-# The cluster is vanilla but not featureless since ADR-0044 — deploy/kind.yaml tells containerd that
-# per-registry config exists, which is what lets the fixture point the nodes at its own registry. A
-# cluster created before that patch is refused by name at bring-up, not diagnosed later as a pull
-# failure.
+# The cluster is the tier's own, `jr2-dist`: a STOCK one-node kind cluster, as a user makes it with
+# `kind create cluster`, with no prerequisite of the Fence. So the tier's first `jr2 up` is the one
+# that installs them (ADR-0084), as on a user's computer, and no recipe of this repo hides a step
+# the user would miss. deploy/kind.yaml tells containerd that per-registry config exists (ADR-0044),
+# which is what lets the fixture point the node at its own registry; a cluster created before the
+# containerd patch is refused by name at bring-up, not diagnosed later as a pull failure. The
+# cluster is made fresh, so `e2e-dist-up` deletes one that a run left; `e2e-dist-down` deletes it.
 
-# a VANILLA kind cluster for the @dist tier (the same one @kind uses — safe to run either)
+# a fresh stock kind cluster for the @dist tier, with no image and no prerequisite of the Fence in it
 e2e-dist-up:
-    kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
-    @echo "now: \`just e2e-dist\`"
+    mkdir -p features/.tmp
+    kind delete cluster --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
+    kind create cluster --config deploy/kind.yaml --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
+    @echo "now: \`just e2e-dist\`, then \`just e2e-dist-down\`"
 
 # run the @dist e2e tier (needs `just e2e-dist-up`, and network on every run — the storage is wiped)
 e2e-dist:
-    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} pnpm --filter @jr2/e2e test:e2e:dist
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ dist_cluster }} pnpm --filter @jr2/e2e test:e2e:dist
+
+# delete the @dist tier's kind cluster
+e2e-dist-down:
+    kind delete cluster --name {{ dist_cluster }} --kubeconfig features/.tmp/kubeconfig-{{ dist_cluster }}
 
 # --- @model e2e tier (ADR-0066; requires docker + kind + a model endpoint) ---
 #
-# The @kind tier with the last fake removed: the same vanilla cluster (`just e2e-kind-up`), and
+# The @kind tier with the last fake removed: the same cluster (`just e2e-kind-up`), and
 # behind each scenario's Custodian a REAL model endpoint, named by a profile in
 # `features/model-endpoints/<name>.json` and selected with `JR2_MODEL_ENDPOINT` (default
 # `homelab`); the key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone. Not in CI and

@@ -43,10 +43,10 @@ export default defineConfig({
 
 - **`name` is the instance's identity**; its namespace defaults to it (`-n` overrides — ADR-0019).
 - **There is no `repos` list.** A Repo is a slot on a `workspace()`, bound by url (ADR-0051); `jr2.config.ts` holds what
-  reaches one — `git.credentials`, the prefix-matched list that is also the fence a per-run slot's url must pass. The
-  scaffold writes one wildcard entry, commented, for the user to narrow (ADR-0051). The operator keeps a bare cache per
-  node from the `Repo` resources the Orchestrator creates off its Machines (ADR-0004); Sandboxes clone `--shared`
-  against it. There is no host-side directory — a Repo pods should see must be fetchable from the cluster.
+  reaches one — `git.credentials`, the prefix-matched list that a per-run slot's url must also match. The scaffold
+  writes one wildcard entry, commented, for the user to narrow (ADR-0051). The operator keeps a bare cache per node from
+  the `Repo` resources the Orchestrator creates off its Machines (ADR-0004); Sandboxes clone `--shared` against it.
+  There is no host-side directory — a Repo pods should see must be fetchable from the cluster.
 - **A registered Machine that composes a Sandbox is the data-plane switch** (ADR-0051), read off `jr2 up`'s walk: with
   one, the instance gets the kubectl Sandbox backend; without one, the instance is workspace-less. There is **no
   `images` config block**: `jr2 up` builds every image it deploys and resolves each to a content-addressed tag
@@ -55,8 +55,8 @@ export default defineConfig({
   [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md),
   [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)) and opts into a User Container the same way
   ([ADR-0005](0005-sandbox-pod-composition.md)); `images/default` is the one path convention `jr2 up` still checks.
-  Every Harness pod gets a Custodian — an Agent without one cannot act (ADR-0013, ADR-0059) — and that is not
-  configurable. Agent-runtime concerns live in `harness` (ADR-0018).
+  Every Harness uses the Instance's one Custodian — an Agent without it cannot act (ADR-0013, ADR-0059, ADR-0084) — and
+  that is not configurable. Agent-runtime concerns live in `harness` (ADR-0018).
 - **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`), the gateways pi's catalog
   providers call (`catalog`) and any other env — never which model to use; each definition names its own (ADR-0018).
 - **`secrets` is the Instance's one list of secrets**
@@ -67,6 +67,9 @@ export default defineConfig({
   ([ADR-0079](0079-an-agent-holds-mcp-tools-a-machine-calls-them-as-an-effect-and-the-machine-is-the-approval.md)): each
   by a name that the author chooses, remote (`url`, an optional `secret`) or stdio (`command`, `args`), with a
   `timeout`. An Agent and an `mcp` Effect name a server by that name.
+- **`egress` is the Instance's default Egress list**
+  ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)): the names that a Sandbox may reach, each with
+  its ports. A `workspace()` that states its own list replaces it.
 - **`callers`, `hooks` and `cors`** are the Instance's reach for Callers
   ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)): the named Caller tokens
   and the JWT issuers with their scopes, the Hooks with their credentials and the Hook kinds that the config imports,

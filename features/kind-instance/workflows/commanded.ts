@@ -110,5 +110,5 @@ export const machine = workspace(body, {
     code: z.string().optional(),
     text: z.string().optional(),
   }),
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" } },
 });

@@ -76,7 +76,7 @@
     "trials": 10
   },
   "chart-refusal/off": {
-    "passed": 9,
+    "passed": 7,
     "trials": 10
   },
   "steer-follow/off": {

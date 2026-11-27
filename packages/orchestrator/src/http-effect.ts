@@ -67,6 +67,7 @@ import {
   MAX_START_BYTES,
   nodeEffectorTransport,
   type EffectorPort,
+  type EffectorService,
   type EffectState,
   type HttpMethod,
   type HttpOutput,
@@ -403,7 +404,9 @@ export function bearer(s: Secret): { readonly bearer: Secret } {
 
 /**
  * Make the `auth` of an `http` Effect that sends `Authorization: Basic <value>`, where the value
- * is the base64 of `user:password`. The Effector puts in the value of each secret.
+ * is the base64 of `user:password`. The Effector puts in the value of each secret. In an `http`
+ * whose body is a Worktree file, which runs in the Sandbox Effector, the Custodian puts in the
+ * password's value: there the user must be text, and the password one `secret(...)`.
  *
  * Each of `user` and `password` is a string, a `secret(...)` or a `text`. In a packaged Machine,
  * one of them can hold `secret(open)`. It refuses another value: `` expected a string, a
@@ -1039,7 +1042,7 @@ export function startRequestOf(parts: HttpParts, run: HttpRequestParts): HttpSta
 export type EffectorPlacement = "instance" | { sandbox: string };
 
 /** Where a placement's Effector is, as the host knows it (ADR-0068): its Service and its key. */
-export type EffectorTarget = { placement: "instance" | "sandbox"; service: string; key: Buffer | string };
+export type EffectorTarget = { placement: "instance" | "sandbox"; service: EffectorService; key: Buffer | string };
 export type EffectorPortFactory = (target: EffectorTarget) => EffectorPort;
 
 type Settle = { type: "jr2.effect.settle"; output: unknown };

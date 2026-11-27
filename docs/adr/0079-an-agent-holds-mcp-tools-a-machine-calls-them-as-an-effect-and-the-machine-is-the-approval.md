@@ -41,8 +41,10 @@ second approval in the Harness would be a state that the Machine cannot see.
   `authorization`, explicit `hosts` that leave out the url's host, and explicit `paths` that do not cover the url's
   path. A server with a `secret` needs an `https://` url, as a model endpoint with a bound key does
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); a server with no secret can use
-  `http://`, as a keyless model endpoint can. In v1 a credential is a static bearer token, a Held secret or an Effect
-  secret. OAuth grants are the next round. `timeout` is for one call, 60 seconds by default.
+  `http://`, as a keyless model endpoint can. Such a server needs an entry on the Egress list, also when jr2 itself
+  calls it ([ADR-0084](0084-a-sandboxs-only-network-leads-to-the-custodian.md)): `jr2 up` refuses to converge while it
+  has none, and prints the entry to add. In v1 a credential is a static bearer token, a Held secret or an Effect secret.
+  OAuth grants are the next round. `timeout` is for one call, 60 seconds by default.
 - **An Agent names the servers and the tools that it uses.** `AgentDefinition` gains `mcp?: Array<{ server, tools? }>`.
   `server` is a name of the config's `mcp` block, and `tools` is the allowlist. The field is plain data, as the
   definition is ([ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)). Each entry is an
@@ -69,7 +71,7 @@ second approval in the Harness would be a state that the Machine cannot see.
   it. One token under two secret names is the author's own act, and jr2 cannot see it.
 
 - **The tool list is fixed for a conversation.** `jr2 up` checks each allowlisted name against the live server, from the
-  check pod and through its Custodian, as the provider preflight checks a model
+  check pod and through the Custodian, as the provider preflight checks a model
   ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). It refuses a name that the server does not
   list, and it fails when the server refuses the request (a 401 or a 403: a wrong or expired token), as it fails on a
   model key that the provider refuses. It only warns when the server does not answer. The Harness reads `tools/list` at
@@ -165,9 +167,9 @@ second approval in the Harness would be a state that the Machine cannot see.
   contract beside MCP, its code would run in the Harness process or in the domain with a new seat, and an engine change
   would carry it again. An MCP server is the same function behind a contract that every engine speaks.
 - **One secret for each host and header**, which `jr2 up` refused before this decision (ADR-0059's R5). Rejected: two
-  servers of one service (two Slack workspaces) send their tokens to one host in one header, and the Menu-only Agents of
-  an Instance share one Custodian. The Custodian already chose the value by the Stand-in in the header, so only the
-  refusal went.
+  servers of one service (two Slack workspaces) send their tokens to one host in one header, and all the Agents of an
+  Instance share one Custodian. The Custodian already chose the value by the Stand-in in the header, so only the refusal
+  went.
 - **Start a stdio server with pi-mcp's own spawn.** Rejected: the process would be outside the domain, with every
   Stand-in in its env (ADR-0076).
 - **Protocol `2026-07-28`.** Not now: pi-mcp speaks `2025-11-25`, and the servers that the target user runs speak it.
@@ -175,8 +177,8 @@ second approval in the Harness would be a state that the Machine cannot see.
 ## Consequences
 
 - `jr2.config.ts` gains the `mcp` block, and `AgentDefinition` gains `mcp`. The Effect kinds gain `mcp` (ADR-0067).
-- A Custodian holds what its pod's Agents name, the Instance Harness's too (ADR-0059): an Agent's MCP server secret is
-  held in the pod where its Turns run. The Custodian chooses a secret by the Stand-in that a request carries, so two
+- The Custodian holds what each pod's Agents name, the Instance Harness's too (ADR-0059): an Agent's MCP server secret
+  is held for the pod where its Turns run. The Custodian chooses a secret by the Stand-in that a request carries, so two
   secrets can share one host and one header.
 - An Agent's MCP tools reach the model, so the `@model` tier gains the claim `mcp-then-pick` (ADR-0066).
 - A stdio server shares the domain with the other Workspace code of its Sandbox. Other Agents' code can trace it and

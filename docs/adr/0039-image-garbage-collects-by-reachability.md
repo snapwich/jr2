@@ -32,8 +32,8 @@ parsing names.
      instead of being permanent by fiat. A Pinned image — the Custodian's Envoy
      ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)) — is never taken at all: jr2 did
      not build it, so it carries no stamp, and what jr2 did not stamp, jr2 does not sweep. It is a root besides (the
-     map's `custodian` key, every Sandbox CR's sidecars, every Harness pod), so no sweep would take it from under a live
-     pod even if it were stamped.
+     map's `custodian` key, the Custodian's own pod), so no sweep would take it from under a live pod even if it were
+     stamped.
 - **`jr2 up` sweeps after a successful converge** — the moment the root set moves, which is where the iteration garbage
   comes from. Nodes get a **one-generation grace**: refs named by the map this converge replaced stay one more round, so
   the ConfigMap's kubelet propagation window cannot provision a just-swept ref. The **host daemon is swept

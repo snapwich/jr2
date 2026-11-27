@@ -12,7 +12,8 @@ it again at any time. When nothing changed, it changes nothing.
 ## Why one command
 
 A [Workflow](../reference/glossary.md#workflow) needs many parts in the cluster: the Orchestrator, its Secret, its
-images and the operator. Some Workflows also need a [Sandbox Image](../reference/glossary.md#sandbox-image) or the
+images, the [Custodian](../reference/glossary.md#custodian) and the operator. Some Workflows also need a
+[Sandbox Image](../reference/glossary.md#sandbox-image) or the
 [Instance Harness](../reference/glossary.md#instance-harness). If you put each part there by hand, you must remember the
 steps and their order. When you forget a step, the cluster is not correct, and you find the problem only when a run
 fails. `jr2 up` does every step, in the correct order, each time. It tells you what it does at each step.
@@ -39,6 +40,7 @@ The diagram shows what `jr2 up` makes, and what [`jr2 run`](../reference/cli.md#
       - **Assembly**: your Workflows and your config
     - **jr2-instance Secret**: holds the Instance token
     - **Instance Harness**: when an Agent is Menu-only
+    - **Custodian**: with its uplink and its resolver
     - **Instance Effector**: when an Effect runs there, or a Hook needs it
     - **Repo cache**: when a Machine has a Sandbox
   - ↓ the Orchestrator asks for each Sandbox · ↑ the operator makes its pod
@@ -69,37 +71,71 @@ the cluster, see [Architecture](architecture.md).
 3. It loads each Workflow in `workflows/`. It reads the parts that each [Machine](../reference/glossary.md#machine)
    carries: its [Agents](../reference/glossary.md#agent), its [Repos](../reference/glossary.md#repo), its Sandbox Images
    and its [Effects](../reference/glossary.md#effect). It also checks each [Chart](../reference/glossary.md#chart) file.
+   It gives a warning for an [Egress list](../reference/glossary.md#egress-list) of `["*"]`, and for each `*.` entry.
 4. It makes the Assembly from the folder, and calculates its hash. See [The Assembly](#the-assembly).
 5. It checks the Kubernetes version of the cluster.
 6. It checks that the namespace is this Instance's. Before it uses a namespace for the first time, it asks you.
-7. It checks that the cluster keeps pod-level resources.
-8. It finds the platforms of the nodes, and it decides the address of each image.
-9. It builds the Sandbox Images.
-10. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
-11. It checks each model that an Agent uses: a pod in the cluster asks the provider for one tool call for each model.
-    Until each check passes, `jr2 up` writes nothing that the Instance or the operator reads. The pod has up to 5
-    minutes to start, and each model has up to 6 minutes. `jr2 up` writes each model's result as it comes. With
-    `--skip-provider-preflight`, no pod checks the models, and `jr2 up` writes a warning that names each model that it
-    did not check. The same pod asks each remote MCP server that an Agent names for its tools, through its Custodian.
-    `jr2 up` refuses an allowlisted tool that the server does not list, and a server that refuses the token. The flag
-    skips this check too.
-12. It applies the operator. For a Repo with an ssh url, it asks where the deploy key comes from.
-13. It applies the Secrets and the Orchestrator, and waits for the rollout. When the Machines need them, it also waits
+7. When a Machine has a Sandbox or a Menu-only Agent, it reads the three prerequisites of the
+   [Fence](../reference/glossary.md#fence) from the cluster: jr2's two admission policies, which keep a pod of another
+   namespace off the Instance's attachments; Multus; and the DaemonSet `jr2-system/jr2-fence-node`, which puts the stock
+   CNI plugins `bridge`, `static` and `tuning` on each node and loads the Fence's rule table there. When one is missing,
+   it writes a list of each part that it will install, and asks in the question of step 6. A Multus that jr2 did not
+   install is used as it is: jr2 reads none of its settings and never changes it. Before it applies anything, it refuses
+   Cilium with `cni-exclusive: "true"`, and a read that fails. This is the same on each cluster, kind or not.
+8. It applies the namespace. When a Machine has a Sandbox or a Menu-only Agent, it then applies the two admission
+   policies, before any pod of the Instance. Then it checks that the cluster keeps pod-level resources.
+9. It finds the platforms of the nodes, and it decides the address of each image.
+10. When a Machine has a Sandbox or a Menu-only Agent, it installs what step 7 found missing, with kubectl. First the
+    namespace `jr2-system` and the DaemonSet `jr2-system/jr2-fence-node`. Its pod runs as root on the node's network. At
+    each start, it loads the rule table `inet jr2_fence` into the node, with the capability `NET_ADMIN`, and then checks
+    that the node's CNI folders are the default ones and that the node's `bridge` plugin is v1.8.0 or later, and copies
+    each plugin onto a node that has no file of that name. `jr2 up` waits for it on each Sandbox node. A node that the
+    pod refuses stops the converge here: the namespace `jr2-system` and the DaemonSet stay, with the plugins that it
+    wrote and the table on each node where it loaded, and `jr2 down --all` removes them. Then Multus, when the cluster
+    has none. When each part was there, it prints one line.
+11. It builds the Sandbox Images.
+12. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
+    Then it reads Multus from the cluster, and checks the admission policies with server-side dry runs, which make
+    nothing: a pod of another namespace that names the Instance's attachment, and an attachment on the Fence's bridge
+    outside an Instance's namespace, must each be denied. It lists the pods and the attachments of the cluster, and
+    refuses while one exists that the policies refuse now: one that was made while they were absent. Then it applies the
+    Custodian, its uplink on each Sandbox node and its resolver. When the Custodian is ready, a short pod on each
+    Sandbox node checks the Fence: the pod gets the address of its slot (so the Multus of the node works), the Custodian
+    answers it and refuses its dial to the address of the API Service at once, and only the Custodian answers its dial
+    to the kubelet's port on the node. The pod has no privilege, so it sees what the bridge and the table do, not its
+    VLANs. While a Sandbox node fails, the converge fails, and the error names the node, the part and the likely causes.
+13. It checks each model that an Agent uses: one pod on a Sandbox node, behind the Fence as each Harness pod is, asks
+    the provider through the Custodian for one tool call for each model. Until each check passes, `jr2 up` writes
+    nothing else that the Instance or the operator reads. The pod has up to 5 minutes to start, and each model has up to
+    6 minutes. `jr2 up` writes each model's result as it comes. With `--skip-provider-preflight`, no pod checks the
+    models, and `jr2 up` writes a warning that names each model that it did not check. The same pod asks each remote MCP
+    server that an Agent names for its tools, through the Custodian. `jr2 up` refuses an allowlisted tool that the
+    server does not list, and a server that refuses the token. The flag skips this check too.
+14. It applies the operator. For a Repo with an ssh url, it asks where the deploy key comes from.
+15. It applies the Secrets and the Orchestrator, and waits for the rollout. When the Machines need them, it also waits
     for the Repo cache, the Instance Harness and the [Instance Effector](../reference/glossary.md#instance-effector).
     The Repo cache agent on each Sandbox node checks that the kernel of its node has Landlock, which jr2 needs. While a
     Sandbox node has no Landlock, the converge fails. The error names each such node, the reason, and the fix: keep the
     node out with `sandbox.nodeSelector` or a taint, or enable Landlock in its kernel. Then run `jr2 up` again.
-14. It publishes the Assembly to the Orchestrator. When the Orchestrator already has this Assembly, it publishes
+16. It publishes the Assembly to the Orchestrator. When the Orchestrator already has this Assembly, it publishes
     nothing.
-15. It removes the images that nothing uses now.
+17. It removes the images that nothing uses now.
+
+`jr2 up` also refuses to converge while a host that jr2 uses with no secret has no entry on the Egress list, such as a
+model endpoint with no key or an MCP server with no token. A secret in the path of a url does not count, because the
+Effector holds it, not the Custodian. The error prints the entry to add. A host that no entry can name, such as
+`localhost` or an IPv6 address, is refused with the reason.
 
 `jr2 up` says `converged` only when each pod that it rolled out runs the image that it expected. The labels and the
 records that `jr2 up` writes help it to skip work. They do not prove that the cluster is correct. The pods do.
 
 The Machines decide some parts. When no registered Machine makes a Sandbox, `jr2 up` builds no Sandbox Image and runs no
-Repo cache. When no Agent has `workspace: "none"`, there is no Instance Harness. When the Machines stop using the Repo
-cache or the Instance Harness, `jr2 up` removes it from the namespace. The image sweep removes a Sandbox Image that
-nothing names.
+Repo cache. When no Agent has `workspace: "none"`, there is no Instance Harness. The Instance Harness is behind a Fence,
+as a Sandbox is, so `jr2 up` checks no node for the Fence only when the Instance has neither. When the Machines stop
+using the Repo cache or the Instance Harness, `jr2 up` removes it from the namespace. The Custodian follows a rule of
+its own: when the Instance has no Harness pod, `jr2 up` removes the Custodian only after the last Sandbox and the
+Instance Harness pod are gone, because a run that still runs keeps its Sandbox. The Instance keeps its range of VLANs
+until `jr2 down`. The image sweep removes a Sandbox Image that nothing names.
 
 ## The images
 
@@ -108,12 +144,13 @@ Each image that a converge uses is one of these kinds:
 | Image                                                 | Who owns it | What `jr2 up` does                                                                                                                                                                   |
 | ----------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [Kit image](../reference/glossary.md#kit-image)       | jr2         | It builds nothing. The cluster pulls `jr2-orchestrator`, `jr2-harness` and `jr2-operator` at the tag of the Kit version.                                                             |
-| [Pinned image](../reference/glossary.md#pinned-image) | Upstream    | It builds nothing. The cluster pulls the Envoy image of the [Custodian](../reference/glossary.md#custodian), by its tag and its digest.                                              |
+| [Pinned image](../reference/glossary.md#pinned-image) | Upstream    | It builds nothing. The cluster pulls the Envoy image of the Custodian, by its tag and its digest.                                                                                    |
 | Sandbox Image, from a `file:` URL                     | You         | It builds the folder that a [`workspace()`](../reference/authoring-surface/workspace.md) names, and the `images/default/` folder that [`jr2 init`](../reference/cli.md#init) writes. |
 | Sandbox Image, from a registry                        | You         | It builds nothing. The cluster pulls the image.                                                                                                                                      |
 
-The Custodian is a container in each [Harness](../reference/glossary.md#harness) pod.
-[Workspaces](workspaces.md#the-sandbox-image) explains what a Sandbox Image holds.
+The Custodian is one part of the Instance, outside every Sandbox. Each [Harness](../reference/glossary.md#harness) of
+the Instance uses it ([Architecture](architecture.md#the-custodian)). [Workspaces](workspaces.md#the-sandbox-image)
+explains what a Sandbox Image holds.
 
 The tag of each image that `jr2 up` builds is a hash of the inputs of that image and of its platforms. Thus a new tag
 means new content, and the same tag means the same content. This rule has three results:
@@ -217,6 +254,13 @@ would remove, and removes nothing.
   keep pod-level resources.
 - `jr2 up` refuses a namespace that belongs to a different Instance. It asks you before it uses a namespace for the
   first time. `--yes` gives the answer for CI.
+- When a Machine has a Sandbox or a Menu-only Agent, `jr2 up` installs each prerequisite of the Fence that the cluster
+  does not have, on any cluster. It lists each part and asks you before it installs for the first time. A later converge
+  of a newer Kit changes the DaemonSet `jr2-fence-node` and the admission policies with no question, and asks before it
+  changes the Multus that it installed. It refuses when it cannot install safely: before it applies anything, for what
+  it reads in the API; after it applies the DaemonSet, for what the pod finds on a node; before the Custodian, when the
+  admission policies do not deny the dry runs, or while the cluster has a pod or an attachment that they refuse now. It
+  never changes a Multus that it did not install, and never replaces a plugin file on a node.
 - `jr2 up` refuses a cluster that is not kind when `registry` is not set and it must build an image. When no registered
   Machine makes a [Sandbox](../reference/glossary.md#sandbox), `jr2 up` builds no image and needs no `registry`.
 - Each verb that reads the Instance, other than `jr2 version`, refuses when the Instance and the CLI do not use the same
@@ -259,3 +303,5 @@ would remove, and removes nothing.
   the Forward, and one Kit version for each Instance
 - [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): the
   Orchestrator is a Kit image, and an Instance publishes its Assembly
+- [ADR-0084](../reference/decisions/0084-a-sandboxs-only-network-leads-to-the-custodian.md): `jr2 up` installs the
+  Custodian, its uplink and its resolver, installs the prerequisites of the Fence, and checks the Fence

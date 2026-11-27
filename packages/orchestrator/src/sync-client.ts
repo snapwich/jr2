@@ -5,6 +5,7 @@
 // container but this one call, which moves one ref. The Harness's answer is a report the next push
 // never trusts.
 
+import { routedFetch } from "./custodian-client.ts";
 import type { SyncAnswer, SyncRequest } from "./wire.ts";
 
 /** The Harness's sync, as a push drives it. It never throws: a Harness that cannot be reached, or
@@ -21,10 +22,11 @@ export function createSyncPort(options: {
   baseUrl: string;
   /** The Workspace's Harness bearer (ADR-0058). */
   token?: string;
-  /** Injectable for socket-free tests. Default: global `fetch`. */
+  /** Injectable for socket-free tests. Default: `routedFetch` (through the Custodian to a slot
+   * address, ADR-0084). */
   fetch?: typeof fetch;
 }): SyncPort {
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchImpl = options.fetch ?? routedFetch;
   return {
     sync: async (req, signal) => {
       const url = new URL("/sync", options.baseUrl).toString();

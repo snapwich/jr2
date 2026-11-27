@@ -30,27 +30,44 @@ type Roots = {
 function mkKube(
   objects: Record<string, Partial<KubeObject>>,
   opts: { context?: string; roots?: Roots } = {},
-): KubeAdmin & { deleted: string[] } {
+): KubeAdmin & { deleted: string[]; applied: string[] } {
   const store = new Map(Object.entries(objects));
   const roots = opts.roots ?? {};
   let crdGone = false;
   const fake = {
     deleted: [] as string[],
+    applied: [] as string[],
     context: async () => opts.context ?? "kind-test",
     getJson: async <T = KubeObject>(o: { kind: string; name: string; namespace?: string }) =>
       store.get(`${o.namespace ?? ""}/${o.kind.toLowerCase()}/${o.name}`) as T | undefined,
-    apply: async () => assert.fail("down applies nothing"),
+    // The one apply of `down`: the removal form of the fence node's DaemonSet (`--all`).
+    apply: async (o: { manifest: string }) => {
+      const doc = JSON.parse(o.manifest) as { kind: string; metadata: { name: string } };
+      assert.equal(`${doc.kind}/${doc.metadata.name}`, "DaemonSet/jr2-fence-node", "down applies nothing else");
+      fake.applied.push(o.manifest);
+    },
     label: async () => assert.fail("down labels nothing"),
     deleteObject: async (o: { kind: string; name: string; namespace?: string }) =>
       void fake.deleted.push(`${o.namespace ?? ""}/${o.kind}/${o.name}`),
-    deleteManifest: async () => {
+    deleteManifest: async (o: { manifest: string }) => {
+      if (o.manifest.includes("name: kube-multus-ds")) return void fake.deleted.push("(multus manifest)");
       fake.deleted.push("(operator manifest)");
       // The manifest CARRIES the `sandboxes.core.jr2.dev` CRD, so `--all` takes the resource type
       // with it — and the sweep runs after (see the `--all` test).
       crdGone = true;
     },
     waitRollout: async () => {},
-    listJson: async <T>(o: { kind: string }): Promise<T[]> => {
+    listJson: async <T>(o: { kind: string; fieldSelector?: string; namespace?: string }): Promise<T[]> => {
+      // One object by name (the DaemonSets that `--all` removes), and the NetworkAttachmentDefinitions.
+      if (o.kind === "daemonset" && o.fieldSelector?.startsWith("metadata.name=")) {
+        const one = store.get(`${o.namespace ?? ""}/${o.kind.toLowerCase()}/${o.fieldSelector.slice(14)}`);
+        return (one ? [one] : []) as T[];
+      }
+      if (o.kind === "network-attachment-definitions.k8s.cni.cncf.io") {
+        return [...store.entries()]
+          .filter(([k]) => k.includes("/network-attachment-definitions.k8s.cni.cncf.io/"))
+          .map(([, v]) => v) as T[];
+      }
       if (o.kind.startsWith("sandboxes") && crdGone) {
         throw new Error(
           'Command failed: kubectl get sandboxes.core.jr2.dev\nerror: the server doesn\'t have a resource type "sandboxes"',
@@ -71,6 +88,13 @@ function mkKube(
     awaitPodEnd: async () => assert.fail("down runs no check pod") as never,
     serverVersion: async () => assert.fail("down reads no version") as never,
     dryRunCreate: async () => assert.fail("down dry-runs nothing") as never,
+    create: async () => assert.fail("down creates nothing") as never,
+    replace: async () => assert.fail("down replaces nothing") as never,
+    // A claim's delete is conditional (ADR-0084); this one always finds the claim it read.
+    deleteIf: async (o: { apiPath: string }) => {
+      fake.deleted.push(`jr2-system/lease/${o.apiPath.split("/").at(-1)}`);
+      return "deleted" as const;
+    },
   };
   return fake;
 }
@@ -176,8 +200,155 @@ test("down deletes the instance's namespace; --all takes the operator too, BEFOR
   const sweep = mkSweep();
   const w2 = await mkWorld(kube2, true, sweep);
   assert.equal(await down(["--all"], w2.io), 0);
-  assert.deepEqual(kube2.deleted, ["/Namespace/myinst", "(operator manifest)"]);
+  assert.deepEqual(kube2.deleted, [
+    "/Namespace/myinst",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-pods",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-attachments",
+    "/validatingadmissionpolicy/jr2-fence-guard-pods",
+    "/validatingadmissionpolicy/jr2-fence-guard-attachments",
+    "(operator manifest)",
+  ]);
   assert.deepEqual(sweep.listed, ["host", "node test"], "the stores are read only once both roots are gone");
+});
+
+test("--all removes what jr2 installed for the Fence: the rule table and the bridge on each node, the fence node's DaemonSet, the admission policies and jr2's Multus; the plugin files stay; a plain down removes none (ADR-0084)", async () => {
+  const installed = {
+    ...ownNs,
+    "jr2-system/daemonset/jr2-fence-node": {
+      metadata: { name: "jr2-fence-node" },
+      spec: { template: { spec: { containers: [{ name: "idle", image: "jr2-operator:7" }] } } },
+    } as Partial<KubeObject>,
+    "kube-system/daemonset/kube-multus-ds": {
+      metadata: { name: "kube-multus-ds", annotations: { "jr2.dev/multus": "v4.3.2-thick-2" } },
+    },
+  };
+  const plain = mkKube(installed);
+  assert.equal(await down([], (await mkWorld(plain, true)).io), 0);
+  assert.deepEqual(plain.deleted, ["/Namespace/myinst"]);
+  assert.deepEqual(plain.applied, []);
+
+  const all = mkKube(installed);
+  const w = await mkWorld(all, true);
+  assert.equal(await down(["--all"], w.io), 0);
+  assert.match(
+    w.confirms[0]!,
+    /delete namespace "myinst" AND the per-cluster operator, the Fence's rule table and its bridge jr2fence0 on each node, the DaemonSet jr2-fence-node that loads the table, the Fence's admission policies jr2-fence-guard-pods and jr2-fence-guard-attachments with their bindings, and a Multus that jr2 installed with its CustomResourceDefinition, which deletes each NetworkAttachmentDefinition of the cluster; when the cluster has a NetworkAttachmentDefinition of another owner, jr2 keeps its Multus and says so\)\?$/,
+  );
+  // The table goes first: the removal form of the DaemonSet, with the image that it runs.
+  assert.equal(all.applied.length, 1);
+  const removal = JSON.parse(all.applied[0]!) as Record<string, any>;
+  assert.deepEqual(
+    removal.spec.template.spec.initContainers.map((c: { name: string; image: string }) => [c.name, c.image]),
+    [["rules", "jr2-operator:7"]],
+  );
+  assert.match(removal.spec.template.spec.initContainers[0].command[2], /delete table inet jr2_fence/);
+  assert.match(removal.spec.template.spec.initContainers[0].command[2], /ip link delete jr2fence0/);
+  assert.deepEqual(all.deleted, [
+    "/Namespace/myinst",
+    "jr2-system/daemonset/jr2-fence-node",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-pods",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-attachments",
+    "/validatingadmissionpolicy/jr2-fence-guard-pods",
+    "/validatingadmissionpolicy/jr2-fence-guard-attachments",
+    "(multus manifest)",
+    "(operator manifest)",
+  ]);
+  const err = w.err.join("");
+  assert.match(
+    err,
+    /removing the rule table "inet jr2_fence" and the bridge jr2fence0 from each node\n.*uninstalling the DaemonSet jr2-system\/jr2-fence-node; the CNI plugins bridge, static, tuning stay in \/opt\/cni\/bin on each node\n/s,
+  );
+  assert.match(
+    err,
+    /uninstalling Multus \(kube-system\), which jr2 installed, and its CustomResourceDefinition network-attachment-definitions\.k8s\.cni\.cncf\.io\n/,
+  );
+
+  // A NetworkAttachmentDefinition of another owner: jr2's Multus and its definition stay, with a warning.
+  const shared = mkKube({
+    ...installed,
+    "team/network-attachment-definitions.k8s.cni.cncf.io/macvlan": { metadata: { name: "macvlan", namespace: "team" } },
+  });
+  const sw = await mkWorld(shared, true);
+  assert.equal(await down(["--all"], sw.io), 0);
+  assert.ok(!shared.deleted.includes("(multus manifest)"));
+  assert.match(
+    sw.err.join(""),
+    /warning: the cluster has NetworkAttachmentDefinitions that are not jr2's \(team\/macvlan\), so jr2 keeps the Multus/,
+  );
+
+  // A Multus that jr2 did not install stays.
+  const foreign = mkKube({
+    ...ownNs,
+    "kube-system/daemonset/kube-multus-ds": { metadata: { name: "kube-multus-ds" } },
+  });
+  assert.equal(await down(["--all"], (await mkWorld(foreign, true)).io), 0);
+  assert.deepEqual(foreign.deleted, [
+    "/Namespace/myinst",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-pods",
+    "/validatingadmissionpolicybinding/jr2-fence-guard-attachments",
+    "/validatingadmissionpolicy/jr2-fence-guard-pods",
+    "/validatingadmissionpolicy/jr2-fence-guard-attachments",
+    "(operator manifest)",
+  ]);
+});
+
+test("down gives back the Instance's VLAN range of the Fence, after its namespace is gone, and no other (ADR-0084)", async () => {
+  const kube = mkKube(ownNs);
+  const listJson = kube.listJson.bind(kube);
+  const claim = (range: number, holder: string) => ({
+    metadata: {
+      name: `jr2-fence-range-${range}`,
+      uid: `u${range}`,
+      resourceVersion: "5",
+      labels: { "jr2.dev/fence-holder": holder },
+    },
+    spec: { holderIdentity: holder },
+  });
+  const selectors: string[] = [];
+  kube.listJson = async <T>(o: { kind: string; selector?: string; namespace?: string }): Promise<T[]> => {
+    if (o.kind !== "lease") return listJson(o);
+    assert.equal(o.namespace, "jr2-system");
+    selectors.push(o.selector ?? "");
+    // The label selects; the holder in the spec decides.
+    return [claim(3, "myinst"), claim(9, "intruder")] as T[];
+  };
+  const w = await mkWorld(kube, true);
+  assert.equal(await down([], w.io), 0);
+  assert.deepEqual(selectors, ["jr2.dev/fence-holder=myinst"]);
+  assert.deepEqual(kube.deleted, ["/Namespace/myinst", "jr2-system/lease/jr2-fence-range-3"]);
+  assert.match(w.err.join("\n"), /gave back VLAN range 3 of the Fence/);
+});
+
+test("--all refuses while another Instance that is still there holds a VLAN range, and names it (ADR-0084)", async () => {
+  const claims = [
+    { metadata: { name: "jr2-fence-range-0" }, spec: { holderIdentity: "myinst" } },
+    { metadata: { name: "jr2-fence-range-1" }, spec: { holderIdentity: "team-b" } },
+    { metadata: { name: "jr2-fence-range-2" }, spec: { holderIdentity: "gone" } },
+  ];
+  const live = (alive: string[]) => {
+    const kube = mkKube(ownNs);
+    const listJson = kube.listJson.bind(kube);
+    kube.listJson = async <T>(o: { kind: string; selector?: string; fieldSelector?: string }): Promise<T[]> => {
+      if (o.kind === "lease") return (o.selector === "jr2.dev/fence-range" ? claims : []) as T[];
+      if (o.kind === "namespace" && o.fieldSelector !== undefined) {
+        const name = o.fieldSelector.replace("metadata.name=", "");
+        return (alive.includes(name) ? [{ metadata: { name } }] : []) as T[];
+      }
+      return listJson(o);
+    };
+    return kube;
+  };
+  const held = live(["myinst", "team-b"]);
+  const w = await mkWorld(held, true);
+  assert.equal(await down(["--all"], w.io), 1);
+  assert.deepEqual(held.deleted, [], "nothing is deleted");
+  assert.match(w.err.join("\n"), /refusing --all: the Instances in namespace "team-b" still hold a VLAN range/);
+  // A plain `jr2 down` is not refused, and with no other holder there (a claim whose namespace is
+  // NotFound does not count) `--all` goes on.
+  assert.equal(await down([], (await mkWorld(live(["myinst", "team-b"]), true)).io), 0);
+  const alone = live(["myinst"]);
+  assert.equal(await down(["--all"], (await mkWorld(alone, true)).io), 0);
+  assert.ok(alone.deleted.includes("(operator manifest)"));
 });
 
 test("--all takes the Sandbox CRD with the operator, and the sweep still collects", async () => {

@@ -3,8 +3,9 @@
 // the wrapper forwards it, so a scenario reads what the Machine routed on.
 //
 //   file-body an `http` whose body is a file the body wrote and committed in the Worktree
-//             (`body: file(...)`, ADR-0067), PUT to the echo with `bearer(secret("echo-token"))`: the
-//             Sandbox Effector opens it beneath the Worktree and sends it. The body first waits on its
+//             (`body: file(...)`, ADR-0067), PUT to the echo with `bearer(secret("echo-bearer"))`: the
+//             Sandbox Effector opens it beneath the Worktree and sends it with the bearer's Stand-in,
+//             and the Custodian puts the value in its place (ADR-0068). The body first waits on its
 //             `hold` Gate, so the step reads the pod while it is live
 //   env       a credentialed command that prints its secret from env and from `.path`, then the
 //             files of the commit it runs against: the output names the secret and holds no form of it
@@ -22,9 +23,10 @@
 //             command's process group (ADR-0067). The body then waits on its `after` Gate, so the
 //             step reads the Effector container while the pod is live
 //
-// The echo is the suite's (`steps/seed.ts`); `echo-token` is the tier's one Effect secret, which
-// these Effects place in this Workspace's Sandbox Effector (and the `called` workflow's in the
-// Instance Effector). The setup commands run in the Harness container as the Agent's user.
+// The echo is the suite's (`steps/seed.ts`). The commands name `echo-token`, whose value this
+// Workspace's Sandbox Effector holds (and the `called` workflow's in the Instance Effector); the
+// http names `echo-bearer`, whose value the Custodian holds for it. The setup commands run in the
+// Harness container as the Agent's user.
 
 import { z } from "zod";
 import { assign } from "xstate";
@@ -44,9 +46,9 @@ import {
   worktree,
 } from "@jr2/orchestrator";
 /** The seed Repo (`steps/seed.ts`), bound as every kind workflow binds it. */
-const SEED = { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" };
+const SEED = { url: "http://seed.jr2-e2e-seed.svc.cluster.local/app.git", ref: "main" };
 
-const ECHO = "http://echo.jr2-e2e-seed.svc";
+const ECHO = "http://echo.jr2-e2e-seed.svc.cluster.local";
 
 const door = z.object({
   mode: z.enum(["file-body", "env", "dirty", "key", "takeover", "stop"]),
@@ -81,7 +83,7 @@ const body = jr2Setup({
     send: http({
       method: "PUT",
       url: `${ECHO}/file-body`,
-      auth: bearer(token),
+      auth: bearer(secret("echo-bearer")),
       input: sendInput,
       body: file<typeof sendInput>("report.txt", { segments: ({ marker }) => [marker], contentType: "text/plain" }),
     }),

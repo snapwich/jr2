@@ -30,7 +30,7 @@ import {
 } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 
-const ECHO = "http://echo.jr2-e2e-seed.svc";
+const ECHO = "http://echo.jr2-e2e-seed.svc.cluster.local";
 
 const door = z.object({ mode: z.enum(["job"]), marker: z.string().regex(/^m-[a-z0-9]+$/) });
 // `never`: no Repo Slot, so the handles are `{ repos: {} }`, with no branch.

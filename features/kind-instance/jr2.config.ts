@@ -1,11 +1,14 @@
 // The @kind tier's instance config (ADR-0010): bring-up is the product's own path — one shared
-// vanilla kind cluster, then `jr2 up` per scenario into a FRESH namespace (`-n` at the CLI;
+// kind cluster with no image in it (`just e2e-kind-up`), on which `jr2 up` installs the Fence's
+// prerequisites (ADR-0084), then `jr2 up` per scenario into a FRESH namespace (`-n` at the CLI;
 // namespace-as-identity makes the scenario the isolation unit, ADR-0019).
 //
 // No Repo is named here (ADR-0051): the tier's workflows bind their one slot to the seed
-// repository the e2e suite serves in-cluster over HTTP (`seed.jr2-e2e-seed.svc`), and this file
-// declares only the credentials FENCE — an entry admitting that host by prefix, with no token and
-// no key, so a per-run url naming it clones anonymously and any other host is refused at attach.
+// repository the e2e suite serves in-cluster over HTTP (`seed.jr2-e2e-seed.svc.cluster.local`),
+// and this file declares only the credentials FENCE — an entry admitting that host by prefix, with
+// no token and no key, so a per-run url naming it clones anonymously and any other host is refused
+// at attach. Each seed name is the Service's full name, because the Custodian resolves a name as
+// it is written (ADR-0084).
 //
 // NO IMAGE IS NAMED HERE (ADR-0038). The `jr2` binary under test runs from this checkout, so its
 // converge builds the Harness, operator, this instance, and `images/default` from source at
@@ -16,7 +19,9 @@
 // Harness and the only fake left is the model behind this endpoint (`features/steps/fake-provider.ts`).
 // It is a provider that wants a key, over HTTPS — so the tier runs every turn through the Custodian
 // (ADR-0059): `apiKey` is a held secret, bound to this endpoint's host, and the Harness container
-// holds only its Stand-in.
+// holds only its Stand-in. The endpoint has a name, `model.<namespace>.svc.cluster.local`: a
+// Service of the scenario's namespace with no selector, whose one endpoint is the host, so a turn
+// takes the path of a hosted provider, by name, through the Fence (ADR-0084).
 
 import { defineConfig, secret } from "@jr2/orchestrator";
 import { github } from "@jr2/orchestrator/hooks/github";
@@ -27,7 +32,7 @@ export default defineConfig({
   name: "jr2-e2e-kind",
   git: {
     credentials: [
-      { match: "seed.jr2-e2e-seed.svc/" },
+      { match: "seed.jr2-e2e-seed.svc.cluster.local/" },
       // The seed's push remote (ADR-0067, ADR-0051): `push.git` over ssh, the `pushed` workflow's
       // Binding. The deploy key clones and pushes (no `push` field); `sign` names the key the
       // Sandbox Effector signs with. A scenario that runs `pushed` writes both Secrets from the
@@ -35,7 +40,7 @@ export default defineConfig({
       // generates a deploy key nothing authorizes, so that namespace's cache of `push.git` fails
       // its probe and serves anyway (ADR-0048), as `unsynced`'s does.
       {
-        match: "seed.jr2-e2e-seed.svc/srv/",
+        match: "seed.jr2-e2e-seed.svc.cluster.local/srv/",
         sshKey: "jr2-e2e-push-key",
         sign: { sshKey: "jr2-e2e-sign-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
       },
@@ -43,17 +48,21 @@ export default defineConfig({
       // The same deploy key; a GPG key the Sandbox Effector signs with, which the scenario writes
       // from a key it makes on the host before `jr2 up`.
       {
-        match: "seed.jr2-e2e-seed.svc/srv/gpg",
+        match: "seed.jr2-e2e-seed.svc.cluster.local/srv/gpg",
         sshKey: "jr2-e2e-push-key",
         sign: { gpgKey: "jr2-e2e-gpg-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
       },
     ],
   },
-  // The tier's one Effect secret (ADR-0068): the `called` and `asked` workflows' http Effects name
-  // it, so it is placed in the Instance Effector, and the `effected` workflow's file-body http and
-  // credentialed command name it, so it is placed in that Workspace's Sandbox Effector — no
-  // `workspace()` lists it and no provider reads it, so no Custodian holds it. Per scenario, from env like the provider key; in-cluster it reads undefined, which is
-  // safe: the Orchestrator never sees an Effect secret.
+  // The tier's Effect secrets (ADR-0068). `echo-token`: the `called` and `asked` workflows' http
+  // Effects name it, so it is placed in the Instance Effector, and the `effected` workflow's
+  // credentialed commands name it, so that Workspace's Sandbox Effector holds its value. The
+  // `shared` workflow's file-body http sends it as a bearer, so the Custodian of that Workspace's pod
+  // holds it, and its Sandbox Effector holds its Stand-in. `echo-bearer`: the `effected` workflow's
+  // file-body http sends it as a bearer, so the Custodian holds it for that Sandbox Effector — a
+  // second name, because one file of the Effector cannot hold both the value a command reads and the
+  // Stand-in the Custodian swaps. Per scenario, from env like the provider key; in-cluster each
+  // reads undefined, which is safe: the Orchestrator never sees an Effect secret.
   //
   // `self-token` is the `dispatched` workflow's (ADR-0071): the target token its dispatch names,
   // so it is placed in the Instance Effector beside `echo-token`. A literal from env, per scenario:
@@ -83,6 +92,7 @@ export default defineConfig({
   // in `jr2-hook-digests`, and a step sends the value in the header.
   secrets: [
     { name: "echo-token", value: process.env.JR2_ECHO_TOKEN },
+    { name: "echo-bearer", value: process.env.JR2_ECHO_BEARER },
     { name: "GH_HOOK", value: process.env.JR2_GH_HOOK },
     { name: "CHAT_SIGNING", value: process.env.JR2_CHAT_SIGNING },
     { name: "GL_HOOK", value: process.env.JR2_GL_HOOK },
@@ -108,9 +118,11 @@ export default defineConfig({
   // The Size of every Sandbox this tier provisions (ADR-0060): below the kit default, because jr2
   // reserves the whole Size and the tier runs several scenarios at once on ONE kind node — at 2Gi
   // and one cpu each, beside every scenario's kit-sized control pods, a 4-core runner leaves
-  // Sandboxes Pending. The Harness still gets 960Mi and 450m after the Custodian's share. The Size
-  // alone is not enough there: the control pods ask 900m a scenario before any Sandbox, so the
-  // runner also runs fewer workers (`just e2e-kind 2`; the recipe has the arithmetic).
+  // Sandboxes Pending. The Harness gets the whole Size, because the Custodian is a pod of its own
+  // (ADR-0084). The Size alone is not enough there: before any Sandbox, a scenario's control pods
+  // ask 850m and its Custodian pod asks 100m and 1,920Mi, so 950m a scenario, and Multus asks 100m
+  // on the node. So the runner also runs fewer workers (`just e2e-kind 2`; the recipe has the
+  // arithmetic).
   // One named Caller token (ADR-0078): `jr2 up` makes its value in a Secret of its own and gives the
   // Orchestrator only the digest. The Callers Rule reads it, sends it and rotates it.
   callers: { tokens: { ci: { may: { read: "all" } } } },
@@ -124,13 +136,27 @@ export default defineConfig({
     lab: gitlab({ secret: secret("GL_HOOK") }),
   },
   sandbox: { resources: { limits: { memory: "1Gi", cpu: "500m" } } },
+  // What a Sandbox may reach with no secret (ADR-0084). A host that a secret is bound to (the model,
+  // the MCP server) and each SSH Repo that a workflow binds need no entry. Each entry here is a
+  // host that a Sandbox calls and that no secret and no binding names:
+  //   - the seed's ssh port, for a per-run Repo over ssh (the handoff and LFS push scenarios): its
+  //     url is run input, so no binding names it when `jr2 up` derives the list;
+  //   - the seed's LFS server, which the Sandbox Effector's push uploads to, with no credential;
+  //   - the unbound echo, by its address and port, as an author permits a host with no name: a
+  //     Stand-in sent there arrives as it left (ADR-0059). Its url rides env like the provider's;
+  //     in-cluster it reads empty, and the entry is left out.
+  egress: [
+    "seed.jr2-e2e-seed.svc.cluster.local:22",
+    "lfs.jr2-e2e-seed.svc.cluster.local:80",
+    ...(process.env.JR2_ECHO_URL ? [new URL(process.env.JR2_ECHO_URL).host] : []),
+  ],
   harness: {
     provider: {
       id: "fake",
       api: "openai-completions",
       // Deployment-varying, so it rides env (ADR-0019): the World starts the scripted endpoint on
-      // an ephemeral port per scenario and publishes a POD-reachable address (the kind bridge
-      // gateway — localhost never works from a pod).
+      // an ephemeral port per scenario and publishes the name of the `model` Service of the
+      // scenario's namespace, whose one endpoint is this host at the scripted model's port.
       baseUrl: process.env.JR2_FAKE_PROVIDER_URL ?? "",
       // Per scenario, from env like the endpoint. In-cluster this reads undefined, which is safe:
       // the Orchestrator composes pods from what `jr2 up` resolved, never from this field.

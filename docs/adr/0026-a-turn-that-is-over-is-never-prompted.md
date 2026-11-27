@@ -1,6 +1,6 @@
 # A Turn that is over is never prompted, and only a Turn that is over answers 404
 
-The Harness reads its surface at the start of each Submission: `GET /agents/<iid>/surface`, through the pod's Custodian
+The Harness reads its surface at the start of each Submission: `GET /agents/<iid>/surface`, through the Custodian
 ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)). An iid with no registration
 answers **HTTP 404**. The Orchestrator registers the surface before every admission — the first, a reroll's, and a
 nudge's, which reuses the live one — and removes it only when the invocation ends, which sends

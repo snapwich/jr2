@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { BRANCH_NAME, cut, pathFault, type CutAnswer, type CutRequest } from "../src/cut.ts";
+import { BRANCH_NAME, cut, cutEnv, pathFault, type CutAnswer, type CutRequest } from "../src/cut.ts";
 
 const LOCK = ["flock", "-x", "0"];
 const run = (cwd: string, ...args: string[]): string =>
@@ -1391,4 +1391,24 @@ test("a cut at a Handoff refuses an Agent's own folder, a held branch, and a mal
     /a cut at a Handoff takes no `from`/,
   );
   assert.match(refusal(await w.go({ path: w.path("x"), branch: "r", handoff: head.slice(0, 12) })), /a full commit id/);
+});
+
+test("the cut's env keeps SSL_CERT_FILE beside an HTTPS JR2_CUSTODIAN_URL, so jr2-lfs and jr2-upload-pack trust the pod's CA (ADR-0084)", () => {
+  const paths = { workRoot: "/work", lock: [], gitLfs: "git-lfs", jr2Lfs: "jr2-lfs" };
+  const https = cutEnv(paths, "/h", {
+    JR2_CUSTODIAN_URL: "https://custodian.jr2.internal",
+    SSL_CERT_FILE: "/etc/jr2/ca/bundle.crt",
+    NODE_EXTRA_CA_CERTS: "/etc/jr2/ca/extra.crt",
+  });
+  assert.equal(https.JR2_CUSTODIAN_URL, "https://custodian.jr2.internal");
+  assert.equal(https.SSL_CERT_FILE, "/etc/jr2/ca/bundle.crt");
+  assert.equal(https.NODE_EXTRA_CA_CERTS, undefined, "only the trust variable that Go reads is kept");
+  const plain = cutEnv(paths, "/h", {
+    JR2_CUSTODIAN_URL: "http://custodian.jr2.internal",
+    SSL_CERT_FILE: "/etc/jr2/ca/bundle.crt",
+  });
+  assert.equal(plain.SSL_CERT_FILE, undefined, "a plain URL needs no trust");
+  const none = cutEnv(paths, "/h", { SSL_CERT_FILE: "/etc/jr2/ca/bundle.crt" });
+  assert.equal(none.JR2_CUSTODIAN_URL, undefined);
+  assert.equal(none.SSL_CERT_FILE, undefined);
 });

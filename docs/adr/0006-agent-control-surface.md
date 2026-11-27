@@ -2,12 +2,11 @@
 
 The control plane is Menu tool calls (ADR-0002), but **which** events an Agent may emit is scoped to the current Machine
 state and defined by the Machine, not an open set the Agent invents. The menu derives from the invoking state's
-transitions (ADR-0015 — the consumer authors no tool lists), is read by the Harness through the pod's Custodian
-(ADR-0013), and the Agent **chooses one** (controlled agency); the Machine owns the transition table. The Agent never
-steers the workflow — it answers within a frame the Machine set — and because its only control-plane peer is the
-Custodian (which holds a credential it cannot read), that frame is _enforced_, not advertised. Menus only change at turn
-boundaries, and the Harness re-reads the Menu per Submission (ADR-0013/0027), so no `list_changed` push channel is
-needed.
+transitions (ADR-0015 — the consumer authors no tool lists), is read by the Harness through the Custodian (ADR-0013),
+and the Agent **chooses one** (controlled agency); the Machine owns the transition table. The Agent never steers the
+workflow — it answers within a frame the Machine set — and because its only control-plane peer is the Custodian (which
+holds a credential it cannot read), that frame is _enforced_, not advertised. Menus only change at turn boundaries, and
+the Harness re-reads the Menu per Submission (ADR-0013/0027), so no `list_changed` push channel is needed.
 
 There is no jr2-blessed event vocabulary: every menu entry is a workflow-defined event (ADR-0011).
 

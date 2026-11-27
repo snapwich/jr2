@@ -3,10 +3,14 @@
 // AGENTS.md block (ADR-0072: a file in the Instance folder, not the cluster) → typecheck → the
 // Machine walk → staging the Assembly (ADR-0069) → the Kubernetes floor (ADR-0037) → ownership →
 // image resolution → Kit images (the operator, the Harness, the Orchestrator) → Sandbox Images →
-// Secret (+ preflight of referenced Secrets) → the provider preflight (ADR-0019, ADR-0059: through a
-// Custodian, in pods that read their own objects) → operator → git ssh keys → apply → rollout → the cache
-// agent (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted
-// when none does) → Instance Harness (ADR-0031: converged by convention when a carried definition
+// Secret (+ preflight of referenced Secrets) → the Custodian (ADR-0084: one pod on each Sandbox node
+// with its uplink and its resolver, on a VLAN range the Instance claims, converged when the Instance
+// has a Harness pod, and deleted when no Harness pod of the namespace is left; the range stays
+// claimed until `jr2 down`; then the probe of each Sandbox node) → the provider preflight (ADR-0019,
+// ADR-0059: one check pod on slot 1 of the Fence, which reads its own objects, through the
+// Custodian) → operator → git ssh keys → apply → rollout → the cache agent (ADR-0051: a DaemonSet
+// converged when a registered Machine composes a Sandbox, deleted when none does) → Instance
+// Harness (ADR-0031: on slot 0 of the Fence, converged by convention when a carried definition
 // declares `workspace: "none"`, deleted when none does) → Instance Effector → publishing the Assembly to the
 // running Orchestrator (ADR-0069) → a report of live workspaces still on an older image.
 //
@@ -58,7 +62,7 @@
 // labeled objects found → converge silently (it's home); nothing → confirm first-time setup
 // (`--yes` for CI); objects labeled as a DIFFERENT instance → refuse.
 
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { setTimeout as sleepMs } from "node:timers/promises";
 import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -68,15 +72,11 @@ import {
   callerTokenDigest,
   callerTokenSecret,
   storedValueSha256,
-  custodianBootstrap,
   custodianRef,
-  custodianScript,
-  CUSTODIAN_PROGRAM,
   defaultImageContext,
   heldSecretsOf,
   HELD_CA_SECRET,
   HELD_TLS_SECRET,
-  INSTANCE_CUSTODIAN_CONFIGMAP,
   INSTANCE_HARNESS_HELD_POD,
   ORCHESTRATOR_PORT,
   imageContextDigest,
@@ -91,6 +91,9 @@ import {
   LABEL_GIT_CLONE,
   gitCloneSecretsOf,
   gitPushPlansOf,
+  gitPushSecretName,
+  gitPushTokenSecretName,
+  GIT_PUSH_TOKEN_KEY,
   repoIdentity,
   type GitPushManifest,
   type SandboxEffectorPlan,
@@ -116,10 +119,37 @@ import {
   workspaceHeldPod,
   type JR2Config,
   memoryBytes,
+  egressRulesOf,
+  egressText,
+  fenceRangesOf,
+  uncarriedHosts,
+  custodianDialToken,
+  CUSTODIAN_SERVICE,
+  FENCE_CONFIGMAP,
+  CA_CONFIGMAP,
 } from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { awaitMounts, digestSecretsOf, mountedDigests, staleLine } from "../mount-wait.ts";
-import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
+import {
+  caFits,
+  CHECK_POD_SLOT,
+  custodianSlotSecret,
+  fingerprint,
+  INSTANCE_HARNESS_SLOT,
+  issueCa,
+  issueLeaf,
+  leafFits,
+  leafStem,
+  leafTargets,
+  podFenceObjects,
+  readSlotSecret,
+  sandboxStandInSecret,
+  sandboxTrustConfigMap,
+  controlToken,
+  trustBundles,
+  type FenceRanges,
+  type Pem,
+} from "@jr2/orchestrator/internal";
 import {
   assertEmulation,
   buildSandboxImage,
@@ -147,12 +177,9 @@ import {
   INSTANCE_HARNESS_PVC,
   INSTANCE_HARNESS_SERVICE,
   instanceHarnessObjects,
-  INSTANCE_HARNESS_CREDENTIALS,
-  podCredentials,
   instanceEffectorObjects,
   effectorDigest,
   storedValueDigest,
-  type ValueDigest,
   effectorGraceSeconds,
   INSTANCE_EFFECTOR,
   instanceObjects,
@@ -170,17 +197,22 @@ import {
   STATE_PVC,
   stateVolumePlan,
   trustObject,
-  holdsAny,
   LABEL_HELD_POD,
   type HeldObjects,
-  type CustodianFiles,
   type HeldPodObjects,
   checkPodObjects,
   LABEL_PROVIDER_PREFLIGHT,
   checkPodObjectNames,
   PROVIDER_PREFLIGHT,
   CHECK_CONTAINER,
+  custodianObjects,
+  fenceConfigObject,
+  custodianValueSecrets,
 } from "../deploy.ts";
+import { claimRange, ensureNamespace, makeSlotLive, type LiveKube } from "../fence.ts";
+import { checkFenceApi, FOREIGN_MULTUS_NOTE, fenceRefusal, probeFenceNodes } from "../fence-probe.ts";
+import { applyFenceGuard } from "../fence-guard.ts";
+import { describeInstall, installFence, planFenceInstall } from "../fence-install.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { planCallerTokens } from "../caller-tokens.ts";
 import { resolveRoot } from "../instance.ts";
@@ -192,6 +224,7 @@ import {
   kubectlAdmin,
   kubectlKube,
   rolloutFailure,
+  isMissingResourceType,
   KUBE_FLOOR,
   ORCHESTRATOR_SERVICE,
   type KubeAdmin,
@@ -398,11 +431,36 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
   if (volumePlan.line) activity(io, volumePlan.line);
 
-  if (!ns || !owner) {
-    const what = ns ? `adopt existing namespace "${namespace}"` : `create namespace "${namespace}"`;
-    const ok =
-      values.yes === true ||
-      (await confirmOrBail(io, `first contact: deploy instance "${name}" to context ${context} (${what})?`));
+  // --- the Fence's prerequisites (ADR-0084, ADR-0019): read now, installed after the question ----
+  // An Instance with a Harness pod (a Sandbox, or the Instance Harness) is on the Fence. Its
+  // prerequisites are jr2's two admission policies, which keep a pod of another namespace off the
+  // Instance's attachments; Multus; and the DaemonSet jr2-fence-node, which puts the CNI plugins
+  // bridge, static and tuning on each node and loads the rule table there. `jr2 up` installs each one
+  // that the cluster lacks, with kubectl, on any cluster, and uses a Multus of another owner as it
+  // is. The read refuses, before anything is applied, a Cilium that removes each other CNI
+  // configuration. The Sandbox nodes come from the same read of the nodes as the platforms below.
+  const fenced = carried.composesSandbox || carried.instanceHarness !== undefined;
+  const allNodes =
+    config.platforms === undefined || fenced ? await kube.listJson<NodeObject>({ kind: "node", ...ctx }) : [];
+  const fenceNodes = sandboxNodes(allNodes, config.sandbox).nodes;
+  const fencePlan = fenced ? await planFenceInstall(kube, { nodes: fenceNodes, ...ctx }) : undefined;
+  for (const note of fencePlan?.notes ?? []) activity(io, note);
+  // The first time a converge installs something on the cluster, it lists what, and asks in the
+  // first-contact question when there is one: one question, one `--yes`.
+  const fenceList = fencePlan !== undefined ? describeInstall(fencePlan) : undefined;
+
+  if (!ns || !owner || fenceList !== undefined) {
+    for (const line of fenceList ?? []) activity(io, line);
+    const fenceAsk = "install the Fence's prerequisites in the list above";
+    const what = [
+      ...(!ns ? [`create namespace "${namespace}"`] : !owner ? [`adopt existing namespace "${namespace}"`] : []),
+      ...(fenceList !== undefined ? [fenceAsk] : []),
+    ].join("; ");
+    const question =
+      !ns || !owner
+        ? `first contact: deploy instance "${name}" to context ${context} (${what})?`
+        : `first setup of the Fence on context ${context}: ${what}?`;
+    const ok = values.yes === true || (await confirmOrBail(io, question));
     if (!ok) {
       activity(io, "aborted — nothing was changed");
       return 1;
@@ -416,6 +474,10 @@ export async function up(args: string[], io: Io): Promise<number> {
     }),
     ...ctx,
   });
+  // The admission policies of the Fence (ADR-0084), before the first pod of the Instance and before
+  // any attachment of the Fence. Each converge applies them, so a newer Kit applies its version; one
+  // that the cluster refuses stops the converge here.
+  if (fencePlan !== undefined) await applyFenceGuard(kube, { ...ctx, log: (line) => activity(io, line) });
 
   // --- pod-level resources (ADR-0060): the whole Size is one pod-level ceiling (KEP-2837) ------
   // A server with the PodLevelResources gate off drops `spec.resources` silently, and every
@@ -450,7 +512,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // "Schedulable" is the union of where an ordinary pod lands (the Orchestrator's own placement)
   // and the Instance's Sandbox nodes (ADR-0052): a tainted pool no Sandbox reaches is not a platform
   // this instance owes an image. The same read reports the Sandbox nodes themselves below.
-  const nodes = config.platforms === undefined ? await kube.listJson<NodeObject>({ kind: "node", ...ctx }) : [];
+  const nodes = config.platforms === undefined ? allNodes : [];
   const schedulable = buildNodes(nodes, config.sandbox);
   const {
     platforms,
@@ -679,11 +741,26 @@ export async function up(args: string[], io: Io): Promise<number> {
   // The operator IMAGE is resolved whenever anything this converge deploys runs it: the operator
   // layer itself, or the data plane's cache agent, which is the same binary (`/manager repo-cache`,
   // ADR-0051) and rides the instance's namespace even when the controller loop is somebody else's.
-  const operatorImage =
-    config.operator?.manage === false && !carried.composesSandbox ? undefined : await ensureKitImage("operator");
+  // And the DaemonSet jr2-fence-node runs it (ADR-0084): an Instance with a Harness pod resolves it too.
+  const operatorImage = config.operator?.manage === false && !fenced ? undefined : await ensureKitImage("operator");
   if (operatorImage !== undefined) converged.operator = operatorImage;
   // Applied after the provider preflight (below): the operator is the cluster's, and a converge
   // whose provider check fails must not have changed it.
+
+  // --- the Fence's prerequisites (ADR-0084): installed now that the operator image is delivered --
+  // Before the Custodian, whose pods need both: the DaemonSet jr2-fence-node first (the plugins and
+  // the rule table on each node, and the checks of each node), and then Multus. The DaemonSet is in
+  // the operator's namespace, which this converge may be the first to need. A node that the
+  // DaemonSet refuses stops the converge here, after these applies: they stay (ADR-0019).
+  if (fencePlan !== undefined) {
+    await ensureNamespace(kube, OPERATOR_NAMESPACE, ctx);
+    await installFence(kube, fencePlan, {
+      image: operatorImage!,
+      nodes: fenceNodes.map((n) => n.metadata.name),
+      ...ctx,
+      log: (line) => activity(io, line),
+    });
+  }
 
   // --- the kit's own runtime images (ADR-0038) ---------------------------------------------------
   // Built here rather than lazily beside its consumers. The Harness is the injection source
@@ -926,14 +1003,148 @@ export async function up(args: string[], io: Io): Promise<number> {
     // Every bound Agent's model, and every model an Open body allows a Chart's own Agents (ADR-0070).
     models: carried.models,
     caBundle: caPem,
+    fenced,
   });
 
-  // --- provider preflight (ADR-0019, ADR-0059): through a Custodian, FROM INSIDE the cluster -----
-  // BEFORE anything the Instance or the cluster reads is written — the operator, a deploy key, the
-  // trust, the held objects, the instance List: each check pod has its own copies of what it reads,
-  // from the values on this host. So a check that fails leaves the Instance, its Assembly and the
-  // operator as they were. Only the namespace, the PriorityClasses and the delivered images come
-  // first, because the check pod needs them.
+  // --- what each Sandbox Effector's image owes its pushes (ADR-0068) ------------------------
+  // Before anything is applied, the Custodian too: an image that lacks a push form's tools, or the passwd entry ssh
+  // needs, is refused here with the fix, not at the first push in a pod.
+  await checkEffectorImages(
+    (ref, paths) => onHost(ref, () => build.imageFiles(ref, platforms, paths)),
+    config,
+    placements.sandbox,
+    converged,
+    contextDigests,
+  );
+
+  // --- the Fence's range (ADR-0084), before the check pod that is on it, and the Orchestrator ------
+  // An Instance with a Harness pod (a Sandbox, or the Instance Harness) has a Custodian; an Instance
+  // with none, such as one whose runs have no Agent, claims no VLAN range. A Custodian that a
+  // converge keeps for a Harness pod that is left keeps its range, and the Orchestrator still dials
+  // through it.
+  const custodianLeft =
+    !fenced && (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx }))
+      ? await harnessPodsLeft(kube, namespace, ctx)
+      : undefined;
+  let fenceRange: number | undefined;
+  if (fenced) {
+    // The prerequisites that `jr2 up` installed or found above, as the API shows them now: without
+    // them the Custodian's attachments cannot be applied and its pods do not start. And the guard: the
+    // server-side dry runs that jr2's admission policies must deny, before the first attachment.
+    await checkFenceApi(kube, {
+      nodes: fenceNodes.map((n) => n.metadata.name),
+      multus: fencePlan!.multus,
+      namespace,
+      ...ctx,
+    });
+  }
+  if (fenced || custodianLeft !== undefined) {
+    fenceRange = await claimRange(kube, { namespace, ...ctx, log: (line) => activity(io, line) });
+  }
+
+  // --- the Custodian (ADR-0084): its uplink and its resolver, on each Sandbox node ----------------
+  // An Instance with a Harness pod (a Sandbox, or the Instance Harness) has it; an Instance with
+  // none, such as one whose runs have no Agent, installs nothing and claims no VLAN range. Before the
+  // provider preflight (ADR-0019): the check pod is a Harness pod on the Fence, and reaches a
+  // provider only through the Custodian, as a Turn does.
+  if (fenced && fenceRange !== undefined) {
+    const range = fenceRange;
+    activity(io, `custodian: converging on each Sandbox node (VLAN range ${range})`);
+    await kube.apply({
+      manifest: custodianObjects({
+        name,
+        namespace,
+        range,
+        ranges: fenceRangesOf(config.fence),
+        orchestratorImage: refs.orchestrator,
+        envoyImage: custodianImage,
+        dialToken: custodianDialToken(Buffer.from(signingKey, "base64")),
+        valueSecrets: custodianValueSecrets(held.objects, pushTokenSecrets(config, placements.sandbox, io.env)),
+        upstreamTrust: trustBundles("", caPem).upstream,
+        ...(config.sandbox ? { placement: config.sandbox } : {}),
+        ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
+      }),
+      // Server-side: the ConfigMap carries every root certificate, past client-side apply's
+      // annotation.
+      serverSide: true,
+      warn: (line) => activity(io, line),
+      ...ctx,
+    });
+    try {
+      await awaitRollout(kube, {
+        kind: "daemonset",
+        name: CUSTODIAN_SERVICE,
+        namespace,
+        selector: `app=${CUSTODIAN_SERVICE}`,
+        ...ctx,
+      });
+    } catch (err) {
+      // With no Multus, the Custodian's pod has no uplink `net1`, and its rollout fails with no
+      // word about Multus.
+      if (fencePlan!.multus !== "foreign" || !(err instanceof Error)) throw err;
+      throw new Error(`${err.message}\n\n${FOREIGN_MULTUS_NOTE}`);
+    }
+    await verifyRunningImage(io, kube, {
+      layer: "custodian",
+      namespace,
+      selector: `app=${CUSTODIAN_SERVICE}`,
+      image: refs.orchestrator,
+      container: "control",
+      ...ctx,
+    });
+    // Then what only a pod on each node shows: the bridge and its VLANs.
+    const gaps = await probeFenceNodes(kube, {
+      name,
+      namespace,
+      range,
+      ranges: fenceRangesOf(config.fence),
+      image: refs.orchestrator,
+      ...(config.sandbox ? { placement: config.sandbox } : {}),
+      ...ctx,
+      log: (line) => activity(io, line),
+    });
+    if (gaps.length > 0) throw fenceRefusal(gaps, fencePlan!.multus);
+    activity(
+      io,
+      "fence: verified on each Sandbox node — a pod on the Fence has its slot's address, the Custodian answers its " +
+        "DNS query, and only the Custodian answers its dials to the API Service's address and to the node's kubelet port",
+    );
+  } else if (await kube.getJson({ kind: "daemonset", name: CUSTODIAN_SERVICE, namespace, ...ctx })) {
+    // A Custodian of a converge that had a Harness pod. Its range stays claimed until `jr2 down`
+    // (ADR-0084): a pod of the Instance can still be on a VLAN of it. The Custodian goes only when no
+    // Harness pod of the namespace is left: no Sandbox (a held run keeps its own, ADR-0069) and no
+    // Instance Harness pod (its layer below deletes it, and it drains). Else a later converge
+    // deletes it.
+    const left = custodianLeft;
+    if (left !== undefined) {
+      activity(io, `custodian: kept — ${left} still on the Fence; a later \`jr2 up\` deletes it`);
+    } else {
+      activity(io, "custodian: none (no Harness pod) — deleting the Custodian");
+      await kube.deleteManifest({
+        manifest: custodianObjects({
+          name,
+          namespace,
+          range: 0,
+          ranges: fenceRangesOf(config.fence),
+          orchestratorImage: refs.orchestrator,
+          envoyImage: custodianImage,
+          dialToken: "",
+          valueSecrets: [],
+          upstreamTrust: "",
+        }),
+        ...ctx,
+      });
+      await kube.deleteObject({ kind: "configmap", name: FENCE_CONFIGMAP, namespace, ...ctx });
+    }
+  }
+
+  // --- provider preflight (ADR-0019, ADR-0059): through the Custodian, FROM INSIDE the cluster ---
+  // BEFORE anything else the Instance or the cluster reads is written — the operator, a deploy key,
+  // the trust, the held objects, the instance List: the check pod has its own copies of what it
+  // reads, from the values on this host. So a check that fails leaves the Orchestrator, the
+  // Instance's pods, its Assembly and the operator as they were. The namespace, the PriorityClasses,
+  // the delivered images, the VLAN range and the Custodian come first, because the check pod needs
+  // them (ADR-0084).
   const checkPods = checkPodsOf(config, placementWalk, held.objects.pods);
   const custom = config.harness?.provider;
   if (custom && !checkPods.some((p) => p.providers.some((v) => v.id === custom.id))) {
@@ -960,12 +1171,12 @@ export async function up(args: string[], io: Io): Promise<number> {
     namespace,
     ctx,
     harnessImage: refs.harness,
-    custodianImage,
     harness: config.harness,
-    caBundle: caPem !== undefined,
+    caBundle: caPem,
     values: Object.assign({}, ...held.objects.pods.map((p) => p.values)) as Record<string, string>,
     leaves: held.objects.leaves,
-    trust: trustData(caPem, held.bundles),
+    bundles: held.bundles,
+    ranges: fenceRangesOf(config.fence),
     harnessEnvData,
     priorityClassName: priorityClassNames(config.priorityClasses).sandbox,
     signingKey: Buffer.from(signingKey, "base64"),
@@ -1030,30 +1241,37 @@ export async function up(args: string[], io: Io): Promise<number> {
   // registers it, and by then this line has scrolled away.
   const gitSsh = await ensureGitSsh(io, kube, config, carried.repos, namespace, ctx, values.yes === true);
 
-  // --- what each Sandbox Effector's image owes its pushes (ADR-0068) ------------------------
-  // Before anything is applied: an image that lacks a push form's tools, or the passwd entry ssh
-  // needs, is refused here with the fix, not at the first push in a pod.
-  await checkEffectorImages(
-    (ref, paths) => onHost(ref, () => build.imageFiles(ref, platforms, paths)),
-    config,
-    placements.sandbox,
-    converged,
-    contextDigests,
-  );
-
   // --- push credentials (ADR-0051): one Secret per git.credentials entry, never per pod ----
   // After the deploy keys exist (a generated one included), before anything else is applied: a
   // static Binding whose entry cannot push is refused here.
-  const gitPush = await resolveGitPush(io, kube, config, placements.sandbox, namespace, ctx);
+  const gitPush = await resolveGitPush(
+    io,
+    kube,
+    config,
+    placements.sandbox,
+    namespace,
+    ctx,
+    Buffer.from(signingKey, "base64"),
+  );
 
   // --- dispatch preflight (ADR-0071): each foreign target's door, from the host ------------------
   await preflightDispatch(io, carried.effects);
 
   // --- apply + rollout ---------------------------------------------------------------------------
-  // The trust bundles first, and server-side: every pod that mounts them must find them, and they
-  // carry every root certificate — past what client-side apply's annotation can hold.
-  const trust = trustObject({ name, namespace, caBundle: caPem, bundles: held.bundles });
+  // The trust ConfigMap first, and server-side: every pod that mounts it must find it. With no
+  // `caBundle` no pod mounts it, and a `jr2-ca` that an earlier converge applied goes (ADR-0020).
+  const trust = trustObject({ name, namespace, caBundle: caPem });
   if (trust) await kube.apply({ manifest: trust, serverSide: true, ...ctx });
+  else await kube.deleteObject({ kind: "configmap", name: CA_CONFIGMAP, namespace, ...ctx });
+  // What the Orchestrator reads for each Sandbox's trust files on the Fence (ADR-0020), also
+  // server-side, before the Orchestrator that mounts it.
+  if (fenceRange !== undefined) {
+    await kube.apply({
+      manifest: fenceConfigObject({ name, namespace, upstream: trustBundles("", caPem).upstream, caBundle: caPem }),
+      serverSide: true,
+      ...ctx,
+    });
+  }
   const instanceList = instanceObjects({
     name,
     namespace,
@@ -1072,9 +1290,34 @@ export async function up(args: string[], io: Io): Promise<number> {
     sandboxEffectors: placements.sandbox,
     gitPush,
     gitClone,
+    ...(fenceRange !== undefined ? { fence: { range: fenceRange, ranges: fenceRangesOf(config.fence) } } : {}),
   });
   activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
   await kube.apply({ manifest: instanceList, warn: (line) => activity(io, line), ...ctx });
+  // jr2 makes two NetworkPolicies now: the Custodian's and the Instance Effector's (ADR-0084,
+  // ADR-0068). A Harness pod is on the Fence and has no address on the cluster's network, so each
+  // other policy that jr2 made for this Instance before the Fence goes on an upgrade. A Sandbox made
+  // before the Fence (no `spec.network`) is on the cluster's network until it goes, so the two
+  // Sandbox policies stay while one exists, and a later converge deletes them.
+  const keptPolicies = new Set([CUSTODIAN_SERVICE, INSTANCE_EFFECTOR]);
+  const offFence = await sandboxesOffTheFence(kube, namespace, ctx);
+  if (offFence.length > 0) {
+    for (const policy of SANDBOX_POLICIES_BEFORE_THE_FENCE) keptPolicies.add(policy);
+    activity(
+      io,
+      `${offFence.length} Sandbox(es) made before the Fence (${offFence.join(", ")}) keep their NetworkPolicies ` +
+        "until they go; the next `jr2 up` after that deletes the policies",
+    );
+  }
+  for (const policy of await kube.listJson<KubeObject>({
+    kind: "networkpolicy",
+    selector: `${LABEL_INSTANCE}=${name},app.kubernetes.io/managed-by=jr2`,
+    namespace,
+    ...ctx,
+  })) {
+    if (keptPolicies.has(policy.metadata.name)) continue;
+    await kube.deleteObject({ kind: "networkpolicy", name: policy.metadata.name, namespace, ...ctx });
+  }
   // After the apply, so the line names a value that exists. It works only when the Orchestrator has
   // loaded its digest, which the publish below waits for (ADR-0078); `converged` says so.
   for (const n of callerTokens.made) {
@@ -1134,7 +1377,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     if (literalPods.has(secret.metadata.labels?.[LABEL_HELD_POD] ?? "")) continue;
     await kube.deleteObject({ kind: "secret", name: secret.metadata.name, namespace, ...ctx });
   }
-  if (!holdsAny(held.objects)) {
+  if (!held.objects.ca) {
     await kube.deleteObject({ kind: "secret", name: HELD_TLS_SECRET, namespace, ...ctx });
   }
 
@@ -1218,32 +1461,95 @@ export async function up(args: string[], io: Io): Promise<number> {
     activity(io, `instance harness: converging (${why.join("; ")})`);
     const harnessImage = refs.harness;
     const instance = instanceHeld(held.objects);
+    const signing = Buffer.from(signingKey, "base64");
+    if (fenceRange === undefined || held.objects.ca === undefined || held.bundles === undefined) {
+      throw new Error("jr2 up converges the Instance Harness with no Fence range or CA — a jr2 defect");
+    }
+    const ranges = fenceRangesOf(config.fence);
+    // Slot 0's objects (ADR-0084): its rules, with its control token signed for the placement's
+    // name, so it speaks only for the Turns hosted there (ADR-0076), its secret Stand-ins, minted
+    // here as the pod's maker, and the leaves of the Instance's CA; its trust files; its Stand-ins.
+    // The placeholder table of the slot Secret before stays, append-only: the running pod has
+    // looked up names with it.
+    const before = await kube.getJson<KubeObject & { data?: Record<string, string> }>({
+      kind: "secret",
+      name: custodianSlotSecret(INSTANCE_HARNESS_SLOT),
+      namespace,
+      ...ctx,
+    });
+    let placeholders;
+    try {
+      placeholders = before?.data ? readSlotSecret(before.data).spec.placeholders : undefined;
+    } catch {
+      placeholders = undefined;
+    }
+    const trust = {
+      extra: held.bundles.extra,
+      bundle: held.bundles.bundle,
+      ...(caPem !== undefined ? { ca: caPem } : {}),
+    };
+    const fence = podFenceObjects({
+      namespace,
+      pod: INSTANCE_HARNESS_SERVICE,
+      slot: INSTANCE_HARNESS_SLOT,
+      manifest: instance.manifest,
+      heldPod: INSTANCE_HARNESS_HELD_POD,
+      controlToken: controlToken(signing, INSTANCE_HARNESS_SERVICE),
+      placement: INSTANCE_HARNESS_SERVICE,
+      leaves: held.objects.leaves,
+      trust,
+      ...(placeholders ? { placeholders } : {}),
+      ranges,
+      signingKey: signing,
+      labels: { [LABEL_INSTANCE]: name, "app.kubernetes.io/managed-by": "jr2" },
+    });
+    // Server-side: the trust files carry every root, past client-side apply's annotation.
+    await kube.apply({
+      manifest: JSON.stringify({
+        apiVersion: "v1",
+        kind: "List",
+        items: [fence.slotSecret, fence.trust, fence.standIns],
+      }),
+      serverSide: true,
+      warn: (line) => activity(io, line),
+      ...ctx,
+    });
+    // The rules are live on each Custodian pod before the pod starts, and before a new version of
+    // them is relied on by a pod that runs (ADR-0084).
+    const version = await makeSlotLive(liveKube(io, kube), {
+      namespace,
+      slot: INSTANCE_HARNESS_SLOT,
+      dialToken: custodianDialToken(signing),
+      ...ctx,
+    });
+    activity(
+      io,
+      `instance harness: Fence slot ${INSTANCE_HARNESS_SLOT} ` +
+        (version !== undefined ? `live at version ${version}` : "written (no Custodian pod runs to ask)"),
+    );
     await kube.apply({
       manifest: instanceHarnessObjects({
         name,
         namespace,
         harnessImage,
-        custodianImage,
         held: instance.manifest,
-        custodian: instance.custodian,
-        heldDigest: heldDigest(Buffer.from(signingKey, "base64"), held.objects, instance, valueDigest),
-        // Its control token and secret Stand-ins (ADR-0076, ADR-0059): minted here, as the pod's
-        // maker, from the kept key — so a re-run converges to the same values.
-        credentials: podCredentials(Buffer.from(signingKey, "base64"), {
-          placement: INSTANCE_HARNESS_SERVICE,
-          heldPod: INSTANCE_HARNESS_HELD_POD,
-          manifest: instance.manifest,
-        }),
+        ranges,
+        trustDigest: trustDigest(trust),
         harness: config.harness,
         ...(config.mcp ? { mcp: config.mcp } : {}),
         caBundle: caPem !== undefined,
         // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
         // placement from the kept key — the same shape it stamps onto every Sandbox at provision.
-        bearerSha256: harnessTokenDigest(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
+        bearerSha256: harnessTokenDigest(signing, INSTANCE_HARNESS_SERVICE),
+        ...(config.sandbox ? { placement: config.sandbox } : {}),
         ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
       }),
       ...ctx,
     });
+    // What the pod had before the Fence (ADR-0084): the ClusterIP Service that the Orchestrator
+    // dialed, and the objects of a Custodian in the pod. No Service routes to it now.
+    await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
+    for (const old of BEFORE_THE_FENCE) await kube.deleteObject({ ...old, namespace, ...ctx });
     await awaitRollout(kube, {
       kind: "statefulset",
       name: INSTANCE_HARNESS_SERVICE,
@@ -1269,10 +1575,35 @@ export async function up(args: string[], io: Io): Promise<number> {
     await kube.deleteObject({ kind: "persistentvolumeclaim", name: INSTANCE_HARNESS_PVC, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_PODS_SERVICE, namespace, ...ctx });
-    // Its Custodian's files and its credentials go with the pod they were made for (ADR-0059,
-    // ADR-0076).
-    await kube.deleteObject({ kind: "configmap", name: INSTANCE_CUSTODIAN_CONFIGMAP, namespace, ...ctx });
-    await kube.deleteObject({ kind: "secret", name: INSTANCE_HARNESS_CREDENTIALS, namespace, ...ctx });
+    for (const old of BEFORE_THE_FENCE) await kube.deleteObject({ ...old, namespace, ...ctx });
+    // Slot 0's objects go when no pod of it is left: a pod that drains keeps its Menu and its model
+    // through the Custodian to the end (ADR-0031), and a later converge deletes them.
+    const draining = await kube.listJson({
+      kind: "pod",
+      selector: `app=${INSTANCE_HARNESS_SERVICE}`,
+      namespace,
+      ...ctx,
+    });
+    if (draining.length > 0) {
+      activity(
+        io,
+        `instance harness: Fence slot ${INSTANCE_HARNESS_SLOT} kept while its pod drains; a later \`jr2 up\` deletes it`,
+      );
+    } else {
+      await kube.deleteObject({ kind: "secret", name: custodianSlotSecret(INSTANCE_HARNESS_SLOT), namespace, ...ctx });
+      await kube.deleteObject({
+        kind: "configmap",
+        name: sandboxTrustConfigMap(INSTANCE_HARNESS_SERVICE),
+        namespace,
+        ...ctx,
+      });
+      await kube.deleteObject({
+        kind: "secret",
+        name: sandboxStandInSecret(INSTANCE_HARNESS_SERVICE),
+        namespace,
+        ...ctx,
+      });
+    }
   }
 
   // --- Instance Effector (ADR-0068): converged when an Effect is placed there or a Hook needs it,
@@ -1352,6 +1683,14 @@ export async function up(args: string[], io: Io): Promise<number> {
   for (const notice of gitSsh) reportGeneratedKey(io, notice);
   return 0;
 }
+
+/** The Instance Harness's objects of the time before the Fence (ADR-0084): its Custodian's rendered
+ * files, and its credentials Secret, which held its control token. `jr2 up` deletes them on an
+ * upgraded Instance. */
+const BEFORE_THE_FENCE = [
+  { kind: "configmap", name: "jr2-held-custodian" },
+  { kind: "secret", name: `${INSTANCE_HARNESS_SERVICE}-token` },
+] as const;
 
 /**
  * Every image ref one converge resolved. The Orchestrator reads `harness`/`custodian`/`sandbox` from
@@ -1623,6 +1962,10 @@ async function resolveHeld(
     models: string[];
     /** The user's `caBundle` (ADR-0020): trusted upstream, and by the Harness beside the jr2 CA. */
     caBundle?: string;
+    /** The Instance has a Harness pod that `jr2 up` makes on the Fence (the Instance Harness, a check
+     * pod): its Custodian ends TLS at jr2's own name with a leaf of the Instance's CA, so the CA
+     * exists whether or not a secret is held (ADR-0084). */
+    fenced?: boolean;
   },
 ): Promise<{ objects: HeldObjects; bundles?: { extra: string; bundle: string; upstream: string } }> {
   const { config, namespace, ctx } = opts;
@@ -1641,22 +1984,26 @@ async function resolveHeld(
   // Each pod's own: the bindings of the names it holds and their literal values. Its Custodian's
   // files are rendered by whoever makes the pod — here for the Instance Harness alone; the
   // Orchestrator at provision for a Sandbox, from the same manifest (ADR-0059).
+  // Its Egress list (ADR-0084) joins what the placement read with the hosts its Held secrets are
+  // bound to: each is an Intercepted host, which needs no entry. A bound or SSH Repo host that the
+  // Fence cannot carry gets no rule, and a warning.
+  const ranges = fenceRangesOf(config.fence);
+  // The secrets the Custodian holds for the pod's Sandbox Effector (ADR-0068) are bindings of the same
+  // manifest, after the Harness's own; their hosts are in the Egress parts already (`effector`).
   const pods: HeldPodObjects[] = opts.pods.map((plan) => {
-    const own: HeldManifest = { version: 1, secrets: manifest.secrets.filter((b) => plan.names.includes(b.name)) };
-    const literals = Object.fromEntries(
-      own.secrets.filter((b) => b.source.kind === "literal").map((b) => [b.name, values[b.name] as string]),
-    );
+    const secrets = manifest.secrets.filter((b) => plan.names.includes(b.name));
+    const parts = { ...plan.egress, held: secrets.flatMap((b) => b.hosts) };
+    for (const warning of uncarriedHosts(plan.label, parts, ranges)) activity(io, `warning: ${warning}`);
+    const egress = egressRulesOf(parts, ranges);
+    activity(io, `${plan.label}: Egress list ${egressText(egress)}`);
+    const own: HeldManifest = { version: 1, secrets: [...secrets, ...(plan.effector?.bindings ?? [])], egress };
+    const literals = Object.fromEntries([
+      ...secrets.filter((b) => b.source.kind === "literal").map((b) => [b.name, values[b.name] as string]),
+      ...Object.entries(plan.effector?.values ?? {}),
+    ]);
     return { pod: plan.pod, manifest: own, values: literals };
   });
-  // The Instance Harness, when the walk placed one: the one pod `jr2 up` makes, so the one whose
-  // Custodian files it renders.
-  const instancePod = pods.find((p) => p.pod === INSTANCE_HARNESS_HELD_POD);
-  const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
-  const instance: CustodianFiles | undefined = instancePod && {
-    bootstrap: JSON.stringify(custodianBootstrap(instancePod.manifest, orchestrator)),
-    script: custodianScript(instancePod.manifest, { fetch: false }),
-  };
-  if (manifest.secrets.length === 0) return { objects: { pods, ...(instance && { instance }), leaves: {} } };
+  if (manifest.secrets.length === 0 && opts.fenced !== true) return { objects: { pods, leaves: {} } };
   for (const s of manifest.secrets) {
     const where = s.hosts.map((h) => (h.port === 443 ? h.host : `${h.host}:${h.port}`)).join(", ");
     const source = s.source.kind === "literal" ? "literal" : `secret ${s.source.secret}/${s.source.key}`;
@@ -1673,20 +2020,37 @@ async function resolveHeld(
 
   const tls = await kube.getJson<Data>({ kind: "secret", name: HELD_TLS_SECRET, namespace, ...ctx });
   const leaves: Record<string, Pem> = {};
-  for (const s of manifest.secrets) {
-    for (const h of s.hosts) {
-      if (leaves[h.leaf]) continue;
-      const existing = {
-        cert: decode(tls?.data, `${h.leaf}.crt`) ?? "",
-        key: decode(tls?.data, `${h.leaf}.key`) ?? "",
-      };
-      leaves[h.leaf] = leafFits(existing, ca, h.host) ? existing : issueLeaf(ca, h.host);
-    }
-  }
-  return {
-    objects: { pods, ...(instance && { instance }), ca, leaves },
-    bundles: trustBundles(ca.cert, opts.caBundle),
+  const leafOf = (host: string, stem: string): void => {
+    if (leaves[stem]) return;
+    const existing = { cert: decode(tls?.data, `${stem}.crt`) ?? "", key: decode(tls?.data, `${stem}.key`) ?? "" };
+    leaves[stem] = leafFits(existing, ca, host) ? existing : issueLeaf(ca, host);
   };
+  for (const s of manifest.secrets) for (const h of s.hosts) leafOf(h.host, h.leaf);
+  // On the Fence, each TLS target of a pod: jr2's own name and each Intercepted rule, so that the
+  // Instance Harness and the check pod, whose Custodian slots `jr2 up` writes, have a leaf of each
+  // (ADR-0084). A Sandbox gets leaves of its own CA at provision.
+  if (opts.fenced === true) {
+    for (const p of pods) for (const t of leafTargets(p.manifest)) leafOf(t.host, leafStem(t.host, t.port));
+  }
+  return { objects: { pods, ca, leaves }, bundles: trustBundles(ca.cert, opts.caBundle) };
+}
+
+/**
+ * The token Secrets that the Custodian may read (ADR-0068): the one of each `git.credentials` entry
+ * whose token is set, when a Workspace pushes. Any of them can be the entry that a slot's url
+ * matches at provision, a per-run url included, so the Role names each one. Never a push Secret:
+ * it holds the ssh push key and the signing key.
+ */
+function pushTokenSecrets(
+  config: JR2Config,
+  sandbox: readonly SandboxEffectorPlan[],
+  env: Record<string, string | undefined>,
+): string[] {
+  if (!sandbox.some((p) => p.pushes.length > 0)) return [];
+  return (config.git?.credentials ?? []).flatMap((entry) => {
+    const token = entry.push ? ("token" in entry.push ? entry.push.token : undefined) : entry.token;
+    return token !== undefined && env[token] ? [gitPushTokenSecretName(gitPushSecretName(entry.match))] : [];
+  });
 }
 
 /**
@@ -1719,41 +2083,22 @@ export function envFromHeldRefusal(
   return undefined;
 }
 
-/** The Instance Harness's held objects and its Custodian's files — the walk always places it when
- * it converges. */
-function instanceHeld(held: HeldObjects): HeldPodObjects & { custodian: CustodianFiles } {
+/** The Instance Harness's held objects — the walk always places it when it converges. */
+function instanceHeld(held: HeldObjects): HeldPodObjects {
   const pod = held.pods.find((p) => p.pod === INSTANCE_HARNESS_HELD_POD);
-  if (!pod || !held.instance)
-    throw new Error("jr2 up placed no held secrets for the Instance Harness it converges — a jr2 defect");
-  return { ...pod, custodian: held.instance };
+  if (!pod) throw new Error("jr2 up placed no held secrets for the Instance Harness it converges — a jr2 defect");
+  return pod;
 }
 
-/** The Instance Harness's `jr2.dev/held-digest` (ADR-0059): an HMAC over its pod's held-secret
- * inputs — a literal's value, a `valueFrom`'s reference and the digest of its value — keyed with
- * the signing key so the annotation reveals nothing about a value. Its Custodian reads each value
- * once at start, so a value edited in the user's Secret must roll it — and so must an edit to its
- * two rendered files or the program they load. `program` is the kit's program; it is an input
- * only so that its test can change it. Exported for its test alone. */
-export function heldDigest(
-  key: Buffer,
-  all: HeldObjects,
-  held: HeldPodObjects & { custodian: CustodianFiles },
-  valueDigest: ValueDigest,
-  program: string = CUSTODIAN_PROGRAM,
-): string {
-  const mac = createHmac("sha256", key);
-  mac.update(JSON.stringify(held.manifest));
-  const stems = new Set(held.manifest.secrets.flatMap((s) => s.hosts.map((h) => h.leaf)));
-  for (const stem of [...stems].sort()) mac.update(`${stem}:${fingerprint(all.leaves[stem]!.cert)}`);
-  for (const name of Object.keys(held.values).sort()) mac.update(`${name}=${held.values[name]}`);
-  for (const s of held.manifest.secrets) {
-    if (s.source.kind === "secret") mac.update(`${s.name}<-${valueDigest(s.source.secret, s.source.key) ?? ""}`);
-  }
-  // Its Custodian's files, and the program they load: Envoy reads all three once at start.
-  mac.update(held.custodian.bootstrap);
-  mac.update(held.custodian.script);
-  mac.update(program);
-  return mac.digest("base64url").slice(0, 32);
+/** The Instance Harness's `jr2.dev/held-digest` (ADR-0020, ADR-0084): a digest of its trust files,
+ * which the Harness reads once, at start, so a new CA or a new `caBundle` rolls the pod. Nothing else
+ * of what the Custodian holds for it is an input: the Custodian takes a changed held value, leaf or
+ * Egress list live, through slot 0's Secret, with no roll (ADR-0059). Exported for its test. */
+export function trustDigest(trust: { extra: string; bundle: string; ca?: string }): string {
+  return createHash("sha256")
+    .update(JSON.stringify([trust.extra, trust.bundle, trust.ca ?? null]))
+    .digest("base64url")
+    .slice(0, 32);
 }
 
 /** The one delivery failure that is a configuration error rather than a docker one (ADR-0019). */
@@ -1762,6 +2107,52 @@ function undeliverable(context: string): Error {
     `context ${context} is not a kind cluster and no \`registry\` is configured — ` +
       `set \`registry\` in jr2.config.ts (from env) so the image can be pushed (ADR-0019)`,
   );
+}
+
+/**
+ * What still runs on the Fence in `namespace` with no Harness pod in the walk (ADR-0084): the count
+ * of its Sandboxes and whether its Instance Harness pod is there, as words, or `undefined` when
+ * neither is. A Sandbox kind that the cluster does not know counts as no Sandbox.
+ */
+async function harnessPodsLeft(
+  kube: KubeAdmin,
+  namespace: string,
+  ctx: { context?: string },
+): Promise<string | undefined> {
+  let sandboxes = 0;
+  try {
+    sandboxes = (await kube.listJson({ kind: "sandboxes.core.jr2.dev", namespace, ...ctx })).length;
+  } catch (err) {
+    if (!/doesn't have a resource type/.test((err as Error).message)) throw err;
+  }
+  const harness = await kube.listJson({ kind: "pod", selector: `app=${INSTANCE_HARNESS_SERVICE}`, namespace, ...ctx });
+  const parts = [
+    ...(sandboxes > 0 ? [`${sandboxes} Sandbox${sandboxes === 1 ? "" : "es"}`] : []),
+    ...(harness.length > 0 ? ["the Instance Harness pod"] : []),
+  ];
+  return parts.length > 0 ? parts.join(" and ") : undefined;
+}
+
+/** The NetworkPolicies that selected each Sandbox pod before the Fence (ADR-0084). */
+const SANDBOX_POLICIES_BEFORE_THE_FENCE = ["jr2-sandbox-ingress", "jr2-sandbox-egress"];
+
+/**
+ * The names of the namespace's Sandboxes that are not on the Fence: a CR with no `spec.network`,
+ * which only an Orchestrator of before the Fence made (ADR-0084). A Sandbox kind that the cluster
+ * does not know counts as no Sandbox.
+ */
+async function sandboxesOffTheFence(kube: KubeAdmin, namespace: string, ctx: { context?: string }): Promise<string[]> {
+  try {
+    const sandboxes = await kube.listJson<{ metadata: { name: string }; spec?: { network?: unknown } }>({
+      kind: "sandboxes.core.jr2.dev",
+      namespace,
+      ...ctx,
+    });
+    return sandboxes.filter((s) => s.spec?.network === undefined).map((s) => s.metadata.name);
+  } catch (err) {
+    if (isMissingResourceType(err)) return [];
+    throw err;
+  }
 }
 
 /**
@@ -1900,10 +2291,11 @@ async function resolveGitPush(
   sandbox: readonly SandboxEffectorPlan[],
   namespace: string,
   ctx: { context?: string },
+  signingKey: Buffer,
 ): Promise<GitPushObjects> {
   const none: GitPushObjects = { secrets: [], manifest: { version: 1, entries: [] } };
   if (!sandbox.some((p) => p.pushes.length > 0)) return none;
-  const { plans, skipped } = gitPushPlansOf(config.git?.credentials ?? [], (n) => io.env[n]);
+  const { plans, skipped } = gitPushPlansOf(config.git?.credentials ?? [], (n) => io.env[n], signingKey);
   const read = new Map<string, Record<string, string> | undefined>();
   const dataOf = async (secret: string) => {
     if (!read.has(secret)) {
@@ -1969,6 +2361,14 @@ async function resolveGitPush(
     }
     if (entry.push.length === 0) continue;
     out.secrets.push({ name: entry.secret, data });
+    // The token alone, in a Secret of its own: the Custodian's Role names it, and never the push
+    // Secret, which holds the ssh push key and the signing key (ADR-0068).
+    if (plan.token !== undefined) {
+      out.secrets.push({
+        name: gitPushTokenSecretName(entry.secret),
+        data: { [GIT_PUSH_TOKEN_KEY]: Buffer.from(plan.token).toString("base64") },
+      });
+    }
     out.manifest.entries.push(entry);
     activity(
       io,
@@ -2476,11 +2876,11 @@ export type CheckedProvider = {
   custom?: true;
 };
 
-/** One check pod: the providers that the Harness pods of one placement call. */
+/** The check pod: the providers that the Harness pods call (ADR-0019, ADR-0084). */
 export type CheckPod = {
   /** For a human: `the Sandbox nodes`, `the Instance Harness`, or both. */
   where: string;
-  /** The node predicate of those pods (ADR-0052); none for the Instance Harness. */
+  /** The node predicate of those pods: the Sandbox placement (ADR-0052, ADR-0084). */
   placement?: SandboxPlacement;
   /** The bindings of the checked keys: each a part of a held pod's manifest. */
   manifest: HeldManifest;
@@ -2507,30 +2907,50 @@ type Seat = {
   models: readonly string[];
   servers: readonly string[];
   held: HeldManifest["secrets"];
+  egress: HeldManifest["egress"];
 };
 
+/** Each rule of the pods of one class, once, in the order of the pods (ADR-0084). A rule two pods
+ * share with two marks is Intercepted when either intercepts it. */
+function egressOfClass(seats: readonly Seat[]): HeldManifest["egress"] {
+  const out: HeldManifest["egress"] = [];
+  for (const rule of seats.flatMap((s) => s.egress)) {
+    const known = out.find((r) => r.host === rule.host && r.port === rule.port && r.match === rule.match);
+    if (!known) {
+      out.push({ ...rule, from: [...rule.from] });
+      continue;
+    }
+    known.intercept ||= rule.intercept;
+    for (const f of rule.from) if (!known.from.includes(f)) known.from.push(f);
+  }
+  return out;
+}
+
 /**
- * Which providers the preflight checks, and in which pod (ADR-0019, ADR-0059). Every carried model
- * that a Harness pod runs is checked, in a pod with that pod's placement: a Workspace's model on the
- * Sandbox nodes, a `"none"` Agent's where the Instance Harness runs, so a node class whose egress is
- * closed fails here. The two are one check pod when their placements are the same. The custom provider
- * (`harness.provider`) goes the same way: its key is a held secret too (`JR2_PROVIDER_API_KEY`), so
- * the key never enters a pod spec, an argv or a script.
+ * Which providers the preflight checks, and in which pod (ADR-0019, ADR-0059, ADR-0084). Every
+ * carried model that a Harness pod runs is checked, in one check pod: every Harness pod, a Sandbox or
+ * the Instance Harness, is on the Fence on a Sandbox node and reaches a provider through the
+ * Instance's Custodian, so one pod with the Sandbox placement stands for all of them, and a node class
+ * whose egress is closed fails here. The custom provider (`harness.provider`) goes the same way: its
+ * key is a held secret too (`JR2_PROVIDER_API_KEY`), so the key never enters a pod spec, an argv or a
+ * script.
  *
- * In one placement, a provider's keys are the ones the first pod there that runs one of its models
- * holds (`MODEL_KEYS`, claimed by the provider). The check pod holds that pod's bindings of them and
- * reads their values where that pod reads them. A provider no pod there holds a key for is checked
- * all the same, with no key: a Turn there meets the same, and pi says so (`not configured`); a
- * signing credential in `harness.env` reaches the check as it reaches a Turn. Pure, for its test.
+ * A provider's keys are the ones the first pod that runs one of its models holds (`MODEL_KEYS`,
+ * claimed by the provider). The check pod holds that pod's bindings of them, and the Custodian reads
+ * their values where that pod's do. A provider no pod holds a key for is checked all the same, with
+ * no key: a Turn meets the same, and pi says so (`not configured`); a signing credential in
+ * `harness.env` reaches the check as it reaches a Turn. Its Egress list is each rule of each Harness
+ * pod. Pure, for its test.
  */
 export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readonly HeldPodObjects[]): CheckPod[] {
   const custom = config.harness?.provider;
   const heldOf = (pod: string) => pods.find((p) => p.pod === pod)?.manifest.secrets ?? [];
+  const egressOf = (pod: string) => pods.find((p) => p.pod === pod)?.manifest.egress ?? [];
   const seats: Seat[] = [
     ...walk.workspaces.map((ws) => {
       const pod = workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route });
       const servers = (ws.pod.mcp ?? []).map((m) => m.entry.server);
-      return { pod, sandbox: true, models: ws.pod.models, servers, held: heldOf(pod) };
+      return { pod, sandbox: true, models: ws.pod.models, servers, held: heldOf(pod), egress: egressOf(pod) };
     }),
     ...(walk.instanceHarness
       ? [
@@ -2540,32 +2960,17 @@ export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readon
             models: walk.instanceHarness.models,
             servers: walk.instanceHarness.servers ?? [],
             held: heldOf(INSTANCE_HARNESS_HELD_POD),
+            egress: egressOf(INSTANCE_HARNESS_HELD_POD),
           },
         ]
       : []),
   ];
+  // Every Harness pod is on the Fence, on a Sandbox node (ADR-0084, ADR-0031): one class, so one
+  // check pod, on slot 1, with the Sandbox placement.
   const sandbox = config.sandbox?.nodeSelector || config.sandbox?.tolerations?.length ? config.sandbox : undefined;
-  const placementOf = (seat: Seat) => (seat.sandbox ? sandbox : undefined);
-  // A check pod stands for one class of Harness pod: its nodes, and whether it holds a secret. A pod
-  // that holds one sends its HTTPS through its Custodian (a tunnel for an unbound host); a pod that
-  // holds none sends it direct. So the two are two check pods, even on the same nodes.
-  const keyOf = (seat: Seat) => {
-    const placement = placementOf(seat);
-    return JSON.stringify({
-      nodeSelector: placement?.nodeSelector ?? {},
-      tolerations: placement?.tolerations ?? [],
-      holds: seat.held.length > 0,
-    });
-  };
-  const groups = new Map<string, { seats: Seat[]; placement?: SandboxPlacement }>();
-  for (const seat of seats) {
-    const key = keyOf(seat);
-    const group = groups.get(key) ?? { seats: [], ...(placementOf(seat) ? { placement: placementOf(seat) } : {}) };
-    group.seats.push(seat);
-    groups.set(key, group);
-  }
+  const groups = seats.length > 0 ? [{ seats, ...(sandbox ? { placement: sandbox } : {}) }] : [];
   const checkPods: CheckPod[] = [];
-  for (const group of groups.values()) {
+  for (const group of groups) {
     const models: string[] = [];
     for (const seat of group.seats) for (const m of seat.models) if (!models.includes(m)) models.push(m);
     const checkPod: CheckPod = {
@@ -2574,9 +2979,10 @@ export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readon
         ...(group.seats.some((s) => !s.sandbox) ? ["the Instance Harness"] : []),
       ].join(" and "),
       ...(group.placement ? { placement: group.placement } : {}),
-      // A class that holds a secret: the first pod's own held set, so the check pod's env (the proxy, the
-      // Stand-ins) is that of a pod of the class; the keys the class's other pods hold join it below.
-      manifest: { version: 1, secrets: [...group.seats[0]!.held] },
+      // The keys and the MCP secrets that the check uses join it below, each with a pod's binding.
+      // The Egress list: each rule of a Harness pod, so the check reaches what a Turn reaches
+      // (ADR-0084).
+      manifest: { version: 1, secrets: [], egress: egressOfClass(group.seats) },
       providers: [],
       mcp: [],
     };
@@ -2680,15 +3086,19 @@ async function preflightProviders(
     namespace: string;
     ctx: { context?: string };
     harnessImage: string;
-    custodianImage: string;
     harness?: JR2Config["harness"];
-    caBundle: boolean;
+    /** The user's `caBundle` (ADR-0020). */
+    caBundle?: string;
     values: Record<string, string>;
+    /** The leaves of the Instance's CA, by file stem: one for each TLS target of the check pod. */
     leaves: Record<string, Pem>;
-    trust: Record<string, string>;
+    /** The trust files of a Harness pod under the Instance's CA (`trustBundles`). */
+    bundles?: { extra: string; bundle: string };
+    /** The Instance's two Fence ranges: the check pod is on slot 1 (ADR-0084). */
+    ranges: FenceRanges;
     harnessEnvData: Record<string, string>;
     priorityClassName: string;
-    /** The signing key, for each check pod's own Stand-ins (ADR-0019, ADR-0059). */
+    /** The signing key, for the check pod's own Stand-ins (ADR-0019, ADR-0059) and the dial token. */
     signingKey: Buffer;
     /** The config's `mcp` block, for the check pod's harness config (ADR-0079). */
     mcp?: JR2Config["mcp"];
@@ -2713,8 +3123,11 @@ async function preflightProviders(
     return;
   }
   if (!opts.checkPods.length) return;
+  if (opts.bundles === undefined)
+    throw new Error("the provider preflight has no trust files of the Instance's CA — a jr2 defect");
+  const bundles = opts.bundles;
   const run = randomBytes(4).toString("hex");
-  const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
+  const custodians = liveKube(io, kube);
   const faults: string[] = [];
   /** An MCP result already said: two check pods can list one server, and say it once. */
   const saidMcp = new Set<string>();
@@ -2734,18 +3147,14 @@ async function preflightProviders(
         ? "harness.provider has no apiKey"
         : `no Harness pod there holds a key of "${p.id}"; a credential in harness.env still reaches it`;
       const holds = p.keys.length
-        ? `through a Custodian that holds ${p.keys.join(", ")} for ${p.hosts.join(", ")}`
-        : checkPod.manifest.secrets.length
-          ? `with no held key (${why}), through the Custodian's tunnel, as those pods call it`
-          : `with no held key (${why}), direct, as a pod that holds no secret calls it`;
+        ? `through the Custodian, which holds ${p.keys.join(", ")} for ${p.hosts.join(", ")}`
+        : `with no held key (${why}), through the Custodian, as a Turn calls it`;
       activity(io, `provider: checking ${p.models.join(", ")} on ${checkPod.where}, ${holds}`);
     }
     for (const m of checkPod.mcp) {
       const holds = m.secret
-        ? `through a Custodian that holds ${m.secret}, with its Stand-in`
-        : checkPod.manifest.secrets.length && m.url.startsWith("https:")
-          ? "with no credential, through the Custodian's tunnel"
-          : "with no credential, direct";
+        ? `through the Custodian, which holds ${m.secret}, with its Stand-in`
+        : "with no credential, through the Custodian";
       activity(io, `mcp: listing the tools of "${m.server}" at ${m.url} on ${checkPod.where}, ${holds}`);
     }
     activity(
@@ -2762,29 +3171,36 @@ async function preflightProviders(
     const runSeconds =
       CHECK_MODEL_SECONDS * models.length + CHECK_MCP_SECONDS * servers.length + CHECK_RUN_MARGIN_SECONDS;
     // Built before the apply: a fault in jr2 here is jr2's, never the cluster's refusal.
+    // Slot 1's objects (ADR-0084): its rules, with the copy of the literal values of the keys it
+    // holds, a control token the Orchestrator never signed (the check reads no Menu) and secret
+    // Stand-ins minted for this pod alone (ADR-0019, ADR-0076); its trust files; its Stand-ins.
+    const fence = podFenceObjects({
+      namespace,
+      pod: object,
+      slot: CHECK_POD_SLOT,
+      manifest: checkPod.manifest,
+      heldPod: object,
+      values: opts.values,
+      controlToken: randomBytes(24).toString("hex"),
+      placement: object,
+      leaves: opts.leaves,
+      trust: { ...bundles, ...(opts.caBundle !== undefined ? { ca: opts.caBundle } : {}) },
+      ranges: opts.ranges,
+      signingKey: opts.signingKey,
+      labels: {
+        [LABEL_INSTANCE]: opts.name,
+        "app.kubernetes.io/managed-by": "jr2",
+        [LABEL_PROVIDER_PREFLIGHT]: run,
+      },
+    });
     const manifest = checkPodObjects({
       name: opts.name,
       namespace,
       object,
       run,
       harnessImage: opts.harnessImage,
-      custodianImage: opts.custodianImage,
       held: checkPod.manifest,
-      values: opts.values,
-      leaves: opts.leaves,
-      trust: opts.trust,
-      custodian: {
-        bootstrap: JSON.stringify(custodianBootstrap(checkPod.manifest, orchestrator)),
-        script: custodianScript(checkPod.manifest, { fetch: false }),
-      },
-      // Its own credentials (ADR-0019, ADR-0076): a control token the Orchestrator never signed,
-      // and secret Stand-ins minted for this pod alone.
-      credentials: podCredentials(opts.signingKey, {
-        placement: object,
-        heldPod: object,
-        manifest: checkPod.manifest,
-        controlToken: "unsigned",
-      }),
+      ranges: opts.ranges,
       harnessEnvData: opts.harnessEnvData,
       models,
       servers,
@@ -2792,14 +3208,43 @@ async function preflightProviders(
       ...(checkPod.placement ? { placement: checkPod.placement } : {}),
       priorityClassName: opts.priorityClassName,
       ...(opts.harness ? { harness: opts.harness } : {}),
-      caBundle: opts.caBundle,
+      caBundle: opts.caBundle !== undefined,
       deadlineSeconds: CHECK_START_SECONDS + runSeconds + 60,
     });
     let end: PodEnd | undefined;
     let refused: string | undefined;
     try {
-      // Server-side: the trust bundles carry every root, past client-side apply's annotation.
-      await applyFirstContact(kube, { manifest, serverSide: true, warn: (line) => activity(io, line), ...ctx });
+      // Server-side: the trust files carry every root, past client-side apply's annotation. The
+      // slot's rules first, and live on each Custodian pod, before the pod that they are for.
+      await applyFirstContact(kube, {
+        manifest: JSON.stringify({
+          apiVersion: "v1",
+          kind: "List",
+          items: [fence.slotSecret, fence.trust, fence.standIns],
+        }),
+        serverSide: true,
+        warn: (line) => activity(io, line),
+        ...ctx,
+      });
+    } catch (err) {
+      refused = `the cluster refused the check pod's objects: ${errText(err)}`;
+    }
+    if (refused === undefined) {
+      try {
+        await makeSlotLive(custodians, {
+          namespace,
+          slot: CHECK_POD_SLOT,
+          dialToken: custodianDialToken(opts.signingKey),
+          ...ctx,
+        });
+      } catch (err) {
+        refused = `the check pod's rules are not live: ${errText(err)}`;
+      }
+    }
+    try {
+      if (refused === undefined) {
+        await applyFirstContact(kube, { manifest, serverSide: true, warn: (line) => activity(io, line), ...ctx });
+      }
     } catch (err) {
       // A quota, a Pod Security level or a webhook that refuses the pod: this check pod's fault alone.
       refused = `the cluster refused the check pod's objects: ${errText(err)}`;
@@ -2829,6 +3274,16 @@ async function preflightProviders(
     } finally {
       await removeCheckPod(io, kube, object, namespace, ctx);
     }
+    // Then the slot: its Secret holds the copy of the literal values (ADR-0019). The Custodian drops
+    // the slot's rules when it next reads the slots.
+    try {
+      await kube.deleteObject({ kind: "secret", name: custodianSlotSecret(CHECK_POD_SLOT), namespace, ...ctx });
+    } catch (err) {
+      activity(
+        io,
+        `warning: provider: the check pod's slot Secret was not deleted (${errText(err)}) — the next \`jr2 up\` removes it`,
+      );
+    }
     // The last log read while the pod ran stands in for an empty final read.
     const output = end?.output || lastLive;
     const verdicts = checkVerdicts(output);
@@ -2847,7 +3302,7 @@ async function preflightProviders(
           (started.has(model)
             ? `the check pod stopped while it checked this model: ${pod()}`
             : `not checked: the check pod stopped before it reached this model: ${pod()}`);
-        faults.push(providerFault(p, model, checkPod.where, why, checkPod.manifest.secrets.length > 0));
+        faults.push(providerFault(p, model, checkPod.where, why, true));
       }
     }
     const listings = mcpCheckVerdicts(output);
@@ -3002,14 +3457,14 @@ async function applyFirstContact(kube: KubeAdmin, opts: Parameters<KubeAdmin["ap
   }
 }
 
-/** The trust bundles a check pod reads (`<object>-ca`), as `trustObject` writes them to `jr2-ca`. */
-function trustData(
-  caBundle: string | undefined,
-  bundles: { extra: string; bundle: string; upstream: string } | undefined,
-) {
+/** The Custodian pods as `makeSlotLive` reaches them: the converge's API reads, a port-forward to one
+ * pod (`io.kube`), and `io.fetch` over it. */
+function liveKube(io: Io, kube: KubeAdmin): LiveKube {
+  const port = io.kube ?? kubectlKube;
   return {
-    ...(caBundle !== undefined ? { "ca.crt": caBundle } : {}),
-    ...(bundles ? { "extra.crt": bundles.extra, "bundle.crt": bundles.bundle, "upstream.crt": bundles.upstream } : {}),
+    listJson: (o) => kube.listJson(o),
+    portForward: (o) => port.portForward(o),
+    fetch: (url, init) => (io.fetch ?? globalThis.fetch)(url, init),
   };
 }
 
@@ -3061,7 +3516,7 @@ async function removeCheckLeftovers(
     }
     for (const kind of ["configmap", "secret", "networkpolicy"]) {
       for (const o of await kube.listJson<CheckObject>({ kind, selector, namespace, ...ctx })) {
-        const owner = o.metadata.name.replace(/-(ca|tls|env)$/, "");
+        const owner = o.metadata.name.replace(/-(ca|tls|env|trust|standins)$/, "");
         if (named.has(owner) || !(since(o.metadata.creationTimestamp) > CHECK_LEFTOVER_SECONDS)) continue;
         await kube.deleteObject({ kind, name: o.metadata.name, namespace, wait: false, ...ctx });
       }
@@ -3134,21 +3589,15 @@ export function checkVerdicts(output: string): Map<string, CheckVerdict> {
 
 /**
  * Why a check pod said nothing of a model, from how it ended (`PodEnd`): the hint follows the reason
- * the kubelet gave, and the Custodian's own refusal line is quoted when it has one. Exported for its
- * test.
+ * the kubelet gave. Exported for its test.
  */
-export function podFault(
-  end: PodEnd,
-  checkPod: Pick<CheckPod, "where">,
-  images: { harnessImage: string; custodianImage: string },
-): string {
-  const refusal = /jr2\.custodian refuse secret=\S+ reason=[\w-]+/.exec(end.custodian)?.[0];
+export function podFault(end: PodEnd, checkPod: Pick<CheckPod, "where">, images: { harnessImage: string }): string {
   const said = end.reasons.length ? ` (${end.reasons.join("; ")})` : "";
   const stuck = end.stuck ?? "";
   if (/ErrImagePull|ImagePullBackOff|InvalidImageName/.test(stuck)) {
     return (
       `the check pod cannot start: ${stuck}${said} — a node on ${checkPod.where} cannot pull ` +
-      `${stuck.startsWith("custodian") ? images.custodianImage : images.harnessImage}; check \`registry\` or ` +
+      `${images.harnessImage}; check \`registry\` or ` +
       "`kitRegistry`, and that those nodes can pull from it"
     );
   }
@@ -3160,27 +3609,18 @@ export function podFault(
     );
   }
   if (stuck.startsWith("FailedMount")) {
-    // A volume of the Custodian: a held secret's `valueFrom` Secret, or its key.
+    // A volume of the check pod: its trust ConfigMap or its Stand-in Secret, which `jr2 up` wrote
+    // before the pod (ADR-0084).
     return (
-      `the check pod cannot start: ${stuck} — a Secret or a key that a \`secrets\` valueFrom names is missing ` +
-      "in the Instance's namespace"
+      `the check pod cannot start: ${stuck} — its trust ConfigMap or its Stand-in Secret is missing; ` +
+      "a jr2 defect, not a fault of the provider: run `jr2 up` again"
     );
   }
   const oom = [stuck, ...end.reasons].find((r) => /OOMKilled/.test(r));
   if (oom) {
-    const custodian = oom.startsWith("custodian");
     return (
-      `the check pod ran out of memory: ${oom}${said} — ` +
-      (custodian
-        ? `its Custodian has the Instance Harness Custodian's limit (${KIT_POD_SIZES.instanceCustodian.limits.memory})`
-        : `the check container's limit is ${KIT_POD_SIZES.checkContainer.limits.memory}`) +
-      "; a jr2 defect, not a fault of the provider"
-    );
-  }
-  if (refusal || stuck.startsWith("custodian")) {
-    return (
-      `the check pod's Custodian did not start: ${refusal ?? stuck}${said} — a Custodian stops at start on a held ` +
-      "value that is missing, empty or not printable ASCII"
+      `the check pod ran out of memory: ${oom}${said} — the check container's limit is ` +
+      `${KIT_POD_SIZES.checkContainer.limits.memory}; a jr2 defect, not a fault of the provider`
     );
   }
   if (end.phase === "timeout") {
@@ -3204,12 +3644,16 @@ function providerFault(p: CheckedProvider, model: string, where: string, fault: 
     (p.custom || p.gateway) && /no answer in \d+ s|no verdict in \d+ s|time ran out/.test(fault)
       ? "  - a model that loads on first use can take longer than the check waits: run `jr2 up` again once it has loaded\n"
       : "";
+  // The Custodian's 502 names a failed TLS handshake (ADR-0059): then the TLS of the host is the
+  // likely cause, and comes first.
+  const tls = tlsCauses(fault);
   if (p.custom) {
     // The custom provider's own causes (ADR-0018): an endpoint jr2 knows nothing about but its url.
     return (
       `provider preflight failed for model "${model}" against ${hosts} (from a pod on ${where}, as a Turn calls it): ` +
       `${fault}\n` +
       slow +
+      tls +
       // A refused key: the endpoint answered, so the key comes first and the reach is not it.
       (refusedKey(fault)
         ? (p.keys.length
@@ -3240,13 +3684,41 @@ function providerFault(p: CheckedProvider, model: string, where: string, fault: 
     `${custodian ? "through a Custodian" : "direct"}, ` +
     `as a Turn calls it): ${fault}\n` +
     slow +
+    tls +
     causes +
     (p.gateway
       ? `  - harness.catalog.${p.id}.baseUrl (${p.gateway}) may not answer, or may not serve "${model.slice(p.id.length + 1)}" ` +
         "(a LiteLLM model_name alias)\n"
       : "") +
-    "  - a private CA on that path must be in harness.caBundle"
-  );
+    // The certificate's cause, first, already names harness.caBundle.
+    (tls === CERTIFICATE_CAUSE ? "" : "  - a private CA on that path must be in harness.caBundle\n")
+  ).replace(/\n$/, "");
+}
+
+/** The cause of a certificate that the Custodian does not trust (ADR-0059). */
+const CERTIFICATE_CAUSE =
+  "  - the Custodian does not trust the certificate of the host, or the certificate is not for the host's name: " +
+  "a private CA on that path must be in harness.caBundle\n";
+/** The Custodian's own 502 for a target that it could not reach: a match is anchored on it, so that a
+ * gateway's own error text that names TLS does not count. */
+const NOT_REACHED = String.raw`jr2 custodian: \S+ could not be reached: `;
+
+/** The causes of a failed TLS handshake, when the Custodian's 502 names one (ADR-0059), else nothing. */
+export function tlsCauses(fault: string): string {
+  if (new RegExp(`${NOT_REACHED}the TLS handshake failed: the Custodian does not trust the certificate`).test(fault)) {
+    return CERTIFICATE_CAUSE;
+  }
+  if (
+    new RegExp(
+      `${NOT_REACHED}(the TLS handshake failed|the host closed the connection before the TLS handshake ended)`,
+    ).test(fault)
+  ) {
+    return (
+      "  - the host may not accept TLS 1.2 with an ECDHE cipher suite and AES-GCM or ChaCha20-Poly1305, which is all " +
+      "that the Custodian offers: put a TLS terminator, such as nginx, in front of a host that does not\n"
+    );
+  }
+  return "";
 }
 
 /** The layers this converge hands to the cluster, said out loud rather than silently skipped. */

@@ -7,5 +7,5 @@ import { body, door } from "./_wt-load.ts";
 export const machine = workspace(body, {
   input: door,
   resources: { limits: { memory: "2Gi", cpu: "500m" } },
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/large.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc.cluster.local/large.git", ref: "main" } },
 });

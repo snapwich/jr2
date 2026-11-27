@@ -1,8 +1,14 @@
-# A runner with room for the heavy tiers, and a VANILLA kind cluster on it (ADR-0038): the first
-# steps of each @kind shard and of @dist in release.yml. Each job has its own runner, so each
-# creates its own cluster.
+# A runner with room for the heavy tiers, and a kind cluster on it with no image in it (ADR-0038):
+# the first steps of each @kind shard and of @dist in release.yml. Each job has its own runner, so
+# each creates its own cluster. No recipe prepares it for the Fence: the tier's first `jr2 up`
+# installs the Fence's prerequisites, as on any cluster (ADR-0084).
 name: kind cluster
-description: free the runner's disk, install the pinned kind, create the cluster
+description: free the runner's disk, install the pinned kind and create the cluster
+inputs:
+  recipe:
+    description: the just recipe that creates the cluster (e2e-kind-up for @kind, e2e-dist-up for @dist)
+    required: false
+    default: e2e-kind-up
 
 runs:
   using: composite
@@ -37,4 +43,6 @@ runs:
 
     - name: Create the cluster
       shell: bash
-      run: just e2e-kind-up
+      env:
+        RECIPE: ${{ inputs.recipe }}
+      run: just "$RECIPE"

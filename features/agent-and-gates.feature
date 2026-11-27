@@ -6,7 +6,7 @@ Feature: Agents and gates drive a run from outside
 
   What plays the agent here is really its HARNESS'S Menu (ADR-0013): the routes a Harness reads and
   picks on, through its pod's Custodian — and there is no pod in this tier. A REAL Agent, in a real
-  Sandbox, reaching these routes through a real Custodian on localhost, is what the `@kind` tier
+  Sandbox, reaching these routes through a real Custodian outside its pod, is what the `@kind` tier
   proves.
 
   Rule: an agent's tool call transitions the state that invoked it

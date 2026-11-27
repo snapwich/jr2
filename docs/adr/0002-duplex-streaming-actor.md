@@ -9,7 +9,7 @@ steering), and a held hour-long cross-pod connection is lost on any blip or Orch
 ## Control plane: Menu tool calls, not stream interpretation
 
 The Agent emits the domain events the Machine cares about by **calling tools** — its Menu, derived from the invoking
-state's transitions (ADR-0015), read by the Harness through the pod's Custodian and presented to the model as tools
+state's transitions (ADR-0015), read by the Harness through the Custodian and presented to the model as tools
 (ADR-0013). Events are Agent-authored and semantic rather than inferred from a generic event stream. This was proven
 end-to-end against a real Harness + vLLM (PoC #5): the Agent called its tool, the Machine transitioned, and a gated
 action observably occurred only post-approval.
